@@ -1775,7 +1775,7 @@ Resources:
         Size: 5120
       Tags:
         # Data plane — Jobs API batch ingest. Cost scales with doc volume through
-        # the batch path. See docs/planning/monitor-data-mart.md §10.3.
+        # the batch path. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -4544,7 +4544,7 @@ Resources:
 
   # Metering table. Partitioned by (date, hour) using WRITE TIME (= document
   # completion time, since save_reporting_data runs at end of workflow).
-  # See docs/planning/monitor-data-mart.md §2.3 for the partitioning rationale.
+  # See docs/reporting-sql-layer.md §2.3 for the partitioning rationale.
   MeteringTable:
     Type: AWS::Glue::Table
     Properties:
@@ -4624,7 +4624,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_hourly"
-        Description: "Hourly rollup of metering data. Append-only. See docs/planning/monitor-data-mart.md §2."
+        Description: "Hourly rollup of metering data. Append-only. See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -4690,7 +4690,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_daily"
-        Description: "Daily rollup of metering data. Append-only. See docs/planning/monitor-data-mart.md §2."
+        Description: "Daily rollup of metering data. Append-only. See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -4744,7 +4744,7 @@ Resources:
   # Control-plane cost rollup — dashboard's Control Plane Cost KPI reads from
   # here. Populated by the rollup Lambda from CloudWatch metrics
   # (AWS/Lambda/Duration + Invocations, IDPControlPlane/* custom metrics).
-  # See docs/planning/monitor-data-mart.md §10.2.
+  # See docs/reporting-sql-layer.md §10.2.
   ControlPlaneHourlyTable:
     Type: AWS::Glue::Table
     Properties:
@@ -4752,7 +4752,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "control_plane_hourly"
-        Description: "Hourly rollup of control-plane Lambda cost. See docs/planning/monitor-data-mart.md §10.2."
+        Description: "Hourly rollup of control-plane Lambda cost. See docs/reporting-sql-layer.md §10.2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -4819,7 +4819,7 @@ Resources:
 
   ##########################################################################
   # Data Mart Rollup Lambda — hourly + daily aggregations for the IDP Monitor
-  # dashboard. See docs/planning/monitor-data-mart.md.
+  # dashboard. See docs/reporting-sql-layer.md.
   ##########################################################################
 
   DataMartRollupFunction:
@@ -4957,7 +4957,7 @@ Resources:
     Properties:
       FunctionName: !Ref DataMartRollupFunction
       Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
+      Principal: !Sub events.${AWS::URLSuffix}
       SourceArn: !GetAtt DataMartRollupHourlySchedule.Arn
 
   # Daily rollup: writes metering_daily for the previous fully-sealed UTC day.
@@ -4978,7 +4978,7 @@ Resources:
     Properties:
       FunctionName: !Ref DataMartRollupFunction
       Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
+      Principal: !Sub events.${AWS::URLSuffix}
       SourceArn: !GetAtt DataMartRollupDailySchedule.Arn
 
   DocumentSectionsCrawlerSecurityConfigurationV2:
@@ -6170,7 +6170,7 @@ Resources:
       Timeout: 30
       Tags:
         # Data plane — invoked per doc-workflow state change. See
-        # docs/planning/monitor-data-mart.md §10.3 / §10.4.
+        # docs/reporting-sql-layer.md §10.3 / §10.4.
         idp:plane: data
 
       Layers:
@@ -6364,7 +6364,7 @@ Resources:
       EphemeralStorage:
         Size: 5120
       Tags:
-        # Data plane — SQS per-doc status-change events. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — SQS per-doc status-change events. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -6462,7 +6462,7 @@ Resources:
       Timeout: 300
       Tags:
         # Data plane — SQS per-doc dispatcher for custom post-processor.
-        # See docs/planning/monitor-data-mart.md §10.3.
+        # See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig:
         !If

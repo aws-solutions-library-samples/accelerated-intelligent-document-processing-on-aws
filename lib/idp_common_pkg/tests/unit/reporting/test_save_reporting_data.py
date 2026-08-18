@@ -504,7 +504,7 @@ class TestSaveReportingDataSections:
 
 
 # ---------------------------------------------------------------------------
-# Metering write-time partitioning (docs/planning/monitor-data-mart.md §2.3)
+# Metering write-time partitioning (docs/reporting-sql-layer.md §2.3)
 # ---------------------------------------------------------------------------
 
 

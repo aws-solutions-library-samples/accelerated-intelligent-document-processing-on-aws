@@ -4,7 +4,7 @@
 """Unit tests for scripts/check_data_plane_tags.py.
 
 The linter enforces ``idp:plane=data`` on the small whitelist of
-data-plane Lambdas. See docs/planning/monitor-data-mart.md §10.3.
+data-plane Lambdas. See docs/reporting-sql-layer.md §10.3.
 
 These tests pin the linter's behavior:
 - Whitelisted Lambda missing the tag → exit 1 with the logical ID named

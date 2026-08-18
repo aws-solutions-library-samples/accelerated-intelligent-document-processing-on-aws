@@ -94,7 +94,7 @@ def emit_control_plane_cost_metric(
     The hourly rollup Lambda (main IDP stack) reads these via
     ``cloudwatch:GetMetricData`` and writes rows to ``control_plane_hourly``
     for the dashboard's Control Plane Cost KPI. See
-    ``docs/planning/monitor-data-mart.md`` §10 for the design.
+    ``docs/reporting-sql-layer.md`` §10 for the design.
 
     Args:
         component: Short label identifying the feature area

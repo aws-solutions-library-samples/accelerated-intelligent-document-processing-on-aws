@@ -473,7 +473,7 @@ class TestGlueTableCreation:
         assert call_args["TableInput"]["Name"] == "metering"
         assert call_args["TableInput"]["TableType"] == "EXTERNAL_TABLE"
         # Two partition keys — date + hour. See
-        # docs/planning/monitor-data-mart.md §2.
+        # docs/reporting-sql-layer.md §2.
         assert call_args["TableInput"]["PartitionKeys"] == [
             {"Name": "date", "Type": "string"},
             {"Name": "hour", "Type": "string"},

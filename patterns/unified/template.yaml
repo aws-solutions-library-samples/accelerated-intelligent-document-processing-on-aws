@@ -3783,7 +3783,7 @@ Resources:
       MemorySize: 4096
       Tracing: Active
       Tags:
-        # Data plane — per-doc BDA invocation. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Environment:
         Variables:
@@ -3855,7 +3855,7 @@ Resources:
       MemorySize: 4096
       Tracing: Active
       Tags:
-        # Data plane — per-doc BDA result parsing. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig: !If
         - DeployInVPC
@@ -3980,7 +3980,7 @@ Resources:
       MemorySize: 4096
       Tracing: Active
       Tags:
-        # Data plane — per-doc BDA completion signal. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Environment:
         Variables:
@@ -4219,7 +4219,7 @@ Resources:
       MemorySize: 4096
       Tracing: Active
       Tags:
-        # Data plane — runs per document. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
         # The rollup Lambda discovers stack membership via the native
         # aws:cloudformation:stack-name tag; no idp:stack tag needed here.
         idp:plane: data
@@ -4717,7 +4717,7 @@ Resources:
       MemorySize: 4096
       Tracing: Active
       Tags:
-        # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig: !If
         - DeployInVPC
@@ -5012,7 +5012,7 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tags:
-        # Data plane — per-doc pipeline result stitching. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc pipeline result stitching. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig: !If
         - DeployInVPC
@@ -5327,7 +5327,7 @@ Resources:
       Tracing: Active
       Tags:
         # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
-        # See docs/planning/monitor-data-mart.md §10.3.
+        # See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Role: !GetAtt PipelineHooksDispatcherFunctionRole.Arn
       Environment:
@@ -5585,7 +5585,7 @@ Resources:
       MemorySize: 1024
       Tags:
         # Data plane — per-doc policy classification for rule validation.
-        # See docs/planning/monitor-data-mart.md §10.3.
+        # See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Environment:
         Variables:
@@ -5679,7 +5679,7 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tags:
-        # Data plane — per-doc rule validation. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc rule validation. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig: !If
         - DeployInVPC
@@ -5819,7 +5819,7 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tags:
-        # Data plane — per-doc rule-validation orchestration. See docs/planning/monitor-data-mart.md §10.3.
+        # Data plane — per-doc rule-validation orchestration. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       VpcConfig: !If
         - DeployInVPC

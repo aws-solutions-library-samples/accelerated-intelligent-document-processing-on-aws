@@ -6,7 +6,7 @@
 The helper emits ``IDPControlPlane/*`` CloudWatch metrics that the hourly
 rollup Lambda later aggregates into the ``control_plane_hourly`` table.
 Every control-plane Lambda that hits Athena or Bedrock calls this at end
-of invocation. See docs/planning/monitor-data-mart.md §10.5.
+of invocation. See docs/reporting-sql-layer.md §10.5.
 """
 
 from unittest.mock import MagicMock, patch

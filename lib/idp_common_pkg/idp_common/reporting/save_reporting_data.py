@@ -1100,7 +1100,7 @@ class SaveReportingData:
         # ``timestamp`` is the write time (= doc completion time, since this
         # runs at end of workflow). ``initial_event_time`` preserves the
         # queue time for consumers that need queue-time semantics. See
-        # docs/planning/monitor-data-mart.md §2.3 for the partitioning
+        # docs/reporting-sql-layer.md §2.3 for the partitioning
         # rationale.
         metering_schema = pa.schema(
             [
@@ -1200,7 +1200,7 @@ class SaveReportingData:
 
         # Save metering data in Parquet format. Path is date+hour partitioned
         # so the tier picker's <2h tail query can prune to the current hour
-        # instead of scanning the whole day (see docs/planning/monitor-data-mart.md §4).
+        # instead of scanning the whole day (see docs/reporting-sql-layer.md §4).
         if metering_records:
             metering_key = (
                 f"metering/date={date_partition}/hour={hour_partition}/"

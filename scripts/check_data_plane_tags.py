@@ -4,7 +4,7 @@
 
 """Enforce ``idp:plane=data`` on the small whitelist of data-plane Lambdas.
 
-See docs/planning/monitor-data-mart.md §10.3 for the tagging rationale.
+See docs/reporting-sql-layer.md §10.3 for the tagging rationale.
 Short version:
 
 - Only per-document processors carry ``idp:plane=data``. Everything else
@@ -39,7 +39,7 @@ UNIFIED_TEMPLATE = REPO_ROOT / "patterns" / "unified" / "template.yaml"
 MAIN_TEMPLATE = REPO_ROOT / "template.yaml"
 
 # Data-plane whitelist: Lambda logical IDs classified as "invoked
-# per document". See docs/planning/monitor-data-mart.md §10.4 for the
+# per document". See docs/reporting-sql-layer.md §10.4 for the
 # classification rule ("what triggered the invocation").
 #
 # Keep this list narrow — every entry is a source of cost that the
@@ -209,7 +209,7 @@ def main() -> int:
             "If this Lambda is control plane (invoked by user / schedule / admin,\n"
             "not by document arrival), remove it from DATA_PLANE_WHITELIST in\n"
             "scripts/check_data_plane_tags.py instead.\n\n"
-            "See docs/planning/monitor-data-mart.md §10.3–§10.4.",
+            "See docs/reporting-sql-layer.md §10.3–§10.4.",
             file=sys.stderr,
         )
         return 1

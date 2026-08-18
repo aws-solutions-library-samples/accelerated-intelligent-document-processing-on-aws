@@ -14,7 +14,7 @@ event payload:
 
 **Append-only.** Each partition is written once and never rewritten.
 The ``metering`` table is partitioned by write time (= completion time,
-see save_reporting_data.py + docs/planning/monitor-data-mart.md §2.3),
+see save_reporting_data.py + docs/reporting-sql-layer.md §2.3),
 so metering rows never land in past partitions — no re-materialization
 window needed.
 
@@ -23,7 +23,7 @@ data before writing (Athena queries with ``LIMIT 1``). If the partition
 already exists, the handler skips the INSERT. This means a duplicate
 EventBridge fire is safe.
 
-See docs/planning/monitor-data-mart.md for the full design.
+See docs/reporting-sql-layer.md for the full design.
 """
 
 import io
@@ -150,10 +150,11 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
     """Query CloudWatch for the previous hour's control-plane metrics
     and write one Parquet row per (function, component, model) to S3.
 
-    Control-plane Lambdas are discovered via the ``idp:stack`` tag
-    (all IDP Lambdas carry it) minus those with ``idp:plane=data``
-    (the ~7 doc processors). Everything else is implicitly control
-    plane — see docs/planning/monitor-data-mart.md §10.3.
+    Control-plane Lambdas are discovered via the CFN-native
+    ``aws:cloudformation:stack-name`` tag (all IDP Lambdas carry it)
+    minus those with ``idp:plane=data`` (the whitelisted per-doc
+    processors). Everything else is implicitly control plane — see
+    docs/reporting-sql-layer.md §10.3.
     """
     if _s3_object_exists(
         f"control_plane/date={target_date}/hour={target_hour}/data.parquet"
@@ -293,17 +294,19 @@ def _get_resources_by_tag(tags: Dict[str, List[str]]) -> List[str]:
     """Fetch all Lambda ARNs matching the given tag filter. Paginated."""
     tag_filters = [{"Key": key, "Values": values} for key, values in tags.items()]
     arns: List[str] = []
-    pagination_token = ""
+    next_page: Optional[str] = None
     while True:
-        response = tagging_client.get_resources(
-            TagFilters=tag_filters,
-            ResourceTypeFilters=["lambda:function"],
-            PaginationToken=pagination_token,
-        )
+        kwargs: Dict[str, Any] = {
+            "TagFilters": tag_filters,
+            "ResourceTypeFilters": ["lambda:function"],
+        }
+        if next_page:
+            kwargs["PaginationToken"] = next_page
+        response = tagging_client.get_resources(**kwargs)
         for mapping in response.get("ResourceTagMappingList", []):
             arns.append(mapping["ResourceARN"])
-        pagination_token = response.get("PaginationToken") or ""
-        if not pagination_token:
+        next_page = response.get("PaginationToken") or None
+        if not next_page:
             break
     return arns
 
