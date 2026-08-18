@@ -458,7 +458,10 @@ def get_dynamic_document_sections_description(
 - **Dot notation columns**: Names like `document_class.type` are SINGLE column names with dots inside quotes
 - **List data is stored as JSON strings** - use JSON parsing functions to extract array elements
 - **Case sensitivity**: Column names are lowercase, use LOWER() for string comparisons
-- **Partitioning**: All tables partitioned by `date` in YYYY-MM-DD format
+- **Partitioning**: `document_sections_*` tables partitioned by `date` (YYYY-MM-DD).
+  The `metering` table is partitioned by `date` + `hour` (YYYY-MM-DD / HH) reflecting
+  completion time — `WHERE "date" = 'X'` means "docs completed on X", not "queued on X";
+  filter on `initial_event_time` for queue-time semantics.
 
 ### Sample Queries:
 ```sql
