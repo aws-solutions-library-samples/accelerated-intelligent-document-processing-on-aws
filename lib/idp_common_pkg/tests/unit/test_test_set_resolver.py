@@ -2958,6 +2958,8 @@ class TestTestSetResolver:
         meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
         assert "labelJobId" not in meta
         assert "labelJobStatus" not in meta
+        # Confirmation is returned, not stored — see the reset test for why.
+        assert "lastAddResult" not in meta
 
     def test_reset_discards_reviewed_labels_and_review_state(self, labeling_env):
         """The destructive counterpart to clearDraftLabels.
@@ -3023,7 +3025,28 @@ class TestTestSetResolver:
         meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
         assert meta["labelState"] == "unlabeled"
         assert "labelJobId" not in meta
+        # Returned to the caller, which shows it as a transient confirmation...
         assert "Reset" in result["lastAddResult"]
+        # ...but NOT persisted. lastAddResult is the async add flow's completion
+        # notice, rendered by the test-set list; a synchronous operation storing one
+        # produced an alert that no amount of dismissing could remove, because
+        # dismissal is client-side and every re-fetch brought it back.
+        assert "lastAddResult" not in meta
+
+    def test_reset_discards_a_stale_notice_from_an_earlier_add(self, labeling_env):
+        """Resetting invalidates whatever the last add reported."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET lastAddResult = :r",
+            ExpressionAttributeValues={":r": "Added 40 document(s)"},
+        )
+
+        test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "lastAddResult" not in meta
 
     def test_reset_is_admin_only(self, labeling_env):
         """An Author manages test sets but must not be able to discard the team's

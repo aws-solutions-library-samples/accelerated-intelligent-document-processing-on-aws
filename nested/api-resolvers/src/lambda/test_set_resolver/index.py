@@ -2125,13 +2125,17 @@ def remove_documents_from_test_set(args):
     )
     new_count = validation.get("input_count", 0)
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
+    # returns before the work finishes, so the outcome has nowhere to live but the
+    # record, and the test-set list renders it. This operation is synchronous — the
+    # caller gets the count in the response and shows it there — so persisting a
+    # second copy only produced an immortal alert on the list page, which no amount
+    # of dismissing could remove because dismissal is client-side. Clearing it also
+    # discards any stale notice from an earlier add, which this operation invalidates.
     tracking_table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET fileCount = :c, lastAddResult = :r",
-        ExpressionAttributeValues={
-            ":c": new_count,
-            ":r": f"Removed {removed} document(s)",
-        },
+        UpdateExpression="SET fileCount = :c REMOVE lastAddResult",
+        ExpressionAttributeValues={":c": new_count},
     )
 
     logger.info(
@@ -2196,12 +2200,16 @@ def clear_draft_labels(args):
     kept = len(candidates) - len(to_delete)
     # Without dropping the label-job pointer the set keeps reporting a job whose
     # output no longer exists.
+    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
+    # returns before the work finishes, so the outcome has nowhere to live but the
+    # record, and the test-set list renders it. This operation is synchronous — the
+    # caller gets the count in the response and shows it there — so persisting a
+    # second copy only produced an immortal alert on the list page, which no amount
+    # of dismissing could remove because dismissal is client-side. Clearing it also
+    # discards any stale notice from an earlier add, which this operation invalidates.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET lastAddResult = :r REMOVE labelJobId, labelJobStatus",
-        expression_attribute_values={
-            ":r": f"Cleared {len(to_delete)} draft label section(s)"
-        },
+        update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
     )
 
     logger.info(
@@ -2263,12 +2271,19 @@ def reset_test_set_labels(args):
     _clear_review_state_for_label_jobs(test_set_id)
 
     now = f"Reset {len(keys)} label object(s)"
+    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
+    # returns before the work finishes, so the outcome has nowhere to live but the
+    # record, and the test-set list renders it. This operation is synchronous — the
+    # caller gets the count in the response and shows it there — so persisting a
+    # second copy only produced an immortal alert on the list page, which no amount
+    # of dismissing could remove because dismissal is client-side. Clearing it also
+    # discards any stale notice from an earlier add, which this operation invalidates.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=(
-            "SET labelState = :u, lastAddResult = :r REMOVE labelJobId, labelJobStatus"
+            "SET labelState = :u REMOVE lastAddResult, labelJobId, labelJobStatus"
         ),
-        expression_attribute_values={":u": "unlabeled", ":r": now},
+        expression_attribute_values={":u": "unlabeled"},
     )
 
     logger.info(f"Reset {test_set_id}: deleted {len(keys)} baseline object(s)")

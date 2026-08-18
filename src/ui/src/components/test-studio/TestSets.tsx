@@ -104,6 +104,15 @@ const TestSets = (): React.JSX.Element => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  // Test-set ids whose completion notice this session has already dismissed.
+  //
+  // lastAddResult lives on the record because the asynchronous add flow has nowhere
+  // else to report its outcome, so dismissing the alert cannot delete it — and every
+  // re-fetch brought the alert back, which read as the X doing nothing. Remembering the
+  // dismissal per session makes X mean "I have seen this" without a mutation whose only
+  // job is to clear a notice. Keyed by id + message so a NEW notice for the same set is
+  // not swallowed by an older dismissal.
+  const [dismissedResults, setDismissedResults] = useState<Set<string>>(new Set());
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [genInitial, setGenInitial] = useState<{ tab?: 'prompt' | 'config'; version?: string; className?: string }>({});
   const location = useLocation();
@@ -921,13 +930,15 @@ const TestSets = (): React.JSX.Element => {
       )}
 
       {testSets
-        .filter((ts) => ts.lastAddResult && ts.status === 'COMPLETED')
+        .filter((ts) => ts.lastAddResult && ts.status === 'COMPLETED' && !dismissedResults.has(`${ts.id}:${ts.lastAddResult}`))
         .map((ts) => (
           <Alert
             key={ts.id}
             type="info"
             dismissible
             onDismiss={() => {
+              const token = `${ts.id}:${ts.lastAddResult}`;
+              setDismissedResults((prev) => new Set(prev).add(token));
               setTestSets((prev) => prev.map((t) => (t.id === ts.id ? { ...t, lastAddResult: null } : t)));
             }}
           >
