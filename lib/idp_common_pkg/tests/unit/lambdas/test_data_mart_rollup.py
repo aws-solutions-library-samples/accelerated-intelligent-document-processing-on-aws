@@ -172,6 +172,7 @@ class TestMeteringDailyRollup:
         captured_sql = []
         with (
             patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(rollup, "_require_all_24_hours_present"),
             patch.object(
                 rollup,
                 "_run_athena",
@@ -185,6 +186,9 @@ class TestMeteringDailyRollup:
         assert (
             '"metering"' not in sql or 'FROM "idp-reporting"."metering_hourly"' in sql
         )
+        # Uses the renamed n_doc_events column (was n_docs).
+        assert "n_doc_events" in sql
+        assert "SUM(n_docs)" not in sql
 
     def test_daily_skip_when_partition_exists(self, rollup):
         with (
@@ -195,6 +199,43 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is True
         mock_athena.assert_not_called()
 
+    def test_daily_raises_when_hourly_incomplete(self, rollup):
+        """Missing any of the 24 hourly partitions must abort the daily
+        rollup — otherwise the partition writes with under-counted totals
+        and locks in permanently via the idempotency check."""
+
+        # Simulate: hours 00-22 present, hour 23 missing (the exact
+        # boundary case where the 23:xx hourly rollup failed retries).
+        present_hours = [[f"{h:02d}"] for h in range(23)]
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", return_value=present_hours
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="missing hours"):
+                rollup._run_daily()
+
+    def test_daily_hourly_check_passes_when_all_24_present(self, rollup):
+        """Sanity — 24 hours present, the check passes and INSERT runs."""
+        present_hours = [[f"{h:02d}"] for h in range(24)]
+        captured_sql = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", return_value=present_hours
+            ),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured_sql.append(sql) or "qid-789",
+            ),
+        ):
+            result = rollup._run_daily()
+        assert result["skipped"] is False
+        # The INSERT must actually run when the check passes.
+        assert any("INSERT INTO" in s for s in captured_sql)
+
 
 @pytest.mark.unit
 class TestControlPlaneDiscovery:
@@ -202,19 +243,28 @@ class TestControlPlaneDiscovery:
     (whitelist model, §10.3). Correctness of this set determines
     whether Control Plane Cost KPI is accurate."""
 
-    def test_subtracts_data_plane_arns(self, rollup):
+    def test_subtracts_data_plane_arns_stack_scoped(self, rollup):
+        """Discovery must scope BOTH the ``all_idp`` list AND the
+        ``data_plane`` subtraction to this stack via the
+        ``aws:cloudformation:stack-name`` tag. An account with multiple
+        IDP stacks would otherwise subtract sibling stacks' data-plane
+        Lambdas from this stack's list (harmless), or worse — return
+        their Lambdas' ARNs (bug)."""
         all_idp = [
             "arn:aws:lambda:us-east-1:1:function:OCRFunction",
             "arn:aws:lambda:us-east-1:1:function:TestResultsResolver",
             "arn:aws:lambda:us-east-1:1:function:ConfigResolver",
         ]
-        data_plane = {"arn:aws:lambda:us-east-1:1:function:OCRFunction"}
+        data_plane = ["arn:aws:lambda:us-east-1:1:function:OCRFunction"]
 
         def fake_get(tags):
-            # Stack scoping uses CFN's native tag — no custom idp:stack tag.
             if tags == {"aws:cloudformation:stack-name": ["idp-test-stack"]}:
                 return list(all_idp)
-            if tags == {"idp:plane": ["data"]}:
+            # BOTH filters combined → stack-scoped data plane subtraction.
+            if tags == {
+                "aws:cloudformation:stack-name": ["idp-test-stack"],
+                "idp:plane": ["data"],
+            }:
                 return list(data_plane)
             return []
 
@@ -338,38 +388,93 @@ class TestControlPlaneRowBuilding:
             function_name="MyFn",
             component="monitor-dashboard",
             hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
-            metrics={"duration": 0.0, "invocations": 0.0},
+            metrics={"duration_ms": 0.0, "invocations": 0.0},
         )
         assert rows == []
 
-    def test_row_includes_cost_estimates(self, rollup):
-        """A real invocation produces one row with duration, tokens, and
-        estimated cost columns filled in — matches the schema of
-        ``control_plane_hourly``."""
-        rows = rollup._build_control_plane_rows(
-            function_name="TestRunnerFunction",
-            component="test-runner",
-            hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
-            metrics={
-                "duration": 5000.0,  # 5 seconds
-                "invocations": 3.0,
-                "athena_bytes": 1_000_000.0,
-                "bedrock_in": 100.0,
-                "bedrock_out": 50.0,
-            },
-        )
+    def test_row_no_bedrock_emits_one_null_model_row(self, rollup):
+        """Component that didn't call Bedrock this hour → one row with
+        bedrock_model=None capturing Lambda+Athena cost only."""
+        with patch.object(rollup, "_get_lambda_memory_mb", return_value=512):
+            rows = rollup._build_control_plane_rows(
+                function_name="TestRunnerFunction",
+                component="test-runner",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    "duration_ms": 5000.0,
+                    "invocations": 3.0,
+                    "athena_bytes": 1_000_000.0,
+                    "bedrock_by_model": {},
+                },
+            )
         assert len(rows) == 1
         r = rows[0]
-        assert r["function_name"] == "TestRunnerFunction"
-        assert r["component"] == "test-runner"
+        assert r["bedrock_model"] is None
         assert r["invocations"] == 3
         assert r["duration_ms_sum"] == 5000
         assert r["athena_bytes_sum"] == 1_000_000
-        assert r["bedrock_tokens_in"] == 100
-        assert r["bedrock_tokens_out"] == 50
+        assert r["bedrock_tokens_in"] == 0
+        assert r["bedrock_tokens_out"] == 0
         assert r["est_lambda_cost"] > 0
         assert r["est_athena_cost"] > 0
-        assert r["est_bedrock_cost"] > 0
+        assert r["est_bedrock_cost"] == 0.0
+
+    def test_row_per_bedrock_model(self, rollup):
+        """A component that called two Bedrock models emits one row per
+        model, each with the correct per-model pricing applied."""
+        with patch.object(rollup, "_get_lambda_memory_mb", return_value=1024):
+            rows = rollup._build_control_plane_rows(
+                function_name="AnalyticsAgentFn",
+                component="analytics-agent",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    "duration_ms": 10_000.0,
+                    "invocations": 5.0,
+                    "athena_bytes": 0.0,
+                    "bedrock_by_model": {
+                        "us.anthropic.claude-opus-4-1": {"in": 1000, "out": 500},
+                        "us.anthropic.claude-haiku-4-5": {"in": 2000, "out": 1000},
+                    },
+                },
+            )
+        assert len(rows) == 2
+        by_model = {r["bedrock_model"]: r for r in rows}
+        # Opus pricing: $15 in / $75 out per 1K
+        opus = by_model["us.anthropic.claude-opus-4-1"]
+        assert opus["bedrock_tokens_in"] == 1000
+        assert opus["bedrock_tokens_out"] == 500
+        assert (
+            abs(opus["est_bedrock_cost"] - (1000 * 15 / 1000 + 500 * 75 / 1000)) < 1e-6
+        )
+        # Haiku pricing: $0.80 in / $4 out per 1K
+        haiku = by_model["us.anthropic.claude-haiku-4-5"]
+        assert (
+            abs(haiku["est_bedrock_cost"] - (2000 * 0.80 / 1000 + 1000 * 4 / 1000))
+            < 1e-6
+        )
+
+    def test_lambda_cost_scales_with_actual_memory(self, rollup):
+        """Cost estimate uses the Lambda's real MemorySize (not the
+        previous fixed 512 MB assumption). 4 GB memory → 8× the
+        cost that a 512 MB assumption would give at the same duration."""
+        with patch.object(rollup, "_get_lambda_memory_mb", return_value=4096):
+            rows_4gb = rollup._build_control_plane_rows(
+                function_name="BigFn",
+                component="test-runner",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={"duration_ms": 5000.0, "invocations": 1.0},
+            )
+        with patch.object(rollup, "_get_lambda_memory_mb", return_value=512):
+            rows_512 = rollup._build_control_plane_rows(
+                function_name="SmallFn",
+                component="test-runner",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={"duration_ms": 5000.0, "invocations": 1.0},
+            )
+        assert (
+            abs(rows_4gb[0]["est_lambda_cost"] / rows_512[0]["est_lambda_cost"] - 8)
+            < 0.01
+        )
 
     def test_flatten_cw_response_missing_values(self, rollup):
         """CloudWatch returns an empty Values list when there's no data
@@ -386,6 +491,17 @@ class TestControlPlaneRowBuilding:
         assert result["duration"] == 1234.5
         assert result["invocations"] == 0.0
         assert result["athena_bytes"] == 0.0
+
+    def test_flatten_cw_response_filters_nan(self, rollup):
+        """A NaN value slipping through would poison a downstream int()
+        cast. _flatten_cw_response must drop NaN before summing."""
+        response = {
+            "MetricDataResults": [
+                {"Id": "duration", "Values": [1000.0, float("nan"), 500.0]},
+            ]
+        }
+        result = rollup._flatten_cw_response(response)
+        assert result["duration"] == 1500.0
 
 
 @pytest.mark.unit

@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""One-shot migration for the metering table's new ``hour`` partition key.
+
+Context
+-------
+Phase 1 of the reporting SQL layer added an ``hour`` partition key to the
+Glue ``metering`` table (see ``docs/reporting-sql-layer.md`` §2.3). New
+writes go to ``metering/date=YYYY-MM-DD/hour=HH/…``. Old writes lived at
+``metering/date=YYYY-MM-DD/…`` (no hour subdirectory) and are invisible
+to the new projection template, which walks
+``date=${date}/hour=${hour}/`` paths only.
+
+This script moves each existing ``date=X/*.parquet`` file into
+``date=X/hour=HH/`` under the same date partition, where ``HH`` is
+read from the file's own ``timestamp`` (or ``initial_event_time`` as
+fallback) column. Historical dashboards that read via the new Glue
+table become visible again after this runs.
+
+Idempotency: files whose key already contains ``/hour=`` are skipped.
+
+Usage
+-----
+    # Dry run first — reports what WOULD move
+    python scripts/migrate_metering_hour_partition.py \\
+        --bucket <reporting-bucket> \\
+        --dry-run
+
+    # For real (uses S3 CopyObject + DeleteObject, no download)
+    python scripts/migrate_metering_hour_partition.py \\
+        --bucket <reporting-bucket>
+
+Safety
+------
+- Files are copied to the new key first, then the old key is deleted.
+  Interruption between copy and delete is safe — a re-run treats already-
+  migrated files as no-ops (they carry ``/hour=`` in the key).
+- Skips writes to Athena — the projection picks up the new partitions
+  automatically once objects land under the ``hour=`` subpath.
+- Pass ``--profile`` to select an AWS CLI profile.
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import re
+import sys
+from typing import Iterator, Optional
+
+import boto3
+
+
+HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
+DATE_PART_PATTERN = re.compile(r"metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
+
+
+def iter_metering_parquet_keys(s3, bucket: str) -> Iterator[str]:
+    """Yield every metering/*.parquet key under the bucket."""
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix="metering/"):
+        for obj in page.get("Contents") or []:
+            key = obj["Key"]
+            if key.endswith(".parquet"):
+                yield key
+
+
+def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
+    """Read the first row's timestamp column and return its UTC hour as HH.
+
+    Falls back to ``initial_event_time`` if ``timestamp`` isn't present.
+    Returns ``None`` if the file has no rows or the columns are absent —
+    the caller decides whether to skip or park the file in ``hour=00``.
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        print(
+            "ERROR: pyarrow required. pip install pyarrow", file=sys.stderr
+        )
+        sys.exit(2)
+
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    body = obj["Body"].read()
+    table = pq.read_table(io.BytesIO(body), columns=None)
+    for candidate in ("timestamp", "initial_event_time"):
+        if candidate in table.column_names and table.num_rows > 0:
+            ts = table.column(candidate)[0].as_py()
+            if ts is not None:
+                return ts.strftime("%H")
+    return None
+
+
+def new_key(old_key: str, hour: str) -> Optional[str]:
+    """Rewrite ``metering/date=X/foo.parquet`` → ``metering/date=X/hour=HH/foo.parquet``."""
+    match = DATE_PART_PATTERN.search(old_key)
+    if not match:
+        return None
+    date_part, filename = match.groups()
+    return f"metering/date={date_part}/hour={hour}/{filename}"
+
+
+def migrate(
+    bucket: str,
+    dry_run: bool,
+    default_hour: str = "00",
+    fallback_hour_on_missing: bool = True,
+) -> tuple[int, int, int]:
+    """Move every un-hour-partitioned metering parquet under ``bucket``.
+
+    Returns (moved, skipped, errors).
+    """
+    s3 = boto3.client("s3")
+    moved = skipped = errors = 0
+    for key in iter_metering_parquet_keys(s3, bucket):
+        if HOUR_KEY_PATTERN.search(key):
+            skipped += 1
+            continue
+
+        hour: Optional[str]
+        try:
+            hour = infer_hour_from_parquet(s3, bucket, key)
+        except Exception as e:
+            print(f"  WARN read failed for {key}: {e}", file=sys.stderr)
+            hour = None
+        if hour is None:
+            if not fallback_hour_on_missing:
+                print(f"  SKIP {key} — no timestamp column")
+                skipped += 1
+                continue
+            hour = default_hour
+
+        target = new_key(key, hour)
+        if target is None:
+            print(f"  SKIP {key} — path shape did not match")
+            skipped += 1
+            continue
+
+        if dry_run:
+            print(f"  DRY-RUN {key} -> {target}")
+            moved += 1
+            continue
+
+        try:
+            s3.copy_object(
+                Bucket=bucket,
+                Key=target,
+                CopySource={"Bucket": bucket, "Key": key},
+            )
+            s3.delete_object(Bucket=bucket, Key=key)
+            print(f"  MOVED {key} -> {target}")
+            moved += 1
+        except Exception as e:
+            print(f"  ERROR {key}: {e}", file=sys.stderr)
+            errors += 1
+    return moved, skipped, errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bucket", required=True, help="Reporting bucket name")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report moves without executing them",
+    )
+    parser.add_argument(
+        "--profile",
+        help="AWS CLI profile name",
+    )
+    parser.add_argument(
+        "--default-hour",
+        default="00",
+        help="Fallback hour partition when a file has no readable timestamp column (default: 00)",
+    )
+    args = parser.parse_args()
+
+    if args.profile:
+        boto3.setup_default_session(profile_name=args.profile)
+
+    moved, skipped, errors = migrate(
+        bucket=args.bucket,
+        dry_run=args.dry_run,
+        default_hour=args.default_hour,
+    )
+    print(f"\nSummary: moved={moved} skipped={skipped} errors={errors}")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

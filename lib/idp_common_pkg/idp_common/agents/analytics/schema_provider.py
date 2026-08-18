@@ -53,10 +53,17 @@ def get_metering_table_description() -> str:
 - `number_of_pages` (int): Number of pages in the document (replicated across all rows for same document)
 - `unit_cost` (double): Cost per unit in USD
 - `estimated_cost` (double): Calculated total cost (value × unit_cost)
-- `timestamp` (timestamp): When the operation was performed
+- `timestamp` (timestamp): Document COMPLETION time — i.e., when the workflow ended and
+  the row was written to metering. Not queue time.
+- `initial_event_time` (timestamp): Original queue time — when the document was first
+  enqueued. Populated on every row for consumers who need queue-time semantics.
 - `config_version` (string): Configuration version used for processing (defaults to "default" if not specified)
 
-**Partitioned by**: date (YYYY-MM-DD format)
+**Partitioned by**: date + hour (both string, `YYYY-MM-DD` / `HH`). Partition
+values reflect COMPLETION time (write time), not queue time. `WHERE date = 'X'`
+means "docs completed on X", not "docs queued on X" — filter on
+`initial_event_time` for queue-time semantics. Add `AND hour = 'HH'` to
+partition-prune tail queries scoped to a specific hour.
 
 ### Critical Aggregation Patterns:
 - **For document page counts**: Use `MAX("number_of_pages")` per document (NOT SUM, as this value is replicated)

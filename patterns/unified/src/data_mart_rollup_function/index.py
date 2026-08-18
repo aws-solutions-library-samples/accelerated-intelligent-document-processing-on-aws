@@ -28,7 +28,9 @@ See docs/reporting-sql-layer.md for the full design.
 
 import io
 import logging
+import math
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,6 +69,11 @@ athena_client = boto3.client("athena")
 cloudwatch_client = boto3.client("cloudwatch")
 tagging_client = boto3.client("resourcegroupstaggingapi")
 s3_client = boto3.client("s3")
+lambda_client = boto3.client("lambda")
+
+# Cache Lambda MemorySize lookups within a single rollup invocation to avoid
+# re-issuing get_function_configuration per (function, hour) call.
+_lambda_memory_cache: Dict[str, int] = {}
 
 
 def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
@@ -124,7 +131,11 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         )
         return {"skipped": True, "reason": "partition_exists"}
 
-    # nosec B608 — target_date/target_hour are derived from datetime, not user input
+    # nosec B608 — target_date/target_hour are derived from datetime, not user input.
+    # `n_doc_events` (not `n_docs`) — a doc reprocessed lands multiple
+    # metering rows, and COUNT(DISTINCT document_id) at hour grain
+    # de-dupes only within the hour. Consumers who need cross-hour
+    # unique-doc counts should query raw metering.
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_hourly"
         SELECT
@@ -132,7 +143,7 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
             config_version,
             service_api,
             unit,
-            COUNT(DISTINCT document_id) AS n_docs,
+            COUNT(DISTINCT document_id) AS n_doc_events,
             SUM(value) AS sum_value,
             SUM(estimated_cost) AS sum_cost,
             SUM(number_of_pages) AS sum_pages,
@@ -209,7 +220,15 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
 
 
 def _run_daily() -> Dict[str, Any]:
-    """Rollup the previous fully-sealed UTC day."""
+    """Rollup the previous fully-sealed UTC day.
+
+    Before writing, verify that ``metering_hourly`` has all 24 hour
+    partitions present for the target date. Writing an incomplete daily
+    would be permanent — the per-partition idempotency skip means the
+    row never gets recomputed even if the missing hourly arrives later.
+    On incomplete input, raise so Lambda async-retry can replay after
+    the hourly rollup catches up.
+    """
     target_date = _previous_day()
     logger.info(f"Daily rollup targeting date={target_date}")
     if _partition_already_written(table="metering_daily", date=target_date):
@@ -219,7 +238,13 @@ def _run_daily() -> Dict[str, Any]:
         )
         return {"mode": "daily", "target_date": target_date, "skipped": True}
 
-    # nosec B608 — target_date is derived from datetime, not user input
+    _require_all_24_hours_present(target_date)
+
+    # nosec B608 — target_date is derived from datetime, not user input.
+    # `n_doc_events` (not `n_docs`) — a doc reprocessed in a different hour
+    # is counted once per hour, so summing across hours may exceed unique
+    # doc count. Consumers who need unique-doc counts should query raw
+    # `metering` with COUNT(DISTINCT document_id) — see §2 in the doc.
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_daily"
         SELECT
@@ -227,7 +252,7 @@ def _run_daily() -> Dict[str, Any]:
             config_version,
             service_api,
             unit,
-            SUM(n_docs) AS n_docs,
+            SUM(n_doc_events) AS n_doc_events,
             SUM(sum_value) AS sum_value,
             SUM(sum_cost) AS sum_cost,
             SUM(sum_pages) AS sum_pages,
@@ -243,6 +268,31 @@ def _run_daily() -> Dict[str, Any]:
         "query_execution_id": query_id,
         "skipped": False,
     }
+
+
+def _require_all_24_hours_present(target_date: str) -> None:
+    """Fail loudly if metering_hourly is missing any hour for the day.
+
+    Rationale: if the 23:xx hourly rollup failed (transient Athena outage,
+    say), the day is incomplete. Writing metering_daily now would lock in
+    a permanently-wrong number via the idempotency check. Better to raise
+    so async retry replays after the hourly catches up.
+    """
+    # nosec B608 — target_date is from datetime.strftime, not user input
+    sql = (
+        f'SELECT DISTINCT hour FROM "{DATABASE}"."metering_hourly" '  # nosec B608
+        f"WHERE date = '{target_date}'"  # nosec B608
+    )
+    rows = _run_athena_query_with_results(sql)
+    present = {r[0] for r in rows if r and r[0]}
+    expected = {f"{h:02d}" for h in range(24)}
+    missing = expected - present
+    if missing:
+        raise RuntimeError(
+            f"metering_hourly for date={target_date} is missing hours "
+            f"{sorted(missing)}. Refusing to write incomplete metering_daily; "
+            f"async retry will replay once the hourly rollup catches up."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +314,13 @@ def _discover_control_plane_lambdas() -> List[str]:
         return []
 
     all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": [STACK_NAME]})
-    data_plane = set(_get_resources_by_tag({"idp:plane": ["data"]}))
+    # Scope the data-plane query to THIS stack too — a shared account with
+    # multiple IDP stacks would otherwise include sibling stacks' Lambdas.
+    data_plane = set(
+        _get_resources_by_tag(
+            {"aws:cloudformation:stack-name": [STACK_NAME], "idp:plane": ["data"]}
+        )
+    )
 
     control_plane = [arn for arn in all_idp if arn not in data_plane]
 
@@ -317,13 +373,25 @@ def _get_cw_metrics_for_function(
     component: str,
     hour_start: datetime,
     hour_end: datetime,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """Aggregate the hour's CloudWatch metrics for one Lambda.
 
-    Emits a single ``get_metric_data`` call with all four metrics batched:
-    Duration (native), Invocations (native), AthenaBytesScanned (custom
-    from ``IDPControlPlane`` namespace, if the Lambda emits it),
-    BedrockInputTokens + BedrockOutputTokens (custom, same namespace).
+    Returns a dict with:
+      - ``duration_ms``, ``invocations`` (Lambda-scoped, native)
+      - ``athena_bytes`` (Component-scoped, custom)
+      - ``bedrock_by_model``: {model_id: {"in": tokens, "out": tokens}}
+        Empty when the component didn't call Bedrock this hour.
+
+    Bedrock metrics carry a ``Model`` dimension. GetMetricData requires
+    exact dimension sets, so we ListMetrics first to discover which
+    (Component, Model) pairs exist for this hour's namespace, then
+    batch-query each. The helper (idp_common.metrics.emit_control_plane_cost_metric)
+    is the sole emitter, so the dimension shape is contractual.
+
+    Transient CloudWatch errors (Throttling, ServiceUnavailable) are
+    re-raised so the caller can abort the whole rollup and let Lambda's
+    async retry replay the hour — dropping a Lambda's row silently would
+    hide the outage forever behind the per-partition idempotency skip.
     """
     query = [
         {
@@ -362,96 +430,184 @@ def _get_cw_metrics_for_function(
                 "Stat": "Sum",
             },
         },
-        {
-            "Id": "bedrock_in",
-            "MetricStat": {
-                "Metric": {
-                    "Namespace": "IDPControlPlane",
-                    "MetricName": "BedrockInputTokens",
-                    "Dimensions": [{"Name": "Component", "Value": component}],
-                },
-                "Period": 3600,
-                "Stat": "Sum",
-            },
-        },
-        {
-            "Id": "bedrock_out",
-            "MetricStat": {
-                "Metric": {
-                    "Namespace": "IDPControlPlane",
-                    "MetricName": "BedrockOutputTokens",
-                    "Dimensions": [{"Name": "Component", "Value": component}],
-                },
-                "Period": 3600,
-                "Stat": "Sum",
-            },
-        },
     ]
-    try:
+    response = cloudwatch_client.get_metric_data(
+        MetricDataQueries=query,
+        StartTime=hour_start,
+        EndTime=hour_end,
+    )
+    flat = _flatten_cw_response(response)
+    return {
+        "duration_ms": flat.get("duration", 0.0),
+        "invocations": flat.get("invocations", 0.0),
+        "athena_bytes": flat.get("athena_bytes", 0.0),
+        "bedrock_by_model": _get_bedrock_tokens_by_model(
+            component, hour_start, hour_end
+        ),
+    }
+
+
+def _get_bedrock_tokens_by_model(
+    component: str, hour_start: datetime, hour_end: datetime
+) -> Dict[str, Dict[str, float]]:
+    """List Bedrock token metrics for this component and return
+    {model_id: {"in": tokens, "out": tokens}}.
+
+    The emitter (``emit_control_plane_cost_metric``) writes metrics with
+    dims ``[Component, Model]`` — GetMetricData needs an exact dimension
+    set, so we ListMetrics first to discover the Model values that
+    actually exist for this component, then query one aggregate per
+    Model. See §10.5 in docs/reporting-sql-layer.md.
+    """
+    models: List[str] = []
+    seen: set = set()
+    for metric_name in ("BedrockInputTokens", "BedrockOutputTokens"):
+        next_token: Optional[str] = None
+        while True:
+            kwargs: Dict[str, Any] = {
+                "Namespace": "IDPControlPlane",
+                "MetricName": metric_name,
+                "Dimensions": [
+                    {"Name": "Component", "Value": component},
+                ],
+            }
+            if next_token:
+                kwargs["NextToken"] = next_token
+            resp = cloudwatch_client.list_metrics(**kwargs)
+            for m in resp.get("Metrics", []):
+                for d in m.get("Dimensions", []):
+                    if d.get("Name") == "Model" and d.get("Value") not in seen:
+                        seen.add(d["Value"])
+                        models.append(d["Value"])
+            next_token = resp.get("NextToken")
+            if not next_token:
+                break
+    if not models:
+        return {}
+
+    # Batch queries for all (model, direction) pairs into a single
+    # GetMetricData call. IDs must be alphanumeric — sanitize model IDs.
+    queries: List[Dict[str, Any]] = []
+    id_to_key: Dict[str, Tuple[str, str]] = {}
+    for i, model in enumerate(models):
+        for direction, metric_name in (
+            ("in", "BedrockInputTokens"),
+            ("out", "BedrockOutputTokens"),
+        ):
+            qid = f"m{i}_{direction}"
+            id_to_key[qid] = (model, direction)
+            queries.append(
+                {
+                    "Id": qid,
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "IDPControlPlane",
+                            "MetricName": metric_name,
+                            "Dimensions": [
+                                {"Name": "Component", "Value": component},
+                                {"Name": "Model", "Value": model},
+                            ],
+                        },
+                        "Period": 3600,
+                        "Stat": "Sum",
+                    },
+                }
+            )
+    # GetMetricData caps at 500 queries per call. With ~few models per
+    # component we're nowhere near it, but chunk just in case.
+    result: Dict[str, Dict[str, float]] = {m: {"in": 0.0, "out": 0.0} for m in models}
+    for chunk_start in range(0, len(queries), 500):
+        chunk = queries[chunk_start : chunk_start + 500]
         response = cloudwatch_client.get_metric_data(
-            MetricDataQueries=query,
+            MetricDataQueries=chunk,
             StartTime=hour_start,
             EndTime=hour_end,
         )
-    except Exception as e:
-        logger.warning(f"get_metric_data failed for {function_name}: {e}. Skipping.")
-        return {}
-    return _flatten_cw_response(response)
+        flat = _flatten_cw_response(response)
+        for qid, value in flat.items():
+            model, direction = id_to_key[qid]
+            result[model][direction] = value
+    return result
 
 
 def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
     """Turn ``get_metric_data`` output into a flat ``{id: sum}`` dict.
 
-    A metric with no data (Lambda didn't hit that stat this hour) has an
-    empty ``Values`` list — treat as 0.0. All queries in this Lambda use
-    ``Period=3600``, so there's at most one value per metric per query.
+    Filters NaN values before summing — a broken metric occasionally
+    yields NaN, which would poison an int() cast downstream. Empty
+    Values (Lambda didn't hit that stat this hour) collapse to 0.0.
+    All queries use ``Period=3600``, so at most one value per query.
     """
     result: Dict[str, float] = {}
     for r in response.get("MetricDataResults", []):
-        values = r.get("Values") or []
-        result[r["Id"]] = float(sum(values))
+        values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+        result[r["Id"]] = float(math.fsum(values))
     return result
+
+
+def _get_lambda_memory_mb(function_name: str) -> int:
+    """Return the Lambda's configured MemorySize in MB.
+
+    Cached per invocation so we don't spam get_function_configuration —
+    memory is a static property of the deployed function. Falls back to
+    128 MB (the AWS default) on lookup failure so cost estimates are
+    conservative rather than zero.
+    """
+    cached = _lambda_memory_cache.get(function_name)
+    if cached is not None:
+        return cached
+    try:
+        response = lambda_client.get_function_configuration(FunctionName=function_name)
+        memory_mb = int(response.get("MemorySize", 128))
+    except Exception as e:
+        logger.warning(
+            f"get_function_configuration failed for {function_name}: {e}. "
+            f"Assuming default 128 MB — cost estimate may be low."
+        )
+        memory_mb = 128
+    _lambda_memory_cache[function_name] = memory_mb
+    return memory_mb
 
 
 def _build_control_plane_rows(
     function_name: str,
     component: str,
     hour_ts: datetime,
-    metrics: Dict[str, float],
+    metrics: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Compose one output row for the given function. Skips writing if
-    the function had zero activity this hour — the row would be all
-    zeros and just adds noise to Athena scans.
+    """Compose output rows for the given function.
+
+    Emits one row per (function, model) — the ``bedrock_by_model`` dict
+    can have zero, one, or many entries. When zero, emits a single row
+    with ``bedrock_model=None`` capturing Lambda+Athena cost only.
+
+    Skips writing if the function had zero activity this hour — an
+    all-zero row just adds noise to Athena scans.
     """
-    duration_ms = metrics.get("duration", 0.0)
-    invocations = int(metrics.get("invocations", 0))
+    duration_ms = float(metrics.get("duration_ms", 0.0))
+    invocations = int(metrics.get("invocations", 0.0))
     if duration_ms == 0 and invocations == 0:
-        # Function didn't run this hour — omit the row entirely.
         return []
 
-    athena_bytes = int(metrics.get("athena_bytes", 0))
-    tokens_in = int(metrics.get("bedrock_in", 0))
-    tokens_out = int(metrics.get("bedrock_out", 0))
-
-    # Duration is in milliseconds. Assume 512 MB Lambda memory for the
-    # cost estimate (dashboard is best-effort, not billing-grade).
-    lambda_gb_seconds = (duration_ms / 1000.0) * 0.512
+    athena_bytes = int(metrics.get("athena_bytes", 0.0))
+    memory_mb = _get_lambda_memory_mb(function_name)
+    lambda_gb_seconds = (duration_ms / 1000.0) * (memory_mb / 1024.0)
     est_lambda_cost = lambda_gb_seconds * LAMBDA_ARM64_GB_SECOND_PRICE
     est_athena_cost = (athena_bytes / (1024**4)) * ATHENA_PRICE_PER_TB
-    # For control_plane_hourly, bedrock_model is null at rollup time —
-    # per-model breakdown would require iterating models within the
-    # component (deferred; see §10.5).
-    price = _bedrock_price_for_model(None)
-    est_bedrock_cost = (
-        tokens_in * price["in"] / 1000.0 + tokens_out * price["out"] / 1000.0
-    )
 
-    return [
-        {
+    bedrock_by_model = metrics.get("bedrock_by_model") or {}
+
+    # Common (Lambda + Athena) fields shared across per-model rows.
+    def _row(model: Optional[str], tokens_in: int, tokens_out: int) -> Dict[str, Any]:
+        price = _bedrock_price_for_model(model)
+        est_bedrock_cost = (
+            tokens_in * price["in"] / 1000.0 + tokens_out * price["out"] / 1000.0
+        )
+        return {
             "hour_ts": hour_ts,
             "function_name": function_name,
             "component": component,
-            "bedrock_model": None,
+            "bedrock_model": model,
             "invocations": invocations,
             "duration_ms_sum": int(duration_ms),
             "athena_bytes_sum": athena_bytes,
@@ -461,6 +617,15 @@ def _build_control_plane_rows(
             "est_athena_cost": est_athena_cost,
             "est_bedrock_cost": est_bedrock_cost,
         }
+
+    if not bedrock_by_model:
+        # Component didn't call Bedrock this hour — one row without a model.
+        return [_row(None, 0, 0)]
+    # One row per Bedrock model. Cost bookkeeping is straightforward this way,
+    # and consumers can group by ``bedrock_model`` for per-model drill-down.
+    return [
+        _row(model, int(tokens["in"]), int(tokens["out"]))
+        for model, tokens in bedrock_by_model.items()
     ]
 
 
@@ -475,45 +640,59 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     return DEFAULT_BEDROCK_PRICE
 
 
+# Component-mapping rules — ORDER MATTERS. First match wins. Rules are
+# regexes compiled against the lower-cased function name. Ordering is
+# from most-specific to least-specific so a broad rule (e.g. ``config``)
+# doesn't accidentally catch a Lambda a more-specific rule would claim.
+# See §10.2 in docs/reporting-sql-layer.md for the canonical label set.
+_COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
+    # Monitor (marketplace) dashboard resolver + AI-summary agent.
+    (re.compile(r"monitoringmetrics|dashboardresolver"), "monitor-dashboard"),
+    (re.compile(r"monitor.*agent"), "monitor-agent"),
+    # Rollup Lambda itself — matched before generic 'rollup' catch-alls
+    # so a future 'rollup-*' Lambda doesn't get grabbed.
+    (re.compile(r"datamartrollup|rollup"), "rollup-lambda"),
+    # Test infrastructure — all matched here so 'testresults' / 'testrunner'
+    # don't fall through to 'test-set-mgmt' via the 'testset' rule.
+    (re.compile(r"testresults|testexecutionaggregation|mlflow"), "test-results"),
+    (re.compile(r"testrunner|filecopy|filecopier"), "test-runner"),
+    (re.compile(r"testset"), "test-set-mgmt"),
+    # Analytics agents (SQL-driven) and doc-chat processors — matched
+    # before broader user/agent patterns.
+    (
+        re.compile(r"analyticsagent|agentchat|agentprocessor"),
+        "analytics-agent",
+    ),
+    (re.compile(r"chatwithdocument|chatstream"), "doc-chat"),
+    # Policy discovery (more specific than 'config').
+    (re.compile(r"policydiscovery|discovery"), "policy-discovery"),
+    # Config CRUD — narrower than 'config' alone, requires 'resolver' suffix.
+    (re.compile(r"config.*resolver"), "config-mgmt"),
+    (re.compile(r"capacity"), "capacity-planner"),
+    (re.compile(r"finetuning"), "finetuning"),
+    # Cognito / user-directory management.
+    (re.compile(r"usermanagement|usersync"), "user-mgmt"),
+    # UI-facing dispatchers (every page load hits these).
+    (
+        re.compile(r"lookupfunction|apihandler|httpapidispatcher"),
+        "api-dispatch",
+    ),
+]
+
+
 def _component_for_function(function_name: str) -> str:
     """Best-effort mapping from Lambda name → ``component`` label.
 
-    Uses substring matching against the function's CloudFormation logical
-    ID (which is embedded in the deployed function name). See §10.4 for
-    the canonical set of component labels.
+    Uses regex matching against the lower-cased function name. Rules are
+    ordered from most-specific to least-specific in ``_COMPONENT_RULES``
+    (see comment above the list). Unmatched Lambdas fall through to
+    ``other-control`` — an explicit fallback the dashboard can flag so
+    operators know to extend the rules or investigate a new feature.
     """
     name = function_name.lower()
-    if "monitoringmetrics" in name or "dashboardresolver" in name:
-        return "monitor-dashboard"
-    if "monitor" in name and "agent" in name:
-        return "monitor-agent"
-    if "analyticsagent" in name or "agentchat" in name or "agentprocessor" in name:
-        return "analytics-agent"
-    # User-driven chat with a document (not the analytics agent chat).
-    if "chatwithdocument" in name or "chatstream" in name:
-        return "doc-chat"
-    if "testset" in name:
-        return "test-set-mgmt"
-    if "testrunner" in name or "filecopy" in name or "filecopier" in name:
-        return "test-runner"
-    if "testresults" in name or "testexecutionaggregation" in name or "mlflow" in name:
-        return "test-results"
-    if "config" in name and "resolver" in name:
-        return "config-mgmt"
-    if "capacity" in name:
-        return "capacity-planner"
-    if "discovery" in name or "policydiscovery" in name:
-        return "policy-discovery"
-    if "finetuning" in name:
-        return "finetuning"
-    if "datamartrollup" in name or "rollup" in name:
-        return "rollup-lambda"
-    # Cognito / user directory management (user CRUD, group sync).
-    if "usermanagement" in name or "usersync" in name:
-        return "user-mgmt"
-    # Document status lookup + main HTTP API dispatcher — every UI page load.
-    if "lookupfunction" in name or "apihandler" in name or "httpapidispatcher" in name:
-        return "api-dispatch"
+    for pattern, label in _COMPONENT_RULES:
+        if pattern.search(name):
+            return label
     return "other-control"
 
 
@@ -595,7 +774,12 @@ def _run_athena_query_with_results(sql: str) -> List[List[str]]:
 
 
 def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
-    """Poll get_query_execution until the query terminates."""
+    """Poll get_query_execution until the query terminates.
+
+    On timeout, call StopQueryExecution before raising — otherwise an
+    orphaned Athena query keeps scanning (and billing) after we've
+    given up on it, and a retry starts a fresh one on top.
+    """
     started = time.time()
     while True:
         response = athena_client.get_query_execution(QueryExecutionId=query_id)
@@ -610,6 +794,15 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
                 f"Athena query {query_id} ended in state {state}: {reason}"
             )
         if time.time() - started > timeout_sec:
+            try:
+                athena_client.stop_query_execution(QueryExecutionId=query_id)
+                logger.warning(
+                    f"Athena query {query_id} timed out — stop_query_execution issued."
+                )
+            except Exception as stop_err:
+                logger.warning(
+                    f"stop_query_execution({query_id}) failed: {stop_err}"
+                )
             raise TimeoutError(
                 f"Athena query {query_id} did not complete in {timeout_sec}s"
             )

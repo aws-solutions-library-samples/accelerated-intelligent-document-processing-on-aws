@@ -23,10 +23,18 @@ control-plane cost attribution.
 | 2 | `metering_daily` | date × document_class × config_version × service_api | Same rollup Lambda, `INSERT INTO` from `metering_hourly` |
 | 3 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, writes Parquet directly from CloudWatch data |
 
-**Aggregated columns on the two metering rollup tables:** `n_docs,
-sum_cost, sum_pages, sum_input_tokens, sum_output_tokens`. No per-doc
-columns, no status, no timing — those queries stay on raw `metering`
+**Aggregated columns on the two metering rollup tables:**
+`n_doc_events, sum_value, sum_cost, sum_pages`. No per-doc columns,
+no status, no timing — those queries stay on raw `metering`
 (column-scoped scan is already cheap).
+
+**Naming note:** `n_doc_events` (not `n_docs`) — a document
+reprocessed across multiple hours produces one metering row per
+hour it lands in, and `COUNT(DISTINCT document_id)` at hour grain
+de-dupes only within the hour. Consumers who need cross-hour or
+cross-day *unique* document counts must query raw `metering` with
+`COUNT(DISTINCT document_id)`. Cost/token/page sums are accurate at
+every grain because the underlying values are additive.
 
 **All three tables are append-only.** A partition is written once and
 never rewritten. The write-time partitioning of `metering` (see §2.3)

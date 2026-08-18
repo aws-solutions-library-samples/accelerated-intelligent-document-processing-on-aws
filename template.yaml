@@ -4666,7 +4666,7 @@ Resources:
               Type: string
             - Name: unit
               Type: string
-            - Name: n_docs
+            - Name: n_doc_events
               Type: bigint
             - Name: sum_value
               Type: double
@@ -4728,7 +4728,7 @@ Resources:
               Type: string
             - Name: unit
               Type: string
-            - Name: n_docs
+            - Name: n_doc_events
               Type: bigint
             - Name: sum_value
               Type: double
@@ -4850,6 +4850,19 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
       MemorySize: 512
       Timeout: 900
+      # Pin to 1 concurrent execution so a scheduled invocation racing with
+      # an async retry cannot both pass the pre-INSERT idempotency check
+      # (SELECT ... LIMIT 1) and double-write metering_hourly rows.
+      ReservedConcurrentExecutions: 1
+      # Async failures (Athena down for all 3 async retries) land in the
+      # DLQ so an operator sees the data-hole instead of the hour silently
+      # disappearing forever behind the per-partition idempotency skip.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt DataMartRollupDLQ.Arn
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -4902,6 +4915,15 @@ Resources:
               Resource: "*"
             - Effect: Allow
               Action:
+                - lambda:GetFunctionConfiguration
+              # Rollup reads MemorySize from each control-plane Lambda in the
+              # stack to compute an accurate GB-second Lambda cost estimate
+              # (vs. the previous fixed 512 MB assumption). Scoped to functions
+              # in this account/region; the rollup's tag-based discovery
+              # bounds the actual call set to this stack.
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+            - Effect: Allow
+              Action:
                 - s3:GetObject
                 - s3:PutObject
                 - s3:HeadObject
@@ -4935,6 +4957,57 @@ Resources:
     Properties:
       KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
       RetentionInDays: !Ref LogRetentionDays
+
+  # Dead-letter queue for the rollup Lambda's async invocations. Async
+  # retries at ~1min and ~5min: if all fail (e.g., Athena outage), the
+  # event lands here and the CloudWatch alarm below pages the operator.
+  # Without this, that hour's data would be silently missing forever,
+  # since the per-partition idempotency check would skip on any manual
+  # retry.
+  DataMartRollupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-data-mart-rollup-dlq"
+      MessageRetentionPeriod: 1209600  # 14 days (SQS max)
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  DataMartRollupDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DataMartRollupDLQ
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sqs:SendMessage
+            Resource: !GetAtt DataMartRollupDLQ.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt DataMartRollupFunction.Arn
+
+  DataMartRollupDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-data-mart-rollup-dlq-depth"
+      AlarmDescription: >-
+        Data-mart rollup Lambda's async retries all failed for at least
+        one scheduled invocation. Historical cost/volume data for that
+        hour or day is missing. Check the rollup Lambda log for the root
+        cause and re-invoke manually once resolved.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DataMartRollupDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
   # Hourly rollup: writes metering_hourly and control_plane_hourly for the
   # previous fully-sealed UTC hour. Fires at minute 5 to give in-flight
