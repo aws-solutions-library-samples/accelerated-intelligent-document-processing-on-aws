@@ -704,10 +704,47 @@ def _transform_stickler_metrics(
             "fa": metrics.get("fa", 0),
             "fd": metrics.get("fd", 0),
         },
-        "field_metrics": process_eval.field_metrics,
+        "field_metrics": _with_accuracy_intervals(process_eval.field_metrics),
         "document_count": process_eval.document_count,
         "total_time": process_eval.total_time,
     }
+
+
+def _with_accuracy_intervals(field_metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Attach sampling uncertainty to each field's accuracy.
+
+    A per-field accuracy is a proportion measured on however many observations that
+    field happened to get, and the point estimate alone cannot distinguish 100% on 3
+    from 100% on 300. Overall run accuracy firms up within roughly a hundred documents
+    because every document feeds it; a field appearing once per document gains one
+    observation per document, so a broken field can sit inside a healthy overall score.
+
+    Derived from the counts already present, so nothing new is measured or stored.
+    Fields with no observations get no interval rather than a zero-filled one — 0%
+    would read as "always wrong" for a field no document contained.
+    """
+    if not isinstance(field_metrics, dict):
+        return field_metrics or {}
+
+    try:
+        from idp_common.evaluation.intervals import (
+            accuracy_interval_from_confusion_matrix,
+        )
+    except ImportError as e:  # pragma: no cover — the extra is present in this Lambda
+        logger.warning(f"Accuracy intervals unavailable: {e}")
+        return field_metrics
+
+    for metrics in field_metrics.values():
+        if not isinstance(metrics, dict):
+            continue
+        interval = accuracy_interval_from_confusion_matrix(metrics)
+        if interval is None:
+            continue
+        metrics["accuracy_observations"] = interval.observations
+        metrics["accuracy_margin"] = interval.margin
+        metrics["accuracy_low"] = interval.low
+        metrics["accuracy_high"] = interval.high
+    return field_metrics
 
 
 def _aggregate_graded_packet_metrics(
