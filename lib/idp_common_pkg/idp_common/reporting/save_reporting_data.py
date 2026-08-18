@@ -937,7 +937,10 @@ class SaveReportingData:
                     "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
                 },
             },
-            "PartitionKeys": [{"Name": "date", "Type": "string"}],
+            "PartitionKeys": [
+                {"Name": "date", "Type": "string"},
+                {"Name": "hour", "Type": "string"},
+            ],
             "TableType": "EXTERNAL_TABLE",
             "Parameters": {
                 "projection.enabled": "true",
@@ -946,7 +949,13 @@ class SaveReportingData:
                 "projection.date.range": "2020-01-01,NOW",
                 "projection.date.interval": "1",
                 "projection.date.interval.unit": "DAYS",
-                "storage.location.template": f"s3://{self.reporting_bucket}/metering/date=${{date}}/",
+                "projection.hour.type": "integer",
+                "projection.hour.range": "0,23",
+                "projection.hour.digits": "2",
+                "storage.location.template": (
+                    f"s3://{self.reporting_bucket}/metering/"
+                    f"date=${{date}}/hour=${{hour}}/"
+                ),
             },
         }
 
@@ -1087,7 +1096,12 @@ class SaveReportingData:
             logger.warning(warning_msg)
             return None
 
-        # Define schema for metering data with new cost fields
+        # Define schema for metering data with new cost fields.
+        # ``timestamp`` is the write time (= doc completion time, since this
+        # runs at end of workflow). ``initial_event_time`` preserves the
+        # queue time for consumers that need queue-time semantics. See
+        # docs/planning/monitor-data-mart.md §2.3 for the partitioning
+        # rationale.
         metering_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -1099,34 +1113,35 @@ class SaveReportingData:
                 ("unit_cost", pa.float64()),
                 ("estimated_cost", pa.float64()),
                 ("timestamp", pa.timestamp("ms")),
+                ("initial_event_time", pa.timestamp("ms")),
                 ("config_version", pa.string()),
             ]
         )
 
-        # Use document.initial_event_time if available, otherwise use current time
+        # Partition by WRITE TIME (= completion time). Every metering row
+        # lands in the current partition — no time-travel into past
+        # partitions, so rollup rows are trivially append-only. The
+        # ``initial_event_time`` column preserves queue-time semantics for
+        # any consumer that needs them.
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+        date_partition = timestamp.strftime("%Y-%m-%d")
+        hour_partition = timestamp.strftime("%H")
+
+        # Parse initial_event_time for the column value (best-effort — falls
+        # back to timestamp if parsing fails or the field is missing).
+        initial_event_time: Optional[datetime.datetime] = None
         if document.initial_event_time:
             try:
-                # Try to parse the initial_event_time string into a datetime object
-                doc_time = datetime.datetime.fromisoformat(
+                initial_event_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
-                )
-                timestamp = doc_time
-                date_partition = doc_time.strftime("%Y-%m-%d")
-                logger.info(
-                    f"Using document initial_event_time: {document.initial_event_time} for partitioning"
                 )
             except (ValueError, TypeError) as e:
                 logger.warning(
-                    f"Could not parse document.initial_event_time: {document.initial_event_time}, using current time instead. Error: {str(e)}"
+                    f"Could not parse document.initial_event_time: "
+                    f"{document.initial_event_time}. Error: {str(e)}"
                 )
-                timestamp = datetime.datetime.now()
-                date_partition = timestamp.strftime("%Y-%m-%d")
-        else:
-            logger.warning(
-                "Document initial_event_time not available, using current time instead"
-            )
-            timestamp = datetime.datetime.now()
-            date_partition = timestamp.strftime("%Y-%m-%d")
+        if initial_event_time is None:
+            initial_event_time = timestamp
 
         # Escape document ID by replacing slashes with underscores
         document_id = document.id or document.input_key or "unknown"
@@ -1178,13 +1193,19 @@ class SaveReportingData:
                     "unit_cost": unit_cost,
                     "estimated_cost": estimated_cost,
                     "timestamp": timestamp,
+                    "initial_event_time": initial_event_time,
                     "config_version": document.config_version or "default",
                 }
                 metering_records.append(metering_record)
 
-        # Save metering data in Parquet format
+        # Save metering data in Parquet format. Path is date+hour partitioned
+        # so the tier picker's <2h tail query can prune to the current hour
+        # instead of scanning the whole day (see docs/planning/monitor-data-mart.md §4).
         if metering_records:
-            metering_key = f"metering/date={date_partition}/{escaped_doc_id}_{timestamp_str}_results.parquet"
+            metering_key = (
+                f"metering/date={date_partition}/hour={hour_partition}/"
+                f"{escaped_doc_id}_{timestamp_str}_results.parquet"
+            )
             self._save_records_as_parquet(
                 metering_records, metering_key, metering_schema
             )

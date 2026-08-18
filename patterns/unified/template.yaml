@@ -3782,6 +3782,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA invocation. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -3851,6 +3854,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA result parsing. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -3973,6 +3979,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA completion signal. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -4209,6 +4218,11 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document. See docs/planning/monitor-data-mart.md §10.3.
+        # The rollup Lambda discovers stack membership via the native
+        # aws:cloudformation:stack-name tag; no idp:stack tag needed here.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4371,6 +4385,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4530,6 +4547,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4696,6 +4716,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4838,6 +4861,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4985,6 +5011,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc pipeline result stitching. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5073,6 +5102,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5293,6 +5325,10 @@ Resources:
       Timeout: 900
       MemorySize: 256
       Tracing: Active
+      Tags:
+        # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
+        # See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Role: !GetAtt PipelineHooksDispatcherFunctionRole.Arn
       Environment:
         Variables:
@@ -5347,6 +5383,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5544,6 +5583,10 @@ Resources:
           - "index.handler"
       Timeout: 300
       MemorySize: 1024
+      Tags:
+        # Data plane — per-doc policy classification for rule validation.
+        # See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -5635,6 +5678,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule validation. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5772,6 +5818,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule-validation orchestration. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds

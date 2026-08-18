@@ -1773,6 +1773,10 @@ Resources:
       Timeout: 900
       EphemeralStorage:
         Size: 5120
+      Tags:
+        # Data plane — Jobs API batch ingest. Cost scales with doc volume through
+        # the batch path. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       # See ApiHandlerFunction for rationale — JobsApiRequiresVPC rule gates
@@ -4538,6 +4542,9 @@ Resources:
           - Name: date
             Type: string
 
+  # Metering table. Partitioned by (date, hour) using WRITE TIME (= document
+  # completion time, since save_reporting_data runs at end of workflow).
+  # See docs/planning/monitor-data-mart.md §2.3 for the partitioning rationale.
   MeteringTable:
     Type: AWS::Glue::Table
     Properties:
@@ -4545,7 +4552,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering"
-        Description: "Table for document metering data"
+        Description: "Table for document metering data. Partitioned by (date, hour) using write time (= completion time)."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -4556,13 +4563,17 @@ Resources:
           projection.date.range: "2024-01-01,2030-12-31"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
           storage.location.template: !Sub
-            - "s3://${Bucket}/metering/date=${date}/"
+            - "s3://${Bucket}/metering/date=${date}/hour=${hour}/"
             - Bucket: !If
                 - ShouldCreateReportingBucket
                 - !Ref ReportingBucket
                 - !Ref ReportingBucketName
               date: "${date}"
+              hour: "${hour}"
         StorageDescriptor:
           Location: !Sub
             - "s3://${Bucket}/metering/"
@@ -4593,12 +4604,382 @@ Resources:
               Type: double
             - Name: timestamp
               Type: timestamp
+            - Name: initial_event_time
+              Type: timestamp
             - Name: config_version
               Type: string
           Compressed: true
         PartitionKeys:
           - Name: date
             Type: string
+          - Name: hour
+            Type: string
+
+  # Hourly metering rollup — dashboard's KPI cards, cost-by-stage, cost trend
+  # charts read from here for the 2h-24h tier. Populated by the DataMartRollupFunction.
+  MeteringHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_hourly"
+        Description: "Hourly rollup of metering data. Append-only. See docs/planning/monitor-data-mart.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_hourly/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_hourly/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: config_version
+              Type: string
+            - Name: service_api
+              Type: string
+            - Name: unit
+              Type: string
+            - Name: n_docs
+              Type: bigint
+            - Name: sum_value
+              Type: double
+            - Name: sum_cost
+              Type: double
+            - Name: sum_pages
+              Type: bigint
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  # Daily metering rollup — dashboard's >24h tier reads from here. One row
+  # per (day, dimensions). Written once/day (at 00:15 UTC) by the rollup Lambda.
+  MeteringDailyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_daily"
+        Description: "Daily rollup of metering data. Append-only. See docs/planning/monitor-data-mart.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_daily/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_daily/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: day
+              Type: date
+            - Name: config_version
+              Type: string
+            - Name: service_api
+              Type: string
+            - Name: unit
+              Type: string
+            - Name: n_docs
+              Type: bigint
+            - Name: sum_value
+              Type: double
+            - Name: sum_cost
+              Type: double
+            - Name: sum_pages
+              Type: bigint
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Control-plane cost rollup — dashboard's Control Plane Cost KPI reads from
+  # here. Populated by the rollup Lambda from CloudWatch metrics
+  # (AWS/Lambda/Duration + Invocations, IDPControlPlane/* custom metrics).
+  # See docs/planning/monitor-data-mart.md §10.2.
+  ControlPlaneHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "control_plane_hourly"
+        Description: "Hourly rollup of control-plane Lambda cost. See docs/planning/monitor-data-mart.md §10.2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/control_plane/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/control_plane/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: function_name
+              Type: string
+            - Name: component
+              Type: string
+            - Name: bedrock_model
+              Type: string
+            - Name: invocations
+              Type: bigint
+            - Name: duration_ms_sum
+              Type: bigint
+            - Name: athena_bytes_sum
+              Type: bigint
+            - Name: bedrock_tokens_in
+              Type: bigint
+            - Name: bedrock_tokens_out
+              Type: bigint
+            - Name: est_lambda_cost
+              Type: double
+            - Name: est_athena_cost
+              Type: double
+            - Name: est_bedrock_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  ##########################################################################
+  # Data Mart Rollup Lambda — hourly + daily aggregations for the IDP Monitor
+  # dashboard. See docs/planning/monitor-data-mart.md.
+  ##########################################################################
+
+  DataMartRollupFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only interacts with AWS APIs (Athena, Glue, CloudWatch, S3) — no VPC needed"
+          - id: W92
+            reason: "Function invoked hourly at most; no reserved concurrency needed"
+          - id: W12
+            reason: "cloudwatch:GetMetricData and resourcegroupstaggingapi:GetResources require * resource — no partition-level scoping available"
+      # checkov:skip=CKV_AWS_116: "Not SQS-triggered; DLQ not applicable to EventBridge scheduled invocations"
+      # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+      # checkov:skip=CKV_AWS_115: "No reserved concurrency needed for hourly cron"
+      # checkov:skip=CKV_AWS_173: "Environment variables contain only configuration"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./patterns/unified/src/data_mart_rollup_function
+      Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
+      MemorySize: 512
+      Timeout: 900
+      Tags:
+        idp:stack: !Ref AWS::StackName
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REPORTING_DATABASE: !Ref ReportingDatabase
+          ATHENA_WORKGROUP: primary
+          ATHENA_QUERY_OUTPUT_LOCATION: !Sub
+            - "s3://${Bucket}/athena_query_results/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          REPORTING_BUCKET: !If
+            - ShouldCreateReportingBucket
+            - !Ref ReportingBucket
+            - !Ref ReportingBucketName
+          STACK_NAME: !Ref AWS::StackName
+      LoggingConfig:
+        LogGroup: !Ref DataMartRollupFunctionLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+              Resource:
+                - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:CreatePartition
+                - glue:BatchCreatePartition
+              Resource:
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${ReportingDatabase}"
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${ReportingDatabase}/*"
+            - Effect: Allow
+              Action:
+                - cloudwatch:GetMetricData
+                - cloudwatch:ListMetrics
+              # GetMetricData does not support resource-level scoping.
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - tag:GetResources
+              # Tag API is account-scoped; no resource-level scoping available.
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:HeadObject
+                - s3:ListBucket
+                # Required for Athena StartQueryExecution — it calls
+                # GetBucketLocation on the OutputLocation bucket to verify
+                # the workgroup can write results there before running the
+                # query. Without this, StartQueryExecution fails at the
+                # "verify/create output bucket" precheck.
+                - s3:GetBucketLocation
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !GetAtt ReportingBucket.Arn
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/*"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+
+  DataMartRollupFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Hourly rollup: writes metering_hourly and control_plane_hourly for the
+  # previous fully-sealed UTC hour. Fires at minute 5 to give in-flight
+  # doc-completions a moment to land in metering before the aggregation reads.
+  DataMartRollupHourlySchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Hourly trigger for the data-mart rollup Lambda.
+      ScheduleExpression: "cron(5 * * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: DataMartRollupHourly
+          Arn: !GetAtt DataMartRollupFunction.Arn
+          Input: '{"mode": "hourly"}'
+
+  DataMartRollupHourlyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataMartRollupFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DataMartRollupHourlySchedule.Arn
+
+  # Daily rollup: writes metering_daily for the previous fully-sealed UTC day.
+  # Fires at 00:15 to allow the 23:xx hourly rollup to complete first.
+  DataMartRollupDailySchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
+      ScheduleExpression: "cron(15 0 * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: DataMartRollupDaily
+          Arn: !GetAtt DataMartRollupFunction.Arn
+          Input: '{"mode": "daily"}'
+
+  DataMartRollupDailyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataMartRollupFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DataMartRollupDailySchedule.Arn
 
   DocumentSectionsCrawlerSecurityConfigurationV2:
     Type: AWS::Glue::SecurityConfiguration
@@ -5555,6 +5936,9 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — one invocation per doc-arrival S3 event.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5650,6 +6034,9 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — SQS batch trigger from the doc queue.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5781,6 +6168,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — invoked per doc-workflow state change. See
+        # docs/planning/monitor-data-mart.md §10.3 / §10.4.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5972,6 +6363,9 @@ Resources:
       MemorySize: 3008
       EphemeralStorage:
         Size: 5120
+      Tags:
+        # Data plane — SQS per-doc status-change events. See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       Tracing: Active
@@ -6066,6 +6460,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 300
+      Tags:
+        # Data plane — SQS per-doc dispatcher for custom post-processor.
+        # See docs/planning/monitor-data-mart.md §10.3.
+        idp:plane: data
       VpcConfig:
         !If
           - DeployInVPC
@@ -6172,6 +6570,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 300
+      Tags:
+        # Data plane — invoked async per doc by evaluation / rule-validation
+        # / metering writer Lambdas.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonReportingLayer

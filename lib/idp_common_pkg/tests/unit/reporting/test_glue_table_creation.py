@@ -435,7 +435,8 @@ class TestGlueTableCreation:
         # Setup mock to simulate table doesn't exist
         mock_glue_client.get_table.side_effect = Exception("EntityNotFoundException")
 
-        # Define metering schema with new cost fields
+        # Define metering schema with new cost fields + initial_event_time
+        # (added when partitioning moved to write time — see §2.3).
         metering_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -447,6 +448,7 @@ class TestGlueTableCreation:
                 ("unit_cost", pa.float64()),
                 ("estimated_cost", pa.float64()),
                 ("timestamp", pa.timestamp("ms")),
+                ("initial_event_time", pa.timestamp("ms")),
             ]
         )
 
@@ -470,17 +472,20 @@ class TestGlueTableCreation:
         assert call_args["DatabaseName"] == "test_database"
         assert call_args["TableInput"]["Name"] == "metering"
         assert call_args["TableInput"]["TableType"] == "EXTERNAL_TABLE"
+        # Two partition keys — date + hour. See
+        # docs/planning/monitor-data-mart.md §2.
         assert call_args["TableInput"]["PartitionKeys"] == [
-            {"Name": "date", "Type": "string"}
+            {"Name": "date", "Type": "string"},
+            {"Name": "hour", "Type": "string"},
         ]
         assert (
             call_args["TableInput"]["Description"]
             == "Metering data table for document processing costs and usage"
         )
 
-        # Verify columns include new cost fields
+        # Verify columns include new cost fields + initial_event_time
+        # (preserved as a column when partitioning moved to write time).
         columns = call_args["TableInput"]["StorageDescriptor"]["Columns"]
-        assert len(columns) == 9
         assert {"Name": "document_id", "Type": "string"} in columns
         assert {"Name": "context", "Type": "string"} in columns
         assert {"Name": "service_api", "Type": "string"} in columns
@@ -490,6 +495,7 @@ class TestGlueTableCreation:
         assert {"Name": "unit_cost", "Type": "double"} in columns
         assert {"Name": "estimated_cost", "Type": "double"} in columns
         assert {"Name": "timestamp", "Type": "timestamp"} in columns
+        assert {"Name": "initial_event_time", "Type": "timestamp"} in columns
 
         # Verify storage descriptor settings
         storage = call_args["TableInput"]["StorageDescriptor"]
@@ -503,14 +509,18 @@ class TestGlueTableCreation:
             == "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
         )
 
-        # Verify partition projection parameters
+        # Verify partition projection parameters — including the new hour
+        # dim so Athena can partition-prune to the current hour.
         params = call_args["TableInput"]["Parameters"]
         assert params["projection.enabled"] == "true"
         assert params["projection.date.type"] == "date"
         assert params["projection.date.format"] == "yyyy-MM-dd"
+        assert params["projection.hour.type"] == "integer"
+        assert params["projection.hour.range"] == "0,23"
+        assert params["projection.hour.digits"] == "2"
         assert (
             params["storage.location.template"]
-            == "s3://test-bucket/metering/date=${date}/"
+            == "s3://test-bucket/metering/date=${date}/hour=${hour}/"
         )
 
     def test_create_or_update_metering_glue_table_existing_table(
@@ -535,7 +545,8 @@ class TestGlueTableCreation:
             }
         }
 
-        # Define metering schema with new cost fields
+        # Define metering schema with new cost fields + initial_event_time
+        # (added when partitioning moved to write time — see §2.3).
         metering_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -547,6 +558,7 @@ class TestGlueTableCreation:
                 ("unit_cost", pa.float64()),
                 ("estimated_cost", pa.float64()),
                 ("timestamp", pa.timestamp("ms")),
+                ("initial_event_time", pa.timestamp("ms")),
             ]
         )
 

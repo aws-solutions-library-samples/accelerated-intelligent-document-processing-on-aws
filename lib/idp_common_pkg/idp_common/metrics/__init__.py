@@ -1,11 +1,12 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import boto3
-import os
 import logging
+import os
 import threading
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
+import boto3
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,110 @@ def put_metric(
             )
         except Exception as e:
             logger.error(f"Error publishing metric {name}: {e}")
+
+
+def emit_control_plane_cost_metric(
+    component: str,
+    athena_bytes: Optional[int] = None,
+    bedrock_tokens_in: Optional[int] = None,
+    bedrock_tokens_out: Optional[int] = None,
+    bedrock_model: Optional[str] = None,
+) -> None:
+    """Emit control-plane cost metrics for a single Lambda invocation.
+
+    Meant to be called at the end of every control-plane Lambda invocation
+    that hits Athena or Bedrock. Lambda ``Duration`` is emitted by AWS
+    natively — do not call this for duration.
+
+    Metric shape (namespace ``IDPControlPlane``):
+      - ``AthenaBytesScanned`` (dim: ``Component``)
+      - ``BedrockInputTokens`` (dim: ``Component``, ``Model``)
+      - ``BedrockOutputTokens`` (dim: ``Component``, ``Model``)
+
+    The hourly rollup Lambda (main IDP stack) reads these via
+    ``cloudwatch:GetMetricData`` and writes rows to ``control_plane_hourly``
+    for the dashboard's Control Plane Cost KPI. See
+    ``docs/planning/monitor-data-mart.md`` §10 for the design.
+
+    Args:
+        component: Short label identifying the feature area
+            (``monitor-dashboard``, ``monitor-agent``, ``test-runner``,
+            etc.). See §10.2 for the fixed set of values.
+        athena_bytes: Bytes scanned by an Athena query in this invocation.
+            Emit the ``QueryExecution.Statistics.DataScannedInBytes``
+            value from ``get_query_execution``.
+        bedrock_tokens_in: Input tokens consumed by a Bedrock call in
+            this invocation.
+        bedrock_tokens_out: Output tokens produced by a Bedrock call in
+            this invocation.
+        bedrock_model: Bedrock model ID (e.g., ``us.anthropic.claude-...``).
+            Required whenever ``bedrock_tokens_in`` or
+            ``bedrock_tokens_out`` is set — priced-per-token per-model.
+
+    Failure mode is fire-and-forget: if CloudWatch is unreachable, log a
+    warning and continue. Cost visibility is best-effort — never a
+    reason to fail an invocation.
+    """
+    if bedrock_tokens_in is not None or bedrock_tokens_out is not None:
+        if not bedrock_model:
+            logger.warning(
+                "emit_control_plane_cost_metric: bedrock tokens supplied "
+                "without bedrock_model; skipping bedrock metrics"
+            )
+            bedrock_tokens_in = None
+            bedrock_tokens_out = None
+
+    metric_data: List[Dict[str, Any]] = []
+    if athena_bytes is not None:
+        metric_data.append(
+            {
+                "MetricName": "AthenaBytesScanned",
+                "Value": float(athena_bytes),
+                "Unit": "Bytes",
+                "Dimensions": [{"Name": "Component", "Value": component}],
+            }
+        )
+    if bedrock_tokens_in is not None:
+        metric_data.append(
+            {
+                "MetricName": "BedrockInputTokens",
+                "Value": float(bedrock_tokens_in),
+                "Unit": "Count",
+                "Dimensions": [
+                    {"Name": "Component", "Value": component},
+                    {"Name": "Model", "Value": bedrock_model or "unknown"},
+                ],
+            }
+        )
+    if bedrock_tokens_out is not None:
+        metric_data.append(
+            {
+                "MetricName": "BedrockOutputTokens",
+                "Value": float(bedrock_tokens_out),
+                "Unit": "Count",
+                "Dimensions": [
+                    {"Name": "Component", "Value": component},
+                    {"Name": "Model", "Value": bedrock_model or "unknown"},
+                ],
+            }
+        )
+
+    if not metric_data:
+        return
+
+    with _metric_lock:
+        try:
+            cloudwatch = get_cloudwatch_client()
+            cloudwatch.put_metric_data(
+                Namespace="IDPControlPlane",
+                MetricData=metric_data,
+            )
+        except Exception as e:
+            # Best-effort — cost telemetry never fails an invocation.
+            logger.warning(
+                f"Failed to emit control-plane cost metrics for "
+                f"component={component!r}: {e}"
+            )
 
 
 def create_client_performance_metrics(

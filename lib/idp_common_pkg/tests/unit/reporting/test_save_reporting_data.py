@@ -501,3 +501,168 @@ class TestSaveReportingDataSections:
 
         assert record_with_config["config_version"] == "test-v1.0"
         assert record_without_config["config_version"] == "default"
+
+
+# ---------------------------------------------------------------------------
+# Metering write-time partitioning (docs/planning/monitor-data-mart.md §2.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMeteringWriteTimePartitioning:
+    """Metering rows partition by write time (=completion time), not by
+    ``initial_event_time`` (queue time). ``initial_event_time`` is preserved
+    as a column on each row.
+
+    The rollup Lambda relies on this invariant: every metering row lands in
+    the current-hour partition, so hourly rollups are trivially append-only
+    with no trailing re-materialization window.
+    """
+
+    @pytest.fixture
+    def reporting(self):
+        with patch("boto3.client"):
+            return SaveReportingData(reporting_bucket="test-bucket")
+
+    def _doc_with_metering(self, initial_event_time: str = "2020-01-01T00:00:00Z"):
+        """Build a doc whose ``initial_event_time`` is well in the past so
+        we can tell it apart from ``datetime.now()`` in assertions.
+        """
+        doc = Document(id="doc-late-finish", input_key="test/late-doc.pdf")
+        doc.initial_event_time = initial_event_time
+        doc.metering = {
+            "extraction/bedrock/converse": {
+                "inputTokens": 100.0,
+                "outputTokens": 50.0,
+            }
+        }
+        doc.num_pages = 3
+        return doc
+
+    def test_metering_partitions_use_write_time_not_queue_time(self, reporting):
+        """A doc queued years ago that finishes now must land in *today's*
+        partition. This is the whole point of the write-time change —
+        otherwise late completions would land in past partitions and
+        rollups would need a trailing re-materialization window.
+        """
+        import datetime as dt
+
+        doc = self._doc_with_metering("2020-01-01T00:00:00Z")  # ancient queue time
+
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+
+        assert mock_save.called, "save_metering_data must write records"
+        s3_key = mock_save.call_args[0][1]
+        today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+        assert f"date={today}" in s3_key, (
+            f"Expected today's date ({today}) in S3 key, got {s3_key!r} — "
+            f"partitioning may have regressed to initial_event_time"
+        )
+        assert "date=2020-01-01" not in s3_key, (
+            f"Old initial_event_time bled through into partition path: {s3_key!r}"
+        )
+
+    def test_metering_key_includes_hour_partition(self, reporting):
+        """Path must be ``date=YYYY-MM-DD/hour=HH/`` so the tier picker's
+        current-hour tail query can partition-prune to ~40 MB instead of
+        scanning the whole day."""
+        import datetime as dt
+
+        doc = self._doc_with_metering()
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+
+        s3_key = mock_save.call_args[0][1]
+        current_hour = dt.datetime.now(dt.timezone.utc).strftime("%H")
+        assert f"hour={current_hour}" in s3_key, (
+            f"Expected hour={current_hour} in S3 key, got {s3_key!r}"
+        )
+
+    def test_initial_event_time_preserved_as_column(self, reporting):
+        """``initial_event_time`` is not in the partition anymore, but it
+        MUST still exist as a queryable column on each metering row so
+        consumers who need queue-time semantics can filter on it.
+        """
+        doc = self._doc_with_metering("2024-06-15T10:30:00Z")
+
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+
+        records = mock_save.call_args[0][0]
+        assert records, "Expected at least one metering record"
+        for r in records:
+            assert "initial_event_time" in r, (
+                "initial_event_time must be preserved as a column"
+            )
+            assert r["initial_event_time"].year == 2024
+            assert r["initial_event_time"].month == 6
+
+    def test_missing_initial_event_time_falls_back_to_write_time(self, reporting):
+        """Docs without ``initial_event_time`` (should be rare — probably
+        only failure paths) fall back to using write time for the column
+        too. The row still exists; no data loss.
+        """
+        doc = self._doc_with_metering()
+        doc.initial_event_time = None
+
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+
+        records = mock_save.call_args[0][0]
+        assert records
+        for r in records:
+            # Fallback: initial_event_time equals timestamp (both = write time)
+            assert r["initial_event_time"] == r["timestamp"]
+
+    def test_unparseable_initial_event_time_falls_back(self, reporting):
+        """Malformed ``initial_event_time`` (e.g., legacy garbage) must
+        not fail the write — falls back to write time for the column."""
+        doc = self._doc_with_metering("not a valid iso timestamp")
+
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+
+        records = mock_save.call_args[0][0]
+        assert records
+        for r in records:
+            assert r["initial_event_time"] == r["timestamp"]
+
+    def test_glue_table_declares_date_and_hour_partitions(self, reporting):
+        """Regression guard on the Glue table schema: both ``date`` and
+        ``hour`` must be partition keys, with partition projection
+        configured for both — otherwise Athena can't discover the new
+        hour=HH sub-partitions.
+        """
+        mock_glue = MagicMock()
+        # Force the create path (module's except branch keys on the
+        # EntityNotFoundException substring).
+        mock_glue.get_table.side_effect = Exception(
+            "EntityNotFoundException: table does not exist"
+        )
+        reporting.glue_client = mock_glue
+        reporting.database_name = "test-db"
+
+        import pyarrow as pa
+
+        schema = pa.schema(
+            [
+                ("document_id", pa.string()),
+                ("timestamp", pa.timestamp("ms")),
+                ("initial_event_time", pa.timestamp("ms")),
+            ]
+        )
+        reporting._create_or_update_metering_glue_table(schema)
+
+        call = mock_glue.create_table.call_args
+        table_input = call.kwargs["TableInput"]
+        partition_keys = {p["Name"] for p in table_input["PartitionKeys"]}
+        assert partition_keys == {"date", "hour"}, (
+            f"Expected {{'date', 'hour'}} partition keys, got {partition_keys!r}"
+        )
+        params = table_input["Parameters"]
+        assert params.get("projection.hour.type") == "integer"
+        assert params.get("projection.hour.range") == "0,23"
+        assert "hour=${hour}" in params.get("storage.location.template", ""), (
+            "storage.location.template must include hour"
+        )
