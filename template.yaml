@@ -4850,8 +4850,6 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
       MemorySize: 512
       Timeout: 900
-      Tags:
-        idp:stack: !Ref AWS::StackName
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -11351,6 +11349,11 @@ Resources:
       Description: Lambda function to mark HITL section review as complete
       MemorySize: 512
       Timeout: 60
+      Tags:
+        # Data plane — per-doc pipeline callback. Fires once per doc that
+        # needs review, resuming the paused Step Function via task-token
+        # callback. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       Environment:

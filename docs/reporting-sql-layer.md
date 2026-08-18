@@ -42,8 +42,11 @@ by requested range:
 | `2h – 24h` | `metering_hourly` | raw `metering` for the current hour |
 | `> 24h` | `metering_daily` | `metering_hourly` for the current day |
 
-Sealed hour and day rows never change once written, so any query
-hitting them benefits from Athena result reuse.
+Sealed hour and day rows never change once written, so any consumer
+`SELECT` that hits them benefits from Athena result reuse — a second
+dashboard-open within the workgroup's result-reuse TTL returns
+instantly. (Result reuse applies to consumer reads, not to the
+rollup Lambda's `INSERT`.)
 
 ### 2.3 `metering` partitioning: write time, not queue time
 
@@ -169,7 +172,8 @@ Every hour, for the sealed hour N-1:
 |---|---|---|
 | `monitor-dashboard` | Dashboard resolver + Athena reads it issues | Page open in IDP Monitor UI |
 | `monitor-agent` | Scheduled AI-summary agent | EventBridge hourly cron |
-| `analytics-agent` | Natural-language → SQL agent | User question in chat |
+| `analytics-agent` | Natural-language → SQL agent, agent-chat processor | User question / chat |
+| `doc-chat` | Chat-with-document + streaming chat | User chat about a specific doc |
 | `test-set-mgmt` | Test set CRUD + S3 polling | Test Studio UI + on-open scan |
 | `test-runner` | Kick off test runs + copy files | User clicks "Run test" |
 | `test-results` | Aggregate test runs + serve dashboard reads | End-of-run + results page open |
@@ -177,7 +181,8 @@ Every hour, for the sealed hour N-1:
 | `capacity-planner` | Capacity calculation tool | User action |
 | `policy-discovery` | Policy Discovery API + async processor | Admin action |
 | `finetuning` | Fine-tuning job management | Admin action |
-| `agent-chat` | User chat message handling | User messages |
+| `user-mgmt` | Cognito user CRUD + directory sync | Admin action |
+| `api-dispatch` | Main HTTP API dispatcher + document status lookup | Every UI page load |
 | `rollup-lambda` | The rollup Lambda itself | EventBridge cron |
 | `other-control` | Fallback for Lambdas that don't match a category | — |
 
@@ -225,7 +230,7 @@ Lambda slips through without a tag, its cost is *misattributed* to
 Applied classifier: *what triggered the invocation*. If cost scales
 with production doc arrival, it's data plane.
 
-**Data-plane Lambdas** (22 total, all in `DATA_PLANE_WHITELIST`):
+**Data-plane Lambdas** (23 total, all in `DATA_PLANE_WHITELIST`):
 
 | Lambda | Template | Trigger |
 |---|---|---|
@@ -251,6 +256,7 @@ with production doc arrival, it's data plane.
 | `JobTracker` | `template.yaml` | SQS per-doc status-change events |
 | `SaveReportingDataFunctionV2` | `template.yaml` | Async per doc (Evaluation / RuleValidation) |
 | `PostProcessingDecompressor` | `template.yaml` | SQS per-doc custom post-processor dispatcher |
+| `CompleteSectionReviewFunction` | `template.yaml` | HITL callback — resumes paused Step Function once per doc that needs review |
 
 **Explicitly NOT data plane (in the same templates):**
 `TestExecutionAggregationFunction` (post-run orchestration),
@@ -258,7 +264,6 @@ with production doc arrival, it's data plane.
 `CodeBuildTrigger` / `BDAOCRProjectFunction` (one-shot CFN custom
 resources), `TestFileCopierFunction` (test-run seeding — scales with
 test volume, not prod docs — `test-runner` component),
-`CompleteSectionReviewFunction` (HITL user click),
 `CircuitBreakerManagerFunction` (alarm/health-check),
 `BackfillWorkerFunction` (admin one-shot),
 `FinetuningProcessDocumentFunction` (training-set processing),

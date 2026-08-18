@@ -286,6 +286,36 @@ class TestComponentMapping:
         (missing the 'ier' variant). Now covered explicitly."""
         assert rollup._component_for_function("TestFileCopierFunction") == "test-runner"
 
+    def test_doc_chat_maps_correctly(self, rollup):
+        """User chat with a specific document lands under ``doc-chat``,
+        separate from the analytics-agent chat (which is SQL-driven)."""
+        assert (
+            rollup._component_for_function("ChatWithDocumentProcessorFunction")
+            == "doc-chat"
+        )
+        assert (
+            rollup._component_for_function("ChatStreamProcessorFunction") == "doc-chat"
+        )
+
+    def test_user_mgmt_maps_correctly(self, rollup):
+        assert rollup._component_for_function("UserManagementFunction") == "user-mgmt"
+        assert rollup._component_for_function("UserSyncFunction") == "user-mgmt"
+
+    def test_api_dispatch_maps_correctly(self, rollup):
+        """Every UI page load hits these — high-volume, worth breaking out."""
+        assert rollup._component_for_function("LookupFunction") == "api-dispatch"
+        assert rollup._component_for_function("ApiHandlerFunction") == "api-dispatch"
+        assert (
+            rollup._component_for_function("HttpApiDispatcherFunction")
+            == "api-dispatch"
+        )
+
+    def test_agent_processor_folds_into_analytics_agent(self, rollup):
+        assert (
+            rollup._component_for_function("AgentProcessorFunction")
+            == "analytics-agent"
+        )
+
     def test_config_mgmt(self, rollup):
         assert rollup._component_for_function("ConfigResolverFunction") == "config-mgmt"
 

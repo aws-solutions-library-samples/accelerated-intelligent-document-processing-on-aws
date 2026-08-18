@@ -169,7 +169,8 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
     if not control_arns:
         logger.warning(
             "No control-plane Lambdas discovered (expected at least the "
-            "rollup Lambda itself + others). Check idp:stack tag."
+            "rollup Lambda itself + others). Check that the stack's Lambdas "
+            "carry the CFN-native aws:cloudformation:stack-name tag."
         )
         return {"skipped": True, "reason": "no_control_lambdas"}
 
@@ -486,8 +487,11 @@ def _component_for_function(function_name: str) -> str:
         return "monitor-dashboard"
     if "monitor" in name and "agent" in name:
         return "monitor-agent"
-    if "analyticsagent" in name or "agentchat" in name:
+    if "analyticsagent" in name or "agentchat" in name or "agentprocessor" in name:
         return "analytics-agent"
+    # User-driven chat with a document (not the analytics agent chat).
+    if "chatwithdocument" in name or "chatstream" in name:
+        return "doc-chat"
     if "testset" in name:
         return "test-set-mgmt"
     if "testrunner" in name or "filecopy" in name or "filecopier" in name:
@@ -504,6 +508,12 @@ def _component_for_function(function_name: str) -> str:
         return "finetuning"
     if "datamartrollup" in name or "rollup" in name:
         return "rollup-lambda"
+    # Cognito / user directory management (user CRUD, group sync).
+    if "usermanagement" in name or "usersync" in name:
+        return "user-mgmt"
+    # Document status lookup + main HTTP API dispatcher — every UI page load.
+    if "lookupfunction" in name or "apihandler" in name or "httpapidispatcher" in name:
+        return "api-dispatch"
     return "other-control"
 
 

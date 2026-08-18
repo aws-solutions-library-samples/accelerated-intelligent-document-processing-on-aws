@@ -1200,7 +1200,7 @@ class SaveReportingData:
 
         # Save metering data in Parquet format. Path is date+hour partitioned
         # so the tier picker's <2h tail query can prune to the current hour
-        # instead of scanning the whole day (see docs/reporting-sql-layer.md §4).
+        # instead of scanning the whole day (see docs/reporting-sql-layer.md §2).
         if metering_records:
             metering_key = (
                 f"metering/date={date_partition}/hour={hour_partition}/"

@@ -51,8 +51,7 @@ MAIN_TEMPLATE = REPO_ROOT / "template.yaml"
 # MLflowLoggerFunction (per-run write-up), CodeBuildTrigger (one-shot
 # bootstrap), BDAOCRProjectFunction (CFN custom resource),
 # TestFileCopierFunction (test-run seeding, scales with test volume not
-# prod docs), CompleteSectionReviewFunction (HITL user click),
-# CircuitBreakerManagerFunction (alarm/health-check driven),
+# prod docs), CircuitBreakerManagerFunction (alarm/health-check driven),
 # BackfillWorkerFunction (admin one-shot), FinetuningProcessDocumentFunction
 # (training-set processing, not prod doc arrival), DataMartRollupFunction
 # itself, and all API resolvers / chat / auth / admin functions.
@@ -101,6 +100,13 @@ DATA_PLANE_WHITELIST: dict[str, Path] = {
     "SaveReportingDataFunctionV2": MAIN_TEMPLATE,
     # SQS per-doc dispatcher for user-supplied custom post-processor.
     "PostProcessingDecompressor": MAIN_TEMPLATE,
+    # HITL section review completion — per-doc pipeline callback. The
+    # pipeline pauses on low-confidence sections (task-token pattern) and
+    # this Lambda fires exactly once per doc that needs review, resuming
+    # the Step Function. Trigger is a human click, but the CAUSE is a
+    # specific doc's low-confidence extraction — cost scales with docs,
+    # not with UI activity or infra baseline.
+    "CompleteSectionReviewFunction": MAIN_TEMPLATE,
 }
 
 
