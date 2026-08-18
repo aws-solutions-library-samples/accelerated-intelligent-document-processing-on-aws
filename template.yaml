@@ -4547,6 +4547,13 @@ Resources:
   # See docs/reporting-sql-layer.md §2.3 for the partitioning rationale.
   MeteringTable:
     Type: AWS::Glue::Table
+    # DependsOn the migration custom resource so, on stack upgrade from a
+    # pre-hour-partition version, historical `metering/date=X/*.parquet`
+    # files are relocated into `date=X/hour=HH/` subdirs BEFORE this
+    # table's new projection template takes effect. Without the barrier,
+    # dashboards would show a data hole for the duration of the migration.
+    # See docs/reporting-sql-layer.md §2.3.
+    DependsOn: MeteringHourMigrationCustomResource
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseName: !Ref ReportingDatabase
@@ -4816,6 +4823,104 @@ Resources:
             Type: string
           - Name: hour
             Type: string
+
+  ##########################################################################
+  # Metering hour-partition migration — on stack upgrade from a pre-hour-
+  # partition version, relocates historical `date=X/*.parquet` files into
+  # `date=X/hour=HH/` subdirs so the new Glue projection can see them.
+  # Fresh installs no-op immediately (empty bucket). See §2.3.
+  ##########################################################################
+
+  MeteringHourMigrationFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency (one-shot CFN custom resource)"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for Cfn Custom Resource function"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables contain non-sensitive configuration values"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/metering_hour_migration
+      Description: >-
+        One-shot migration for the metering hour-partition upgrade. Runs as a
+        CFN custom resource; blocks stack update until historical Parquet files
+        are relocated into date=X/hour=HH/ subdirs.
+      MemorySize: 3008
+      Timeout: 900
+      # Layer supplies pyarrow (needed to read the hour from each Parquet's
+      # timestamp column). Reuses the shared idp_common base layer.
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref MeteringHourMigrationFunctionLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !GetAtt ReportingBucket.Arn
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering/*"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+
+  MeteringHourMigrationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  MeteringHourMigrationCustomResource:
+    Type: Custom::MeteringHourMigration
+    Properties:
+      ServiceToken: !GetAtt MeteringHourMigrationFunction.Arn
+      # Reporting bucket the migration walks.
+      ReportingBucket: !If
+        - ShouldCreateReportingBucket
+        - !Ref ReportingBucket
+        - !Ref ReportingBucketName
+      # MigrationVersion — CFN only sends an Update to a custom resource
+      # when one of its properties changes. Bump this string when the
+      # migration logic itself changes (e.g., a new hour-inference rule)
+      # so existing stacks re-run against any files that might need
+      # re-processing. Ordinary version bumps of the accelerator don't
+      # need to touch this — the migration is idempotent (already-migrated
+      # keys carry `/hour=` and are skipped by the lister).
+      MigrationVersion: "1.0-hour-partition"
 
   ##########################################################################
   # Data Mart Rollup Lambda — hourly + daily aggregations for the IDP Monitor
