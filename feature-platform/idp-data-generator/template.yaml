@@ -60,6 +60,17 @@ Parameters:
     Default: us.anthropic.claude-sonnet-4-6
     Description: Bedrock model ID the generator uses for synthesis.
 
+  BedrockMaxAttempts:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 30
+    Description: >-
+      botocore retry attempts for calls made inside the generator runtime, including
+      the Bedrock calls SEED makes through strands. Generous because a run is long and
+      expensive: losing an hour of generation to one transient 5xx costs far more than
+      a few extra retries. Set to 1 to disable retrying.
+
   SeedNodeTimeoutSeconds:
     Type: Number
     Default: 10800
@@ -510,6 +521,16 @@ Resources:
         HOST_TRACKING_TABLE: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
         GENERATOR_MODEL_ID: !Ref GeneratorModelId
         SEED_NODE_TIMEOUT_S: !Ref SeedNodeTimeoutSeconds
+        # Retry transient Bedrock faults in botocore, beneath every library in this
+        # container. The generator reaches Bedrock through SEED, which calls it through
+        # strands, so our own retry decorators are never on that path: a single
+        # `internalServerException` from ConverseStream — the kind whose own message
+        # says "Try your request again" — surfaced as a strands EventLoopException and
+        # discarded a 78-minute run. Retrying at the SDK layer covers every caller
+        # regardless of which library makes the call. Adaptive mode also backs off on
+        # throttling, which matters when documents generate concurrently.
+        AWS_RETRY_MODE: adaptive
+        AWS_MAX_ATTEMPTS: !Ref BedrockMaxAttempts
         # Strands file_write/editor tools prompt for interactive confirmation
         # otherwise, which auto-cancels in the headless runtime.
         BYPASS_TOOL_CONSENT: "true"
