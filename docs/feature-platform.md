@@ -163,6 +163,21 @@ License Manager (`ListReceivedLicenses`) was also ruled out: it fails with
 `AccessDeniedException: Service role not found` until a service role is created
 in the buyer account, which we can't require of a customer.
 
+Verified against the live listing across **every** caller/subscription combination:
+
+| Caller | Subscribed to this product? | `GetEntitlements` | `SearchAgreements` |
+|---|---|---|---|
+| Buyer account | no | `[]` | `[]` (correct negative) |
+| Buyer account | **yes** | **`[]`** | **ACTIVE agreement** (correct positive) |
+| **Seller** account | n/a (product owner) | **`[]`** | ACTIVE agreement via `PartyType=Proposer` |
+
+`GetEntitlements` returns an empty list in **every** case — including from the
+seller account, and including for a genuinely subscribed buyer. There is no
+configuration in which it answers this question for a usage-based SaaS listing,
+because such a listing has no entitlement records at all. `SearchAgreements`
+answers correctly in every case.
+
+
 The three outcomes are deliberately distinct:
 
 | Outcome | State | Meaning |

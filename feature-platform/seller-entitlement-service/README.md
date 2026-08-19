@@ -198,8 +198,24 @@ Two things that verification settled, and that you should not "fix" back:
   that with `ValidationException: Provided filter name is invalid`. `FilterName`
   is a free-form string with no client-side validation, so only a real call
   reveals this.
-- **`GetEntitlements` returns `{"Entitlements": []}` even from the seller account
-  with the correct product code.** Confirmed, not inferred. A usage-based SaaS
+- **`GetEntitlements` returns `{"Entitlements": []}` from every caller** — the
+  seller account with the correct product code, an unsubscribed buyer, and a
+  genuinely **subscribed** buyer. Confirmed, not inferred. A usage-based SaaS
   listing has no entitlement records at all, so that API can never answer "is this
-  buyer subscribed?" — from anywhere, for any caller. It remains in the IAM policy
-  only for SaaS *Contract* listings.
+  buyer subscribed?" from anywhere. It remains in the IAM policy only for SaaS
+  *Contract* listings.
+
+Verified against the live listing across **every** caller/subscription combination:
+
+| Caller | Subscribed to this product? | `GetEntitlements` | `SearchAgreements` |
+|---|---|---|---|
+| Buyer account | no | `[]` | `[]` (correct negative) |
+| Buyer account | **yes** | **`[]`** | **ACTIVE agreement** (correct positive) |
+| **Seller** account | n/a (product owner) | **`[]`** | ACTIVE agreement via `PartyType=Proposer` |
+
+`GetEntitlements` returns an empty list in **every** case — including from the
+seller account, and including for a genuinely subscribed buyer. There is no
+configuration in which it answers this question for a usage-based SaaS listing,
+because such a listing has no entitlement records at all. `SearchAgreements`
+answers correctly in every case.
+
