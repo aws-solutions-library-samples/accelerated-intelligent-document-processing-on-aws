@@ -413,6 +413,10 @@ const ComprehensiveBreakdown = ({
               accuracy: total > 0 ? ((tp + tn) / total).toFixed(3) : 'N/A',
               observations: interval ? interval.observations : 0,
               accuracyMargin: formatMargin(interval),
+              // Sorting must key on the number: the displayed value is formatted, and
+              // "±10.2" sorts before "±5.9" as a string. The accuracy column gets away
+              // with a string because toFixed(3) is fixed-width; margins are not.
+              accuracyMarginValue: interval ? interval.margin : -1,
               accuracyBounds: formatBounds(interval),
               lowEvidence: isLowEvidence(interval),
               precision: tp + fp > 0 ? (tp / (tp + fp)).toFixed(3) : 'N/A',
@@ -567,7 +571,7 @@ const ComprehensiveBreakdown = ({
                 ) : (
                   '—'
                 ),
-              sortingField: 'accuracyMargin',
+              sortingField: 'accuracyMarginValue',
               minWidth: 130,
             },
             {

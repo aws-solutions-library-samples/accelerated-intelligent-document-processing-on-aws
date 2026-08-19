@@ -3699,12 +3699,13 @@ class TestTestSetResolver:
 
 @pytest.mark.unit
 class TestLabelStateReconciliation:
-    """labelState must not understate a set that already holds ground truth.
+    """labelState must not understate a set holding ground truth — nor overstate one.
 
-    It is derived once at registration and afterwards moved only by harvest and
-    reset. The synthetic generator writes documents and baselines straight to S3, so
-    a set that gains 47 labelled documents keeps reporting "Unlabeled" with no
-    estimated accuracy — worst in exactly the place the number matters.
+    It is derived once at registration and afterwards moved only by harvest and reset,
+    so the synthetic generator writing documents and baselines straight to S3 leaves a
+    fully-labelled set reporting "Unlabeled". Repairing that is the point. Promoting a
+    set that is NOT ground truth is worse: a green badge on unreviewed machine drafts,
+    the effort estimator running on them, and the "Labeling failed" warning suppressed.
     """
 
     @pytest.fixture
@@ -3713,7 +3714,7 @@ class TestLabelStateReconciliation:
             s3 = boto3.client("s3", region_name="us-east-1")
             s3.create_bucket(Bucket="test-set-bucket")
             ddb = boto3.resource("dynamodb", region_name="us-east-1")
-            ddb.create_table(
+            table = ddb.create_table(
                 TableName="test-table",
                 KeySchema=[
                     {"AttributeName": "PK", "KeyType": "HASH"},
@@ -3725,54 +3726,164 @@ class TestLabelStateReconciliation:
                 ],
                 BillingMode="PAY_PER_REQUEST",
             )
+            writes = []
+
+            def record(key, update_expression, **kwargs):
+                writes.append((key["PK"], update_expression, kwargs))
+
             with patch.dict(
                 os.environ,
                 {"TEST_SET_BUCKET": "test-set-bucket", "TRACKING_TABLE": "test-table"},
             ):
                 with (
                     patch.object(test_set_index, "s3_client", s3),
-                    patch.object(
-                        test_set_index.db_client,
-                        "update_item",
-                        wraps=_recording_update(),
-                    ) as upd,
+                    patch.object(test_set_index.db_client, "update_item", record),
                 ):
-                    yield s3, upd
+                    yield s3, table, writes
 
-    def test_a_set_with_baselines_is_repaired(self, env):
-        s3, upd = env
+    @staticmethod
+    def _seed_doc(s3, test_set_id, name, label_source=None):
+        s3.put_object(
+            Bucket="test-set-bucket", Key=f"{test_set_id}/input/{name}", Body=b"pdf"
+        )
+        body = {"inference_result": {"x": 1}}
+        if label_source:
+            body["labelSource"] = label_source
         s3.put_object(
             Bucket="test-set-bucket",
-            Key="ts1/baseline/a.pdf/sections/1/result.json",
-            Body=b"{}",
+            Key=f"{test_set_id}/baseline/{name}/sections/1/result.json",
+            Body=json.dumps(body).encode(),
         )
-        items = [{"id": "ts1", "labelState": "unlabeled"}]
+
+    def test_a_fully_labelled_set_is_repaired(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
 
         test_set_index._reconcile_label_state(items)
 
         assert items[0]["labelState"] == "labeled"
-        assert upd.called, "the repair must persist, or it repeats on every read"
+        assert any("labelState" in w[1] for w in writes), "the repair must persist"
 
-    def test_a_set_with_no_baselines_is_left_alone(self, env):
-        s3, upd = env
-        items = [{"id": "ts1", "labelState": "unlabeled"}]
+    def test_a_set_mid_harvest_is_never_promoted(self, env):
+        """The blocking case: drafts are on S3 before labelState moves to 'draft'.
+
+        The harvest writes draft-machine labels under the same baseline/ prefix and
+        only sets labelState when it reaches COMPLETED. Promoting here puts a
+        "Labeled" badge on unreviewed machine output — and if the harvest then fails,
+        permanently, while also suppressing the "Labeling failed" warning.
+        """
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelJobId": "run-1",
+                "labelJobStatus": "RUNNING",
+            }
+        ]
 
         test_set_index._reconcile_label_state(items)
 
         assert items[0]["labelState"] == "unlabeled"
-        assert not upd.called
+        assert writes == []
+
+    def test_a_failed_harvest_is_never_promoted(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelJobStatus": "FAILED",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+
+    def test_drafts_with_no_job_pointer_are_recorded_as_draft(self, env):
+        """Belt and braces: machine drafts are never ground truth, job record or not."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "draft"
+
+    def test_partial_coverage_is_not_a_labelled_set(self, env):
+        """One labelled document out of two is not ground truth for the set."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 2}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+
+    def test_a_set_with_no_baselines_is_left_alone(self, env):
+        s3, _table, writes = env
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert all("labelState" not in w[1] for w in writes)
+
+    def test_an_unlabelled_set_is_not_reprobed_at_the_same_membership(self, env):
+        """Without a marker the probe never converges on genuinely unlabelled sets."""
+        s3, _table, writes = env
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+        assert any("labelProbedFileCount" in w[1] for w in writes)
+
+        calls = []
+        with patch.object(
+            test_set_index, "_validate_test_set_files", lambda *a, **k: calls.append(1)
+        ):
+            test_set_index._reconcile_label_state(
+                [
+                    {
+                        "id": "ts1",
+                        "labelState": "unlabeled",
+                        "fileCount": 1,
+                        "labelProbedFileCount": 1,
+                    }
+                ]
+            )
+        assert calls == [], "a set already probed at this membership must be skipped"
+
+    def test_adding_documents_invalidates_the_marker(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelProbedFileCount": 0,  # probed when the set was empty
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
 
     def test_already_labelled_sets_are_never_probed(self, env):
-        """The cost has to fall only on sets that might be wrong."""
-        s3, upd = env
+        s3, _table, writes = env
         calls = []
-        real_list = s3.list_objects_v2
-
-        def counting(**kwargs):
-            calls.append(kwargs.get("Prefix"))
-            return real_list(**kwargs)
-
-        with patch.object(test_set_index.s3_client, "list_objects_v2", counting):
+        with patch.object(
+            test_set_index, "_validate_test_set_files", lambda *a, **k: calls.append(1)
+        ):
             test_set_index._reconcile_label_state(
                 [
                     {"id": "a", "labelState": "labeled"},
@@ -3783,31 +3894,27 @@ class TestLabelStateReconciliation:
 
     def test_probing_is_bounded(self, env):
         """The list path is otherwise pure DynamoDB and is the hottest query."""
-        s3, upd = env
+        s3, _table, writes = env
         calls = []
-        real_list = s3.list_objects_v2
-
-        def counting(**kwargs):
-            calls.append(kwargs.get("Prefix"))
-            return real_list(**kwargs)
-
-        many = [{"id": f"ts{i}", "labelState": "unlabeled"} for i in range(60)]
-        with patch.object(test_set_index.s3_client, "list_objects_v2", counting):
+        many = [
+            {"id": f"ts{i}", "labelState": "unlabeled", "fileCount": 1}
+            for i in range(60)
+        ]
+        with patch.object(
+            test_set_index,
+            "_validate_test_set_files",
+            lambda *a, **k: (calls.append(1), {"labeled": False})[1],
+        ):
             test_set_index._reconcile_label_state(many)
         assert len(calls) == test_set_index.MAX_LABEL_STATE_PROBES
 
-    def test_a_listing_failure_never_breaks_the_list(self, env):
-        s3, upd = env
+    def test_a_probe_failure_never_breaks_the_list(self, env):
+        s3, _table, writes = env
         with patch.object(
-            test_set_index.s3_client,
-            "list_objects_v2",
+            test_set_index,
+            "_validate_test_set_files",
             side_effect=RuntimeError("s3 down"),
         ):
-            test_set_index._reconcile_label_state([{"id": "ts1"}])  # must not raise
-
-
-def _recording_update():
-    def _update(**kwargs):
-        return None
-
-    return _update
+            test_set_index._reconcile_label_state(
+                [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+            )  # must not raise

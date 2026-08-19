@@ -54,7 +54,7 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 1. **RealKIE-FCC-Verified**: 75 FCC invoice documents
 2. **OmniAI-OCR-Benchmark**: 293 diverse document images across 9 formats
 3. **DocSplit-Poly-Seq**: 500 multi-page packets with 13 document types
-6. **Fake-W2-Tax-Forms**: 2,000 synthetic US W-2 tax form images with 45-field ground truth
+4. **Fake-W2-Tax-Forms**: 2,000 synthetic US W-2 tax form images with 45-field ground truth
 
 All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration version** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions) for details.
 
@@ -76,8 +76,8 @@ During stack deployment, the system automatically:
 2. **Downloads PDFs** directly from HuggingFace's `pdfs/` directory
 3. **Uploads PDFs** to `s3://TestSetBucket/realkie-fcc-verified/input/`
 4. **Extracts Ground Truth** from `json_response` field (already in accelerator format!)
-7. **Uploads Baselines** to `s3://TestSetBucket/realkie-fcc-verified/baseline/`
-8. **Registers Test Set** in DynamoDB with metadata
+5. **Uploads Baselines** to `s3://TestSetBucket/realkie-fcc-verified/baseline/`
+6. **Registers Test Set** in DynamoDB with metadata
 
 #### Key Features
 
@@ -1114,7 +1114,10 @@ enough to expose it. At a measured 90% accuracy:
 | 300 | ±3.4 pts |
 | 500 | ±2.6 pts |
 
-So a field reading "90%" on 20 observations is somewhere between roughly 76% and 97%.
+So a field reading "90%" on 20 observations sits somewhere between 69.9% and 97.2% —
+the interval, which is authoritative. (Subtracting the margin from the point estimate
+would suggest 76%; the interval is asymmetric near the ends, which is exactly why the
+tooltip shows the bounds.)
 Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
 about how much evidence there is, not a defect in the field.
 

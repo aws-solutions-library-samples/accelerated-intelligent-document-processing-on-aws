@@ -3008,10 +3008,10 @@ def _is_valid_test_set_structure(s3_client, bucket, prefix):
         return False
 
 
-# Bound on how many stale-labelState probes one listTestSets call performs. Each is
-# a single-key S3 LIST, but the list path is otherwise pure DynamoDB and is the most
-# frequently hit query in Test Studio, so the work is capped and the remainder is
-# picked up by the next call rather than slowing this one.
+# Bound on how many labelState probes one listTestSets call performs. The list path
+# is otherwise pure DynamoDB and is the most frequently hit query in Test Studio.
+# Probed sets record the result, so the sets skipped here are genuinely picked up by
+# the next call rather than the cap re-rolling over an arbitrary subset.
 MAX_LABEL_STATE_PROBES = 25
 
 
@@ -3023,52 +3023,124 @@ def _reconcile_label_state(items):
     labelled* documents are added to an existing set — which is exactly what the
     synthetic generator does, writing documents and their baselines straight to S3.
     A set can therefore hold 47 documents of ground truth and still report
-    "Unlabeled" with no estimated accuracy, which understates it precisely where
-    the number matters most.
+    "Unlabeled" with no estimated accuracy, which understates it where the number
+    matters most.
 
-    Only sets currently claiming to be unlabelled are probed, and only for the
-    *existence* of any baseline object, so an already-labelled set costs nothing.
-    The repair is written back, so a set is probed once rather than on every read.
+    Overstating is worse than understating, so the promotion is deliberately strict:
+
+    * **Sets owned by a labeling job are never touched.** The harvest writes
+      ``draft-machine`` labels under the same ``baseline/`` prefix and only sets
+      labelState once it reaches COMPLETED, so a running — or failed — harvest is a
+      set with baseline objects that are *not* ground truth. Flipping those to
+      "labeled" would put a green badge on unreviewed machine output, start the
+      effort estimator on it, and suppress the "Labeling failed" warning.
+    * **Coverage must be complete.** Decided by ``_validate_test_set_files``, the
+      same helper registration uses, so repair and registration cannot disagree
+      about what "labeled" means. One labelled document out of 47 is not a labelled
+      set.
+    * **Drafts are recorded as drafts.** If the baselines are machine drafts the
+      state becomes "draft", never "labeled".
+
+    Converging, too: the fileCount a probe ran against is recorded, so a set is
+    probed once per membership change instead of on every read. Known limitation —
+    baselines added for documents that were *already* in the set (a hand-upload
+    straight to S3, rather than a generation that adds documents) leave fileCount
+    unchanged and are not re-probed until it changes.
     """
+    # An optional repair must never be the reason a list fails. A deployment without
+    # the bucket configured simply does not get reconciliation.
+    bucket = os.environ.get("TEST_SET_BUCKET")
+    if not bucket:
+        return
     probes = 0
     for item in items:
         if probes >= MAX_LABEL_STATE_PROBES:
             logger.info(
-                "labelState reconciliation stopped after %d probe(s); remaining "
-                "sets are picked up by the next list",
+                "labelState reconciliation stopped after %d probe(s); the rest are "
+                "picked up by the next list",
                 probes,
             )
             break
         if item.get("labelState") not in (None, "unlabeled"):
             continue
+        # A labeling job owns this set's labelState; see the docstring.
+        if item.get("labelJobId") or item.get("labelJobStatus"):
+            continue
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
         if not test_set_id:
             continue
+        file_count = _as_int(item.get("fileCount"))
+        if (
+            file_count is not None
+            and _as_int(item.get("labelProbedFileCount")) == file_count
+        ):
+            continue  # Already probed at this membership; nothing has been added.
+
         probes += 1
         try:
-            found = s3_client.list_objects_v2(
-                Bucket=os.environ["TEST_SET_BUCKET"],
-                Prefix=f"{test_set_id}/baseline/",
-                MaxKeys=1,
-            ).get("KeyCount", 0)
-        except Exception as e:  # noqa: BLE001 — listing must not fail the list call
+            validation = _validate_test_set_files(
+                s3_client, bucket, test_set_id, allow_unlabeled=True
+            )
+        except Exception as e:  # noqa: BLE001 — probing must not fail the list call
             logger.warning(f"Could not probe labels for {test_set_id}: {e}")
             continue
-        if not found:
+
+        if not validation.get("labeled"):
+            _remember_label_probe(test_set_id, file_count)
             continue
-        item["labelState"] = "labeled"
+
+        state = "draft" if _probed_labels_are_drafts(bucket, test_set_id) else "labeled"
+        item["labelState"] = state
         try:
             db_client.update_item(
                 key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
                 update_expression="SET labelState = :ls",
-                expression_attribute_values={":ls": "labeled"},
+                expression_attribute_values={":ls": state},
             )
             logger.info(
-                f"Repaired labelState for {test_set_id}: baseline objects exist but "
-                "the set was recorded as unlabeled"
+                f"Repaired labelState for {test_set_id} to '{state}': every document "
+                "carries a baseline but the set was recorded as unlabeled"
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not persist labelState for {test_set_id}: {e}")
+
+
+def _probed_labels_are_drafts(bucket, test_set_id):
+    """True when this set's baselines are machine drafts rather than ground truth.
+
+    Reads one section result. The harvest writes drafts for a whole run at once, so a
+    single key is representative; being wrong here can only mis-label a mixed set as
+    "draft", which understates rather than overstates.
+    """
+    try:
+        page = s3_client.list_objects_v2(
+            Bucket=bucket, Prefix=f"{test_set_id}/baseline/", MaxKeys=10
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not list baselines for {test_set_id}: {e}")
+        return False
+    for obj in page.get("Contents") or []:
+        if obj["Key"].endswith("/result.json"):
+            return _existing_label_is_draft(bucket, obj["Key"])
+    return False
+
+
+def _remember_label_probe(test_set_id, file_count):
+    """Record that a set was probed and had no complete ground truth.
+
+    Without this the probe never converges: a genuinely unlabelled set writes no
+    marker, so every listTestSets re-probes it forever.
+    """
+    if file_count is None:
+        return
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET labelProbedFileCount = :n",
+            expression_attribute_values={":n": file_count},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not record label probe for {test_set_id}: {e}")
 
 
 def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):

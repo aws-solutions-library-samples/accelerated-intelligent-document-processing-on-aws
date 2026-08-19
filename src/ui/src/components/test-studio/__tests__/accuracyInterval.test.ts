@@ -92,3 +92,17 @@ describe('formatting', () => {
     expect(isLowEvidence(null)).toBe(false);
   });
 });
+
+describe('sorting', () => {
+  it('orders margins numerically, not as formatted strings', () => {
+    // n=30 at 90% gives ±11.1; n=40 gives ±9.5. As strings "±11.1" < "±9.5", so a
+    // string sort puts the WIDER margin first — the opposite of what the column is
+    // for. The accuracy column gets away with a string because toFixed(3) is
+    // fixed-width; margins cross from one digit to two.
+    const wide = accuracyIntervalForField({ tp: 27, fp: 0, tn: 0, fn: 3 })!;
+    const narrow = accuracyIntervalForField({ tp: 36, fp: 0, tn: 0, fn: 4 })!;
+
+    expect(wide.margin).toBeGreaterThan(narrow.margin);
+    expect(formatMargin(wide) < formatMargin(narrow)).toBe(true);
+  });
+});

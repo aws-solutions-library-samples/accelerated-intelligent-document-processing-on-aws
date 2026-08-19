@@ -31,7 +31,7 @@ Two things it gives you that nothing else does.
 
 **A real accuracy number.** Skimming documents and forming an impression is not a
 substitute. Check a field on 20 documents and its true accuracy could sit anywhere in a
-26-point range — a field that looks like 90% could be 77%. Nobody can make a launch or
+27-point range — a field that looks like 90% could really be 70%. Nobody can make a launch or
 staffing decision on a range that wide. Test Studio reports the per-field margin alongside
 the accuracy for exactly this reason (see [Field-Level
 Metrics](./test-studio.md#field-level-metrics)).
