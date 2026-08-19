@@ -635,6 +635,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if resolved_cid is None and entitlements:
         resolved_cid = entitlements[0].get("CustomerIdentifier")
 
+    # A simulator / endpoint-override ACTIVE is not a real subscription check:
+    # boto3 was pointed at whatever AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE
+    # names. Record it for a paid feature so a production host aimed at a
+    # simulator is visible rather than rendering as a clean "subscription active".
+    if evaluated["state"] == "ACTIVE" and is_marketplace_feature:
+        _emit_unverified_grant_metric(feature_id, _SOURCE_TAG)
+
     return {
         "featureId": feature_id,
         "state": evaluated["state"],

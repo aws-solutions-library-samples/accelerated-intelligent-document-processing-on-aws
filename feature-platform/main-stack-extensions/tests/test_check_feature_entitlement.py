@@ -894,3 +894,50 @@ def test_metric_emission_never_raises(monkeypatch, mock_stack, load_lambda):
     monkeypatch.setattr(mod.logger, "info", _boom)
     # Must swallow, not propagate.
     mod._emit_unverified_grant_metric("f", "auto")
+
+
+def test_simulator_backed_active_emits_metric(monkeypatch, mock_stack, load_lambda):
+    """A simulator/endpoint-override ACTIVE is not a real subscription check.
+
+    boto3 was pointed at whatever AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE
+    names, so a production host aimed at a simulator would otherwise render a
+    clean "subscription active" with nothing recorded anywhere.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "ACTIVE"
+    assert emitted == [("idp-auto-optimizer", "marketplace")]
+
+
+def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambda):
+    """Only a GRANT is an unverified grant; a refusal needs no warning."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(mod, entitlements=[], expected_product="q0k0s3zuuga46hle6fecx547")
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "NONE"
+    assert emitted == []

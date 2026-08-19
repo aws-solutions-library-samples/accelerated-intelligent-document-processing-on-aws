@@ -6,10 +6,17 @@ import { describe, expect, it } from 'vitest';
 import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
 
 describe('isVerifiedEntitlement', () => {
-  it('is true only for ACTIVE from a real Marketplace check', () => {
+  it('is true only for ACTIVE from the real buyer-side check', () => {
     expect(isVerifiedEntitlement('ACTIVE', 'marketplace-live')).toBe(true);
-    expect(isVerifiedEntitlement('ACTIVE', 'marketplace')).toBe(true);
-    expect(isVerifiedEntitlement('ACTIVE', 'simulator')).toBe(true);
+  });
+
+  it('is FALSE for simulator-backed modes — the bypass this must not hide', () => {
+    // `simulator` and `marketplace` (endpoint-override) both mean boto3 was
+    // pointed at a fake Marketplace. Counting them as verified let a production
+    // host aimed at a simulator render a clean "subscription active" with no
+    // warning and no metric.
+    expect(isVerifiedEntitlement('ACTIVE', 'simulator')).toBe(false);
+    expect(isVerifiedEntitlement('ACTIVE', 'marketplace')).toBe(false);
   });
 
   it('is FALSE for auto and advisory — the whole point of the flag', () => {
@@ -47,6 +54,11 @@ describe('isUnverifiedGrant', () => {
     expect(isUnverifiedGrant('ACTIVE', 'marketplace-live')).toBe(false);
   });
 
+  it('is true for simulator-backed grants', () => {
+    expect(isUnverifiedGrant('ACTIVE', 'simulator')).toBe(true);
+    expect(isUnverifiedGrant('ACTIVE', 'marketplace')).toBe(true);
+  });
+
   it('is false when nothing was granted', () => {
     // Not granting access is not an "unverified grant" — no warning is due.
     expect(isUnverifiedGrant('NONE', 'auto')).toBe(false);
@@ -70,6 +82,12 @@ describe('unverifiedReason', () => {
     // The common real cause is a missing IAM grant, so say so — otherwise the
     // admin has no path from "not verified" to "fixed".
     expect(unverifiedReason('advisory')).toContain('SearchAgreements');
+  });
+
+  it('names the simulator for simulator-backed modes', () => {
+    for (const source of ['simulator', 'marketplace'] as const) {
+      expect(unverifiedReason(source)).toContain('simulator');
+    }
   });
 
   it('falls back to a generic explanation', () => {

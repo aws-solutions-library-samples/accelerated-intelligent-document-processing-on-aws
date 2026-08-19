@@ -192,6 +192,14 @@ scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
 It runs both APIs side by side with a positive control, so an empty result is
 distinguishable from a broken one.
 
+> **Simulator-backed modes count as UNVERIFIED.** `simulator` and `marketplace`
+> both mean boto3 was pointed at whatever `FeaturePlatformSimulatorEndpoint`
+> names, so neither is evidence of a real subscription. They therefore report
+> `entitlementVerified: false`, raise the "Subscription not verified" banner, and
+> fire the `UnverifiedEntitlementGrant` metric — the same treatment as `auto` and
+> `advisory`. Only `marketplace-live` counts as checked. Expect the banner in
+> development; if you see it in production, the stack is pointed at a simulator.
+
 ### "Update available" badges
 
 The badge compares the version in the `InstalledFeatures` table against the
