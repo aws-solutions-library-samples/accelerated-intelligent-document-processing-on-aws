@@ -60,6 +60,21 @@ Parameters:
     Default: us.anthropic.claude-sonnet-4-6
     Description: Bedrock model ID the generator uses for synthesis.
 
+  SeedNodeTimeoutSeconds:
+    Type: Number
+    Default: 10800
+    MinValue: 600
+    MaxValue: 27000
+    Description: >-
+      Per-stage timeout for the generation pipeline. The document-rendering stage
+      is the one that hits this: its cost scales with document count, quality
+      (more critic retries per document) and augmentation (extra render passes),
+      and a whole batch of documents shares one stage. A 49-document
+      high-quality augmented run exceeded 3600s. Raise this before reducing
+      count if a run fails with "Node 'doc_loop' execution timed out"; the
+      runtime's own watchdog, just under the AgentCore session ceiling, remains
+      the terminal backstop.
+
 Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
 
@@ -494,6 +509,7 @@ Resources:
         BOOTSTRAP_TRACKING_TABLE: !Ref BootstrapTrackingTable
         HOST_TRACKING_TABLE: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
         GENERATOR_MODEL_ID: !Ref GeneratorModelId
+        SEED_NODE_TIMEOUT_S: !Ref SeedNodeTimeoutSeconds
         # Strands file_write/editor tools prompt for interactive confirmation
         # otherwise, which auto-cancels in the headless runtime.
         BYPASS_TOOL_CONSENT: "true"

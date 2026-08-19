@@ -3695,3 +3695,119 @@ class TestTestSetResolver:
 
         doc = table.get_item(Key={"PK": "doc#ts1-run/a.pdf", "SK": "none"})["Item"]
         assert doc["TestSetId"] == "original-set"
+
+
+@pytest.mark.unit
+class TestLabelStateReconciliation:
+    """labelState must not understate a set that already holds ground truth.
+
+    It is derived once at registration and afterwards moved only by harvest and
+    reset. The synthetic generator writes documents and baselines straight to S3, so
+    a set that gains 47 labelled documents keeps reporting "Unlabeled" with no
+    estimated accuracy — worst in exactly the place the number matters.
+    """
+
+    @pytest.fixture
+    def env(self):
+        with mock_aws():
+            s3 = boto3.client("s3", region_name="us-east-1")
+            s3.create_bucket(Bucket="test-set-bucket")
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName="test-table",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            with patch.dict(
+                os.environ,
+                {"TEST_SET_BUCKET": "test-set-bucket", "TRACKING_TABLE": "test-table"},
+            ):
+                with (
+                    patch.object(test_set_index, "s3_client", s3),
+                    patch.object(
+                        test_set_index.db_client,
+                        "update_item",
+                        wraps=_recording_update(),
+                    ) as upd,
+                ):
+                    yield s3, upd
+
+    def test_a_set_with_baselines_is_repaired(self, env):
+        s3, upd = env
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        items = [{"id": "ts1", "labelState": "unlabeled"}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+        assert upd.called, "the repair must persist, or it repeats on every read"
+
+    def test_a_set_with_no_baselines_is_left_alone(self, env):
+        s3, upd = env
+        items = [{"id": "ts1", "labelState": "unlabeled"}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert not upd.called
+
+    def test_already_labelled_sets_are_never_probed(self, env):
+        """The cost has to fall only on sets that might be wrong."""
+        s3, upd = env
+        calls = []
+        real_list = s3.list_objects_v2
+
+        def counting(**kwargs):
+            calls.append(kwargs.get("Prefix"))
+            return real_list(**kwargs)
+
+        with patch.object(test_set_index.s3_client, "list_objects_v2", counting):
+            test_set_index._reconcile_label_state(
+                [
+                    {"id": "a", "labelState": "labeled"},
+                    {"id": "b", "labelState": "draft"},
+                ]
+            )
+        assert calls == []
+
+    def test_probing_is_bounded(self, env):
+        """The list path is otherwise pure DynamoDB and is the hottest query."""
+        s3, upd = env
+        calls = []
+        real_list = s3.list_objects_v2
+
+        def counting(**kwargs):
+            calls.append(kwargs.get("Prefix"))
+            return real_list(**kwargs)
+
+        many = [{"id": f"ts{i}", "labelState": "unlabeled"} for i in range(60)]
+        with patch.object(test_set_index.s3_client, "list_objects_v2", counting):
+            test_set_index._reconcile_label_state(many)
+        assert len(calls) == test_set_index.MAX_LABEL_STATE_PROBES
+
+    def test_a_listing_failure_never_breaks_the_list(self, env):
+        s3, upd = env
+        with patch.object(
+            test_set_index.s3_client,
+            "list_objects_v2",
+            side_effect=RuntimeError("s3 down"),
+        ):
+            test_set_index._reconcile_label_state([{"id": "ts1"}])  # must not raise
+
+
+def _recording_update():
+    def _update(**kwargs):
+        return None
+
+    return _update

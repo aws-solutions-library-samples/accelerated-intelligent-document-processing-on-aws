@@ -2579,6 +2579,11 @@ def get_test_sets():
     existing_test_sets = {}
     result = []
 
+    # Sets that gained ground truth after registration still say "unlabeled"; see
+    # _reconcile_label_state. Done before building the response so the repair is
+    # visible on the same call that discovers it.
+    _reconcile_label_state(items)
+
     for item in items:
         # GSI projection may not include 'id' - derive from PK if needed
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
@@ -3001,6 +3006,69 @@ def _is_valid_test_set_structure(s3_client, bucket, prefix):
     except Exception as e:
         logger.error(f"Error checking test set structure for {prefix}: {str(e)}")
         return False
+
+
+# Bound on how many stale-labelState probes one listTestSets call performs. Each is
+# a single-key S3 LIST, but the list path is otherwise pure DynamoDB and is the most
+# frequently hit query in Test Studio, so the work is capped and the remainder is
+# picked up by the next call rather than slowing this one.
+MAX_LABEL_STATE_PROBES = 25
+
+
+def _reconcile_label_state(items):
+    """Repair ``labelState`` on sets that gained ground truth after registration.
+
+    labelState is derived once, when a set is first registered, and afterwards only
+    moved by draft-label harvest and reset. Nothing re-derives it when *already
+    labelled* documents are added to an existing set — which is exactly what the
+    synthetic generator does, writing documents and their baselines straight to S3.
+    A set can therefore hold 47 documents of ground truth and still report
+    "Unlabeled" with no estimated accuracy, which understates it precisely where
+    the number matters most.
+
+    Only sets currently claiming to be unlabelled are probed, and only for the
+    *existence* of any baseline object, so an already-labelled set costs nothing.
+    The repair is written back, so a set is probed once rather than on every read.
+    """
+    probes = 0
+    for item in items:
+        if probes >= MAX_LABEL_STATE_PROBES:
+            logger.info(
+                "labelState reconciliation stopped after %d probe(s); remaining "
+                "sets are picked up by the next list",
+                probes,
+            )
+            break
+        if item.get("labelState") not in (None, "unlabeled"):
+            continue
+        test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
+        if not test_set_id:
+            continue
+        probes += 1
+        try:
+            found = s3_client.list_objects_v2(
+                Bucket=os.environ["TEST_SET_BUCKET"],
+                Prefix=f"{test_set_id}/baseline/",
+                MaxKeys=1,
+            ).get("KeyCount", 0)
+        except Exception as e:  # noqa: BLE001 — listing must not fail the list call
+            logger.warning(f"Could not probe labels for {test_set_id}: {e}")
+            continue
+        if not found:
+            continue
+        item["labelState"] = "labeled"
+        try:
+            db_client.update_item(
+                key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+                update_expression="SET labelState = :ls",
+                expression_attribute_values={":ls": "labeled"},
+            )
+            logger.info(
+                f"Repaired labelState for {test_set_id}: baseline objects exist but "
+                "the set was recorded as unlabeled"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not persist labelState for {test_set_id}: {e}")
 
 
 def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
