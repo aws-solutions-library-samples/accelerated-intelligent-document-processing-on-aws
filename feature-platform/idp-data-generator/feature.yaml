@@ -17,7 +17,7 @@
 # CodeBuild/ECR/AgentCore cycle to validate. See README.md.
 featureId: idp-data-generator
 displayName: "Test Set Generator"
-version: 0.1.4
+version: 0.1.3
 description: |
   Generate labeled synthetic document test sets from a document-class schema or
   an existing configuration version, using the SEED generator on an Amazon
