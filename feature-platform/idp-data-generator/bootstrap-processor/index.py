@@ -125,6 +125,11 @@ def _register_test_set(
     )
     names = {
         "#status": "status",
+        # When the status was last written, so the host can tell a long-running
+        # generation from an abandoned one. GENERATING is cleared by the runtime; if
+        # the runtime dies — or the extension is uninstalled — nothing else ever
+        # would, and the set shows a spinner in Test Studio permanently.
+        "#statusUpdatedAt": "statusUpdatedAt",
         "#itemType": "ItemType",
         "#id": "id",
         "#name": "name",
@@ -142,6 +147,7 @@ def _register_test_set(
     }
     set_clauses = [
         "#status = :status",
+        "#statusUpdatedAt = :createdAt",
         "#itemType = :itemType",
         "#id = :id",
         "#name = if_not_exists(#name, :name)",
