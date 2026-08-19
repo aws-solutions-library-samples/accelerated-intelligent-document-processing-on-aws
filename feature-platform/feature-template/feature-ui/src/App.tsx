@@ -50,6 +50,16 @@ const App: React.FC<FeatureContext> = ({
     }
   }, [featureApiEndpoint, getAuthToken]);
 
+  // `subscriptionActive` gates the UI so we don't fire requests the host has
+  // already dimmed. That is ALL it is for.
+  //
+  // If you are building a PAID extension, do NOT treat this as your licence
+  // check. It is a host-computed boolean handed to a browser in the customer's
+  // own AWS account, and it reads `true` whenever subscription checks are
+  // disabled (`auto`), simulated, or unreachable (`advisory`). Enforce in your
+  // backend against your own seller-side check — see
+  // docs/feature-platform-developer-guide.md → "Entitlement enforcement is the
+  // extension's job".
   useEffect(() => {
     if (subscriptionActive) callApi();
   }, [callApi, subscriptionActive]);

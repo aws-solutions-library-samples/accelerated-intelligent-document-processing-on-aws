@@ -21,6 +21,7 @@ import { awsRegion } from '../../aws-exports';
 import FeatureLoader from './FeatureLoader';
 import FeatureCatalogBrowser from './FeatureCatalogBrowser';
 import { resolveFeatureDocsUrl } from './feature-docs-url';
+import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
 import {
   ActiveSubscriptionBanner,
   AwaitingAdminInstall,
@@ -30,6 +31,7 @@ import {
   LoadingBlock,
   NotAvailableInRegion,
   SubscriptionRequired,
+  UnverifiedSubscriptionBanner,
   UpToDateBanner,
   UpdateAvailableBanner,
 } from './FeatureStateMessages';
@@ -256,6 +258,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
     );
   }
 
+  const entitlementSource = entitlement?.source ?? 'none';
   const context: FeatureContext = {
     featureId,
     installedVersion: installed.installedVersion,
@@ -263,6 +266,13 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
     getAuthToken,
     mainStackName,
     subscriptionActive: state === 'ACTIVE',
+    entitlementSource,
+    // ACTIVE *and* actually checked against a Marketplace API. `auto` means
+    // checks are switched off; `advisory` means the check was unreachable and we
+    // allowed rather than locking out a possibly-paying customer. Neither is a
+    // verified subscription, and collapsing them into `subscriptionActive: true`
+    // is what makes that flag unusable as a licence gate.
+    entitlementVerified: isVerifiedEntitlement(state, entitlementSource),
   };
 
   const featureContent = (
@@ -303,8 +313,20 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
   // to "update" backwards.
   const hasUpdate = installed.updateAvailable && !!installed.latestVersion;
 
+  // Paid extension being served without a confirmed subscription. Only for
+  // marketplace features — an OSS extension has no subscription to verify, so
+  // warning about it would be noise.
+  const showUnverifiedWarning = !isOss && isUnverifiedGrant(state, entitlementSource);
+
   return (
     <SpaceBetween size="l">
+      {showUnverifiedWarning && (
+        <UnverifiedSubscriptionBanner
+          featureDisplayName={featureDisplayName}
+          reason={unverifiedReason(entitlementSource)}
+          marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
+        />
+      )}
       {/* In auto-subscribe mode there is no Marketplace contract to cancel,
           so hide the subscription banner (and its admin-only Cancel button). */}
       {entitlement && entitlement.source !== 'auto' && (

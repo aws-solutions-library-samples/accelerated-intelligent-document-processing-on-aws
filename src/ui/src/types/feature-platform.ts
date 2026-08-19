@@ -137,10 +137,39 @@ export interface FeatureContext {
   getAuthToken: () => Promise<string>;
   /** Host stack name (same as main IDP stack name). */
   mainStackName: string;
-  /** True when the subscription is ACTIVE; false when EXPIRED. The host wraps
-   *  the feature in a disabled overlay when false, but passes the flag through
-   *  so features can render sensible read-only fallbacks. */
+  /**
+   * True when the host's entitlement state is ACTIVE; false when EXPIRED. The
+   * host wraps the feature in a disabled overlay when false, but passes the flag
+   * through so features can render sensible read-only fallbacks.
+   *
+   * **This is a UX affordance, NOT a licence gate.** It is a boolean computed by
+   * the host and handed to code running in the end user's browser, in the
+   * customer's own AWS account. It is `true` whenever the host is in `auto`
+   * mode, whenever a simulator is configured, and whenever the live check was
+   * unreachable (`advisory`) — all of which an account admin controls. A paid
+   * extension that treats this as its licence check has no licence check.
+   * See `entitlementVerified` / `entitlementSource`, and
+   * docs/feature-platform-developer-guide.md → "Entitlement enforcement is the
+   * extension's job".
+   */
   subscriptionActive: boolean;
+  /**
+   * How the host arrived at that state, passed through verbatim so an extension
+   * can tell a *verified* subscription from an assumed one. `auto` and
+   * `advisory` mean nothing was verified.
+   */
+  entitlementSource: FeatureEntitlement['source'];
+  /**
+   * True only when the host actually confirmed an entitlement against a
+   * Marketplace API — i.e. ACTIVE from a real check, not `auto`/`advisory`.
+   *
+   * Still not a licence gate (it is host-computed and browser-delivered), but
+   * unlike `subscriptionActive` it does not silently read `true` when checks are
+   * disabled. Use it to decide whether to *nag*, never to decide whether to
+   * *serve*: enforcement belongs in your own backend, against your own
+   * seller-side check.
+   */
+  entitlementVerified: boolean;
 }
 
 declare global {

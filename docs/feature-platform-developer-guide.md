@@ -145,6 +145,63 @@ idp-feature-cli validate ./my-feature
 idp-feature-cli show-schema          # full feature.yaml schema reference
 ```
 
+### Entitlement enforcement is the extension's job
+
+If you are shipping a **paid** extension, read this before you rely on anything
+the host tells you about subscriptions.
+
+The host passes your component a `subscriptionActive` boolean, and the reference
+samples use it (`disabled={!subscriptionActive}`). That is a **UX affordance, not
+a licence gate**, and it is important not to confuse the two:
+
+- It is computed by the host and delivered to **code running in the end user's
+  browser**, inside the **customer's own AWS account**.
+- It reads `true` whenever `FeaturePlatformSubscriptionMode=auto` (checks off),
+  whenever a marketplace simulator is configured, and whenever the live check was
+  unreachable and the host allowed rather than locking out a possibly-paying
+  customer (`advisory`). All three are under the account admin's control.
+- Even with an honest host, a browser boolean is bypassable with devtools, and
+  calling your feature's API directly skips it entirely.
+
+Two extra fields let you tell the cases apart:
+
+| Field | Meaning |
+|---|---|
+| `entitlementSource` | `marketplace-live` / `marketplace` / `simulator` / `auto` / `advisory` / `oss` / `none` |
+| `entitlementVerified` | `true` only when the host confirmed ACTIVE against a Marketplace API — never `true` for `auto` or `advisory` |
+
+Use `entitlementVerified` to decide whether to **warn**; never to decide whether
+to **serve**.
+
+> **The structural fact.** Software that executes in the customer's own AWS
+> account cannot enforce its own licence. The customer owns the Lambda, its
+> environment variables, and its code. No host-side design changes this.
+> Enforcement requires the **seller** to hold something the customer needs at
+> runtime.
+
+What actually works, in descending order of strength:
+
+1. **Seller-hosted activation.** At install, call a seller-owned endpoint with the
+   buyer's AWS account id; validate entitlement **in the seller account** (where
+   `GetEntitlements` / `ResolveCustomer` genuinely work, and `SearchAgreements` as
+   `Proposer` does too) and return a short-lived token bound to that account.
+   This only bites if the token gates something of real value — a prompt/strategy
+   config, a model-routing service, a hosted planner. If it gates nothing
+   valuable it is deterrence, not enforcement. Note a paid SaaS listing needs
+   seller-side `BatchMeterUsage` for billing anyway, so this channel has to exist
+   regardless — enforcement comes nearly free once metering does.
+2. **Seller-hosted compute for the valuable part.** Strongest and heaviest.
+3. **Detect, don't prevent.** Reconcile activations against subscriptions
+   seller-side and handle it commercially.
+
+The host does its part by making unverified access **visible** rather than
+silent: the feature page shows a "Subscription not verified" warning, and the
+`UnverifiedEntitlementGrant` CloudWatch metric (namespace `GENAIDP`, dimensions
+`FeatureId` + `EntitlementSource`) fires whenever a paid extension is served from
+`auto` or `advisory`. Note this is **customer-side observability** — it lands in
+the customer's CloudWatch, not the seller's — so it helps an admin notice a
+misconfigured or unsubscribed stack. It is not revenue protection.
+
 ### Optional: pipeline hooks
 
 A feature can run a Lambda at **extension points** in the document-processing

@@ -733,3 +733,164 @@ def test_auto_mode_unchanged_by_live_support(monkeypatch, mock_stack, load_lambd
         "productCode": None,
         "source": "auto",
     }
+
+
+# ---------------------------------------------------------------------------
+# Unverified-grant telemetry. `auto` and `advisory` both hand out access to a
+# PAID extension without confirming a subscription, and both are invisible in
+# the product — the page looks exactly like a real subscription. The metric is
+# the operator-side signal that it is happening.
+#
+# NB this is CUSTOMER-side observability (it lands in the customer's own
+# CloudWatch), not seller-side revenue protection. It exists so an admin can
+# see that their stack isn't verifying subscriptions — typically a missing
+# aws-marketplace:SearchAgreements permission.
+# ---------------------------------------------------------------------------
+
+
+def _capture_metrics(monkeypatch, mod) -> list:
+    emitted: list = []
+    monkeypatch.setattr(
+        mod,
+        "_emit_unverified_grant_metric",
+        lambda feature_id, source: emitted.append((feature_id, source)),
+    )
+    return emitted
+
+
+def test_auto_mode_emits_metric_for_paid_feature(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+        configuration_bucket=bucket,
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["source"] == "auto"
+    assert result["state"] == "ACTIVE"
+    assert emitted == [("idp-auto-optimizer", "auto")]
+
+
+def test_auto_mode_does_not_emit_for_oss_feature(monkeypatch, mock_stack, load_lambda):
+    """OSS extensions have no subscription to verify — warning would be noise."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+        configuration_bucket=bucket,
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["source"] == "auto"
+    assert emitted == []
+
+
+def test_advisory_emits_metric(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, error="AccessDeniedException")
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["source"] == "advisory"
+    assert emitted == [("idp-auto-optimizer", "advisory")]
+
+
+def test_verified_active_emits_no_metric(monkeypatch, mock_stack, load_lambda):
+    """A genuinely confirmed subscription is not an unverified grant."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [{"agreementId": "agmt-1", "status": "ACTIVE"}])
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "marketplace-live"
+    assert emitted == []
+
+
+def test_metric_payload_is_valid_emf(monkeypatch, mock_stack, load_lambda, caplog):
+    """EMF needs `_aws.Timestamp` + CloudWatchMetrics, and the dimension values
+    must be present as top-level members. A record missing any of these is
+    ingested as a plain log line and silently produces NO metric — the worst
+    outcome for a signal whose whole purpose is to be noticed."""
+    import logging as _logging
+
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+    with caplog.at_level(_logging.INFO):
+        mod._emit_unverified_grant_metric("idp-auto-optimizer", "advisory")
+
+    emf_records = []
+    for rec in caplog.messages:
+        try:
+            parsed = json.loads(rec)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and "_aws" in parsed:
+            emf_records.append(parsed)
+
+    assert len(emf_records) == 1, "expected exactly one EMF record"
+    payload = emf_records[0]
+    aws_meta = payload["_aws"]
+    assert isinstance(aws_meta["Timestamp"], int) and aws_meta["Timestamp"] > 0
+    (metric_directive,) = aws_meta["CloudWatchMetrics"]
+    assert metric_directive["Namespace"] == "GENAIDP"
+    assert metric_directive["Metrics"] == [
+        {"Name": "UnverifiedEntitlementGrant", "Unit": "Count"}
+    ]
+    # Every declared dimension must exist as a top-level member.
+    for dimension_set in metric_directive["Dimensions"]:
+        for dim in dimension_set:
+            assert dim in payload, f"dimension {dim} missing from EMF payload"
+    assert payload["UnverifiedEntitlementGrant"] == 1
+    assert payload["EntitlementSource"] == "advisory"
+
+
+def test_metric_emission_never_raises(monkeypatch, mock_stack, load_lambda):
+    """Telemetry must not be able to break the query it instruments."""
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("logging backend exploded")
+
+    monkeypatch.setattr(mod.logger, "info", _boom)
+    # Must swallow, not propagate.
+    mod._emit_unverified_grant_metric("f", "auto")
