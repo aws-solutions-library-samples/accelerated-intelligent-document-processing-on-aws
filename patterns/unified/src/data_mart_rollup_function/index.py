@@ -271,22 +271,32 @@ def _run_daily() -> Dict[str, Any]:
 
 
 def _require_all_24_hours_present(target_date: str) -> None:
-    """Fail loudly if metering_hourly is missing any hour for the day.
+    """Fail loudly if metering_hourly is missing any hour that raw metering
+    has data for.
 
-    Rationale: if the 23:xx hourly rollup failed (transient Athena outage,
-    say), the day is incomplete. Writing metering_daily now would lock in
-    a permanently-wrong number via the idempotency check. Better to raise
-    so async retry replays after the hourly catches up.
+    We compare metering_hourly against RAW metering rather than "all 24
+    hours" — a day may legitimately have fewer than 24 hours of data (deploy
+    day, offline period, low-volume weekend) and demanding 24 would block
+    the daily rollup forever for those days. The guard's real purpose is to
+    catch the "transient outage caused an hourly rollup to fail while raw
+    metering does have data for that hour" case — an actual data hole that
+    the async retry can fix once the hourly rollup catches up. If both sets
+    match, the day is faithfully rolled up; write metering_daily.
     """
     # nosec B608 — target_date is from datetime.strftime, not user input
-    sql = (
+    raw_sql = (
+        f'SELECT DISTINCT hour FROM "{DATABASE}"."metering" '  # nosec B608
+        f"WHERE date = '{target_date}'"  # nosec B608
+    )
+    hourly_sql = (
         f'SELECT DISTINCT hour FROM "{DATABASE}"."metering_hourly" '  # nosec B608
         f"WHERE date = '{target_date}'"  # nosec B608
     )
-    rows = _run_athena_query_with_results(sql)
-    present = {r[0] for r in rows if r and r[0]}
-    expected = {f"{h:02d}" for h in range(24)}
-    missing = expected - present
+    raw_rows = _run_athena_query_with_results(raw_sql)
+    hourly_rows = _run_athena_query_with_results(hourly_sql)
+    raw_hours = {r[0] for r in raw_rows if r and r[0]}
+    hourly_hours = {r[0] for r in hourly_rows if r and r[0]}
+    missing = raw_hours - hourly_hours
     if missing:
         raise RuntimeError(
             f"metering_hourly for date={target_date} is missing hours "

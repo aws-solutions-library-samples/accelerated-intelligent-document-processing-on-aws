@@ -47,6 +47,19 @@ from typing import Iterator, Optional
 
 import boto3
 
+# pyarrow is bundled via IDPCommonReportingLayer. Import at module load time
+# rather than inside _infer_hour so a missing layer fails the handler on
+# initialization (fast, loud, actionable) instead of silently parking every
+# file at hour=00. If this import fails, the layer is misconfigured — DO
+# NOT swallow it as a per-file read failure.
+try:
+    import pyarrow.parquet as _pq
+except ImportError as _pyarrow_err:  # pragma: no cover
+    _pq = None  # type: ignore[assignment]
+    _PYARROW_IMPORT_ERROR: Optional[BaseException] = _pyarrow_err
+else:
+    _PYARROW_IMPORT_ERROR = None
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -85,6 +98,22 @@ def handler(event, context):
             context,
             "FAILED",
             reason="ReportingBucket property is required",
+        )
+
+    if _PYARROW_IMPORT_ERROR is not None:
+        # Fail loudly — this is a template misconfiguration (wrong Lambda
+        # layer), not a data problem. Continuing would park every file at
+        # hour=00 and lose hour precision on all historical data.
+        return _send(
+            event,
+            context,
+            "FAILED",
+            reason=(
+                "pyarrow is not available in the Lambda's runtime — the "
+                "MeteringHourMigrationFunction must be wired to "
+                "IDPCommonReportingLayer (which bundles pyarrow), not "
+                "IDPCommonBaseLayer. Fix template.yaml and retry update-stack."
+            ),
         )
 
     try:
@@ -213,15 +242,17 @@ def _infer_hour(bucket: str, key: str) -> str:
 
     Falls back to ``initial_event_time`` if ``timestamp`` isn't present,
     and then to ``"00"`` if neither is readable — better to park an
-    uncertain file in ``hour=00`` (still visible to the new projection)
-    than fail the whole migration on one bad file.
+    uncertain single file in ``hour=00`` (still visible to the new
+    projection) than fail the whole migration on one corrupt file. The
+    handler already fails loudly on the *systemic* case (pyarrow entirely
+    absent — that's a layer misconfiguration), so a fallback here can
+    only fire on real per-file data issues.
     """
+    assert _pq is not None, "pyarrow import guard should have caught this"
     try:
-        import pyarrow.parquet as pq  # local import — pyarrow is heavy
-
         obj = s3_client.get_object(Bucket=bucket, Key=key)
         body = obj["Body"].read()
-        table = pq.read_table(io.BytesIO(body))
+        table = _pq.read_table(io.BytesIO(body))
         for candidate in ("timestamp", "initial_event_time"):
             if candidate in table.column_names and table.num_rows > 0:
                 ts = table.column(candidate)[0].as_py()

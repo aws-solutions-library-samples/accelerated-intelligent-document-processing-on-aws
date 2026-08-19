@@ -4861,9 +4861,11 @@ Resources:
       MemorySize: 3008
       Timeout: 900
       # Layer supplies pyarrow (needed to read the hour from each Parquet's
-      # timestamp column). Reuses the shared idp_common base layer.
+      # timestamp column). MUST be the reporting layer — the base layer does
+      # NOT include pyarrow, and picking the wrong one causes every file to
+      # fall through to the hour=00 park path, silently losing hour precision.
       Layers:
-        - !Ref IDPCommonBaseLayer
+        - !Ref IDPCommonReportingLayer
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -4920,7 +4922,13 @@ Resources:
       # re-processing. Ordinary version bumps of the accelerator don't
       # need to touch this — the migration is idempotent (already-migrated
       # keys carry `/hour=` and are skipped by the lister).
-      MigrationVersion: "1.0-hour-partition"
+      #
+      # 1.1: bumped alongside the layer fix (Base → Reporting) — the 1.0
+      # deploy silently parked every file at hour=00 because pyarrow was
+      # absent from the base layer. The handler now fails loudly if
+      # pyarrow is missing; this version bump forces existing stacks to
+      # re-attempt the migration against files that may need re-hour-ing.
+      MigrationVersion: "1.1-hour-partition-inference-fix"
 
   ##########################################################################
   # Data Mart Rollup Lambda — hourly + daily aggregations for the IDP Monitor

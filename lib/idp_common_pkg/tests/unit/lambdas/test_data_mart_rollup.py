@@ -199,31 +199,48 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is True
         mock_athena.assert_not_called()
 
-    def test_daily_raises_when_hourly_incomplete(self, rollup):
-        """Missing any of the 24 hourly partitions must abort the daily
-        rollup — otherwise the partition writes with under-counted totals
-        and locks in permanently via the idempotency check."""
+    def test_daily_raises_when_hourly_missing_a_populated_hour(self, rollup):
+        """Missing any hour that RAW metering has data for must abort the
+        daily rollup — that's the "hourly rollup transiently failed" case
+        the guard exists to catch. Async retry will replay after the
+        hourly catches up."""
 
-        # Simulate: hours 00-22 present, hour 23 missing (the exact
-        # boundary case where the 23:xx hourly rollup failed retries).
-        present_hours = [[f"{h:02d}"] for h in range(23)]
+        # Simulate: raw has hours 00-23 with data; metering_hourly missing hour 23
+        # (the exact boundary case where the 23:xx hourly rollup failed retries).
+        raw_hours = [[f"{h:02d}"] for h in range(24)]
+        hourly_hours = [[f"{h:02d}"] for h in range(23)]
+
+        def fake_query(sql):
+            return (
+                raw_hours
+                if '"metering"' in sql and "hourly" not in sql
+                else hourly_hours
+            )
+
         with (
             patch.object(rollup, "_partition_already_written", return_value=False),
             patch.object(
-                rollup, "_run_athena_query_with_results", return_value=present_hours
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
             ),
         ):
             with pytest.raises(RuntimeError, match="missing hours"):
                 rollup._run_daily()
 
-    def test_daily_hourly_check_passes_when_all_24_present(self, rollup):
-        """Sanity — 24 hours present, the check passes and INSERT runs."""
-        present_hours = [[f"{h:02d}"] for h in range(24)]
+    def test_daily_check_passes_when_hourly_matches_raw(self, rollup):
+        """Sanity — every hour that has raw data is rolled up. Guard passes
+        even when the day is only partially populated (e.g. deploy day)."""
+        # Deploy-day scenario: raw metering has hours 12-19 only.
+        # metering_hourly has the same hours 12-19. Should PASS the guard.
+        partial_hours = [[f"{h:02d}"] for h in range(12, 20)]
         captured_sql = []
+
+        def fake_query(_sql):
+            return partial_hours  # both queries return the same partial set
+
         with (
             patch.object(rollup, "_partition_already_written", return_value=False),
             patch.object(
-                rollup, "_run_athena_query_with_results", return_value=present_hours
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
             ),
             patch.object(
                 rollup,
@@ -234,6 +251,31 @@ class TestMeteringDailyRollup:
             result = rollup._run_daily()
         assert result["skipped"] is False
         # The INSERT must actually run when the check passes.
+        assert any("INSERT INTO" in s for s in captured_sql)
+
+    def test_daily_check_passes_when_day_has_no_data_at_all(self, rollup):
+        """A day with zero raw metering data (idle stack, holiday) should
+        NOT block the daily rollup — the INSERT writes zero rows, but the
+        partition is 'sealed' with a legitimate empty result."""
+        empty = []
+
+        def fake_query(_sql):
+            return empty
+
+        captured_sql = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
+            ),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured_sql.append(sql) or "qid-empty",
+            ),
+        ):
+            result = rollup._run_daily()
+        assert result["skipped"] is False
         assert any("INSERT INTO" in s for s in captured_sql)
 
 
