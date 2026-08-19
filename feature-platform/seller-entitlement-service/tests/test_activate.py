@@ -228,8 +228,9 @@ def test_missing_signing_key_is_500_not_an_unsigned_token(mod, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Seller-side query shape. NOTE: unverified against a live seller account — the
-# filter-name fallback exists precisely because we could not test it.
+# Seller-side query shape. VERIFIED against a live seller account with a positive
+# control (subscribed buyer -> ACTIVE agreement) and a negative one (unsubscribed
+# buyer -> empty list, not an error).
 # ---------------------------------------------------------------------------
 
 
@@ -254,45 +255,14 @@ def test_search_agreements_uses_proposer_side_filters(mod, monkeypatch):
     assert names["AgreementType"] == ["PurchaseAgreement"]
     assert names["AcceptorAccountId"] == ["111111111111"]
     assert names["Status"] == ["ACTIVE"]
-    # First attempt uses the name proven to work on the buyer side.
+    # `ResourceIdentifier` is the only accepted name: the docs' Proposer-side
+    # prose says `ResourceId`, which the live service rejects with
+    # `ValidationException: Provided filter name is invalid`.
     assert names.get("ResourceIdentifier") == ["prod-paid"]
+    assert "ResourceId" not in names
 
 
-def test_falls_back_to_alternate_resource_filter_name(mod, monkeypatch):
-    """The docs' Proposer list says `ResourceId`; the working buyer-side call uses
-    `ResourceIdentifier`. FilterName is free-form and validated server-side only,
-    so we try both rather than guessing — and this test pins the fallback."""
-    from botocore.exceptions import ClientError
-
-    attempted = []
-
-    class _PickyAgreement:
-        def search_agreements(self, **kwargs):
-            names = [f["name"] for f in kwargs["filters"]]
-            attempted.append(names)
-            if "ResourceIdentifier" in names:
-                raise ClientError(
-                    {
-                        "Error": {
-                            "Code": "ValidationException",
-                            "Message": "Provided combination of filters is not supported",
-                        }
-                    },
-                    "SearchAgreements",
-                )
-            return {"agreementViewSummaries": [{"agreementId": "agmt-fallback"}]}
-
-    monkeypatch.setattr(mod, "_agreement", lambda: _PickyAgreement())
-    entitled, detail = mod._has_active_agreement("prod-paid", "111111111111")
-
-    assert entitled is True
-    assert "agmt-fallback" in detail
-    assert len(attempted) == 2
-    assert "ResourceIdentifier" in attempted[0]
-    assert "ResourceId" in attempted[1]
-
-
-def test_both_filter_names_failing_reports_not_entitled(mod, monkeypatch):
+def test_lookup_error_reports_not_entitled(mod, monkeypatch):
     from botocore.exceptions import ClientError
 
     class _BrokenAgreement:

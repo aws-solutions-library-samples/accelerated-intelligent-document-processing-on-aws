@@ -34,7 +34,9 @@ that were confirmed empirically before this was written:
 2. **Entitlements only exist for SaaS *Contract* products.** In the contract
    model AWS communicates entitlements through the Entitlement Service; a
    usage-based SaaS *Subscription* meters instead and has no entitlement records
-   at all. For such a listing GetEntitlements returns an empty list forever.
+   at all. For such a listing GetEntitlements returns an empty list forever —
+   VERIFIED, including from the seller account with the correct product code, so
+   this is not a permissions artefact.
 
 Critically, it does not FAIL in either case — called from a buyer account with
 someone else's product code it returns HTTP 200 with `{"Entitlements": []}`. A

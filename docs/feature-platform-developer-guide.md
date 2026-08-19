@@ -192,8 +192,10 @@ What actually works, in descending order of strength:
    your own seller account, register your `productId`, and your extension
    exchanges "I am AWS account X" for a short-lived, account-bound signed token.
    Entitlement is validated **in the seller account**, which is the only place
-   `SearchAgreements` as `Proposer` / `GetEntitlements` / `ResolveCustomer`
-   actually answer. Authentication uses API Gateway `AWS_IAM`, so the seller
+   `SearchAgreements` as `Proposer` answers. (`GetEntitlements` does not answer
+   even there for a usage-based listing — verified — so it is only useful for SaaS
+   *Contract* products.) The query shape is verified against a live seller account
+   with positive and negative controls. Authentication uses API Gateway `AWS_IAM`, so the seller
    learns the caller's *verified* account without knowing buyer accounts in
    advance and buyers need no seller-issued credentials.
 

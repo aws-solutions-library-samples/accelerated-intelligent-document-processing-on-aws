@@ -152,7 +152,10 @@ in the most misleading way possible. Called from a buyer account it returns HTTP
 1. It's a **seller-side** API. AWS's SaaS guidance is that these calls "must be
    signed by credentials from your AWS Marketplace Seller account".
 2. Entitlement records only exist for SaaS **Contract** products. A usage-based
-   SaaS *Subscription* meters instead and has no entitlements at all.
+   SaaS *Subscription* meters instead and has no entitlements at all. Verified
+   against the live listing **from the seller account** with the correct product
+   code — it still returns an empty list, so this is a property of the pricing
+   model, not a permissions problem.
 
 A fail-closed gate on that would deny every legitimate customer while logging
 nothing — and would look perfectly healthy in CI against the simulator. AWS

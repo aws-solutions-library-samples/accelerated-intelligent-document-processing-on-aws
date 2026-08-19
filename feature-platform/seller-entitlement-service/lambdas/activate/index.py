@@ -128,24 +128,25 @@ def _caller_account_id(event: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-# The AWS docs' prose for SearchAgreements uses `ResourceId` for the
-# Proposer-side filter list while the working buyer-side call uses
-# `ResourceIdentifier`; FilterName is a free-form string, so neither is validated
-# client-side. We try the name proven to work first and fall back, logging which
-# one the service accepted. NOTE: the Proposer-side query below has NOT been
-# exercised against a live seller account — the first real run is the test. If
-# both names fail, the ValidationException is logged verbatim so the cause is
-# obvious rather than mysterious.
-_RESOURCE_FILTER_NAMES = ("ResourceIdentifier", "ResourceId")
-
-
 def _has_active_agreement(product_id: str, buyer_account_id: str) -> Tuple[bool, str]:
     """Seller-side check: does `buyer_account_id` hold an ACTIVE agreement?
 
     Returns (entitled, detail). `detail` is for logging/response diagnostics.
 
-    Uses the documented Proposer filter combination
-    `AgreementType + AcceptorAccountId + ResourceId + Status`.
+    Filter combination — **verified against a live seller account** with both a
+    positive control (a genuinely subscribed buyer returns its ACTIVE agreement)
+    and a negative one (an unsubscribed buyer returns an empty list, not an
+    error):
+
+        PartyType=Proposer + AgreementType=PurchaseAgreement
+        + AcceptorAccountId=<buyer> + ResourceIdentifier=<productId>
+        + Status=ACTIVE
+
+    The filter name is ``ResourceIdentifier``. The AWS docs' prose for the
+    Proposer-side combination list says ``ResourceId``, which the service
+    **rejects** with ``ValidationException: Provided filter name is invalid``.
+    ``FilterName`` is a free-form string with no client-side validation, so this
+    is only discoverable by calling it — hence the note.
 
     An API error is reported as NOT entitled — the opposite of the host's
     advisory-allow. That asymmetry is deliberate: this endpoint runs in the
@@ -154,43 +155,36 @@ def _has_active_agreement(product_id: str, buyer_account_id: str) -> Tuple[bool,
     buyer-side grace period on the last-known-good token (see README) is what
     protects a paying customer from our outage.
     """
-    last_error = ""
-    for filter_name in _RESOURCE_FILTER_NAMES:
-        filters: List[Dict[str, Any]] = [
-            {"name": "PartyType", "values": ["Proposer"]},
-            {"name": "AgreementType", "values": ["PurchaseAgreement"]},
-            {"name": "AcceptorAccountId", "values": [buyer_account_id]},
-            {"name": filter_name, "values": [product_id]},
-            {"name": "Status", "values": ["ACTIVE"]},
-        ]
-        try:
-            resp = _agreement().search_agreements(
-                catalog="AWSMarketplace", filters=filters
-            )
-        except (ClientError, BotoCoreError) as exc:
-            last_error = str(exc)
-            logger.warning(
-                "SearchAgreements(%s) failed for buyer=%s product=%s: %s",
-                filter_name,
-                buyer_account_id,
-                product_id,
-                exc,
-            )
-            continue
-
-        summaries = resp.get("agreementViewSummaries") or []
-        logger.info(
-            "SearchAgreements(%s) ok: buyer=%s product=%s matched=%d",
-            filter_name,
+    filters: List[Dict[str, Any]] = [
+        {"name": "PartyType", "values": ["Proposer"]},
+        {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+        {"name": "AcceptorAccountId", "values": [buyer_account_id]},
+        {"name": "ResourceIdentifier", "values": [product_id]},
+        {"name": "Status", "values": ["ACTIVE"]},
+    ]
+    try:
+        resp = _agreement().search_agreements(catalog="AWSMarketplace", filters=filters)
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning(
+            "SearchAgreements failed for buyer=%s product=%s: %s",
             buyer_account_id,
             product_id,
-            len(summaries),
+            exc,
         )
-        if summaries:
-            return True, f"active agreement {summaries[0].get('agreementId', '')}"
-        return False, "no active agreement for this account"
+        return False, f"agreement lookup failed: {exc}"
 
-    return False, f"agreement lookup failed: {last_error}"
+    summaries = resp.get("agreementViewSummaries") or []
+    logger.info(
+        "SearchAgreements ok: buyer=%s product=%s matched=%d",
+        buyer_account_id,
+        product_id,
+        len(summaries),
+    )
+    if summaries:
+        # A live open-ended agreement has no endTime; treat presence + ACTIVE as
+        # entitled rather than requiring an expiry.
+        return True, f"active agreement {summaries[0].get('agreementId', '')}"
+    return False, "no active agreement for this account"
 
 
 def _mint_token(

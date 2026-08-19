@@ -181,14 +181,25 @@ step, and it means enforcement and billing share one piece of infrastructure
 rather than two. `ResolveCustomer` is already in the Lambda's IAM policy for the
 SaaS registration flow.
 
-## Status
+## Verification status
 
-⚠️ **The seller-side `SearchAgreements` query in this service has not been
-exercised against a live seller account.** The buyer-side equivalent was verified
-(see `scripts/marketplace/verify_entitlement.sh`), and the Proposer-side filter
-combination used here — `AgreementType + AcceptorAccountId + ResourceId +
-Status` — is the documented one. But `FilterName` is a free-form string validated
-only server-side, and the AWS docs use `ResourceId` in the Proposer list while the
-working buyer-side call uses `ResourceIdentifier`. The Lambda therefore **tries
-both and logs which one the service accepted**. Check the logs on your first
-activation; if both fail, the `ValidationException` is logged verbatim.
+The seller-side entitlement query is **verified against a live seller account**,
+with both controls:
+
+| Case | Result |
+|---|---|
+| Subscribed buyer account | returns its `ACTIVE` `PurchaseAgreement` (open-ended, `endTime: null`) |
+| Unsubscribed buyer account | returns an empty list — **not** an error |
+
+Two things that verification settled, and that you should not "fix" back:
+
+- The filter name is **`ResourceIdentifier`**. The AWS docs' prose for the
+  Proposer-side combination list says `ResourceId`, and the live service rejects
+  that with `ValidationException: Provided filter name is invalid`. `FilterName`
+  is a free-form string with no client-side validation, so only a real call
+  reveals this.
+- **`GetEntitlements` returns `{"Entitlements": []}` even from the seller account
+  with the correct product code.** Confirmed, not inferred. A usage-based SaaS
+  listing has no entitlement records at all, so that API can never answer "is this
+  buyer subscribed?" — from anywhere, for any caller. It remains in the IAM policy
+  only for SaaS *Contract* listings.
