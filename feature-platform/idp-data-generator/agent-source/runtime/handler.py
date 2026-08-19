@@ -23,6 +23,8 @@ import os
 import shutil
 import tempfile
 import threading
+import time
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
@@ -159,23 +161,34 @@ def invoke(payload, context=None):
     timeout_s = _GENERATION_TIMEOUT_S
 
     def _worker():
-        job_thread = threading.Thread(target=_run_job, args=(payload,), daemon=True)
-        job_thread.start()
-        job_thread.join(timeout_s)
-        if job_thread.is_alive():
-            logger.error(
-                "Synthesis job %s exceeded %ds; marking FAILED and abandoning "
-                "the wedged worker thread.",
-                job_id,
-                timeout_s,
-            )
-            _post_status(
-                payload,
-                job_id,
-                "FAILED",
-                f"Generation timed out after {timeout_s}s",
-            )
-        app.complete_async_task(task_id)
+        # Pulses while the job runs so a stage that completes no documents still
+        # proves the runtime is alive. This is the only signal that survives the
+        # container itself dying: the watchdog below runs *inside* the runtime, so a
+        # container killed mid-stage leaves the job IN_PROGRESS with nothing left to
+        # fail it — the UI then shows "busy" forever. Anything reconciling from
+        # outside keys on heartbeatAt going stale.
+        stop_heartbeat = threading.Event()
+        _start_heartbeat(payload, job_id, stop_heartbeat)
+        try:
+            job_thread = threading.Thread(target=_run_job, args=(payload,), daemon=True)
+            job_thread.start()
+            job_thread.join(timeout_s)
+            if job_thread.is_alive():
+                logger.error(
+                    "Synthesis job %s exceeded %ds; marking FAILED and abandoning "
+                    "the wedged worker thread.",
+                    job_id,
+                    timeout_s,
+                )
+                _post_status(
+                    payload,
+                    job_id,
+                    "FAILED",
+                    f"Generation timed out after {timeout_s}s",
+                )
+        finally:
+            stop_heartbeat.set()
+            app.complete_async_task(task_id)
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -243,6 +256,56 @@ def _decimalize(value):
     return value
 
 
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _start_heartbeat(payload, job_id, stop_event, interval_s=None):
+    """Pulse the job record while generation runs.
+
+    Progress is reported per completed document, so a long stage that finishes none —
+    augmentation on a batch, most obviously — looks identical to a dead runtime. The
+    in-runtime watchdog cannot cover that case either: it dies with the container. A
+    heartbeat is what lets something outside decide the run is gone.
+    """
+    if interval_s is None:
+        interval_s = int(os.environ.get("HEARTBEAT_INTERVAL_S", "60"))
+
+    started = time.monotonic()
+
+    def _pulse():
+        table_name = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
+        if not (table_name and job_id):
+            return
+        table = boto3.resource("dynamodb").Table(table_name)
+        while not stop_event.wait(interval_s):
+            elapsed_min = int((time.monotonic() - started) / 60)
+            try:
+                # Only ever touches the heartbeat fields, and only while still running,
+                # so it can never resurrect or overwrite a terminal status.
+                #
+                # elapsedMinutes rides along because a percentage alone is ambiguous:
+                # "5% Starting generation" looked identical at one minute and at
+                # sixty-eight, which is what made a dead runtime hard to spot.
+                table.update_item(
+                    Key={"jobId": job_id},
+                    UpdateExpression=("SET heartbeatAt = :h, elapsedMinutes = :m"),
+                    ConditionExpression="#s = :running",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":h": _now_iso(),
+                        ":m": elapsed_min,
+                        ":running": "IN_PROGRESS",
+                    },
+                )
+            except Exception:  # noqa: BLE001 — a heartbeat must never fail a run
+                logger.debug("heartbeat write failed for %s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_pulse, name="heartbeat", daemon=True)
+    thread.start()
+    return thread
+
+
 def _post_status(payload, job_id, status, message, usage=None, run_config=None):
     # The processor invokes this runtime asynchronously and returns, so the
     # runtime writes terminal status to BootstrapTrackingTable itself. Best-effort.
@@ -250,7 +313,11 @@ def _post_status(payload, job_id, status, message, usage=None, run_config=None):
     table_name = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
     if not (table_name and job_id):
         return
-    attrs = {"status": status}
+    # Every write carries a heartbeat. Without one, "job has not changed in an hour"
+    # cannot distinguish a healthy-but-slow stage from a runtime that died: progress
+    # only advances as documents COMPLETE, and augmentation can take an hour with no
+    # document finishing. Reconciliation outside the runtime keys on this.
+    attrs = {"status": status, "heartbeatAt": _now_iso()}
     if message:
         attrs["statusMessage"] = message
     if status == "FAILED" and message:

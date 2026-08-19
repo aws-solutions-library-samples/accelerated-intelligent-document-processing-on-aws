@@ -51,6 +51,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 import boto3
@@ -303,6 +304,68 @@ def _parse_suggestions(text: str) -> list:
     return [line for line in lines if line][:3]
 
 
+# How long a running job may go without a heartbeat before it is presumed dead. The
+# runtime pulses once a minute, so this is generous — it only has to exceed a pause in
+# heartbeat writes, not a pause in progress (a long augmentation stage completes no
+# documents for an hour but still pulses).
+STALE_HEARTBEAT_MINUTES = int(os.environ.get("STALE_HEARTBEAT_MINUTES", "15"))
+
+
+def _reap_dead_jobs(table, jobs):
+    """Fail jobs whose runtime stopped heartbeating.
+
+    The runtime's own watchdog cannot cover this: it runs *inside* the container, so a
+    container killed mid-stage (augmentation is the memory-hungry one) leaves the job
+    IN_PROGRESS with nothing alive to fail it. Observed on a dev stack — the UI showed
+    "generating" for 68 minutes after the runtime had gone silent, and would have shown
+    it indefinitely, across reloads, because the state is a database record rather than
+    anything client-side.
+
+    Jobs with no heartbeat at all are left alone: they predate heartbeating, and
+    presuming those dead would fail live work.
+    """
+    now = datetime.now(timezone.utc)
+    for job in jobs:
+        if job.get("status") != "IN_PROGRESS":
+            continue
+        beat = job.get("heartbeatAt")
+        if not beat:
+            continue
+        try:
+            last = datetime.fromisoformat(str(beat).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        idle_min = (now - last).total_seconds() / 60
+        if idle_min < STALE_HEARTBEAT_MINUTES:
+            continue
+        message = (
+            f"Generation runtime stopped responding {int(idle_min)} minutes ago "
+            "(no heartbeat); the container was most likely terminated mid-run"
+        )
+        job["status"] = "FAILED"
+        job["statusMessage"] = message
+        job["errorMessage"] = message
+        try:
+            table.update_item(
+                Key={"jobId": job["jobId"]},
+                UpdateExpression=(
+                    "SET #s = :failed, statusMessage = :m, errorMessage = :m"
+                ),
+                # Only ever moves a still-running job, so a status the runtime wrote
+                # in the meantime wins.
+                ConditionExpression="#s = :running",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":running": "IN_PROGRESS",
+                    ":m": message,
+                },
+            )
+            logger.warning("Reaped dead job %s: %s", job["jobId"], message)
+        except Exception:  # noqa: BLE001 — reaping must not fail the list
+            logger.warning("Could not reap job %s", job.get("jobId"), exc_info=True)
+
+
 def _handle_list_active_jobs() -> Dict[str, Any]:
     if not _TRACKING_TABLE:
         return _resp(500, {"error": "tracking table not configured"})
@@ -316,6 +379,8 @@ def _handle_list_active_jobs() -> Dict[str, Any]:
         if not key:
             break
         kwargs["ExclusiveStartKey"] = key
+    # The UI polls this, so it is the natural place to notice a runtime that died.
+    _reap_dead_jobs(table, jobs)
     return _resp(200, {"jobs": jobs})
 
 

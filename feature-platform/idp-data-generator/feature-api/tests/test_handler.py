@@ -138,3 +138,95 @@ class TestRbac:
         )
         assert resp["statusCode"] == 202
         assert json.loads(resp["body"])["jobId"]
+
+
+def _make_tracking_table():
+    ddb = boto3.resource("dynamodb", region_name="us-west-2")
+    return ddb.create_table(
+        TableName=_TRACKING_TABLE,
+        BillingMode="PAY_PER_REQUEST",
+        AttributeDefinitions=[{"AttributeName": "jobId", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "jobId", "KeyType": "HASH"}],
+    )
+
+
+def _iso(minutes_ago):
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+
+
+class TestReapDeadJobs:
+    """A runtime that dies mid-run must not leave the UI generating forever.
+
+    The runtime's watchdog runs inside the container, so a container killed mid-stage
+    leaves the job IN_PROGRESS with nothing alive to fail it. Observed on a dev stack:
+    "generating" for 68 minutes after the runtime went silent, and it would have stayed
+    that way indefinitely because the state is a database record, not client state.
+    """
+
+    @mock_aws
+    def test_a_job_with_a_stale_heartbeat_is_failed(self, mod):
+        table = _make_tracking_table()
+        table.put_item(
+            Item={
+                "jobId": "j1",
+                "status": "IN_PROGRESS",
+                "heartbeatAt": _iso(mod.STALE_HEARTBEAT_MINUTES + 5),
+            }
+        )
+
+        resp = mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
+
+        assert resp["statusCode"] == 200
+        stored = table.get_item(Key={"jobId": "j1"})["Item"]
+        assert stored["status"] == "FAILED"
+        assert "stopped responding" in stored["errorMessage"]
+
+    @mock_aws
+    def test_a_recent_heartbeat_is_left_running(self, mod):
+        """A long stage that completes no documents still pulses; it is alive."""
+        table = _make_tracking_table()
+        table.put_item(
+            Item={"jobId": "j1", "status": "IN_PROGRESS", "heartbeatAt": _iso(2)}
+        )
+
+        mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
+
+        assert table.get_item(Key={"jobId": "j1"})["Item"]["status"] == "IN_PROGRESS"
+
+    @mock_aws
+    def test_a_job_with_no_heartbeat_is_left_alone(self, mod):
+        """Jobs predating heartbeating must not be presumed dead."""
+        table = _make_tracking_table()
+        table.put_item(Item={"jobId": "j1", "status": "IN_PROGRESS"})
+
+        mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
+
+        assert table.get_item(Key={"jobId": "j1"})["Item"]["status"] == "IN_PROGRESS"
+
+    @mock_aws
+    def test_a_completed_job_is_never_touched(self, mod):
+        table = _make_tracking_table()
+        table.put_item(
+            Item={
+                "jobId": "j1",
+                "status": "COMPLETED",
+                "heartbeatAt": _iso(600),
+            }
+        )
+
+        mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
+
+        assert table.get_item(Key={"jobId": "j1"})["Item"]["status"] == "COMPLETED"
+
+    @mock_aws
+    def test_an_unparseable_heartbeat_is_not_treated_as_dead(self, mod):
+        table = _make_tracking_table()
+        table.put_item(
+            Item={"jobId": "j1", "status": "IN_PROGRESS", "heartbeatAt": "not-a-date"}
+        )
+
+        mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
+
+        assert table.get_item(Key={"jobId": "j1"})["Item"]["status"] == "IN_PROGRESS"
