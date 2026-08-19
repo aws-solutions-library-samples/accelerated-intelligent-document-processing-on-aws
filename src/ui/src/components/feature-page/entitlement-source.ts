@@ -28,7 +28,7 @@ const CHECKED_SOURCES: ReadonlySet<Source> = new Set<Source>(['marketplace', 'ma
  *
  * This is NOT a licence gate — it is host-computed and delivered to a browser in
  * the customer's own AWS account, so an admin can influence it. Its value is
- * narrower and honest: unlike `subscriptionActive`, it does not silently read
+ * narrower and honest: unlike `uiAccessAllowed`, it does not silently read
  * `true` when checks are disabled or unreachable. Use it to decide whether to
  * *warn*, never whether to *serve*.
  */

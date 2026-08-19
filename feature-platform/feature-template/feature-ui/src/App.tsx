@@ -21,7 +21,7 @@ const App: React.FC<FeatureContext> = ({
   installedVersion,
   featureApiEndpoint,
   getAuthToken,
-  subscriptionActive,
+  uiAccessAllowed,
 }) => {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +50,7 @@ const App: React.FC<FeatureContext> = ({
     }
   }, [featureApiEndpoint, getAuthToken]);
 
-  // `subscriptionActive` gates the UI so we don't fire requests the host has
+  // `uiAccessAllowed` gates the UI so we don't fire requests the host has
   // already dimmed. That is ALL it is for.
   //
   // If you are building a PAID extension, do NOT treat this as your licence
@@ -61,8 +61,8 @@ const App: React.FC<FeatureContext> = ({
   // docs/feature-platform-developer-guide.md → "Entitlement enforcement is the
   // extension's job".
   useEffect(() => {
-    if (subscriptionActive) callApi();
-  }, [callApi, subscriptionActive]);
+    if (uiAccessAllowed) callApi();
+  }, [callApi, uiAccessAllowed]);
 
   return (
     <Container
@@ -83,7 +83,7 @@ const App: React.FC<FeatureContext> = ({
             <Box variant="p">{data.mainStackName}</Box>
           </Box>
         )}
-        <Button onClick={callApi} loading={loading} disabled={!subscriptionActive}>
+        <Button onClick={callApi} loading={loading} disabled={!uiAccessAllowed}>
           Refresh
         </Button>
       </SpaceBetween>

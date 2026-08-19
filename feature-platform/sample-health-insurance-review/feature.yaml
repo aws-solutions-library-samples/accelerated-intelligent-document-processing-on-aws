@@ -7,7 +7,7 @@
 # feature API backed by the feature's own DynamoDB table.
 featureId: sample-health-insurance-review
 displayName: "Sample: Health Insurance Review"
-version: 0.1.3
+version: 0.2.0
 description: |
   Illustrative lightweight health insurance claims review vertical built on the IDP 
   Accelerator rule validation pipeline. Ships a prior-authorization config preset,

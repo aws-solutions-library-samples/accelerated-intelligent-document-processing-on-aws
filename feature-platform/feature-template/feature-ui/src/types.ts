@@ -23,12 +23,12 @@ export interface FeatureContext {
    * account admin controls. Use it to disable buttons and render read-only
    * fallbacks; never to decide whether to serve paid functionality.
    */
-  subscriptionActive: boolean;
+  uiAccessAllowed: boolean;
   /** How the host arrived at that state. `auto` / `advisory` mean nothing was verified. */
   entitlementSource?: 'marketplace' | 'marketplace-live' | 'advisory' | 'simulator' | 'auto' | 'oss' | 'none';
   /**
    * True only when the host actually confirmed an entitlement against a
-   * Marketplace API. Unlike `subscriptionActive` it does not read `true` when
+   * Marketplace API. Unlike `uiAccessAllowed` it does not read `true` when
    * checks are disabled or unreachable — but it is still host-computed and
    * browser-delivered, so it is a signal to *warn* on, not to gate on.
    *

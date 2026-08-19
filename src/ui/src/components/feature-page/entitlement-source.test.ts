@@ -16,7 +16,7 @@ describe('isVerifiedEntitlement', () => {
     // `auto` means checks are switched off; `advisory` means the check was
     // unreachable and we allowed rather than locking out a paying customer.
     // Neither is evidence of a subscription, and collapsing them into "active"
-    // is what makes `subscriptionActive` unusable as a licence signal.
+    // is what makes `uiAccessAllowed` unusable as a licence signal.
     expect(isVerifiedEntitlement('ACTIVE', 'auto')).toBe(false);
     expect(isVerifiedEntitlement('ACTIVE', 'advisory')).toBe(false);
   });

@@ -40,7 +40,7 @@ const WINDOW_OPTIONS = [
 const App: React.FC<FeatureContext> = ({
   featureApiEndpoint,
   getAuthToken,
-  subscriptionActive,
+  uiAccessAllowed,
   installedVersion,
 }) => {
   const [window, setWindow] = useState<string>('');
@@ -73,8 +73,8 @@ const App: React.FC<FeatureContext> = ({
   }, [featureApiEndpoint, getAuthToken, window]);
 
   useEffect(() => {
-    if (subscriptionActive) refresh();
-  }, [refresh, subscriptionActive]);
+    if (uiAccessAllowed) refresh();
+  }, [refresh, uiAccessAllowed]);
 
   const pieData = useMemo(() => {
     if (!data) return [];
@@ -96,7 +96,7 @@ const App: React.FC<FeatureContext> = ({
                 onChange={({ detail }) => setWindow(detail.selectedOption.value ?? '')}
                 options={WINDOW_OPTIONS}
               />
-              <Button onClick={refresh} loading={loading} disabled={!subscriptionActive}>
+              <Button onClick={refresh} loading={loading} disabled={!uiAccessAllowed}>
                 Refresh
               </Button>
             </SpaceBetween>

@@ -265,12 +265,12 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
     featureApiEndpoint: installed.featureApiEndpoint,
     getAuthToken,
     mainStackName,
-    subscriptionActive: state === 'ACTIVE',
+    uiAccessAllowed: state === 'ACTIVE',
     entitlementSource,
     // ACTIVE *and* actually checked against a Marketplace API. `auto` means
     // checks are switched off; `advisory` means the check was unreachable and we
     // allowed rather than locking out a possibly-paying customer. Neither is a
-    // verified subscription, and collapsing them into `subscriptionActive: true`
+    // verified subscription, and collapsing them into `uiAccessAllowed: true`
     // is what makes that flag unusable as a licence gate.
     entitlementVerified: isVerifiedEntitlement(state, entitlementSource),
   };

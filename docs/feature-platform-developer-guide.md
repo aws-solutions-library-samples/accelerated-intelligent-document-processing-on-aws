@@ -150,9 +150,15 @@ idp-feature-cli show-schema          # full feature.yaml schema reference
 If you are shipping a **paid** extension, read this before you rely on anything
 the host tells you about subscriptions.
 
-The host passes your component a `subscriptionActive` boolean, and the reference
-samples use it (`disabled={!subscriptionActive}`). That is a **UX affordance, not
-a licence gate**, and it is important not to confuse the two:
+The host passes your component a `uiAccessAllowed` boolean, and the reference
+samples use it (`disabled={!uiAccessAllowed}`). That is a **UX affordance, not a
+licence gate**, and it is important not to confuse the two.
+
+> **Renamed in this release.** This field was called `subscriptionActive`, which
+> invited precisely the wrong reading. If your extension destructures
+> `subscriptionActive`, rename it — see the upgrade note in `CHANGELOG.md`.
+
+Why it is not a gate:
 
 - It is computed by the host and delivered to **code running in the end user's
   browser**, inside the **customer's own AWS account**.
@@ -181,15 +187,22 @@ to **serve**.
 
 What actually works, in descending order of strength:
 
-1. **Seller-hosted activation.** At install, call a seller-owned endpoint with the
-   buyer's AWS account id; validate entitlement **in the seller account** (where
-   `GetEntitlements` / `ResolveCustomer` genuinely work, and `SearchAgreements` as
-   `Proposer` does too) and return a short-lived token bound to that account.
+1. **Seller-hosted activation — [the platform ships a ready-made service for
+   this](../feature-platform/seller-entitlement-service/README.md).** Deploy it in
+   your own seller account, register your `productId`, and your extension
+   exchanges "I am AWS account X" for a short-lived, account-bound signed token.
+   Entitlement is validated **in the seller account**, which is the only place
+   `SearchAgreements` as `Proposer` / `GetEntitlements` / `ResolveCustomer`
+   actually answer. Authentication uses API Gateway `AWS_IAM`, so the seller
+   learns the caller's *verified* account without knowing buyer accounts in
+   advance and buyers need no seller-issued credentials.
+
    This only bites if the token gates something of real value — a prompt/strategy
-   config, a model-routing service, a hosted planner. If it gates nothing
-   valuable it is deterrence, not enforcement. Note a paid SaaS listing needs
-   seller-side `BatchMeterUsage` for billing anyway, so this channel has to exist
-   regardless — enforcement comes nearly free once metering does.
+   config, a model-routing service, a hosted planner. If it gates nothing valuable
+   it is deterrence, not enforcement; the README's threat model is explicit about
+   that. Note a paid SaaS listing needs seller-side `BatchMeterUsage` for billing
+   anyway, so this channel has to exist regardless — enforcement comes nearly free
+   once metering does.
 2. **Seller-hosted compute for the valuable part.** Strongest and heaviest.
 3. **Detect, don't prevent.** Reconcile activations against subscriptions
    seller-side and handle it commercially.
