@@ -30,28 +30,45 @@ IDP web UI, with its own page backed by a UMD-loaded React bundle.
 
 ## Deployment modes
 
-| `FeaturePlatformSimulatorEndpoint` | `EnableFeaturePlatform` | Mode |
-|---|---|---|
-| (n/a) | `false` | Platform off — no platform resources are created. |
-| `''` (default) | `true` (default) | **Auto-subscribe** — extensions in the catalog are installable directly; the UI goes straight to the Install prompt. No entitlement calls. The only mode used today. |
-| `https://…` | `true` | **Marketplace** *(future)* — `checkFeatureEntitlement` calls the supplied simulator or real AWS Marketplace endpoint for entitlement state. Unused until paid extensions ship. |
+Two **independent** parameters: `FeaturePlatformSubscriptionMode` chooses *which*
+API answers "is this account subscribed?", and
+`FeaturePlatformSimulatorEndpoint` chooses *where* that call goes. They used to
+be coupled — the mode was inferred from whether an endpoint was set — which made
+the production path unreachable whenever a simulator was configured, so it could
+never be exercised in development.
 
-The marketplace simulator is **not** bundled with the open-source
-distribution. It is shipped separately and can be bolted onto a running stack
-with no rebuild: deploy the standalone simulator, then set
-`FeaturePlatformSimulatorEndpoint` on the main stack to its URL. Clearing the
-parameter reverts to auto-subscribe.
+| `FeaturePlatformSubscriptionMode` | API called | Notes |
+|---|---|---|
+| `marketplace-live` *(default)* | **Buyer-side** `marketplace-agreement:SearchAgreements` | The production path. See [Subscription checks](#subscription-checks-for-paid-extensions). |
+| `marketplace` | **Seller-side** `marketplace-entitlement:GetEntitlements` | Only meaningful against a simulator — the real API returns an empty list from a buyer account. |
+| `auto` | none | Every catalog extension is treated as subscribed; the UI goes straight to Install. |
+
+`EnableFeaturePlatform=false` removes the platform entirely (no resources
+created), regardless of the above.
+
+| `FeaturePlatformSimulatorEndpoint` | Effect |
+|---|---|
+| `''` *(default)* | Calls go to real AWS Marketplace. |
+| `https://…` | Base URL of a marketplace-simulator. Used for the buyer-console redirect **and** as the endpoint override for the emulated AWS APIs (`AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT` / `…_MARKETPLACE_ENTITLEMENT_SERVICE`), so a simulator can back either mode. |
+
+The marketplace simulator is **not** bundled with the open-source distribution.
+It is shipped separately and can be bolted onto a running stack with no rebuild.
+See [Simulator fidelity contract](feature-platform-developer-guide.md#simulator-fidelity-contract)
+for what a faithful simulator has to implement — in particular, a simulator that
+makes `GetEntitlements` *succeed* for a buyer-side caller reproduces the opposite
+of real behavior and will validate a design that fails silently in production.
 
 ## Two kinds of extensions
 
-| | **OSS extension** | **Marketplace extension** *(future)* |
+| | **OSS extension** | **Marketplace extension** |
 |---|---|---|
 | `source` | `oss` | `marketplace` |
-| Status | available today | framework only — none exist yet |
-| Example | `docs-by-status`, `sample-health-insurance-review` (the bundled samples) | — |
-| Where the template lives | the stack-owned **FeatureBucket** (copied from the artifacts bucket at deploy time) | a **private seller bucket** (GetObject-only, no public read) |
+| Example | `docs-by-status`, `sample-health-insurance-review` (the bundled samples) | `idp-auto-optimizer` (Auto Optimizer) |
+| Where the template lives | the artifacts bucket, under a version-free `<prefix>/extensions/<id>/` base | a **per-Region seller bucket**, under a version-free base — see [Region availability](#region-availability) |
+| Region-scoped? | no — published with the host | **yes** — one published copy per supported Region |
 | Subscribe step | none — installable directly | UI links to the AWS Marketplace listing; buyer subscribes there |
-| How `getFeatureLaunchUrl` produces the template URL | public S3 HTTPS URL of the FeatureBucket object | **presigned** GetObject URL for the seller-bucket object, minted **only after** `GetEntitlements` confirms an ACTIVE subscription |
+| How `getFeatureLaunchUrl` produces the template URL | bare public S3 HTTPS URL | bare public S3 HTTPS URL for the **Region's** bucket, looked up in the catalog's `regions` map (no presign) |
+| Install gate | none | advisory entitlement check on the Launch button; the real gate is the subscription + the extension's runtime check |
 
 ## Catalog & discovery
 
@@ -78,30 +95,139 @@ and seller buckets permit `GetObject` only, not `ListObjectsV2`).
   **Extensions → Browse catalog** only until installed — the bundled reference
   samples do this).
 
-The seller bucket is the one inherent post-deploy runtime dependency for
-marketplace features: `getFeatureLaunchUrl` must presign a `GetObject` against
-it (after the entitlement check) at the moment an entitled admin clicks
-"Launch". The seller bucket's own bucket policy must grant the host's
-feature-platform role `s3:GetObject`, and the host stack must list the seller
-bucket's object ARN in `SellerBucketObjectArns`.
+### Region availability
+
+Marketplace extensions are **Region-scoped**. `sam package` bakes an absolute,
+Region-specific `s3://bucket/key` `CodeUri` into the published template, and a
+Lambda's code bucket must live in the function's own Region — so each supported
+Region needs its own published copy. Catalog schema **1.1** therefore maps each
+Region to an *explicit* bucket + template key:
+
+```yaml
+regions:
+  us-west-2:    { sellerBucket: aws-ml-blog-us-west-2,    templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml }
+  us-east-1:    { sellerBucket: aws-ml-blog-us-east-1,    templateKey: … }
+  eu-central-1: { sellerBucket: aws-ml-blog-eu-central-1, templateKey: … }
+```
+
+`getFeatureLaunchUrl` **looks the caller's Region up** in that map and fails
+closed ("not available in `<region>`") when it's absent, and
+`listCatalogFeatures` reports `availableInRegion` / `availableRegions` so the UI
+shows that up front instead of a Subscribe button that dead-ends.
+
+> **The host never derives a bucket name** by concatenating a basename with the
+> Region. S3 bucket names are global and guessable, so a derived name in a Region
+> we don't publish to could resolve to a bucket somebody else owns — and the
+> customer would be handed a CloudFormation template we did not write. This is a
+> security property, not tidiness.
+
+`templateKey` is **version-free** and must stay that way: a version-bearing key
+goes stale the moment a customer runs a stack Update. Versioned artifacts live
+under `<base>/<version>/` and the feature stack self-locates them from the
+`FEATURE_VERSION` baked into its template at publish time.
+
+Marketplace artifacts are **public-read**, which is forced rather than chosen:
+the registered Quick Launch template URL is fetched by AWS Seller Ops during
+listing review and by CloudFormation in an arbitrary buyer account, and the
+Lambda code zips are fetched from the buyer's account at deploy time. There is
+therefore **no presign** — it could only ever have covered the template, while
+its expiry broke long-running CFN "Update stack" sessions. The commercial gate is
+the Marketplace subscription plus the extension's own runtime entitlement check;
+the host's entitlement check on the Launch button is an **advisory UX gate**.
+
+### Subscription checks for paid extensions
+
+Set by `FeaturePlatformSubscriptionMode` (only consulted when no simulator
+endpoint is configured):
+
+| Mode | What it does |
+|---|---|
+| `marketplace-live` *(default)* | Queries the **buyer-side** AWS Marketplace Agreement API (`SearchAgreements`) for an ACTIVE `PurchaseAgreement` on the extension's `productId`. |
+| `auto` | Skips the check; every catalog extension is treated as subscribed. |
+
+**Why not `GetEntitlements`?** It's the obvious API and it does not work here —
+in the most misleading way possible. Called from a buyer account it returns HTTP
+200 with an *empty* list rather than an error, for two independent reasons:
+
+1. It's a **seller-side** API. AWS's SaaS guidance is that these calls "must be
+   signed by credentials from your AWS Marketplace Seller account".
+2. Entitlement records only exist for SaaS **Contract** products. A usage-based
+   SaaS *Subscription* meters instead and has no entitlements at all.
+
+A fail-closed gate on that would deny every legitimate customer while logging
+nothing — and would look perfectly healthy in CI against the simulator. AWS
+License Manager (`ListReceivedLicenses`) was also ruled out: it fails with
+`AccessDeniedException: Service role not found` until a service role is created
+in the buyer account, which we can't require of a customer.
+
+The three outcomes are deliberately distinct:
+
+| Outcome | State | Meaning |
+|---|---|---|
+| ACTIVE agreement found | `ACTIVE` (`source: marketplace-live`) | Subscribed. |
+| Call succeeded, nothing matched | `NONE` (`source: marketplace-live`) | Authoritative — `SearchAgreements` is scoped to the caller's own account. UI shows Subscribe. |
+| Call **errored** | `ACTIVE` (`source: advisory`) | Indistinguishable from "not subscribed", so we allow and log loudly. |
+
+That last row is the important one: failing closed on a permissions gap or an
+unsupported partition would lock a paying customer out of an extension they
+bought. Each paid extension performs its own runtime entitlement check, so a
+permissive host gate costs nothing while a restrictive one is a support incident.
+For the same reason, the host's check on the Launch button is **advisory**.
+
+> **Known false-negative.** If an AWS Organization holds the subscription in the
+> management account while the IDP stack runs in a member account,
+> `SearchAgreements` from the member account reports nothing. `NONE` therefore
+> routes to Subscribe rather than hard-blocking.
+
+To reproduce any of this against a live account:
+
+```bash
+scripts/marketplace/verify_entitlement.sh          # Auto Optimizer defaults
+scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
+```
+
+It runs both APIs side by side with a positive control, so an empty result is
+distinguishable from a broken one.
 
 ### "Update available" badges
 
-The "Update available" badge an installed extension shows in the **Extensions**
-nav compares the version recorded in the `InstalledFeatures` table against the
-catalog's `latestVersion` for that feature — both read with a single `GetObject`
-of `catalog.json`, no bucket listing. So an update is detected whenever a newer
-catalog ships, which for **OSS extensions** happens on the next host stack
-update (the catalog is re-copied into ConfigurationBucket).
+The badge compares the version in the `InstalledFeatures` table against the
+extension's **live** `latestVersion`, resolved in this order:
 
-> **Marketplace limitation (current).** Because the catalog is refreshed only on
-> a host stack create/update, a new *marketplace* extension version published to
-> a seller bucket is **not** surfaced as "Update available" until the host stack
-> is updated with a re-published catalog carrying the new `latestVersion`. The
-> host does not poll seller buckets at runtime (it can't — `GetObject` only, no
-> listing, and no version index). Live marketplace update detection is deferred;
-> for now, bump `latestVersion` in `config_library/extensions-marketplace.yaml`
-> and re-publish to advertise a new marketplace version.
+1. **`<base>/latest.json`, read at runtime.** The extension publisher rewrites
+   this object on every release (`{featureId, version, displayName,
+   bundleSha256, publishedAt}`), so a new extension version reaches customers
+   **without re-releasing the accelerator and without a stack update**. This
+   applies to OSS and marketplace extensions alike.
+2. **The catalog's `latestVersion`** — the fallback, used when `latest.json`
+   isn't reachable.
+
+The runtime read is designed to be invisible when it fails, because it runs on
+every page load:
+
+- **Fail soft** — unreachable object, bad JSON, blocked egress, or an
+  unpublished Region all fall back to the catalog value and ultimately to no
+  badge. It never surfaces an error.
+- **Cached** — memoized per (bucket, key) for `LATEST_JSON_TTL_SECONDS`
+  (default 300s); failures are cached for a shorter negative TTL so a missing
+  object doesn't cost a round trip every time. Set `LATEST_JSON_LOOKUP=false` to
+  disable the lookup and use the catalog only.
+- **Anonymous first** — the GET is unsigned, since published artifacts are
+  public-read. That needs no IAM grant on the host role and no bucket-policy
+  grant from the publisher, so enabling it cannot regress an existing
+  deployment. If public read is refused the host retries *signed*, which lets an
+  OSS extension self-published to a private bucket still get badges — list that
+  bucket's object ARN in `SellerBucketObjectArns` to allow it.
+
+Comparison is proper SemVer, and a badge appears only when the published version
+is strictly **newer**. A feature installed with `idp-feature-cli deploy
+--from-code` can legitimately be *ahead* of what's published; treating "differs"
+as "update available" would invite a downgrade.
+
+Consequently `latestVersion` in `config_library/extensions-marketplace.yaml` is
+only a seed/fallback. Keeping it roughly current is still useful — it's what a
+stack sees when `latest.json` is unreachable — but shipping an extension release
+no longer requires touching this repo.
 
 The separate Build Info **"update available"** indicator for the *accelerator
 itself* works differently: `idp-cli publish` writes a small pointer object,

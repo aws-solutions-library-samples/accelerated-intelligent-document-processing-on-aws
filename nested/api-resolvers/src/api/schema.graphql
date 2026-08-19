@@ -1839,9 +1839,20 @@ type CatalogFeature @aws_cognito_user_pools {
   # OSS-only: the artifacts bucket + key prefix where this feature's
   # template/ui-bundle were published (under sample-features/). The host builds
   # the Launch Stack URL from these. Null/empty for marketplace features (which
-  # use a private sellerBucket instead).
+  # resolve a per-region sellerBucket from the catalog instead).
   artifactBucket: String
   artifactPrefix: String
+  # Whether this feature can be installed in the host stack's own region.
+  # Marketplace extensions are region-scoped because `sam package` bakes an
+  # absolute, region-specific s3:// CodeUri into the published template, and a
+  # Lambda's code bucket must be in the function's region. False means the UI
+  # should explain "not available in <region>" rather than offer a Subscribe
+  # button that dead-ends. Always true for OSS features.
+  availableInRegion: Boolean
+  # The regions this feature publishes artifacts to. Empty for OSS features
+  # (not region-scoped — they ship with the host). Used to tell the admin where
+  # the extension IS available when it isn't available here.
+  availableRegions: [String]
 }
 
 """Subscription / entitlement state for a feature."""

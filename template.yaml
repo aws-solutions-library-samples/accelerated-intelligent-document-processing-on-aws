@@ -950,12 +950,38 @@ Parameters:
     Type: String
     Default: ''
     Description: >-
-      (Optional) Endpoint URL of a marketplace-simulator (e.g.
-      https://simulator.example.com) or a real AWS Marketplace API. Leave
-      blank (default) for auto-subscribe mode — no entitlement checks, every
-      catalog feature is installable. Set it to bolt entitlement checks onto
-      a running stack with no rebuild; deploy the standalone simulator from
-      the feature-extensions distribution and point this at its endpoint.
+      (Optional) Base URL of a marketplace-simulator (e.g.
+      https://simulator.example.com), used to redirect an admin to the
+      simulated buyer console AND as the endpoint override for the emulated
+      AWS Marketplace APIs. Leave blank (default) to talk to real AWS
+      Marketplace. Deploy the standalone simulator from the feature-extensions
+      distribution and point this at its endpoint; it can be set on a running
+      stack with no rebuild. Which API the host calls is controlled separately
+      by FeaturePlatformSubscriptionMode, so a simulator can back either the
+      buyer-side Agreement API ('marketplace-live') or the seller-side
+      Entitlement API ('marketplace').
+
+  FeaturePlatformSubscriptionMode:
+    Type: String
+    Default: 'marketplace-live'
+    AllowedValues: ['marketplace-live', 'marketplace', 'auto']
+    Description: >-
+      How the host checks AWS Marketplace subscriptions for paid extensions.
+      This is the single source of truth — it is NOT inferred from whether
+      FeaturePlatformSimulatorEndpoint is set, so either mode can be pointed at
+      a simulator for development. 'marketplace-live' (default) queries the
+      BUYER-side AWS Marketplace Agreement API (SearchAgreements) for an active
+      agreement on the extension's product; this is the production path.
+      'marketplace' queries the SELLER-side Entitlement API (GetEntitlements) —
+      useful only against a simulator, because from a buyer account the real
+      GetEntitlements returns an empty list rather than an error (it is
+      seller-side, and usage-based SaaS listings have no entitlement records at
+      all). 'auto' skips the check and treats every catalog extension as
+      subscribed. In every mode OSS extensions install directly and each paid
+      extension enforces its own runtime entitlement check — this host-side
+      check is advisory, and it deliberately degrades to allow (not deny) if the
+      API is unreachable, so a permissions gap can't lock a paying customer out
+      of an extension they bought.
 
   FeaturePlatformDefaultCustomerIdentifier:
     Type: String
@@ -1219,15 +1245,13 @@ Conditions:
   # the same time as the FeaturePlatformStack's identically-named export
   # (which would fail with "Export already exported by stack ...").
   IsFeaturePlatformDisabled: !Equals [ !Ref EnableFeaturePlatform, 'false' ]
-  # Auto-subscribe mode: feature platform is on but no external Marketplace /
-  # simulator endpoint is configured. The entitlement Lambda short-circuits to
-  # ACTIVE so every catalog feature is treated as subscribed and the UI goes
-  # straight to the Install prompt. Setting FeaturePlatformSimulatorEndpoint
-  # switches the platform into marketplace mode with real entitlement checks.
-  IsAutoSubscribeMode:
-    !And
-      - !Condition IsFeaturePlatformEnabled
-      - !Equals [ !Ref FeaturePlatformSimulatorEndpoint, '' ]
+  # NB: there is deliberately no "IsAutoSubscribeMode" condition inferring the
+  # subscription mode from whether FeaturePlatformSimulatorEndpoint is set.
+  # Inferring it coupled two independent choices — WHICH API to call and WHERE
+  # to send it — and made the production path ('marketplace-live') unreachable
+  # whenever a simulator endpoint was configured, so the buyer-side Agreement
+  # check could not be exercised in development. FeaturePlatformSubscriptionMode
+  # is now the single source of truth and is passed through verbatim.
 
 Metadata:
   cfn-lint:
@@ -1370,6 +1394,7 @@ Metadata:
         Parameters:
           - EnableFeaturePlatform
           - FeaturePlatformSimulatorEndpoint
+          - FeaturePlatformSubscriptionMode
           - FeaturePlatformDefaultCustomerIdentifier
           - DefaultFeatureId
           - ConsoleTitle
@@ -1389,6 +1414,8 @@ Metadata:
         default: "Enable Feature Platform"
       FeaturePlatformSimulatorEndpoint:
         default: "Marketplace/Simulator Endpoint (optional — auto-subscribe if blank)"
+      FeaturePlatformSubscriptionMode:
+        default: "Marketplace Subscription Check (live Agreement API, or skip)"
       FeaturePlatformDefaultCustomerIdentifier:
         default: "Marketplace Customer Identifier (optional)"
       DefaultFeatureId:
@@ -2937,17 +2964,15 @@ Resources:
         # Region of the artifacts bucket (= this stack's region), used to build
         # the bare OSS feature template URL in getFeatureLaunchUrl.
         ArtifactRegion: !Ref AWS::Region
-        # The endpoint the entitlement Lambda targets. Blank in auto-subscribe
-        # mode (the Lambda short-circuits to ACTIVE). Set it to a simulator or
-        # real Marketplace endpoint to enable entitlement checks.
+        # Simulator base URL: the buyer-console redirect target AND the endpoint
+        # override for the emulated AWS Marketplace APIs. Blank = real AWS.
         SimulatorEntitlementEndpoint: !Ref FeaturePlatformSimulatorEndpoint
-        # 'auto' short-circuits the entitlement Lambda to ACTIVE for every
-        # feature (no endpoint, no Marketplace call). 'marketplace' targets a
-        # real or admin-supplied Marketplace/simulator endpoint.
-        SubscriptionMode: !If
-          - IsAutoSubscribeMode
-          - 'auto'
-          - 'marketplace'
+        # The mode is passed through verbatim — it is NOT inferred from whether
+        # an endpoint is set. Inferring it made the production path
+        # ('marketplace-live') unreachable whenever a simulator endpoint was
+        # configured, so the buyer-side Agreement check could never be exercised
+        # against a simulator. Decoupling them is what makes it developable.
+        SubscriptionMode: !Ref FeaturePlatformSubscriptionMode
         DefaultCustomerIdentifier: !Ref FeaturePlatformDefaultCustomerIdentifier
         AdminGroupName: 'Admin'
         # ConfigurationTable is shared between the main stack's pipeline and

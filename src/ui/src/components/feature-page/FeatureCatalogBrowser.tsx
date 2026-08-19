@@ -15,6 +15,10 @@ interface BrowserEntry {
   description: string | null;
   source: 'oss' | 'marketplace';
   installed: InstalledFeature | null;
+  /** False only when the catalog says this extension isn't published here. */
+  availableInRegion: boolean;
+  /** Regions the extension IS published to; empty when not region-scoped. */
+  availableRegions: string[];
 }
 
 function mergeCatalog(installed: InstalledFeature[], catalog: CatalogFeature[]): BrowserEntry[] {
@@ -27,14 +31,25 @@ function mergeCatalog(installed: InstalledFeature[], catalog: CatalogFeature[]):
       description: null,
       source: 'oss',
       installed: f,
+      availableInRegion: true,
+      availableRegions: [],
     });
   }
 
   for (const c of catalog) {
+    // An older host doesn't send availableInRegion at all; absent means "no
+    // region restriction known", so default to available rather than hiding a
+    // working extension behind a warning we can't substantiate.
+    const availableInRegion = c.availableInRegion !== false;
+    const availableRegions = c.availableRegions ?? [];
     const existing = byId.get(c.featureId);
     if (existing) {
       existing.description = c.description ?? null;
       existing.source = c.source === 'marketplace' ? 'marketplace' : 'oss';
+      existing.availableRegions = availableRegions;
+      // An already-installed extension keeps working even if the catalog no
+      // longer lists this region, so don't flag an install we can see running.
+      existing.availableInRegion = existing.installed ? true : availableInRegion;
     } else {
       byId.set(c.featureId, {
         featureId: c.featureId,
@@ -42,6 +57,8 @@ function mergeCatalog(installed: InstalledFeature[], catalog: CatalogFeature[]):
         description: c.description ?? null,
         source: c.source === 'marketplace' ? 'marketplace' : 'oss',
         installed: null,
+        availableInRegion,
+        availableRegions,
       });
     }
   }
@@ -53,7 +70,14 @@ function statusBadge(entry: BrowserEntry): React.ReactNode {
   if (entry.installed) {
     return entry.installed.updateAvailable ? <Badge color="blue">Update available</Badge> : <Badge color="green">Installed</Badge>;
   }
-  return entry.source === 'marketplace' ? <Badge color="grey">Subscribe (future)</Badge> : <Badge color="blue">Available to install</Badge>;
+  if (!entry.availableInRegion) {
+    return <Badge color="red">Not available in this Region</Badge>;
+  }
+  return entry.source === 'marketplace' ? (
+    <Badge color="grey">Subscription required</Badge>
+  ) : (
+    <Badge color="blue">Available to install</Badge>
+  );
 }
 
 /**
@@ -99,6 +123,13 @@ const FeatureCatalogBrowser = (): React.JSX.Element => {
                   {statusBadge(e)}
                 </SpaceBetween>
                 {e.description && <Box color="text-body-secondary">{e.description}</Box>}
+                {!e.availableInRegion && (
+                  <Box color="text-status-inactive" fontSize="body-s">
+                    {e.availableRegions.length > 0
+                      ? `Available in ${e.availableRegions.join(', ')}. Deploy the accelerator in one of those Regions to install it.`
+                      : 'This extension is not published for installation in this Region.'}
+                  </Box>
+                )}
               </SpaceBetween>
             </Box>
           ))}
