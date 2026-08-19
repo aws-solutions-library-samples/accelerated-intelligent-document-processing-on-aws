@@ -189,3 +189,97 @@ class TestFieldNames:
         assert "Account Number" in names
         assert "ZIP Code" in names
         assert "Amount" in names
+
+
+@pytest.mark.unit
+class TestOptionalLeavesAcceptNull:
+    """The generator must be allowed to do what the field descriptions instruct.
+
+    IDP config classes are written for extraction, where an absent field is an
+    explicit null — many descriptions say "Output null if not shown". Handing that
+    schema to the generator with `type: "string"` makes the instruction unsatisfiable:
+    the generator emits null, validation rejects it, the critic retries. A real
+    11-document run produced 119 critic rejections and lost the whole batch to the
+    render stage's timeout.
+    """
+
+    @staticmethod
+    def _schema(**props):
+        return {
+            "x-aws-idp-document-type": "Invoice",
+            "type": "object",
+            "properties": props,
+        }
+
+    def test_an_optional_string_may_be_null(self):
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(
+                AFECode={"type": "string", "description": "Output null if not shown."}
+            )
+        )
+        assert out["properties"]["AFECode"]["type"] == ["string", "null"]
+
+    def test_a_required_field_stays_strict(self):
+        """A null in a required field is a real failure, worth the retry."""
+        schema = self._schema(
+            InvoiceNumber={"type": "string"}, AFECode={"type": "string"}
+        )
+        schema["required"] = ["InvoiceNumber"]
+        out = schema_bridge.config_class_to_generator_schema(schema)
+        assert out["properties"]["InvoiceNumber"]["type"] == "string"
+        assert out["properties"]["AFECode"]["type"] == ["string", "null"]
+
+    def test_objects_and_arrays_are_not_widened(self):
+        """Widening a container would let the generator drop whole structures."""
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(
+                Vendor={"type": "object", "properties": {"Name": {"type": "string"}}},
+                LineItems={
+                    "type": "array",
+                    "items": {"type": "object", "properties": {}},
+                },
+            )
+        )
+        assert out["properties"]["Vendor"]["type"] == "object"
+        assert out["properties"]["LineItems"]["type"] == "array"
+
+    def test_nested_and_array_item_leaves_are_reached(self):
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(
+                Vendor={"type": "object", "properties": {"Name": {"type": "string"}}},
+                LineItems={
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"Rate": {"type": "number"}},
+                    },
+                },
+            )
+        )
+        assert out["properties"]["Vendor"]["properties"]["Name"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert out["properties"]["LineItems"]["items"]["properties"]["Rate"][
+            "type"
+        ] == [
+            "number",
+            "null",
+        ]
+
+    def test_field_names_are_still_preserved_exactly(self):
+        """The bridge's core guarantee must survive the widening."""
+        schema = self._schema(
+            AFECode={"type": "string"},
+            Vendor={"type": "object", "properties": {"Name": {"type": "string"}}},
+        )
+        out = schema_bridge.config_class_to_generator_schema(schema)
+        assert schema_bridge.leaf_field_paths(out) == schema_bridge.leaf_field_paths(
+            schema
+        )
+
+    def test_an_already_nullable_field_is_left_as_is(self):
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(Note={"type": ["string", "null"]})
+        )
+        assert out["properties"]["Note"]["type"] == ["string", "null"]
