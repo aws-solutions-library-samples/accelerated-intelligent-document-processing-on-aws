@@ -35,15 +35,41 @@ up silently denying every real customer.
 ## Deploy
 
 ```bash
-cd feature-platform/seller-entitlement-service
-
-sam build
-sam deploy --guided \
-  --stack-name idp-seller-entitlement \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides \
-    'ProductRegistryJson={"prod-a5ee62vs2xa72":{"productCode":"q0k0s3zuuga46hle6fecx547","allowFreeTier":true}}'
+idp-feature-cli seller-service deploy \
+  --product-registry '{"prod-a5ee62vs2xa72":{"productCode":"q0k0s3zuuga46hle6fecx547","allowFreeTier":true}}'
 ```
+
+Or, from a repo checkout, the equivalent `make` wrapper:
+
+```bash
+make seller-entitlement-service \
+  PRODUCT_REGISTRY='{"prod-a5ee62vs2xa72":{"productCode":"q0k0s3zuuga46hle6fecx547","allowFreeTier":true}}'
+```
+
+**Deploys into whichever account your credentials resolve to**, so it runs a
+preflight first and refuses if that account does not own the products you are
+registering. Check it any time, read-only:
+
+```bash
+idp-feature-cli seller-service preflight --product-registry '{...}'
+```
+
+The preflight verifies **ownership**, not merely "is this a seller account" — an
+account-id comparison would pass for any seller, including one that doesn't sell
+this product. It exists because deploying into the wrong account fails *silently*:
+`SearchAgreements(PartyType=Proposer)` answers only for the product's owner and
+returns an empty list rather than an error, so every activation would be refused
+and every customer locked out with nothing in the logs explaining why.
+
+Useful options: `--seller-account-id` to assert the expected account,
+`--stack-name`, `--region` (default `us-east-1`), `--allowed-accounts`,
+`--token-ttl-seconds`, `--yes` to skip the confirmation, and
+`--skip-ownership-check` for the rare case where the deploying role lacks
+`aws-marketplace:ListEntities`.
+
+Requires the AWS SAM CLI and a checkout of this repository (the template and
+Lambda source live here) — the same prerequisites as `idp-feature-cli publish`
+and `init`.
 
 `productId` is the SaaS product **entity id** (`prod-…`) — that is what
 `SearchAgreements` matches on, not the product code. Find it with:
@@ -53,7 +79,7 @@ aws marketplace-discovery get-listing --listing-id prodview-XXXX --region us-eas
   --query 'associatedEntities[0].product.productId' --output text
 ```
 
-Then note the outputs:
+Then note the stack outputs:
 
 ```bash
 aws cloudformation describe-stacks --stack-name idp-seller-entitlement \

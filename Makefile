@@ -24,6 +24,8 @@ endif
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).
 IDP_CLI := $(PYTHON) -m idp_cli.cli
+# Extension-author CLI (idp_feature_sdk). Used by the seller-side targets.
+IDP_FEATURE_CLI := $(PYTHON) -m idp_feature_sdk.cli
 
 # First-party packages that live in THIS repo and are NOT published to PyPI.
 #
@@ -538,6 +540,11 @@ endif
 	@sed -i.bak 's/^__version__ = ".*"/__version__ = "$(V)"/' lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py && rm -f lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_feature_sdk/pyproject.toml && rm -f lib/idp_feature_sdk/pyproject.toml.bak
 	@sed -i.bak 's/^__version__ = ".*"/__version__ = "$(V)"/' lib/idp_feature_sdk/idp_feature_sdk/__init__.py && rm -f lib/idp_feature_sdk/idp_feature_sdk/__init__.py.bak
+	@# Seller Entitlement Service template. Deployed directly by a seller (sam
+	@# deploy / idp-feature-cli), NOT via `idp-cli publish`, so it carries a
+	@# literal version rather than the `<VERSION>` placeholder the published host
+	@# template uses — nothing would substitute a placeholder here.
+	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('feature-platform/seller-entitlement-service/template.yaml'); t=p.read_text(); n,c=re.subn(r\"(ServiceVersion:\\s*\\n\\s*Value: )'[^']*'\", r\"\\g<1>'$(V)'\", t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 ServiceVersion replacement, made {c}')"
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -550,6 +557,7 @@ endif
 	@echo "  - lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py"
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
 	@echo "  - lib/idp_feature_sdk/idp_feature_sdk/__init__.py"
+	@echo "  - feature-platform/seller-entitlement-service/template.yaml"
 
 
 ##@ Documentation
@@ -686,6 +694,51 @@ endif
 		$(if $(NO_WAIT),,--wait) \
 		$(EXTRA_ARGS)
 
+
+
+##@ Marketplace (seller-side)
+# The Seller Entitlement Service is deployed by an extension SELLER into their
+# OWN AWS Marketplace seller account — not into a customer account, and not as
+# part of the IDP main stack. See
+# feature-platform/seller-entitlement-service/README.md.
+#
+# These are thin wrappers around `idp-feature-cli seller-service`, which is where
+# the logic lives: the audience is extension authors (who already use that CLI to
+# publish and deploy), and the preflight is a safety guard that deserves unit
+# tests — which a shell snippet in a Makefile would not get.
+
+.PHONY: seller-entitlement-service seller-entitlement-service-preflight
+
+# Usage:
+#   make seller-entitlement-service-preflight PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy"}}'
+seller-entitlement-service-preflight: ## Check current creds are the SELLER for these products (read-only) (Usage: make seller-entitlement-service-preflight PRODUCT_REGISTRY='{...}' [SELLER_ACCOUNT_ID=...] [REGION=...])
+ifndef PRODUCT_REGISTRY
+	$(error PRODUCT_REGISTRY is not set. Usage: make seller-entitlement-service-preflight PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}')
+endif
+	@$(IDP_FEATURE_CLI) seller-service preflight \
+		--product-registry '$(PRODUCT_REGISTRY)' \
+		$(if $(SELLER_ACCOUNT_ID),--seller-account-id $(SELLER_ACCOUNT_ID)) \
+		$(if $(REGION),--region $(REGION)) \
+		$(if $(SKIP_OWNERSHIP_CHECK),--skip-ownership-check) \
+		$(EXTRA_ARGS)
+
+# Usage:
+#   make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}'
+#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=145026617366 YES=1
+seller-entitlement-service: ## Preflight + deploy the Seller Entitlement Service into the SELLER account (Usage: make seller-entitlement-service PRODUCT_REGISTRY='{...}' [STACK_NAME=...] [SELLER_ACCOUNT_ID=...] [REGION=...] [YES=1])
+ifndef PRODUCT_REGISTRY
+	$(error PRODUCT_REGISTRY is not set. Usage: make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}')
+endif
+	@$(IDP_FEATURE_CLI) seller-service deploy \
+		--product-registry '$(PRODUCT_REGISTRY)' \
+		$(if $(STACK_NAME),--stack-name $(STACK_NAME)) \
+		$(if $(SELLER_ACCOUNT_ID),--seller-account-id $(SELLER_ACCOUNT_ID)) \
+		$(if $(REGION),--region $(REGION)) \
+		$(if $(ALLOWED_ACCOUNTS),--allowed-accounts $(ALLOWED_ACCOUNTS)) \
+		$(if $(TOKEN_TTL_SECONDS),--token-ttl-seconds $(TOKEN_TTL_SECONDS)) \
+		$(if $(SKIP_OWNERSHIP_CHECK),--skip-ownership-check) \
+		$(if $(YES),--yes) \
+		$(EXTRA_ARGS)
 
 ##@ Benchmarking
 

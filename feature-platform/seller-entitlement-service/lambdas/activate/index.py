@@ -45,6 +45,9 @@ Environment:
     TOKEN_TTL_SECONDS      Lifetime of a minted token (default 3600).
     SIGNING_KEY_ARN        KMS asymmetric key used to sign tokens.
     AGREEMENT_REGION       Region for the Agreement API (default us-east-1).
+    SERVICE_VERSION        IDP version this service was deployed from; recorded on
+                           every issuance so a seller can tell which build minted
+                           a customer's token.
     ALLOWED_ACCOUNTS       Optional comma-separated allow-list of buyer accounts
                            that bypass the subscription check (internal/testing).
     LOG_LEVEL              Logging level (default INFO).
@@ -67,6 +70,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 _TOKEN_TTL_SECONDS = int(os.environ.get("TOKEN_TTL_SECONDS", "3600"))
 _SIGNING_KEY_ARN = os.environ.get("SIGNING_KEY_ARN", "")
 _AGREEMENT_REGION = os.environ.get("AGREEMENT_REGION", "us-east-1")
+_SERVICE_VERSION = os.environ.get("SERVICE_VERSION", "unknown")
 _ALLOWED_ACCOUNTS = {
     a.strip() for a in os.environ.get("ALLOWED_ACCOUNTS", "").split(",") if a.strip()
 }
@@ -311,11 +315,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return _response(500, {"error": "could not issue token"})
 
     logger.info(
-        "Issued activation token: buyer=%s product=%s freeTier=%s ttl=%ss (%s)",
+        "Issued activation token: buyer=%s product=%s freeTier=%s ttl=%ss "
+        "service=%s (%s)",
         buyer_account_id,
         product_id,
         free_tier,
         _TOKEN_TTL_SECONDS,
+        _SERVICE_VERSION,
         detail,
     )
     return _response(200, {**token, "freeTier": free_tier})

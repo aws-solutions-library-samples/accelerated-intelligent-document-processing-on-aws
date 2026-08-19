@@ -4,7 +4,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Description: >-
-  Feature Platform — Seller Entitlement Service. Deploy this in YOUR AWS
+  IDP Accelerator Feature Platform — Seller Entitlement Service. Deploy this in YOUR AWS
   Marketplace SELLER account (not a customer account) to issue short-lived,
   account-bound activation tokens to paid extensions running in buyers' accounts.
   Generic: any seller of any Feature Platform extension can deploy it as-is.
@@ -34,6 +34,16 @@ Metadata:
         default: "Allow-listed buyer accounts (bypass subscription check)"
       TokenTtlSeconds:
         default: "Activation token TTL (seconds)"
+
+Mappings:
+  # Stamped by `make version` (one sed target). This template is deployed
+  # directly by a seller via `sam deploy` / `idp-feature-cli seller-service
+  # deploy`, NOT through `idp-cli publish` — so it cannot use the `<VERSION>`
+  # placeholder that the published host template relies on, because nothing
+  # would ever substitute it. Hence a literal.
+  ServiceMeta:
+    ServiceVersion:
+      Value: '0.6.5.dev1'
 
 Parameters:
   ProductRegistryJson:
@@ -192,6 +202,9 @@ Resources:
           TOKEN_TTL_SECONDS: !Ref TokenTtlSeconds
           SIGNING_KEY_ARN: !GetAtt TokenSigningKey.Arn
           AGREEMENT_REGION: !Ref AgreementRegion
+          # Recorded on every activation log line, so a seller debugging a
+          # customer's token knows which build issued it.
+          SERVICE_VERSION: !FindInMap [ServiceMeta, ServiceVersion, Value]
           LOG_LEVEL: !Ref LogLevel
       Events:
         Activate:
@@ -272,6 +285,12 @@ Resources:
           DefaultValue: 0
 
 Outputs:
+  ServiceVersion:
+    Description: >-
+      IDP Accelerator version this seller service was deployed from. Compare with
+      the host/extension versions when diagnosing an activation problem.
+    Value: !FindInMap [ServiceMeta, ServiceVersion, Value]
+
   ActivationEndpoint:
     Description: >-
       POST here from a buyer's extension with {"productId":"prod-..."} signed

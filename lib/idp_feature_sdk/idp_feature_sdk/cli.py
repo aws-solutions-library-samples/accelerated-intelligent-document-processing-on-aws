@@ -16,6 +16,16 @@ from rich.console import Console
 from .manifest import ManifestError, load_manifest
 from .publisher import FeaturePublisher
 from .scaffold import ScaffoldError, ScaffoldOptions, scaffold_feature
+from .seller_service import (
+    DEFAULT_MARKETPLACE_REGION,
+    SellerServiceError,
+    build_sam_deploy_command,
+    find_seller_service_dir,
+    parse_product_registry,
+    preflight,
+    read_service_version,
+    run_command,
+)
 
 console = Console()
 
@@ -1072,6 +1082,242 @@ def init_cmd(
     console.print("    idp-feature-cli validate .")
     console.print("    idp-feature-cli build .")
     console.print("    idp-feature-cli publish . --bucket-basename <bucket>")
+
+
+# ---------------------------------------------------------------------------
+# Seller Entitlement Service — deployed by an extension SELLER into their own
+# AWS Marketplace seller account. See
+# feature-platform/seller-entitlement-service/README.md.
+#
+# This lives in `idp-feature-cli` rather than a Makefile target because the
+# audience is extension authors/sellers (the same people who run `publish` and
+# `deploy`), and because the preflight is a safety guard whose silent failure
+# mode is "every customer locked out" — that deserves unit tests, which a shell
+# snippet in a Makefile does not get.
+# ---------------------------------------------------------------------------
+
+
+@main.group("seller-service")
+def seller_service_group() -> None:
+    """Manage the seller-side entitlement service for paid extensions."""
+
+
+def _seller_clients(region: str):
+    """boto3 STS + Marketplace Catalog clients. Imported lazily so the rest of
+    the CLI works without botocore installed."""
+    try:
+        import boto3
+    except ImportError as exc:  # pragma: no cover - dependency always present
+        raise SellerServiceError(
+            "boto3 is required for seller-service commands."
+        ) from exc
+    return boto3.client("sts"), boto3.client("marketplace-catalog", region_name=region)
+
+
+def _run_preflight(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+):
+    product_ids = parse_product_registry(product_registry)
+    sts_client, catalog_client = _seller_clients(region)
+    result = preflight(
+        product_ids=product_ids,
+        sts_client=sts_client,
+        catalog_client=catalog_client,
+        expected_account_id=seller_account_id,
+        skip_ownership_check=skip_ownership_check,
+    )
+    console.print(
+        f"[green]✓[/green] Credentials resolve to account [bold]{result.account_id}[/bold]"
+    )
+    console.print(f"  {result.caller_arn}")
+    if result.ownership_verified:
+        owned = {p.entity_id: p for p in result.owned}
+        for pid in result.product_ids:
+            p = owned[pid]
+            console.print(
+                f"[green]✓[/green] {pid} owned by this account — "
+                f"'{p.name}' ({p.visibility})"
+            )
+    else:
+        console.print(
+            "[yellow]![/yellow] Ownership check skipped. If this account does not "
+            "own the products, every activation will be refused and every customer "
+            "locked out — silently. You are asserting the account is correct."
+        )
+    return result
+
+
+_registry_option = click.option(
+    "--product-registry",
+    required=True,
+    help=(
+        'JSON map of productId -> settings, e.g. \'{"prod-abc":{"productCode":"xyz",'
+        '"allowFreeTier":true}}\'. productId is the SaaS product ENTITY id '
+        "(prod-...), not the product code."
+    ),
+)
+_seller_account_option = click.option(
+    "--seller-account-id",
+    default=None,
+    help="Assert the caller is exactly this AWS account before proceeding.",
+)
+_skip_ownership_option = click.option(
+    "--skip-ownership-check",
+    is_flag=True,
+    help=(
+        "Skip the product-ownership check (use only when the deploying role "
+        "lacks aws-marketplace:ListEntities and you are certain the account is "
+        "correct)."
+    ),
+)
+_mp_region_option = click.option(
+    "--region",
+    default=DEFAULT_MARKETPLACE_REGION,
+    show_default=True,
+    help="Region for AWS Marketplace APIs and the deployed stack.",
+)
+
+
+@seller_service_group.command("preflight")
+@_registry_option
+@_seller_account_option
+@_skip_ownership_option
+@_mp_region_option
+def seller_service_preflight_cmd(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+) -> None:
+    """Check that the current credentials are the SELLER for these products.
+
+    Read-only. Run this before `deploy` (which runs it automatically) or any time
+    you want to confirm which account you are pointed at.
+    """
+    try:
+        _run_preflight(
+            product_registry, seller_account_id, skip_ownership_check, region
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+    console.print("[green]✓ Preflight passed.[/green]")
+
+
+@seller_service_group.command("deploy")
+@_registry_option
+@_seller_account_option
+@_skip_ownership_option
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="CloudFormation stack name in the seller account.",
+)
+@click.option(
+    "--allowed-accounts",
+    default="",
+    help=(
+        "Comma-separated buyer accounts that receive a token WITHOUT a "
+        "subscription check. For your own test deployments only — every entry is "
+        "an account getting your paid product for free."
+    ),
+)
+@click.option(
+    "--token-ttl-seconds",
+    type=int,
+    default=None,
+    help="Activation token lifetime (template default: 3600).",
+)
+@click.option("--guided", is_flag=True, help="Pass --guided to `sam deploy`.")
+@click.option(
+    "--yes", is_flag=True, help="Skip the confirmation prompt after preflight."
+)
+def seller_service_deploy_cmd(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+    stack_name: str,
+    allowed_accounts: str,
+    token_ttl_seconds: Optional[int],
+    guided: bool,
+    yes: bool,
+) -> None:
+    """Preflight, then deploy the Seller Entitlement Service to this account.
+
+    Deploys into the account the current credentials resolve to — so the
+    preflight runs first and refuses if that account does not own the products
+    being registered.
+    """
+    try:
+        service_dir = find_seller_service_dir()
+        if service_dir is None:
+            raise SellerServiceError(
+                "Could not find feature-platform/seller-entitlement-service/. "
+                "Run this from a checkout of the IDP Accelerator repository "
+                "(the template and Lambda source live there, as with "
+                "`idp-feature-cli init`)."
+            )
+
+        result = _run_preflight(
+            product_registry, seller_account_id, skip_ownership_check, region
+        )
+
+        version = read_service_version(service_dir)
+        console.print()
+        console.print("  About to deploy the Seller Entitlement Service:")
+        console.print(f"    account    {result.account_id}")
+        console.print(f"    region     {region}")
+        console.print(f"    stack      {stack_name}")
+        if version:
+            console.print(f"    version    {version}")
+        if allowed_accounts:
+            console.print(
+                f"    [yellow]allow-list {allowed_accounts} "
+                f"(these accounts skip the subscription check)[/yellow]"
+            )
+        console.print()
+
+        if not yes and not click.confirm("Proceed?", default=False):
+            console.print("Aborted.")
+            sys.exit(1)
+
+        run_command(["sam", "build"], cwd=service_dir)
+        run_command(
+            build_sam_deploy_command(
+                service_dir=service_dir,
+                stack_name=stack_name,
+                region=region,
+                product_registry_json=product_registry,
+                allowed_accounts=allowed_accounts,
+                token_ttl_seconds=token_ttl_seconds,
+                guided=guided,
+            ),
+            cwd=service_dir,
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]✓ Seller Entitlement Service deployed.[/green]")
+    console.print("  Next steps:")
+    console.print(
+        f"    aws cloudformation describe-stacks --stack-name {stack_name} "
+        f"--region {region} --query 'Stacks[0].Outputs' --output table"
+    )
+    console.print(
+        "    # bake ActivationEndpoint + the public key into your extension; see"
+    )
+    console.print(
+        "    # feature-platform/seller-entitlement-service/README.md "
+        "'Buyer-side integration contract'"
+    )
 
 
 if __name__ == "__main__":
