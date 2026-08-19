@@ -104,15 +104,14 @@ const TestSets = (): React.JSX.Element => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
-  // Test-set ids whose completion notice this session has already dismissed.
+  // Sets seen mid-update, so a completion can be announced once when it lands.
   //
-  // lastAddResult lives on the record because the asynchronous add flow has nowhere
-  // else to report its outcome, so dismissing the alert cannot delete it — and every
-  // re-fetch brought the alert back, which read as the X doing nothing. Remembering the
-  // dismissal per session makes X mean "I have seen this" without a mutation whose only
-  // job is to clear a notice. Keyed by id + message so a NEW notice for the same set is
-  // not swallowed by an older dismissal.
-  const [dismissedResults, setDismissedResults] = useState<Set<string>>(new Set());
+  // The outcome of the asynchronous add used to be stored on the record and rendered
+  // from there, which made the notice immortal: dismissing it only cleared React
+  // state, so the next poll brought it back, and nothing ever deleted it. Detecting
+  // the transition here matches how synthetic-generation jobs already report
+  // completion — one transient message, nothing persisted, dismissal final.
+  const updatingRef = React.useRef<Set<string>>(new Set());
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [genInitial, setGenInitial] = useState<{ tab?: 'prompt' | 'config'; version?: string; className?: string }>({});
   const location = useLocation();
@@ -184,6 +183,22 @@ const TestSets = (): React.JSX.Element => {
       const result = await client.graphql({ query: getTestSets });
       console.log('TestSets: GraphQL result:', result);
       const backendTestSets = result.data.getTestSets || [];
+
+      // Announce an asynchronous update once, as it lands. The add mutation returns
+      // before the copy finishes, so this transition is the only moment the outcome
+      // is known — and a transient message is the whole reason nothing needs to be
+      // stored on the record to be re-rendered forever.
+      const wasUpdating = updatingRef.current;
+      const nowUpdating = new Set<string>();
+      backendTestSets.forEach((ts) => {
+        if (!ts) return;
+        if (ts.status === 'UPDATING') {
+          nowUpdating.add(ts.id);
+        } else if (wasUpdating.has(ts.id) && ts.status === 'COMPLETED') {
+          setSuccessMessage(`Test set "${ts.name}" updated — now ${ts.fileCount ?? 0} document(s).`);
+        }
+      });
+      updatingRef.current = nowUpdating;
 
       // Upsert: merge backend data with existing UI state, deduplicating by id
       setTestSets((prevTestSets) => {
@@ -928,23 +943,6 @@ const TestSets = (): React.JSX.Element => {
           {successMessage}
         </Alert>
       )}
-
-      {testSets
-        .filter((ts) => ts.lastAddResult && ts.status === 'COMPLETED' && !dismissedResults.has(`${ts.id}:${ts.lastAddResult}`))
-        .map((ts) => (
-          <Alert
-            key={ts.id}
-            type="info"
-            dismissible
-            onDismiss={() => {
-              const token = `${ts.id}:${ts.lastAddResult}`;
-              setDismissedResults((prev) => new Set(prev).add(token));
-              setTestSets((prev) => prev.map((t) => (t.id === ts.id ? { ...t, lastAddResult: null } : t)));
-            }}
-          >
-            <strong>{ts.name}:</strong> {ts.lastAddResult}
-          </Alert>
-        ))}
 
       <Table
         resizableColumns

@@ -3027,10 +3027,10 @@ class TestTestSetResolver:
         assert "labelJobId" not in meta
         # Returned to the caller, which shows it as a transient confirmation...
         assert "Reset" in result["lastAddResult"]
-        # ...but NOT persisted. lastAddResult is the async add flow's completion
-        # notice, rendered by the test-set list; a synchronous operation storing one
-        # produced an alert that no amount of dismissing could remove, because
-        # dismissal is client-side and every re-fetch brought it back.
+        # ...but NOT persisted. Storing a confirmation on the record made it
+        # immortal: the test-set list rendered it, dismissing only cleared client
+        # state, the next poll re-read it, and nothing ever deleted it. No operation
+        # persists one now — completions are announced transiently instead.
         assert "lastAddResult" not in meta
 
     def test_reset_discards_a_stale_notice_from_an_earlier_add(self, labeling_env):

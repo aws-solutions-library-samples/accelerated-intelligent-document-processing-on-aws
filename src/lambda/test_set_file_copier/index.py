@@ -275,11 +275,17 @@ def _update_test_set_status(tracking_table, test_set_id, status, error=None, fil
             update_expression += ', fileCount = :count'
             expression_values[':count'] = file_count
 
+        # Never persisted. This message used to be stored on the record and rendered
+        # by the test-set list, which made it immortal: dismissing the alert only
+        # cleared client state, the next poll re-read the attribute, and nothing ever
+        # deleted it — sets announced completed work from earlier sessions
+        # indefinitely. The UI now detects the UPDATING -> COMPLETED transition and
+        # shows one transient message, the same way synthetic-generation jobs report
+        # completion. Logged for operators; always cleared so stale values from before
+        # this change disappear the next time a set is touched.
         if last_add_result:
-            update_expression += ', lastAddResult = :lastAddResult'
-            expression_values[':lastAddResult'] = last_add_result
-        else:
-            remove_attrs.append('lastAddResult')
+            logger.info(f"Test set {test_set_id}: {last_add_result}")
+        remove_attrs.append('lastAddResult')
 
         if remove_attrs:
             update_expression += ' REMOVE ' + ', '.join(remove_attrs)
