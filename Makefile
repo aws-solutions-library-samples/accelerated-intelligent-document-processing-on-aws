@@ -707,7 +707,7 @@ endif
 # publish and deploy), and the preflight is a safety guard that deserves unit
 # tests — which a shell snippet in a Makefile would not get.
 
-.PHONY: seller-entitlement-service seller-entitlement-service-preflight
+.PHONY: seller-entitlement-service seller-entitlement-service-preflight seller-entitlement-service-activations
 
 # Usage:
 #   make seller-entitlement-service-preflight PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy"}}'
@@ -739,6 +739,19 @@ endif
 		$(if $(SKIP_OWNERSHIP_CHECK),--skip-ownership-check) \
 		$(if $(YES),--yes) \
 		$(EXTRA_ARGS)
+# Usage:
+#   make seller-entitlement-service-activations
+#   make seller-entitlement-service-activations PRODUCT_ID=prod-xxx OUTCOME=refused
+seller-entitlement-service-activations: ## Show which buyer accounts activated / were refused which products (Usage: make seller-entitlement-service-activations [PRODUCT_ID=...] [OUTCOME=granted|refused] [SINCE=...] [REGION=...])
+	@$(IDP_FEATURE_CLI) seller-service activations \
+		$(if $(STACK_NAME),--stack-name $(STACK_NAME)) \
+		$(if $(PRODUCT_ID),--product-id $(PRODUCT_ID)) \
+		$(if $(BUYER_ACCOUNT_ID),--buyer-account-id $(BUYER_ACCOUNT_ID)) \
+		$(if $(OUTCOME),--outcome $(OUTCOME)) \
+		$(if $(SINCE),--since $(SINCE)) \
+		$(if $(REGION),--region $(REGION)) \
+		$(EXTRA_ARGS)
+
 
 ##@ Benchmarking
 

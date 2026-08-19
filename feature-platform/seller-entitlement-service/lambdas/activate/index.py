@@ -50,6 +50,10 @@ Environment:
                            a customer's token.
     ALLOWED_ACCOUNTS       Optional comma-separated allow-list of buyer accounts
                            that bypass the subscription check (internal/testing).
+    ACTIVATIONS_TABLE      DynamoDB roster of activation attempts, one item per
+                           (buyer account, product). Blank disables recording.
+    METRIC_NAMESPACE       CloudWatch namespace for ActivationAttempt
+                           (default IDPSellerEntitlement).
     LOG_LEVEL              Logging level (default INFO).
 """
 
@@ -71,6 +75,8 @@ _TOKEN_TTL_SECONDS = int(os.environ.get("TOKEN_TTL_SECONDS", "3600"))
 _SIGNING_KEY_ARN = os.environ.get("SIGNING_KEY_ARN", "")
 _AGREEMENT_REGION = os.environ.get("AGREEMENT_REGION", "us-east-1")
 _SERVICE_VERSION = os.environ.get("SERVICE_VERSION", "unknown")
+_ACTIVATIONS_TABLE = os.environ.get("ACTIVATIONS_TABLE", "")
+_METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDPSellerEntitlement")
 _ALLOWED_ACCOUNTS = {
     a.strip() for a in os.environ.get("ALLOWED_ACCOUNTS", "").split(",") if a.strip()
 }
@@ -81,6 +87,7 @@ _CLIENT_CONFIG = Config(
 
 _agreement_client = None
 _kms_client = None
+_activations_table = None
 
 
 def _product_registry() -> Dict[str, Dict[str, Any]]:
@@ -110,6 +117,104 @@ def _kms():
     if _kms_client is None:
         _kms_client = boto3.client("kms", config=_CLIENT_CONFIG)
     return _kms_client
+
+
+def _activations() -> Any:
+    global _activations_table
+    if _activations_table is None:
+        _activations_table = boto3.resource("dynamodb").Table(_ACTIVATIONS_TABLE)
+    return _activations_table
+
+
+def _record_attempt(
+    *,
+    buyer_account_id: str,
+    product_id: str,
+    outcome: str,
+    detail: str,
+    free_tier: bool,
+    caller_arn: str,
+) -> None:
+    """Upsert the activation roster: one item per (buyer account, product).
+
+    **Fail-open by design.** Recording is bookkeeping; it must never be the reason
+    a genuinely entitled customer is refused a token. Every failure is logged and
+    swallowed — the logs remain the backstop record.
+
+    Counters use ADD and the first-seen timestamp uses if_not_exists, so
+    concurrent activations from the same account can't clobber each other.
+    """
+    if not _ACTIVATIONS_TABLE:
+        return
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        _activations().update_item(
+            Key={"buyerAccountId": buyer_account_id, "productId": product_id},
+            UpdateExpression=(
+                "SET firstAttemptAt = if_not_exists(firstAttemptAt, :now), "
+                "lastAttemptAt = :now, lastOutcome = :outcome, "
+                "lastDetail = :detail, lastFreeTier = :free_tier, "
+                "lastServiceVersion = :version, lastCallerArn = :arn "
+                "ADD attemptCount :one, grantedCount :granted"
+            ),
+            ExpressionAttributeValues={
+                ":now": now,
+                ":outcome": outcome,
+                ":detail": detail[:512],
+                ":free_tier": free_tier,
+                ":version": _SERVICE_VERSION,
+                ":arn": caller_arn[:512],
+                ":one": 1,
+                ":granted": 1 if outcome == "granted" else 0,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must not break activation
+        logger.warning(
+            "Could not record activation attempt for buyer=%s product=%s: %s",
+            buyer_account_id,
+            product_id,
+            exc,
+        )
+
+
+def _emit_activation_metric(product_id: str, outcome: str) -> None:
+    """CloudWatch Embedded Metric Format — one log write, no IAM, no latency.
+
+    The API access-log 403 filter can only see the HTTP status; it cannot say
+    WHICH product was refused or why. These carry ProductId + Outcome dimensions,
+    which is what a seller actually alarms on.
+    """
+    try:
+        logger.info(
+            json.dumps(
+                {
+                    "_aws": {
+                        # Required by the EMF spec — without it the record is
+                        # ingested as a plain log line and produces no metric.
+                        "Timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "CloudWatchMetrics": [
+                            {
+                                "Namespace": _METRIC_NAMESPACE,
+                                "Dimensions": [["ProductId", "Outcome"]],
+                                "Metrics": [
+                                    {"Name": "ActivationAttempt", "Unit": "Count"}
+                                ],
+                            }
+                        ],
+                    },
+                    "ProductId": product_id,
+                    "Outcome": outcome,
+                    "ActivationAttempt": 1,
+                }
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break activation
+        logger.warning("Could not emit ActivationAttempt metric: %s", exc)
+
+
+def _caller_arn(event: Dict[str, Any]) -> str:
+    identity = (event.get("requestContext") or {}).get("identity") or {}
+    return str(identity.get("userArn") or identity.get("caller") or "")
 
 
 def _caller_account_id(event: Dict[str, Any]) -> Optional[str]:
@@ -292,6 +397,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             product_id,
             detail,
         )
+        _record_attempt(
+            buyer_account_id=buyer_account_id,
+            product_id=product_id,
+            outcome="refused",
+            detail=detail,
+            free_tier=False,
+            caller_arn=_caller_arn(event),
+        )
+        _emit_activation_metric(product_id, "refused")
         return _response(
             403,
             {
@@ -324,4 +438,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         _SERVICE_VERSION,
         detail,
     )
+    _record_attempt(
+        buyer_account_id=buyer_account_id,
+        product_id=product_id,
+        outcome="granted",
+        detail=detail,
+        free_tier=free_tier,
+        caller_arn=_caller_arn(event),
+    )
+    _emit_activation_metric(product_id, "granted")
     return _response(200, {**token, "freeTier": free_tier})

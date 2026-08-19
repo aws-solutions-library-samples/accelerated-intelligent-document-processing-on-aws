@@ -287,3 +287,140 @@ def test_empty_result_is_not_entitled(mod, monkeypatch):
     entitled, detail = mod._has_active_agreement("prod-paid", "111111111111")
     assert entitled is False
     assert "no active agreement" in detail
+
+
+# ---------------------------------------------------------------------------
+# Activation roster. The durable answer to "who has connected?" — the logs age
+# out with LogRetentionInDays and are printf-formatted, so they are the forensic
+# backstop, not the record.
+# ---------------------------------------------------------------------------
+
+
+class _Table:
+    def __init__(self, error=None):
+        self.calls = []
+        self._error = error
+
+    def update_item(self, **kwargs):
+        if self._error:
+            raise self._error
+        self.calls.append(kwargs)
+        return {}
+
+
+def _with_roster(mod, monkeypatch, error=None):
+    table = _Table(error=error)
+    monkeypatch.setattr(mod, "_ACTIVATIONS_TABLE", "activations")
+    monkeypatch.setattr(mod, "_activations", lambda: table)
+    return table
+
+
+def test_granted_activation_is_recorded(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "agmt-7"))
+    table = _with_roster(mod, monkeypatch)
+
+    resp = mod.handler(
+        _event(
+            account_id="111111111111",
+            user_arn="arn:aws:sts::111111111111:assumed-role/r/s",
+        ),
+        None,
+    )
+    assert resp["statusCode"] == 200
+    (call,) = table.calls
+    assert call["Key"] == {
+        "buyerAccountId": "111111111111",
+        "productId": "prod-paid",
+    }
+    vals = call["ExpressionAttributeValues"]
+    assert vals[":outcome"] == "granted"
+    assert vals[":granted"] == 1
+    assert vals[":one"] == 1
+    # Counters must ADD and first-seen must not be clobbered by concurrent calls.
+    assert "ADD attemptCount :one, grantedCount :granted" in call["UpdateExpression"]
+    assert "if_not_exists(firstAttemptAt, :now)" in call["UpdateExpression"]
+
+
+def test_refused_activation_is_also_recorded(mod, monkeypatch):
+    """A refusal is the more interesting record — it's an unentitled account
+    trying to use a paid product."""
+    monkeypatch.setattr(
+        mod, "_has_active_agreement", lambda p, b: (False, "no active agreement")
+    )
+    table = _with_roster(mod, monkeypatch)
+
+    resp = mod.handler(_event(account_id="222222222222"), None)
+    assert resp["statusCode"] == 403
+    (call,) = table.calls
+    vals = call["ExpressionAttributeValues"]
+    assert vals[":outcome"] == "refused"
+    assert vals[":granted"] == 0
+    assert vals[":one"] == 1
+    assert "no active agreement" in vals[":detail"]
+
+
+def test_roster_write_failure_does_not_break_activation(mod, monkeypatch):
+    """Bookkeeping must never be the reason an entitled customer is refused."""
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "agmt-7"))
+    _with_roster(mod, monkeypatch, error=RuntimeError("table on fire"))
+
+    resp = mod.handler(_event(account_id="111111111111"), None)
+    assert resp["statusCode"] == 200, "must still issue the token"
+
+
+def test_recording_is_skipped_when_no_table_configured(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "ok"))
+    monkeypatch.setattr(mod, "_ACTIVATIONS_TABLE", "")
+    monkeypatch.setattr(
+        mod,
+        "_activations",
+        lambda: (_ for _ in ()).throw(AssertionError("must not resolve a table")),
+    )
+    assert mod.handler(_event(account_id="111111111111"), None)["statusCode"] == 200
+
+
+def test_detail_and_arn_are_truncated(mod, monkeypatch):
+    """Unbounded strings from an API error must not blow the DDB item limit."""
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "x" * 5000))
+    table = _with_roster(mod, monkeypatch)
+    mod.handler(
+        _event(account_id="111111111111", user_arn="arn:aws:sts::1:" + "y" * 5000),
+        None,
+    )
+    vals = table.calls[0]["ExpressionAttributeValues"]
+    assert len(vals[":detail"]) <= 512
+    assert len(vals[":arn"]) <= 512
+
+
+def test_activation_metric_is_valid_emf(mod, monkeypatch, caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO):
+        mod._emit_activation_metric("prod-paid", "refused")
+
+    records = []
+    for message in caplog.messages:
+        try:
+            parsed = json.loads(message)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and "_aws" in parsed:
+            records.append(parsed)
+
+    assert len(records) == 1
+    payload = records[0]
+    assert isinstance(payload["_aws"]["Timestamp"], int)
+    (directive,) = payload["_aws"]["CloudWatchMetrics"]
+    assert directive["Metrics"] == [{"Name": "ActivationAttempt", "Unit": "Count"}]
+    for dimension_set in directive["Dimensions"]:
+        for dim in dimension_set:
+            assert dim in payload, f"dimension {dim} missing from EMF payload"
+    assert payload["Outcome"] == "refused"
+    assert payload["ProductId"] == "prod-paid"
+
+
+def test_metric_emission_never_raises(mod, monkeypatch):
+    monkeypatch.setattr(
+        mod.logger, "info", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    mod._emit_activation_metric("prod-paid", "granted")

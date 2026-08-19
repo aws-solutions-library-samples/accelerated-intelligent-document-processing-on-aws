@@ -287,3 +287,120 @@ def read_service_version(service_dir: Path) -> Optional[str]:
                 if stripped.startswith("Value:"):
                     return stripped.split("Value:", 1)[1].strip().strip("'\"")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Activation roster reads
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ActivationRecord:
+    buyer_account_id: str
+    product_id: str
+    last_outcome: str
+    attempt_count: int
+    granted_count: int
+    first_attempt_at: str
+    last_attempt_at: str
+    free_tier: bool = False
+    detail: str = ""
+    service_version: str = ""
+
+    @classmethod
+    def from_item(cls, item: dict) -> "ActivationRecord":
+        def _int(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        return cls(
+            buyer_account_id=str(item.get("buyerAccountId", "")),
+            product_id=str(item.get("productId", "")),
+            last_outcome=str(item.get("lastOutcome", "")),
+            attempt_count=_int(item.get("attemptCount")),
+            granted_count=_int(item.get("grantedCount")),
+            first_attempt_at=str(item.get("firstAttemptAt", "")),
+            last_attempt_at=str(item.get("lastAttemptAt", "")),
+            free_tier=bool(item.get("lastFreeTier", False)),
+            detail=str(item.get("lastDetail", "")),
+            service_version=str(item.get("lastServiceVersion", "")),
+        )
+
+
+def resolve_stack_output(cfn_client: Any, stack_name: str, key: str) -> str:
+    """Read one Output off the deployed seller-service stack.
+
+    Lets the CLI find the roster table without the operator passing its name.
+    """
+    try:
+        resp = cfn_client.describe_stacks(StackName=stack_name)
+    except Exception as exc:  # noqa: BLE001
+        raise SellerServiceError(
+            f"Could not describe stack '{stack_name}': {exc}\n"
+            "Is the Seller Entitlement Service deployed in this account/region? "
+            "Deploy it with `idp-feature-cli seller-service deploy`."
+        ) from exc
+    for stack in resp.get("Stacks") or []:
+        for output in stack.get("Outputs") or []:
+            if output.get("OutputKey") == key:
+                return str(output.get("OutputValue", ""))
+    raise SellerServiceError(
+        f"Stack '{stack_name}' has no output named '{key}'. It may predate the "
+        "activation roster — redeploy with a current template."
+    )
+
+
+def fetch_activations(
+    *,
+    dynamodb_resource: Any,
+    table_name: str,
+    product_id: Optional[str] = None,
+    buyer_account_id: Optional[str] = None,
+    outcome: Optional[str] = None,
+    since: Optional[str] = None,
+) -> list[ActivationRecord]:
+    """Read the activation roster, newest attempt first.
+
+    Uses the ProductIndex GSI when filtering by product, and the table's own key
+    when filtering by buyer — a Scan only when neither is given, which is the
+    "show me everything" case and is fine for a roster of customers.
+    """
+    table = dynamodb_resource.Table(table_name)
+    try:
+        if product_id:
+            resp = table.query(
+                IndexName="ProductIndex",
+                KeyConditionExpression="productId = :pid",
+                ExpressionAttributeValues={":pid": product_id},
+                ScanIndexForward=False,
+            )
+            items = resp.get("Items", [])
+        elif buyer_account_id:
+            resp = table.query(
+                KeyConditionExpression="buyerAccountId = :bid",
+                ExpressionAttributeValues={":bid": buyer_account_id},
+            )
+            items = resp.get("Items", [])
+        else:
+            items = []
+            kwargs: dict = {}
+            while True:
+                resp = table.scan(**kwargs)
+                items.extend(resp.get("Items", []))
+                if "LastEvaluatedKey" not in resp:
+                    break
+                kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as exc:  # noqa: BLE001
+        raise SellerServiceError(
+            f"Could not read the activation roster: {exc}"
+        ) from exc
+
+    records = [ActivationRecord.from_item(i) for i in items]
+    if outcome:
+        records = [r for r in records if r.last_outcome == outcome]
+    if since:
+        records = [r for r in records if r.last_attempt_at >= since]
+    records.sort(key=lambda r: r.last_attempt_at, reverse=True)
+    return records

@@ -19,10 +19,12 @@ import pytest
 from idp_feature_sdk.seller_service import (
     SellerServiceError,
     build_sam_deploy_command,
+    fetch_activations,
     find_seller_service_dir,
     parse_product_registry,
     preflight,
     read_service_version,
+    resolve_stack_output,
 )
 
 _PRODUCT = "prod-a5ee62vs2xa72"
@@ -308,3 +310,191 @@ def test_real_template_carries_a_version():
         "seller-entitlement-service/template.yaml must carry a literal "
         "ServiceMeta.ServiceVersion.Value that `make version` can stamp"
     )
+
+
+# ---------------------------------------------------------------------------
+# Activation roster reads
+# ---------------------------------------------------------------------------
+
+
+def _item(
+    buyer, product=_PRODUCT, outcome="granted", last="2026-08-19T10:00:00Z", **kw
+):
+    base = {
+        "buyerAccountId": buyer,
+        "productId": product,
+        "lastOutcome": outcome,
+        "attemptCount": 3,
+        "grantedCount": 3 if outcome == "granted" else 0,
+        "firstAttemptAt": "2026-08-01T10:00:00Z",
+        "lastAttemptAt": last,
+        "lastFreeTier": False,
+        "lastDetail": "active agreement agmt-1",
+        "lastServiceVersion": "0.6.5.dev1",
+    }
+    base.update(kw)
+    return base
+
+
+class _Ddb:
+    def __init__(self, items, pages=None):
+        self._items = items
+        self._pages = pages
+        self.queries = []
+        self.scans = 0
+
+    def Table(self, name):  # noqa: N802 - mirrors the boto3 resource API
+        self.table_name = name
+        return self
+
+    def query(self, **kwargs):
+        self.queries.append(kwargs)
+        return {"Items": self._items}
+
+    def scan(self, **kwargs):
+        self.scans += 1
+        if self._pages:
+            page = self._pages.pop(0)
+            return page
+        return {"Items": self._items}
+
+
+def test_product_filter_uses_the_gsi_not_a_scan():
+    """A per-product roster read must not scan the whole table."""
+    ddb = _Ddb([_item("111111111111")])
+    records = fetch_activations(
+        dynamodb_resource=ddb, table_name="t", product_id=_PRODUCT
+    )
+    assert len(records) == 1
+    assert ddb.scans == 0
+    (q,) = ddb.queries
+    assert q["IndexName"] == "ProductIndex"
+    # Newest first — a seller cares about recent activity.
+    assert q["ScanIndexForward"] is False
+
+
+def test_buyer_filter_uses_the_table_key():
+    ddb = _Ddb([_item("111111111111")])
+    fetch_activations(
+        dynamodb_resource=ddb, table_name="t", buyer_account_id="111111111111"
+    )
+    (q,) = ddb.queries
+    assert "IndexName" not in q
+    assert q["ExpressionAttributeValues"] == {":bid": "111111111111"}
+
+
+def test_unfiltered_read_scans_and_paginates():
+    ddb = _Ddb(
+        [],
+        pages=[
+            {"Items": [_item("111111111111")], "LastEvaluatedKey": {"k": 1}},
+            {"Items": [_item("222222222222")]},
+        ],
+    )
+    records = fetch_activations(dynamodb_resource=ddb, table_name="t")
+    assert {r.buyer_account_id for r in records} == {"111111111111", "222222222222"}
+    assert ddb.scans == 2, "must follow LastEvaluatedKey"
+
+
+def test_results_are_sorted_newest_first():
+    ddb = _Ddb(
+        [
+            _item("111111111111", last="2026-08-01T00:00:00Z"),
+            _item("222222222222", last="2026-08-19T00:00:00Z"),
+            _item("333333333333", last="2026-08-10T00:00:00Z"),
+        ]
+    )
+    records = fetch_activations(dynamodb_resource=ddb, table_name="t")
+    assert [r.buyer_account_id for r in records] == [
+        "222222222222",
+        "333333333333",
+        "111111111111",
+    ]
+
+
+def test_outcome_and_since_filters():
+    ddb = _Ddb(
+        [
+            _item("111111111111", outcome="granted", last="2026-08-19T00:00:00Z"),
+            _item("222222222222", outcome="refused", last="2026-08-19T00:00:00Z"),
+            _item("333333333333", outcome="refused", last="2026-07-01T00:00:00Z"),
+        ]
+    )
+    refused = fetch_activations(
+        dynamodb_resource=ddb, table_name="t", outcome="refused"
+    )
+    assert [r.buyer_account_id for r in refused] == ["222222222222", "333333333333"]
+
+    recent = fetch_activations(
+        dynamodb_resource=ddb, table_name="t", since="2026-08-01"
+    )
+    assert "333333333333" not in [r.buyer_account_id for r in recent]
+
+
+def test_decimal_counters_survive_parsing():
+    """DynamoDB returns numbers as Decimal; the record must still be int-like."""
+    from decimal import Decimal
+
+    ddb = _Ddb(
+        [_item("111111111111", attemptCount=Decimal("7"), grantedCount=Decimal("5"))]
+    )
+    (record,) = fetch_activations(dynamodb_resource=ddb, table_name="t")
+    assert record.attempt_count == 7
+    assert record.granted_count == 5
+
+
+def test_missing_or_odd_attributes_do_not_crash():
+    ddb = _Ddb([{"buyerAccountId": "1", "productId": "prod-x"}])
+    (record,) = fetch_activations(dynamodb_resource=ddb, table_name="t")
+    assert record.attempt_count == 0
+    assert record.last_outcome == ""
+
+
+def test_read_failure_is_a_friendly_error():
+    class _Broken:
+        def Table(self, name):  # noqa: N802
+            return self
+
+        def scan(self, **kwargs):
+            raise RuntimeError("ResourceNotFoundException")
+
+    with pytest.raises(
+        SellerServiceError, match="Could not read the activation roster"
+    ):
+        fetch_activations(dynamodb_resource=_Broken(), table_name="t")
+
+
+# ---------------------------------------------------------------------------
+# Stack output resolution
+# ---------------------------------------------------------------------------
+
+
+class _Cfn:
+    def __init__(self, outputs=None, error=None):
+        self._outputs = outputs or []
+        self._error = error
+
+    def describe_stacks(self, **kwargs):
+        if self._error:
+            raise self._error
+        return {"Stacks": [{"Outputs": self._outputs}]}
+
+
+def test_resolves_the_roster_table_from_stack_outputs():
+    cfn = _Cfn([{"OutputKey": "ActivationsTableName", "OutputValue": "tbl-1"}])
+    assert resolve_stack_output(cfn, "s", "ActivationsTableName") == "tbl-1"
+
+
+def test_missing_output_suggests_a_redeploy():
+    """An older deployment predates the roster — say so rather than 'not found'."""
+    with pytest.raises(SellerServiceError, match="redeploy"):
+        resolve_stack_output(_Cfn([]), "s", "ActivationsTableName")
+
+
+def test_missing_stack_suggests_deploying():
+    with pytest.raises(SellerServiceError, match="seller-service deploy"):
+        resolve_stack_output(
+            _Cfn(error=RuntimeError("Stack with id s does not exist")),
+            "s",
+            "ActivationsTableName",
+        )

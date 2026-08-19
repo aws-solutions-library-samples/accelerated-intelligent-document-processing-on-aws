@@ -20,10 +20,12 @@ from .seller_service import (
     DEFAULT_MARKETPLACE_REGION,
     SellerServiceError,
     build_sam_deploy_command,
+    fetch_activations,
     find_seller_service_dir,
     parse_product_registry,
     preflight,
     read_service_version,
+    resolve_stack_output,
     run_command,
 )
 
@@ -1318,6 +1320,126 @@ def seller_service_deploy_cmd(
         "    # feature-platform/seller-entitlement-service/README.md "
         "'Buyer-side integration contract'"
     )
+
+
+@seller_service_group.command("activations")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to read the roster from.",
+)
+@click.option("--product-id", default=None, help="Only this product (uses the GSI).")
+@click.option("--buyer-account-id", default=None, help="Only this buyer account.")
+@click.option(
+    "--outcome",
+    type=click.Choice(["granted", "refused"]),
+    default=None,
+    help="Only attempts whose LAST outcome was this.",
+)
+@click.option(
+    "--since",
+    default=None,
+    help="Only attempts on/after this ISO timestamp, e.g. 2026-08-01.",
+)
+@click.option(
+    "--table-name",
+    default=None,
+    help="Read this table directly, skipping stack lookup.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+def seller_service_activations_cmd(
+    region: str,
+    stack_name: str,
+    product_id: Optional[str],
+    buyer_account_id: Optional[str],
+    outcome: Optional[str],
+    since: Optional[str],
+    table_name: Optional[str],
+    as_json: bool,
+) -> None:
+    """Show which buyer accounts have activated (or been refused) which products.
+
+    Reads the seller service's activation roster — one row per (buyer account,
+    product) with first/last seen, attempt counts, and the last outcome. Run this
+    with credentials for your SELLER account.
+
+    The roster is the durable record: the Lambda and API access logs hold the
+    per-request forensic detail but age out with LogRetentionInDays.
+    """
+    try:
+        import boto3
+
+        if not table_name:
+            table_name = resolve_stack_output(
+                boto3.client("cloudformation", region_name=region),
+                stack_name,
+                "ActivationsTableName",
+            )
+        records = fetch_activations(
+            dynamodb_resource=boto3.resource("dynamodb", region_name=region),
+            table_name=table_name,
+            product_id=product_id,
+            buyer_account_id=buyer_account_id,
+            outcome=outcome,
+            since=since,
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        import dataclasses
+        import json as _json
+
+        click.echo(_json.dumps([dataclasses.asdict(r) for r in records], indent=2))
+        return
+
+    if not records:
+        console.print(
+            "No activation attempts recorded yet"
+            + (f" for {product_id}" if product_id else "")
+            + "."
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Activation roster ({len(records)} account/product pairs)")
+    table.add_column("Buyer account")
+    table.add_column("Product")
+    table.add_column("Last outcome")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Granted", justify="right")
+    table.add_column("Tier")
+    table.add_column("First seen")
+    table.add_column("Last seen")
+    for r in records:
+        colour = "green" if r.last_outcome == "granted" else "red"
+        table.add_row(
+            r.buyer_account_id,
+            r.product_id,
+            f"[{colour}]{r.last_outcome}[/{colour}]",
+            str(r.attempt_count),
+            str(r.granted_count),
+            "free" if r.free_tier else "paid",
+            r.first_attempt_at[:19],
+            r.last_attempt_at[:19],
+        )
+    console.print(table)
+
+    refused = [r for r in records if r.last_outcome == "refused"]
+    if refused:
+        console.print()
+        console.print(
+            f"[yellow]{len(refused)} account/product pair(s) last refused.[/yellow] "
+            "Most recent reasons:"
+        )
+        for r in refused[:5]:
+            console.print(
+                f"  {r.buyer_account_id} / {r.product_id}: {r.detail or '(no detail)'}"
+            )
 
 
 if __name__ == "__main__":

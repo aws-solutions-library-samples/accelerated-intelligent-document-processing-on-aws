@@ -148,6 +148,46 @@ Claims: `{productId, buyerAccountId, freeTier, iat, exp}`.
 Failures: `403 not_entitled` (no active agreement), `404 unknown product`,
 `401 unauthenticated` (API misconfigured — should be impossible with `AWS_IAM`).
 
+## Who has activated? (visibility)
+
+Every activation attempt — granted **and** refused — is recorded three ways.
+
+**1. The activation roster (the durable record).** One DynamoDB item per (buyer
+account, product): first/last seen, attempt and grant counts, last outcome and
+reason, free-tier flag, and the service version that answered. Read it with your
+seller credentials:
+
+```bash
+idp-feature-cli seller-service activations                     # everything, newest first
+idp-feature-cli seller-service activations --product-id prod-a5ee62vs2xa72
+idp-feature-cli seller-service activations --outcome refused   # unentitled attempts
+idp-feature-cli seller-service activations --buyer-account-id 111122223333
+idp-feature-cli seller-service activations --since 2026-08-01 --json
+```
+
+A `--product-id` read uses the `ProductIndex` GSI rather than scanning. The table
+is `Retain`-on-delete and has point-in-time recovery: it is a record of who your
+customers are.
+
+Writes are **fail-open** — if the roster write fails the token is still issued.
+Bookkeeping must never be the reason an entitled customer is refused.
+
+**2. CloudWatch metrics.** `ActivationAttempt` in namespace
+`IDPSellerEntitlement`, dimensioned by `ProductId` + `Outcome`
+(`granted`/`refused`) — emitted via Embedded Metric Format, so no extra IAM and no
+added latency on the activation path. Alarm on a rising `refused` count.
+(`NotEntitledActivations`, from the API access log, additionally counts 403s that
+never reached the Lambda.)
+
+**3. Logs, for per-request forensics.** `/aws/lambda/<fn>` has the decision detail;
+`/aws/apigateway/<stack>-activation` has one JSON line per request with the
+verified caller account and status. Both age out with `LogRetentionInDays`
+(default 90) — which is exactly why the roster exists.
+
+> **No UI, deliberately.** This service runs in the *seller's* account; the IDP
+> web UI belongs to the *buyer's* stack, so there is nowhere in the product to put
+> a seller-facing console. The CLI is the surface; CloudWatch has the graphs.
+
 ## Fail-closed here, grace-period there
 
 Note the deliberate asymmetry:

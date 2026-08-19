@@ -141,6 +141,52 @@ Resources:
       TargetKeyId: !Ref TokenSigningKey
 
   ##########################################################################
+  # Activation roster
+  #
+  # The durable answer to "who has connected, and what did they activate?".
+  # The Lambda + API access logs hold the forensic detail, but they are
+  # printf/JSON lines that age out with LogRetentionInDays — no good as a
+  # commercial record, and awkward to query. This table is one item per
+  # (buyer account, product) with first/last seen, counts, and the last
+  # outcome, so the roster survives log expiry and reads in one query.
+  #
+  # Retained on stack delete: it is a record of who your customers are.
+  ##########################################################################
+  ActivationsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: buyerAccountId
+          AttributeType: S
+        - AttributeName: productId
+          AttributeType: S
+        - AttributeName: lastAttemptAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: buyerAccountId
+          KeyType: HASH
+        - AttributeName: productId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # "Who activated product X, most recent first" — the question a seller
+        # actually asks. Without this it would be a full table scan.
+        - IndexName: ProductIndex
+          KeySchema:
+            - AttributeName: productId
+              KeyType: HASH
+            - AttributeName: lastAttemptAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ##########################################################################
   # Activation Lambda
   ##########################################################################
   ActivateFunctionRole:
@@ -177,6 +223,15 @@ Resources:
                   - aws-marketplace:GetEntitlements
                   - aws-marketplace:ResolveCustomer
                 Resource: '*'
+        - PolicyName: RecordActivations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # UpdateItem only — the Lambda upserts the roster and never reads
+              # or deletes it. The CLI reads with the operator's own credentials.
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt ActivationsTable.Arn
         - PolicyName: SignActivationTokens
           PolicyDocument:
             Version: '2012-10-17'
@@ -205,6 +260,7 @@ Resources:
           # Recorded on every activation log line, so a seller debugging a
           # customer's token knows which build issued it.
           SERVICE_VERSION: !FindInMap [ServiceMeta, ServiceVersion, Value]
+          ACTIVATIONS_TABLE: !Ref ActivationsTable
           LOG_LEVEL: !Ref LogLevel
       Events:
         Activate:
@@ -290,6 +346,12 @@ Outputs:
       IDP Accelerator version this seller service was deployed from. Compare with
       the host/extension versions when diagnosing an activation problem.
     Value: !FindInMap [ServiceMeta, ServiceVersion, Value]
+
+  ActivationsTableName:
+    Description: >-
+      Roster of buyer accounts that have attempted activation, by product. Read it
+      with `idp-feature-cli seller-service activations`.
+    Value: !Ref ActivationsTable
 
   ActivationEndpoint:
     Description: >-
