@@ -72,7 +72,7 @@ features:
     marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y"
     # Seed/fallback only — the live value comes from latest.json at runtime.
     # TO BE SUPPLIED: set to the first published Auto Optimizer version.
-    latestVersion: ""
+    latestVersion: "v0.3.0"
     # Published by the closed-source release tooling to the same public buckets
     # and regions as the host's own templates (scripts/aws-release.sh), but under
     # a separate `artifacts/genai-idp-mp/` prefix so neither release process can
