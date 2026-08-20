@@ -54,7 +54,8 @@ def test_oss_only_when_no_marketplace_file(publisher_in_tmp):
         }
     ]
     catalog = pub.write_catalog_file(oss)
-    assert catalog["schemaVersion"] == "1.0"
+    # 1.1 added marketplace `regions` + `productId`; purely additive.
+    assert catalog["schemaVersion"] == "1.1"
     assert [f["featureId"] for f in catalog["features"]] == ["docs-by-status"]
     # Written to disk too.
     on_disk = _read_catalog(tmp_path)
@@ -98,6 +99,14 @@ features:
     assert mp["source"] == "marketplace"
     assert mp["productCode"] == "prod-xyz"
     assert mp["sellerBucket"] == "seller-prod"
+    # Legacy flat fields are normalized into a one-entry regions map so the host
+    # only ever reads one shape.
+    assert mp["regions"] == {
+        "us-east-1": {
+            "sellerBucket": "seller-prod",
+            "templateKey": "extensions/idp-monitor/template.yaml",
+        }
+    }
 
 
 def test_oss_wins_over_same_id_marketplace_entry(publisher_in_tmp):
@@ -187,6 +196,163 @@ features:
     assert by_id["hidden-mp"]["showInNav"] is False
     assert by_id["visible-mp"]["showInNav"] is True  # absent → default True
     assert by_id["hidden-oss"]["showInNav"] is False
+
+
+# ---------------------------------------------------------------------------
+# Schema 1.1: explicit per-region bucket + version-free templateKey.
+# ---------------------------------------------------------------------------
+
+
+def test_regions_map_propagates_to_catalog(publisher_in_tmp):
+    """The multi-region shape reaches catalog.json intact, with productId."""
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+schemaVersion: "1.1"
+features:
+  - featureId: idp-auto-optimizer
+    displayName: "Auto Optimizer"
+    productCode: "q0k0s3zuuga46hle6fecx547"
+    productId: "prod-a5ee62vs2xa72"
+    marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y"
+    latestVersion: "0.1.0"
+    regions:
+      us-west-2:
+        sellerBucket: aws-ml-blog-us-west-2
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+      eu-central-1:
+        sellerBucket: aws-ml-blog-eu-central-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+""",
+    )
+    catalog = pub.write_catalog_file([])
+    entry = catalog["features"][0]
+    assert entry["productId"] == "prod-a5ee62vs2xa72"
+    assert sorted(entry["regions"]) == ["eu-central-1", "us-west-2"]
+    assert entry["regions"]["us-west-2"]["sellerBucket"] == "aws-ml-blog-us-west-2"
+    # templateKey stays VERSION-FREE — a version-bearing key goes stale on Update.
+    for spec in entry["regions"].values():
+        assert spec["templateKey"].endswith("/template.yaml")
+        assert entry["latestVersion"] not in spec["templateKey"]
+
+
+def test_regions_map_wins_over_legacy_flat_fields(publisher_in_tmp):
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+features:
+  - featureId: both-schemas
+    displayName: "Both"
+    productCode: "p"
+    latestVersion: "1.0.0"
+    sellerBucket: "legacy-bucket"
+    sellerBucketRegion: "us-east-1"
+    templateKey: "extensions/both/template.yaml"
+    regions:
+      us-west-2:
+        sellerBucket: new-bucket
+        templateKey: extensions/both/template.yaml
+""",
+    )
+    entry = pub.write_catalog_file([])["features"][0]
+    assert list(entry["regions"]) == ["us-west-2"]
+    # Legacy fields are still EMITTED verbatim for an older host, but they do not
+    # contribute to `regions`.
+    assert entry["sellerBucket"] == "legacy-bucket"
+
+
+def test_leading_slash_stripped_from_template_key(publisher_in_tmp):
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+features:
+  - featureId: slashy
+    displayName: "Slashy"
+    productCode: "p"
+    latestVersion: "1.0.0"
+    regions:
+      us-east-1:
+        sellerBucket: b
+        templateKey: /extensions/slashy/template.yaml
+""",
+    )
+    entry = pub.write_catalog_file([])["features"][0]
+    assert entry["regions"]["us-east-1"]["templateKey"] == (
+        "extensions/slashy/template.yaml"
+    )
+
+
+def test_region_entry_missing_bucket_or_key_is_skipped(publisher_in_tmp):
+    """A half-specified region is dropped, not published as a broken mapping."""
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+features:
+  - featureId: partial
+    displayName: "Partial"
+    productCode: "p"
+    latestVersion: "1.0.0"
+    regions:
+      us-east-1:
+        sellerBucket: good-bucket
+        templateKey: extensions/partial/template.yaml
+      us-west-2:
+        sellerBucket: ""
+        templateKey: extensions/partial/template.yaml
+      eu-west-1:
+        sellerBucket: b
+""",
+    )
+    entry = pub.write_catalog_file([])["features"][0]
+    assert list(entry["regions"]) == ["us-east-1"]
+
+
+def test_legacy_entry_without_region_yields_no_mapping(publisher_in_tmp):
+    """No sellerBucketRegion → we refuse to guess which region the bucket is in.
+
+    Guessing is the bug schema 1.1 exists to fix: the old resolver reused one
+    bucket in every region, producing a template whose baked CodeUri pointed at
+    another region's objects.
+    """
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+features:
+  - featureId: no-region
+    displayName: "No Region"
+    productCode: "p"
+    latestVersion: "1.0.0"
+    sellerBucket: "some-bucket"
+    templateKey: "extensions/no-region/template.yaml"
+""",
+    )
+    entry = pub.write_catalog_file([])["features"][0]
+    assert entry["regions"] == {}
+    # Still published, with legacy fields intact — the host reports it as
+    # unavailable rather than silently launching the wrong region's template.
+    assert entry["sellerBucket"] == "some-bucket"
+
+
+def test_malformed_regions_value_is_ignored(publisher_in_tmp):
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+features:
+  - featureId: bad-regions
+    displayName: "Bad Regions"
+    productCode: "p"
+    latestVersion: "1.0.0"
+    regions: "us-east-1"
+""",
+    )
+    entry = pub.write_catalog_file([])["features"][0]
+    assert entry["regions"] == {}
 
 
 def test_empty_marketplace_list(publisher_in_tmp):

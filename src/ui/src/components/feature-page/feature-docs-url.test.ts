@@ -17,6 +17,8 @@ const base = (over: Partial<CatalogFeature>): CatalogFeature => ({
   source: 'oss',
   productCode: null,
   marketplaceListingUrl: null,
+  availableInRegion: true,
+  availableRegions: [],
   ...over,
 });
 

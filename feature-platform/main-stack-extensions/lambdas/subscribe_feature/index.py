@@ -32,16 +32,28 @@ The simulator's HTML buyer console lives at
 
 The product code and marketplace listing URL come from the feature's
 ``InstalledFeatures`` row — baked from ``feature.yaml``'s ``marketplace`` block
-at publish time and written at install — so the host needs no per-feature
-product-code configuration.
+at publish time and written at install — **falling back to the catalog entry**.
+
+That fallback is not optional. Subscribe is by definition something you do
+*before* installing, but the ``InstalledFeatures`` row only exists *after*
+install, so reading it alone meant the row lookup always came back empty on the
+one path this resolver exists to serve: in real-Marketplace mode (no simulator
+endpoint) it raised ``SubscribeError`` and the admin got an error instead of the
+listing. ``catalog.json`` has carried ``productCode`` and
+``marketplaceListingUrl`` all along.
 
 Env vars:
     SIMULATOR_ADMIN_ENDPOINT     Base URL of the simulator (e.g. https://sim.example.com).
                                  When blank and SOURCE_TAG is "simulator", raises.
                                  Also used in marketplace mode if set, otherwise the
-                                 feature's install-row marketplaceListingUrl is required.
+                                 feature's marketplaceListingUrl (install row, else
+                                 catalog) is required.
     INSTALLED_FEATURES_TABLE     DynamoDB table holding installed-feature rows
                                  (productCode / marketplaceListingUrl per featureId).
+    CONFIGURATION_BUCKET         (optional) bucket holding catalog.json — the
+                                 pre-install fallback for productCode /
+                                 marketplaceListingUrl. Blank disables it.
+    CATALOG_KEY                  Catalog key (default config_library/catalog.json).
     FEATURE_OFFER_ID_MAP         JSON map {featureId: offerId}. Optional; simulator
                                  auto-creates a default public offer if missing.
     DEFAULT_CUSTOMER_IDENTIFIER  Fallback CustomerIdentifier.
@@ -58,6 +70,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -69,8 +82,50 @@ _DEFAULT_BUYER_ACCOUNT_ID = os.environ.get("DEFAULT_BUYER_ACCOUNT_ID", "11112222
 _ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
 _SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "simulator")
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
+_CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
+_CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
 
 _dynamodb = boto3.resource("dynamodb")
+_config_s3_client = None
+
+
+def _config_s3():
+    global _config_s3_client
+    if _config_s3_client is None:
+        _config_s3_client = boto3.client("s3")
+    return _config_s3_client
+
+
+def _catalog_marketplace_identity(
+    feature_id: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read (productCode, marketplaceListingUrl) from catalog.json.
+
+    The pre-install source of truth: unlike the InstalledFeatures row, the
+    catalog exists before anything is installed — which is precisely when
+    Subscribe is used. Single GetObject, never lists. Returns (None, None) on any
+    failure so the caller degrades rather than erroring.
+    """
+    if not _CONFIGURATION_BUCKET:
+        return None, None
+    try:
+        resp = _config_s3().get_object(Bucket=_CONFIGURATION_BUCKET, Key=_CATALOG_KEY)
+        catalog = json.loads(resp["Body"].read().decode("utf-8"))
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code not in ("NoSuchKey", "404", "NotFound"):
+            logger.warning("Failed to read catalog: %s", exc)
+        return None, None
+    except (BotoCoreError, ValueError) as exc:
+        logger.warning("Bad catalog JSON: %s", exc)
+        return None, None
+    for entry in catalog.get("features") or []:
+        if isinstance(entry, dict) and entry.get("featureId") == feature_id:
+            return (
+                entry.get("productCode") or None,
+                entry.get("marketplaceListingUrl") or None,
+            )
+    return None, None
 
 
 def _load_json_map(raw: str, name: str) -> Dict[str, str]:
@@ -193,10 +248,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         raise ValueError("featureId is required")
 
     # Resolve product code from the feature's InstalledFeatures row (baked from
-    # the manifest at install time). Simulator mode synthesizes one when absent
-    # so subscribe + check find the same row; real-MP mode requires the feature
-    # to have been published with marketplace.productCode set.
+    # the manifest at install time), then from the CATALOG. The catalog fallback
+    # is the one that matters here: Subscribe runs before install, so the install
+    # row does not exist yet on this path.
     product_code, installed_listing_url = _installed_marketplace_identity(feature_id)
+    if not (product_code and installed_listing_url):
+        catalog_code, catalog_listing_url = _catalog_marketplace_identity(feature_id)
+        product_code = product_code or catalog_code
+        installed_listing_url = installed_listing_url or catalog_listing_url
     if not product_code:
         if _SOURCE_TAG == "simulator":
             product_code = f"prod-{feature_id}-sim"
@@ -208,9 +267,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
         else:
             raise SubscribeError(
-                f"No productCode for feature {feature_id!r}. Publish the feature "
-                f"with marketplace.productCode set in feature.yaml and reinstall, "
-                f"so the product code travels with the install."
+                f"No productCode for feature {feature_id!r} in either its install "
+                f"row or the catalog. Set `productCode` on the feature's entry in "
+                f"config_library/extensions-marketplace.yaml and re-publish (or "
+                f"publish the feature with marketplace.productCode set in "
+                f"feature.yaml so it travels with the install)."
             )
 
     customer_identifier = _resolve_customer_identifier(event)
@@ -244,9 +305,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     else:
         raise SubscribeError(
             f"No simulator endpoint and no marketplace listing URL for feature "
-            f"{feature_id!r}. Configure FeaturePlatformSimulatorEndpoint, or "
-            f"publish the feature with marketplace.listingUrl set in feature.yaml "
-            f"and reinstall."
+            f"{feature_id!r}. Set `marketplaceListingUrl` on the feature's entry "
+            f"in config_library/extensions-marketplace.yaml (or publish it with "
+            f"marketplace.listingUrl set in feature.yaml), or configure "
+            f"FeaturePlatformSimulatorEndpoint for simulator mode."
         )
 
     logger.info(

@@ -13,6 +13,10 @@ import useFeatureLaunchUrl from '../../hooks/use-feature-launch-url';
 import useSubscribeFeature from '../../hooks/use-subscribe-feature';
 import useUnsubscribeFeature from '../../hooks/use-unsubscribe-feature';
 import type { FeatureContext } from '../../types/feature-platform';
+// Region this stack runs in — used only to name the Region in the
+// "not available in <region>" message. The server-side catalog resolver is
+// authoritative about availability; this is display text.
+import { awsRegion } from '../../aws-exports';
 
 import FeatureLoader from './FeatureLoader';
 import FeatureCatalogBrowser from './FeatureCatalogBrowser';
@@ -24,6 +28,7 @@ import {
   InstallPrompt,
   LearnMore,
   LoadingBlock,
+  NotAvailableInRegion,
   SubscriptionRequired,
   UpToDateBanner,
   UpdateAvailableBanner,
@@ -185,6 +190,24 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
   // marketplace listing. Null when neither is available.
   const docsUrl = resolveFeatureDocsUrl(catalogEntry);
 
+  // --- Region-unavailable -------------------------------------------------
+  // Checked BEFORE the entitlement states: if the extension isn't published for
+  // this Region, a Subscribe button would dead-end, because even a valid
+  // subscription can't be installed here. An already-installed feature is
+  // exempt — it demonstrably works, whatever the catalog now says.
+  if (!installed && catalogEntry?.availableInRegion === false) {
+    return (
+      <NotAvailableInRegion
+        featureDisplayName={featureDisplayName}
+        description={featureDescription}
+        docsUrl={docsUrl}
+        availableRegions={catalogEntry.availableRegions ?? []}
+        currentRegion={awsRegion}
+        marketplaceUrl={marketplaceUrl ?? catalogEntry.marketplaceListingUrl ?? undefined}
+      />
+    );
+  }
+
   // --- NONE ---------------------------------------------------------------
   if (state === 'NONE') {
     return (
@@ -264,8 +287,21 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
     );
   }
 
+  // Cancelling goes through `unsubscribeFeature`, which drives the simulator's
+  // admin API. A REAL AWS Marketplace subscription can only be cancelled in the
+  // buyer's Marketplace console, so don't offer a button that would fail — and
+  // never offer it for an `advisory` state, where we never confirmed a
+  // subscription in the first place.
+  const canCancelSubscription = isAdmin && (entitlement?.source === 'simulator' || entitlement?.source === 'marketplace');
+
   // --- ACTIVE + installed --------------------------------------------------
-  const hasUpdate = !!installed.latestVersion && installed.latestVersion !== installed.installedVersion;
+  // Trust the server's `updateAvailable`, which compares SemVer properly and
+  // only reports an update when latest is strictly NEWER. Recomputing it here
+  // as `latest !== installed` resurrected the downgrade prompt that the
+  // resolver already fixed: a feature installed with `--from-code` can be
+  // AHEAD of the published latest, and plain inequality then invited the admin
+  // to "update" backwards.
+  const hasUpdate = installed.updateAvailable && !!installed.latestVersion;
 
   return (
     <SpaceBetween size="l">
@@ -274,8 +310,8 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
       {entitlement && entitlement.source !== 'auto' && (
         <ActiveSubscriptionBanner
           entitlement={entitlement}
-          canCancel={isAdmin}
-          onCancel={isAdmin ? handleCancel : undefined}
+          canCancel={canCancelSubscription}
+          onCancel={canCancelSubscription ? handleCancel : undefined}
           cancelling={cancelling}
           cancelError={cancelError?.message ?? null}
         />

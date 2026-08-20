@@ -13,25 +13,66 @@ An extension is an independent CloudFormation stack that an admin installs into
 the same account as the main IDP stack. There are two kinds, distinguished by
 the catalog `source` field:
 
-| | **OSS** (`source: oss`) | **Marketplace** (`source: marketplace`) *(future)* |
+| | **OSS** (`source: oss`) | **Marketplace** (`source: marketplace`) |
 |---|---|---|
-| Status | available today | framework only — no Marketplace extensions exist yet |
 | Audience | bundled with the open-source accelerator | closed-source, sold via AWS Marketplace |
-| Where the template lives | the stack-owned **FeatureBucket** (published with the accelerator's own artifacts) | a **private seller bucket** you control (GetObject-only) |
+| Where the template lives | the artifacts bucket, version-free base `<prefix>/extensions/<id>/` | a **per-Region seller bucket** you control, same version-free layout |
+| Region-scoped? | no | **yes** — one published copy per supported Region (see below) |
 | Catalog entry | `config_library/extensions-oss.yaml` (just a `path`) | `config_library/extensions-marketplace.yaml` (full metadata) |
-| Install gate | none — installable directly | `GetEntitlements(productCode)` must report an active subscription before the host hands out a presigned template URL |
+| Install gate | none — installable directly | advisory entitlement check on the Launch button; the real gate is the Marketplace subscription plus your extension's own runtime check |
 | UI CTA | **Install** | **Subscribe** → then **Install** |
-
-> **Marketplace is a future capability.** The framework (catalog schema,
-> entitlement check, presigned-template flow) is in place, but no AWS
-> Marketplace extensions are published yet and the path is not exercised in the
-> default deployment. The Marketplace steps below document how it will work so
-> authors can plan ahead.
 
 Authoring the *feature itself* (manifest + UI bundle + CFN template) is
 **identical** for both kinds. Only the **catalog registration** (the last step)
 differs. Build and test as an OSS extension first; the Marketplace path layers
-on entitlement + a private seller bucket later.
+on entitlement + a per-Region seller bucket later.
+
+### Marketplace catalog schema (1.1)
+
+```yaml
+schemaVersion: "1.1"
+features:
+  - featureId: idp-auto-optimizer
+    displayName: "Auto Optimizer"
+    description: "…"
+    productCode: "q0k0s3zuuga46hle6fecx547"   # seller-side GetEntitlements
+    productId: "prod-a5ee62vs2xa72"           # buyer-side Agreement API
+    marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-…"
+    latestVersion: ""                         # seed/fallback only — see below
+    regions:
+      us-west-2:
+        sellerBucket: aws-ml-blog-us-west-2
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+      us-east-1: { … }
+      eu-central-1: { … }
+```
+
+Four rules the host relies on:
+
+1. **`regions` is an explicit map, one entry per Region you publish to.** You
+   need per-Region copies because `sam package` bakes an absolute,
+   Region-specific `s3://bucket/key` `CodeUri` into the published template and a
+   Lambda's code bucket must be in the function's Region. The host looks the
+   caller's Region up and fails closed when it's missing — it **never derives a
+   bucket name** from a basename plus the Region, because bucket names are global
+   and guessable and a derived name could belong to somebody else.
+2. **`templateKey` is version-free.** A version-bearing key goes stale on a stack
+   Update. Versioned artifacts live under `<base>/<version>/` and your feature
+   stack self-locates them from its baked `FEATURE_VERSION`.
+3. **`latestVersion` is a seed/fallback.** The host reads `<base>/latest.json` at
+   runtime for the "Update available" badge, so publishing a new extension
+   version does **not** require re-releasing the accelerator. Your publisher
+   already writes `latest.json` on every release.
+4. **Artifacts must be public-read.** AWS Seller Ops fetches the registered Quick
+   Launch template URL during listing review, and CloudFormation fetches the
+   template and the Lambda code zips from an arbitrary buyer account at deploy
+   time. There is no presign (it could only have covered the template, and its
+   expiry broke long-running CFN Update sessions). Your commercial gate is the
+   subscription plus a runtime entitlement check inside the extension.
+
+Legacy schema 1.0 (flat `sellerBucket` + `sellerBucketRegion` + `templateKey`) is
+still accepted as a deprecated single-Region fallback, and is honored **only for
+its own declared Region**. Prefer `regions`.
 
 ## 1. Scaffold
 
@@ -339,8 +380,9 @@ features:
 `idp-cli publish` then builds it and emits a `source: oss` catalog entry
 automatically. UI metadata comes from your `feature.yaml`.
 
-**Marketplace** — publish the feature artifacts to your private seller bucket
-(see step 4), create the AWS Marketplace listing, then add an entry to
+**Marketplace** — publish the feature artifacts to your seller bucket **in every
+Region you support** (see step 4), create the AWS Marketplace listing, then add an
+entry to
 [`config_library/extensions-marketplace.yaml`](../config_library/extensions-marketplace.yaml):
 
 ```yaml
@@ -348,13 +390,21 @@ features:
   - featureId: my-feature
     displayName: "My Feature"
     description: "One-line description shown in the nav and on the feature page."
-    productCode: "<marketplace-product-code>"          # GetEntitlements is keyed on this
+    productCode: "<marketplace-product-code>"   # seller-side GetEntitlements
+    productId: "prod-<id>"                      # buyer-side Agreement API
     marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/<id>"
-    sellerBucket: "<your-private-seller-bucket>"
-    sellerBucketRegion: "us-east-1"
-    latestVersion: "0.1.0"
-    templateKey: "extensions/my-feature/template.yaml"   # version-free; overwritten each publish
+    latestVersion: "0.1.0"                      # seed/fallback; latest.json is authoritative
+    regions:
+      us-east-1:
+        sellerBucket: "<your-seller-bucket-us-east-1>"
+        templateKey: "extensions/my-feature/template.yaml"   # version-free
+      us-west-2:
+        sellerBucket: "<your-seller-bucket-us-west-2>"
+        templateKey: "extensions/my-feature/template.yaml"
 ```
+
+See [Marketplace catalog schema (1.1)](#marketplace-catalog-schema-11) for the
+four rules the host relies on. In short:
 
 `templateKey` is **version-free**: each publish overwrites
 `extensions/<id>/template.yaml`, and its directory `extensions/<id>` is the
@@ -364,11 +414,18 @@ Versioned artifacts (UI bundle, config preset, agent source) live under
 baked `FEATURE_VERSION`, so no version-bearing value is stored as a stale-able CFN
 parameter.
 
-The host's seller-bucket access also requires:
-- the seller bucket's **bucket policy** grants the host's feature-platform role
-  `s3:GetObject`, and
-- the host stack's **`SellerBucketObjectArns`** parameter includes the seller
-  bucket's object ARN (`arn:aws:s3:::<bucket>/*`).
+One entry per Region is required rather than one entry with a bucket basename,
+because `sam package` bakes an absolute, Region-specific `s3://` `CodeUri` into
+the published template. The host resolves the Region by **lookup only** and fails
+closed ("not available in `<region>`") when it's absent — it never derives a
+bucket name, since bucket names are global and a guessed name could belong to
+someone else.
+
+Your artifacts must be **public-read** (the AWS Seller Ops review and the buyer's
+CloudFormation both fetch them from outside your account), so the host needs no
+seller-bucket grant to launch. `SellerBucketObjectArns` is only needed if you
+keep a **private** artifacts bucket and want the host to still read `latest.json`
+for update badges via a signed request.
 
 > **Unadvertised features.** A catalog entry only adds a feature to the
 > *available-to-install* list. A feature deployed directly via CloudFormation
@@ -417,8 +474,12 @@ idp-feature-cli publish ./my-feature \                 # sam package + upload + 
 - **OSS**: artifacts ride along with the accelerator's normal `idp-cli publish`;
   the catalog is regenerated and deployed into the host's ConfigurationBucket on
   the next stack create/update.
-- **Marketplace**: publish to your private seller bucket, and ensure
-  `templateKey` / `latestVersion` in the catalog entry match what you uploaded.
+- **Marketplace**: publish once **per supported Region** (`--region` each time),
+  with `--public` so the artifacts are readable by AWS Seller Ops and by
+  CloudFormation in the buyer's account. Ensure every Region you published to has
+  a matching entry under `regions:` in the catalog. `latestVersion` in the
+  catalog is only a fallback — the `latest.json` your publisher writes is what
+  customers actually see, so an extension release needs no host release.
 
 ### Iterate one extension against a running host (`deploy`)
 
@@ -481,12 +542,75 @@ to exercise the Subscribe → Install → Active flow without a real listing:
        --register-with-simulator <simulator-endpoint> \
        --simulator-product-code <product-code>
    ```
-3. Deploy the main stack with `EnableFeaturePlatform=true` and
-   `FeaturePlatformSimulatorEndpoint=<simulator-endpoint>`.
+3. Deploy the main stack with `EnableFeaturePlatform=true`,
+   `FeaturePlatformSimulatorEndpoint=<simulator-endpoint>`, and the
+   `FeaturePlatformSubscriptionMode` matching the API your simulator implements
+   (`marketplace-live` for `SearchAgreements`, `marketplace` for
+   `GetEntitlements`).
 4. Open the IDP web UI — your feature appears under **Extensions**.
 
-In the default **auto-subscribe** mode (no simulator endpoint) OSS features skip
-the subscription step entirely and go straight to **Install**.
+With `FeaturePlatformSubscriptionMode=auto` OSS features skip the subscription
+step entirely and go straight to **Install**.
+
+### Simulator fidelity contract
+
+The simulator's job is to fail the way AWS fails. Where it diverges, it doesn't
+just under-test — it *actively certifies* designs that break in production, and
+it does so in the silent direction: green in dev, silently denying every customer
+in prod.
+
+The canonical example, and the reason this section exists: a simulator that makes
+**`GetEntitlements` succeed for a buyer-side caller reproduces the opposite of
+real behavior.** Against real AWS, that call returns HTTP 200 with
+`{"Entitlements": []}` — never an error — because it is a seller-side API *and*
+because entitlement records exist only for SaaS **Contract** products (a
+usage-based SaaS Subscription has none). An entitlement gate built and "verified"
+against a generous simulator therefore denies every real customer while logging
+nothing.
+
+A faithful simulator should implement, in priority order:
+
+1. **Buyer-side `marketplace-agreement:SearchAgreements`** — the API the host
+   actually calls in production (`marketplace-live`). Response shape:
+   `agreementViewSummaries[].{agreementId, status, startTime, endTime,
+   proposalSummary.resources[].{id, type}, proposalSummary.offerId}` with
+   `status` in `ACTIVE | CANCELLED | …`. Point the host at it with
+   `AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT` (botocore derives that name from the
+   service model, so no client code is needed). Without this, `marketplace-live`
+   has no development coverage at all.
+2. **Filter-combination validation.** Real `SearchAgreements` rejects
+   unsupported combinations with `ValidationException` ("Provided combination of
+   filters is not supported"), which is a genuine failure mode worth reproducing.
+   The combination the host uses is `PartyType=Acceptor` +
+   `AgreementType=PurchaseAgreement` + `ResourceIdentifier=<productId>` +
+   `Status=ACTIVE`.
+3. **`ResourceIdentifier` keys on the product ENTITY id** (`prod-…`), not the
+   product code. A simulator that only models product codes cannot serve this
+   filter — which is why catalog schema 1.1 carries `productId` separately.
+4. **Pricing model on product registration.** `POST /admin/products` should
+   accept the pricing model (`FREE` / usage-based / contract) and offer terms,
+   because that is what determines whether entitlements exist at all.
+5. **Honest `GetEntitlements`.** Return 200-with-empty-list for a product
+   registered as usage-based/no-contract, and for any caller that is not the
+   registered seller account. This turns the simulator from a trap into a
+   teaching tool: a developer who builds a `GetEntitlements` gate sees it fail in
+   dev exactly as it would in prod.
+6. **Separate buyer and seller identities.** The structural fact behind all of
+   the above: seller-side APIs are signed by the seller account, buyer-side by
+   the buyer. Conflating them is what makes divergence 5 possible.
+7. *(Optional)* **Discovery API** — `GetListing` / `GetOffer` / `GetOfferTerms`.
+   This is how a developer confirms product identity and pricing model without
+   guessing, and it is cheap to stub.
+
+To check any of this against real AWS from a buyer account, read-only:
+
+```bash
+scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
+```
+
+It runs the seller-side and buyer-side calls side by side with a positive
+control, so "empty because not subscribed" is distinguishable from "empty because
+the API can never answer this".
 
 ## Reference
 

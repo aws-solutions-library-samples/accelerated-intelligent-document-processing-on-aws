@@ -1,13 +1,16 @@
 """Unit tests for the subscribe_feature Lambda.
 
 The Lambda returns a Marketplace (or simulator) URL the UI should redirect the
-admin to. The product code + marketplace listing URL now come from the feature's
-InstalledFeatures row (baked from the manifest at install) — not a host env map.
-These tests seed that row via the `installed_features_table` fixture.
+admin to. The product code + marketplace listing URL come from the feature's
+InstalledFeatures row (baked from the manifest at install), falling back to
+catalog.json — which is the path that matters, since Subscribe runs BEFORE the
+install row exists. These tests seed the row via the `installed_features_table`
+fixture and the catalog via `_put_catalog`.
 """
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs, urlparse
 
 import boto3
@@ -37,6 +40,7 @@ def _preload(
     default_customer="CUST-default",
     default_buyer_account="111122223333",
     source_tag="simulator",
+    configuration_bucket="",
 ):
     monkeypatch.setenv("SIMULATOR_ADMIN_ENDPOINT", simulator_endpoint)
     monkeypatch.setenv("INSTALLED_FEATURES_TABLE", table_name)
@@ -45,8 +49,21 @@ def _preload(
     monkeypatch.setenv("DEFAULT_BUYER_ACCOUNT_ID", default_buyer_account)
     monkeypatch.setenv("ADMIN_GROUP", "Admin")
     monkeypatch.setenv("SIMULATOR_SOURCE_TAG", source_tag)
+    monkeypatch.setenv("CONFIGURATION_BUCKET", configuration_bucket)
+    monkeypatch.setenv("CATALOG_KEY", _CATALOG_KEY)
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     return load_lambda("subscribe_feature")
+
+
+_CATALOG_KEY = "config_library/catalog.json"
+
+
+def _put_catalog(bucket: str, features: list) -> None:
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=bucket,
+        Key=_CATALOG_KEY,
+        Body=json.dumps({"schemaVersion": "1.1", "features": features}).encode("utf-8"),
+    )
 
 
 def test_happy_path_simulator_mode(monkeypatch, load_lambda, installed_features_table):
@@ -314,3 +331,129 @@ def test_return_url_defaults_when_not_supplied(
     )
     q = parse_qs(urlparse(result["marketplaceUrl"]).query)
     assert q["returnUrl"] == ["/features/docs-by-status"]
+
+
+# ---------------------------------------------------------------------------
+# Catalog fallback — the not-yet-installed path, which is the ONLY path that
+# matters for Subscribe. The InstalledFeatures row doesn't exist until after
+# install, so before this fallback existed, real-Marketplace mode raised
+# SubscribeError and the admin got an error instead of the listing page.
+# ---------------------------------------------------------------------------
+
+_MP_LISTING = "https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y"
+
+
+def _auto_optimizer_entry(**over) -> dict:
+    entry = {
+        "featureId": "idp-auto-optimizer",
+        "displayName": "Auto Optimizer",
+        "source": "marketplace",
+        "productCode": "q0k0s3zuuga46hle6fecx547",
+        "productId": "prod-a5ee62vs2xa72",
+        "marketplaceListingUrl": _MP_LISTING,
+        "latestVersion": "0.1.0",
+    }
+    entry.update(over)
+    return entry
+
+
+def test_not_installed_marketplace_feature_uses_catalog_listing_url(
+    monkeypatch, mock_stack, load_lambda
+):
+    """The headline fix: subscribe works BEFORE the feature is installed."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_auto_optimizer_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],  # table exists, NO row seeded
+        simulator_endpoint="",  # real-Marketplace mode
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "subscribeFeature", {"featureId": "idp-auto-optimizer"}, groups=["Admin"]
+        ),
+        None,
+    )
+    assert result["marketplaceUrl"] == _MP_LISTING
+    assert result["productCode"] == "q0k0s3zuuga46hle6fecx547"
+
+
+def test_install_row_listing_url_wins_over_catalog(
+    monkeypatch, mock_stack, load_lambda
+):
+    bucket = mock_stack["bucket"]
+    table = mock_stack["table_name"]
+    _put_catalog(bucket, [_auto_optimizer_entry()])
+    _seed_row(
+        table,
+        "idp-auto-optimizer",
+        product_code="from-row",
+        listing_url="https://aws.amazon.com/marketplace/pp/from-row",
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=table,
+        simulator_endpoint="",
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "subscribeFeature", {"featureId": "idp-auto-optimizer"}, groups=["Admin"]
+        ),
+        None,
+    )
+    assert result["marketplaceUrl"].endswith("/from-row")
+    assert result["productCode"] == "from-row"
+
+
+def test_no_catalog_and_no_row_still_raises_a_clear_error(
+    monkeypatch, mock_stack, load_lambda
+):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        simulator_endpoint="",
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    with pytest.raises(mod.SubscribeError, match="extensions-marketplace.yaml"):
+        mod.handler(
+            make_appsync_event(
+                "subscribeFeature",
+                {"featureId": "idp-auto-optimizer"},
+                groups=["Admin"],
+            ),
+            None,
+        )
+
+
+def test_simulator_endpoint_still_wins_over_catalog_listing(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Dev/CI behaviour is untouched: a configured simulator is authoritative."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_auto_optimizer_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        simulator_endpoint="http://sim.example.com",
+        source_tag="simulator",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "subscribeFeature", {"featureId": "idp-auto-optimizer"}, groups=["Admin"]
+        ),
+        None,
+    )
+    assert result["marketplaceUrl"].startswith("http://sim.example.com/marketplace/pp/")
+    assert "q0k0s3zuuga46hle6fecx547" in result["marketplaceUrl"]

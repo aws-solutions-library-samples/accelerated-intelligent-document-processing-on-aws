@@ -1903,6 +1903,81 @@ STDERR:
             self.s3_client.upload_file(local_path, self.bucket, s3_key)
         self.log_success(f"Uploaded {len(files)} sample documents")
 
+    def _normalize_marketplace_regions(self, item):
+        """Normalize a marketplace entry's per-region artifact map (schema 1.1).
+
+        Returns ``{region: {"sellerBucket": ..., "templateKey": ...}}``.
+
+        Schema 1.1 entries carry an explicit ``regions`` mapping. Legacy 1.0
+        entries carry flat ``sellerBucket`` / ``sellerBucketRegion`` /
+        ``templateKey`` fields describing a SINGLE region; those are folded into
+        a one-entry map here so the host only ever has to read ``regions``.
+
+        A legacy entry with no ``sellerBucketRegion`` cannot be placed on the map
+        at all — we refuse to guess, because guessing is exactly the bug schema
+        1.1 exists to fix (the old resolver used the entry's bucket in every
+        region, handing customers a template whose baked CodeUri pointed at
+        another region's objects). Such an entry still publishes with its legacy
+        fields intact and the host reports "not available in <region>".
+        """
+        raw_regions = item.get("regions")
+        normalized = {}
+        if isinstance(raw_regions, dict):
+            for region, spec in raw_regions.items():
+                if not isinstance(spec, dict):
+                    self.log_warning(
+                        f"Marketplace extension {item['featureId']!r}: ignoring "
+                        f"malformed regions[{region!r}] entry {spec!r}"
+                    )
+                    continue
+                bucket = (spec.get("sellerBucket") or "").strip()
+                key = (spec.get("templateKey") or "").strip().lstrip("/")
+                if not (bucket and key):
+                    self.log_warning(
+                        f"Marketplace extension {item['featureId']!r}: "
+                        f"regions[{region!r}] needs both sellerBucket and "
+                        f"templateKey; skipping that region"
+                    )
+                    continue
+                normalized[str(region).strip()] = {
+                    "sellerBucket": bucket,
+                    "templateKey": key,
+                }
+        elif raw_regions is not None:
+            self.log_warning(
+                f"Marketplace extension {item['featureId']!r}: 'regions' must be a "
+                f"mapping of region -> {{sellerBucket, templateKey}}; got "
+                f"{type(raw_regions).__name__}"
+            )
+
+        if normalized:
+            return normalized
+
+        # Legacy schema 1.0 fallback: fold the flat single-region fields in.
+        legacy_bucket = (item.get("sellerBucket") or "").strip()
+        legacy_region = (item.get("sellerBucketRegion") or "").strip()
+        legacy_key = (item.get("templateKey") or "").strip().lstrip("/")
+        if legacy_bucket and legacy_key and legacy_region:
+            self.log_verbose(
+                f"Marketplace extension {item['featureId']!r} uses the deprecated "
+                f"flat sellerBucket/sellerBucketRegion schema; normalized to "
+                f"regions[{legacy_region!r}]. Migrate to a 'regions' map."
+            )
+            return {
+                legacy_region: {
+                    "sellerBucket": legacy_bucket,
+                    "templateKey": legacy_key,
+                }
+            }
+        if legacy_bucket or legacy_key:
+            self.log_warning(
+                f"Marketplace extension {item['featureId']!r} has no usable region "
+                f"mapping (needs a 'regions' map, or sellerBucket + "
+                f"sellerBucketRegion + templateKey). The host will report it as "
+                f"unavailable in every region."
+            )
+        return {}
+
     def _load_marketplace_features(self):
         """Load + normalize the curated marketplace extension list.
 
@@ -1944,9 +2019,27 @@ STDERR:
                     # the UI's Browse catalog page.
                     "showInNav": bool(item.get("showInNav", True)),
                     "source": "marketplace",
+                    # Seed/fallback only. The host reads <base>/latest.json at
+                    # runtime for the "Update available" badge, so an extension
+                    # release no longer requires re-publishing the host.
                     "latestVersion": item.get("latestVersion") or "",
+                    # productCode drives the seller-side GetEntitlements API;
+                    # productId drives the buyer-side Agreement API
+                    # (SearchAgreements ResourceIdentifier filter), which is what
+                    # the host can actually call from the customer's account.
                     "productCode": item.get("productCode") or "",
+                    "productId": item.get("productId") or "",
                     "marketplaceListingUrl": item.get("marketplaceListingUrl") or "",
+                    # Schema 1.1: explicit per-region bucket + version-free
+                    # template key. Always present (possibly empty) so the host
+                    # reads exactly one shape.
+                    "regions": self._normalize_marketplace_regions(item),
+                    # Deprecated schema 1.0 fields, emitted verbatim so a host
+                    # older than this catalog keeps working. Absent from
+                    # `regions`-only entries ON PURPOSE: an old host would then
+                    # fail loudly ("catalog entry is incomplete") instead of
+                    # silently reusing one region's bucket everywhere, which is
+                    # the wrong-region deploy failure schema 1.1 exists to fix.
                     "sellerBucket": item.get("sellerBucket") or "",
                     "sellerBucketRegion": item.get("sellerBucketRegion") or "",
                     "templateKey": item.get("templateKey") or "",
@@ -1970,7 +2063,11 @@ STDERR:
         for entry in marketplace_entries + list(oss_catalog_entries):
             by_id[entry["featureId"]] = entry
         catalog = {
-            "schemaVersion": "1.0",
+            # 1.1 adds `regions` (per-region sellerBucket + version-free
+            # templateKey) and `productId` to marketplace entries. Purely
+            # additive — every 1.0 field is still emitted — so the version is
+            # informational and no consumer gates behavior on it.
+            "schemaVersion": "1.1",
             "features": sorted(by_id.values(), key=lambda f: f["displayName"].lower()),
         }
         out_path = Path(self._CATALOG_OUTPUT_FILE)

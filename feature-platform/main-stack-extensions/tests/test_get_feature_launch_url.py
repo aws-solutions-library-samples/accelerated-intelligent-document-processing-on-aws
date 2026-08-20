@@ -285,18 +285,9 @@ def test_oss_feature_bucket_and_prefix_come_from_catalog(
 
 
 # ---------------------------------------------------------------------------
-# Marketplace features: catalog-driven, entitlement-gated presigned template.
+# Marketplace features: catalog-driven, region-mapped, bare public template URL.
+# (`_CATALOG_KEY` / `_put_catalog` are defined once at the top of the module.)
 # ---------------------------------------------------------------------------
-
-_CATALOG_KEY = "config_library/catalog.json"
-
-
-def _put_catalog(bucket: str, features: list) -> None:
-    boto3.client("s3", region_name="us-east-1").put_object(
-        Bucket=bucket,
-        Key=_CATALOG_KEY,
-        Body=json.dumps({"schemaVersion": "1.0", "features": features}).encode("utf-8"),
-    )
 
 
 def _preload_marketplace(monkeypatch, mock_stack, load_lambda):
@@ -314,32 +305,43 @@ def _preload_marketplace(monkeypatch, mock_stack, load_lambda):
     return load_lambda("get_feature_launch_url")
 
 
-def test_marketplace_entitled_returns_presigned_seller_url(
+_MP_TEMPLATE_KEY = "artifacts/genai-idp-mp/extensions/my-paid-extension/template.yaml"
+
+
+def _mp_entry(bucket: str, regions: dict | None = None, **extra) -> dict:
+    """A schema-1.1 marketplace catalog entry with an explicit regions map."""
+    entry = {
+        "featureId": "my-paid-extension",
+        "displayName": "My Paid Extension",
+        "source": "marketplace",
+        "latestVersion": "0.1.4",
+        "productCode": "prod-xyz",
+        "productId": "prod-abc123",
+        "regions": regions
+        if regions is not None
+        else {
+            "us-east-1": {
+                "sellerBucket": bucket,
+                "templateKey": _MP_TEMPLATE_KEY,
+            }
+        },
+    }
+    entry.update(extra)
+    return entry
+
+
+def test_marketplace_region_hit_returns_bare_public_url(
     monkeypatch, mock_stack, load_lambda
 ):
+    """Schema 1.1: the caller's region resolves in `regions` → bare public URL.
+
+    Marketplace artifacts are public-read by necessity (Seller Ops fetches the
+    registered template URL, and CloudFormation fetches the code zips from the
+    buyer's account), so there is deliberately NO presign here.
+    """
     bucket = mock_stack["bucket"]
-    # Seller template object lives in the (here, same mock) seller bucket, at
-    # the VERSION-FREE extension base (same convention as OSS).
-    _put(
-        bucket,
-        "extensions/my-paid-extension/template.yaml",
-        "AWSTemplateFormatVersion: '2010-09-09'",
-    )
-    _put_catalog(
-        bucket,
-        [
-            {
-                "featureId": "my-paid-extension",
-                "displayName": "My Paid Extension",
-                "source": "marketplace",
-                "latestVersion": "0.1.4",
-                "productCode": "prod-xyz",
-                "sellerBucket": bucket,
-                "sellerBucketRegion": "us-east-1",
-                "templateKey": "extensions/my-paid-extension/template.yaml",
-            }
-        ],
-    )
+    _put(bucket, _MP_TEMPLATE_KEY, "AWSTemplateFormatVersion: '2010-09-09'")
+    _put_catalog(bucket, [_mp_entry(bucket)])
 
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
     # Force the entitlement gate open (GetEntitlements isn't moto-backed).
@@ -352,14 +354,16 @@ def test_marketplace_entitled_returns_presigned_seller_url(
 
     assert result["featureId"] == "my-paid-extension"
     assert result["version"] == "0.1.4"
-    # Presigned GetObject URL for the seller-bucket template (version-free path).
     parsed = urlparse(result["templateUrl"])
     qs = parse_qs(parsed.query)
-    assert "extensions/my-paid-extension/template.yaml" in parsed.path
-    # Presigned (SigV4 "X-Amz-Signature" or SigV2 "Signature" depending on
-    # the botocore signing config) — either way it carries a signature.
-    assert "X-Amz-Signature" in qs or "Signature" in qs
-    # The launch URL embeds the presigned template URL.
+    # The region's bucket, verbatim from the catalog — never derived.
+    assert parsed.netloc == f"{bucket}.s3.us-east-1.amazonaws.com"
+    assert parsed.path == f"/{_MP_TEMPLATE_KEY}"
+    # NOT presigned: no signature, no expiry. Removing the presign is
+    # deliberate; re-adding one would break long-lived Update wizard sessions.
+    assert "X-Amz-Signature" not in qs
+    assert "Signature" not in qs
+    assert "X-Amz-Expires" not in qs
     assert "templateURL=" in result["launchUrl"]
     # The feature stack's ui-deployer reads its UI bundle from the SELLER
     # bucket; FeatureBucket is the only S3 coordinate passed as a param. The
@@ -369,6 +373,124 @@ def test_marketplace_entitled_returns_presigned_seller_url(
     assert params["FeatureBucket"] == bucket
     assert "FeatureArtifactPrefix" not in params
     assert "FeatureKeyPrefix" not in params
+
+
+def test_marketplace_region_miss_fails_closed(monkeypatch, mock_stack, load_lambda):
+    """An unlisted region must fail closed, never derive a bucket name.
+
+    Deriving `<basename>-<region>` would be a security hole: S3 bucket names are
+    global, so a derived name in a region we don't publish to could resolve to a
+    bucket someone else owns, handing the customer a template we didn't write.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [
+            _mp_entry(
+                bucket,
+                regions={
+                    "us-west-2": {
+                        "sellerBucket": "aws-ml-blog-us-west-2",
+                        "templateKey": _MP_TEMPLATE_KEY,
+                    },
+                    "eu-central-1": {
+                        "sellerBucket": "aws-ml-blog-eu-central-1",
+                        "templateKey": _MP_TEMPLATE_KEY,
+                    },
+                },
+            )
+        ],
+    )
+    mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
+    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
+    # The stack runs in us-east-1, which the entry does NOT list.
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
+    )
+    with pytest.raises(mod.FeatureNotAvailableInRegionError) as exc:
+        mod.handler(event, None)
+    message = str(exc.value)
+    assert "us-east-1" in message
+    # The error names where it IS available so the UI can say something useful.
+    assert "us-west-2" in message and "eu-central-1" in message
+
+
+def test_marketplace_legacy_flat_schema_still_works(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Deprecated schema 1.0 (flat sellerBucket + sellerBucketRegion) is honored.
+
+    Accepted only for its OWN declared region — the old resolver used that one
+    bucket in every region, which is the wrong-region deploy bug 1.1 fixes.
+    """
+    bucket = mock_stack["bucket"]
+    _put(bucket, _MP_TEMPLATE_KEY, "AWSTemplateFormatVersion: '2010-09-09'")
+    entry = _mp_entry(bucket, regions={})
+    entry.update(
+        {
+            "sellerBucket": bucket,
+            "sellerBucketRegion": "us-east-1",
+            "templateKey": _MP_TEMPLATE_KEY,
+        }
+    )
+    _put_catalog(bucket, [entry])
+
+    mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
+    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
+    )
+    result = mod.handler(event, None)
+    assert urlparse(result["templateUrl"]).netloc == (
+        f"{bucket}.s3.us-east-1.amazonaws.com"
+    )
+
+
+def test_marketplace_legacy_flat_schema_other_region_fails_closed(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A legacy entry declared for another region must NOT be reused here."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_entry(bucket, regions={})
+    entry.update(
+        {
+            "sellerBucket": "seller-bucket-eu-central-1",
+            "sellerBucketRegion": "eu-central-1",
+            "templateKey": _MP_TEMPLATE_KEY,
+        }
+    )
+    _put_catalog(bucket, [entry])
+
+    mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
+    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
+    )
+    with pytest.raises(mod.FeatureNotAvailableInRegionError):
+        mod.handler(event, None)
+
+
+def test_marketplace_empty_catalog_latest_version_still_launches(
+    monkeypatch, mock_stack, load_lambda
+):
+    """An empty catalog `latestVersion` must not block a launch.
+
+    The template URL is version-free and the version is baked into the published
+    template, so requiring a catalog version here would re-create exactly the
+    host-release coupling the runtime latest.json lookup removes.
+    """
+    bucket = mock_stack["bucket"]
+    _put(bucket, _MP_TEMPLATE_KEY, "AWSTemplateFormatVersion: '2010-09-09'")
+    _put_catalog(bucket, [_mp_entry(bucket, latestVersion="")])
+
+    mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
+    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
+    )
+    result = mod.handler(event, None)
+    assert result["version"] == ""
+    assert result["templateUrl"].endswith(_MP_TEMPLATE_KEY)
 
 
 def test_marketplace_not_entitled_raises(monkeypatch, mock_stack, load_lambda):
@@ -398,9 +520,10 @@ def test_marketplace_not_entitled_raises(monkeypatch, mock_stack, load_lambda):
         mod.handler(event, None)
 
 
-def test_marketplace_incomplete_catalog_entry_raises(
+def test_marketplace_entry_with_no_region_mapping_at_all(
     monkeypatch, mock_stack, load_lambda
 ):
+    """No `regions` and no legacy fields → unavailable everywhere, not a crash."""
     bucket = mock_stack["bucket"]
     _put_catalog(
         bucket,
@@ -408,10 +531,27 @@ def test_marketplace_incomplete_catalog_entry_raises(
             {
                 "featureId": "my-paid-extension",
                 "source": "marketplace",
-                # missing productCode / sellerBucket / templateKey / latestVersion
+                # no regions, no legacy sellerBucket/sellerBucketRegion
             }
         ],
     )
+    mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
+    )
+    with pytest.raises(mod.FeatureNotAvailableInRegionError, match="no regions"):
+        mod.handler(event, None)
+
+
+def test_marketplace_incomplete_catalog_entry_raises(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Region resolves but productCode is missing → explicit 'incomplete' error."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_entry(bucket)
+    del entry["productCode"]
+    _put_catalog(bucket, [entry])
+
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
