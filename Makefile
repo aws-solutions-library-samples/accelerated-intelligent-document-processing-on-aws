@@ -418,6 +418,23 @@ stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VP
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
 	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
 
+# Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
+# through run_stacktest.py: it deploys its own standalone stack (into a seller
+# account) and tears it down again.
+#
+# This is the guard for deploy-time defects, which the offline suites structurally
+# cannot see. Both real failures in this service so far — SAM's CALLER_CREDENTIALS
+# default conflicting with the resource policy, and the missing account-level API
+# Gateway CloudWatch role — were caught only by attempting a deploy.
+#
+# Needs no real Marketplace listing: every assertion is a refusal, so it registers
+# a synthetic product id and skips the ownership check.
+stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, probe live API, teardown
+	feature-platform/seller-entitlement-service/tests/stacktest.sh \
+	    $(if $(STACK_NAME),--stack-name $(STACK_NAME)) \
+	    $(if $(REGION),--region $(REGION)) \
+	    $(if $(NO_TEARDOWN),--no-teardown)
+
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 

@@ -142,9 +142,15 @@ _HOSTILE_IDS = {
     "jinja template": "{{ 7*7 }}",
     "xss": "<script>alert(1)</script>",
     "xxe": '<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>',
-    "unicode rtl override": "prod-‮gnimda",
-    "zero width": "prod-​paid",
-    "homoglyph": "prod-раid",  # Cyrillic а/р
+    # The invisible/confusable payloads are written as escapes rather than literal
+    # characters. The runtime string is byte-identical, but the source stays
+    # readable and honest: a literal U+202E makes the file *display* differently
+    # from how it executes ("Trojan Source"), which is a hazard for whoever reviews
+    # this corpus next and is flagged as HIGH by Bandit B613. Escaping is the fix,
+    # not a suppression.
+    "unicode rtl override": "prod-\u202egnimda",  # RIGHT-TO-LEFT OVERRIDE
+    "zero width": "prod-\u200bpaid",  # ZERO WIDTH SPACE
+    "homoglyph": "prod-\u0440\u0430id",  # Cyrillic er/a, confusable with p/a
     # Long, but under the 4 KB body cap — otherwise this exercises the size
     # guard (413) instead of the productId path it is meant to test.
     "long": "prod-" + "a" * 2000,
