@@ -373,7 +373,11 @@ def test_kms_key_policies_use_no_overly_broad_wildcard_actions(resources):
     key policies that do not grant root full access, because it can permanently
     orphan the key.
     """
-    allowed_wildcards = {"kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:GenerateDataKeyPair*"}
+    allowed_wildcards = {
+        "kms:GenerateDataKey*",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKeyPair*",
+    }
     for name in ("TokenSigningKey", "LogEncryptionKey"):
         for stmt in resources[name]["Properties"]["KeyPolicy"]["Statement"]:
             if stmt.get("Effect") != "Allow":
