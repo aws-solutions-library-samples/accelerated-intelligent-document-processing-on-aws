@@ -51,7 +51,13 @@ STACK_NAME = os.environ.get("STACK_NAME", "")
 # matter; these are best-effort estimates surfaced on the dashboard's
 # Control Plane KPI, not billing-grade numbers.
 ATHENA_PRICE_PER_TB = 5.0  # $5 per TB scanned
-LAMBDA_ARM64_GB_SECOND_PRICE = 0.0000133334  # per GB-second
+# Lambda Duration is billed in GB-seconds; the rate depends on the function's
+# architecture. Missing invocation request pricing before → ~20% under-count
+# on any control-plane Lambda that isn't ARM64 (most of the root-stack
+# Lambdas don't set Architectures and default to x86_64).
+LAMBDA_ARM64_GB_SECOND_PRICE = 0.0000133334  # per GB-second on arm64
+LAMBDA_X86_64_GB_SECOND_PRICE = 0.0000166667  # per GB-second on x86_64
+LAMBDA_REQUEST_PRICE = 0.20 / 1_000_000  # $0.20 per 1M requests, both archs
 # Bedrock per-1K-token prices, keyed by model ID prefix. Fallback to
 # Claude Sonnet pricing for unknown models — best-effort.
 BEDROCK_PRICING = {
@@ -71,9 +77,11 @@ tagging_client = boto3.client("resourcegroupstaggingapi")
 s3_client = boto3.client("s3")
 lambda_client = boto3.client("lambda")
 
-# Cache Lambda MemorySize lookups within a single rollup invocation to avoid
+# Cache Lambda config lookups within a single rollup invocation to avoid
 # re-issuing get_function_configuration per (function, hour) call.
-_lambda_memory_cache: Dict[str, int] = {}
+# Cache: function_name -> (memory_mb, architecture). Architecture defaults
+# to "x86_64" when the SDK doesn't return it or the lookup fails.
+_lambda_memory_cache: Dict[str, Tuple[int, str]] = {}
 
 
 def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
@@ -84,13 +92,46 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     the payload shape.
     """
     mode = event.get("mode", "hourly")
-    logger.info(f"Rollup Lambda invoked with mode={mode!r}")
+    # Anchor the target hour/day to the EventBridge trigger time (`time`
+    # field on scheduled events) rather than wall-clock. This matters on
+    # async retries that cross an hour or day boundary: without it, a
+    # retry silently rolls up the NEXT partition and abandons the failed
+    # one forever. Falls back to now() for ad-hoc invocations that don't
+    # include a time field (manual `aws lambda invoke`).
+    anchor = _parse_anchor_time(event)
+    logger.info(f"Rollup Lambda invoked with mode={mode!r} anchor={anchor.isoformat()}")
 
     if mode == "hourly":
-        return _run_hourly()
+        return _run_hourly(anchor)
     if mode == "daily":
-        return _run_daily()
+        return _run_daily(anchor)
     raise ValueError(f"Unknown rollup mode: {mode!r} (expected 'hourly' or 'daily')")
+
+
+def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
+    """Return the UTC anchor time for ``previous_hour``/``previous_day``.
+
+    Prefers ``event["time"]`` (EventBridge sets this to ISO 8601 UTC on
+    scheduled events) so async retries pin to the ORIGINAL trigger time,
+    not wall-clock — a retry that crossed a boundary would otherwise
+    silently target the wrong partition. Falls back to
+    ``datetime.now(UTC)`` for manual invokes that don't include a time.
+    """
+    raw = event.get("time")
+    if raw:
+        try:
+            # EventBridge uses ISO 8601 with a trailing "Z"; normalize
+            # to "+00:00" so fromisoformat handles it on all Python 3.11+.
+            normalized = raw.replace("Z", "+00:00") if isinstance(raw, str) else raw
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Failed to parse event['time']={raw!r} ({e}); falling back to now()"
+            )
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +139,10 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _run_hourly() -> Dict[str, Any]:
-    """Rollup the previous fully-sealed UTC hour."""
-    target_date, target_hour = _previous_hour()
+def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
+    """Rollup the previous fully-sealed UTC hour relative to ``anchor``
+    (defaults to now — see ``_parse_anchor_time`` for the retry-safe path)."""
+    target_date, target_hour = _previous_hour(anchor)
     logger.info(f"Hourly rollup targeting date={target_date} hour={target_hour}")
     results = {
         "mode": "hourly",
@@ -219,17 +261,18 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
 # ---------------------------------------------------------------------------
 
 
-def _run_daily() -> Dict[str, Any]:
-    """Rollup the previous fully-sealed UTC day.
+def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
+    """Rollup the previous fully-sealed UTC day relative to ``anchor``.
 
-    Before writing, verify that ``metering_hourly`` has all 24 hour
-    partitions present for the target date. Writing an incomplete daily
-    would be permanent — the per-partition idempotency skip means the
-    row never gets recomputed even if the missing hourly arrives later.
-    On incomplete input, raise so Lambda async-retry can replay after
-    the hourly rollup catches up.
+    Before writing, verify that every hour present in raw metering is
+    also present in ``metering_hourly`` for the target date (see
+    ``_require_hourly_matches_raw_metering``). Writing an incomplete
+    daily would be permanent — the per-partition idempotency skip means
+    the row never gets recomputed even if the missing hourly arrives
+    later. On incomplete input, raise so Lambda async-retry can replay
+    after the hourly rollup catches up.
     """
-    target_date = _previous_day()
+    target_date = _previous_day(anchor)
     logger.info(f"Daily rollup targeting date={target_date}")
     if _partition_already_written(table="metering_daily", date=target_date):
         logger.info(
@@ -238,7 +281,7 @@ def _run_daily() -> Dict[str, Any]:
         )
         return {"mode": "daily", "target_date": target_date, "skipped": True}
 
-    _require_all_24_hours_present(target_date)
+    _require_hourly_matches_raw_metering(target_date)
 
     # nosec B608 — target_date is derived from datetime, not user input.
     # `n_doc_events` (not `n_docs`) — a doc reprocessed in a different hour
@@ -270,7 +313,7 @@ def _run_daily() -> Dict[str, Any]:
     }
 
 
-def _require_all_24_hours_present(target_date: str) -> None:
+def _require_hourly_matches_raw_metering(target_date: str) -> None:
     """Fail loudly if metering_hourly is missing any hour that raw metering
     has data for.
 
@@ -487,7 +530,14 @@ def _get_cw_metrics_for_function(
                 "Metric": {
                     "Namespace": "IDPControlPlane",
                     "MetricName": "AthenaBytesScanned",
-                    "Dimensions": [{"Name": "Component", "Value": component}],
+                    # FunctionName dim is what makes per-Lambda attribution
+                    # correct — without it, a Component-only query returns
+                    # the same aggregate to every Lambda in the component
+                    # and we'd multiply cost by the Lambda count.
+                    "Dimensions": [
+                        {"Name": "Component", "Value": component},
+                        {"Name": "FunctionName", "Value": function_name},
+                    ],
                 },
                 "Period": 3600,
                 "Stat": "Sum",
@@ -505,22 +555,30 @@ def _get_cw_metrics_for_function(
         "invocations": flat.get("invocations", 0.0),
         "athena_bytes": flat.get("athena_bytes", 0.0),
         "bedrock_by_model": _get_bedrock_tokens_by_model(
-            component, hour_start, hour_end
+            component, function_name, hour_start, hour_end
         ),
     }
 
 
 def _get_bedrock_tokens_by_model(
-    component: str, hour_start: datetime, hour_end: datetime
+    component: str,
+    function_name: str,
+    hour_start: datetime,
+    hour_end: datetime,
 ) -> Dict[str, Dict[str, float]]:
-    """List Bedrock token metrics for this component and return
-    {model_id: {"in": tokens, "out": tokens}}.
+    """List Bedrock token metrics for this (component, function) pair
+    and return ``{model_id: {"in": tokens, "out": tokens}}``.
 
     The emitter (``emit_control_plane_cost_metric``) writes metrics with
-    dims ``[Component, Model]`` — GetMetricData needs an exact dimension
-    set, so we ListMetrics first to discover the Model values that
-    actually exist for this component, then query one aggregate per
-    Model. See §10.5 in docs/reporting-sql-layer.md.
+    dims ``[Component, FunctionName, Model]`` — the ``FunctionName`` dim
+    is what makes this per-function attribution correct. Without it, a
+    component-only query returns the SAME aggregate for every Lambda in
+    the component and we'd over-count by the Lambda count.
+
+    GetMetricData needs an exact dimension set, so we ListMetrics first
+    to discover the Model values emitted by THIS function, then query
+    one aggregate per (Component, FunctionName, Model). See §10.5 in
+    docs/reporting-sql-layer.md.
     """
     models: List[str] = []
     seen: set = set()
@@ -532,6 +590,7 @@ def _get_bedrock_tokens_by_model(
                 "MetricName": metric_name,
                 "Dimensions": [
                     {"Name": "Component", "Value": component},
+                    {"Name": "FunctionName", "Value": function_name},
                 ],
             }
             if next_token:
@@ -568,6 +627,7 @@ def _get_bedrock_tokens_by_model(
                             "MetricName": metric_name,
                             "Dimensions": [
                                 {"Name": "Component", "Value": component},
+                                {"Name": "FunctionName", "Value": function_name},
                                 {"Name": "Model", "Value": model},
                             ],
                         },
@@ -608,28 +668,33 @@ def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
     return result
 
 
-def _get_lambda_memory_mb(function_name: str) -> int:
-    """Return the Lambda's configured MemorySize in MB.
+def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
+    """Return the Lambda's configured (MemorySize MB, architecture).
 
     Cached per invocation so we don't spam get_function_configuration —
-    memory is a static property of the deployed function. Falls back to
-    128 MB (the AWS default) on lookup failure so cost estimates are
-    conservative rather than zero.
+    both properties are static per deployed function. Falls back to
+    (128 MB, "x86_64") on lookup failure — x86_64 is the AWS default
+    architecture, so this errs on the side of *slightly higher* per-GB
+    -second cost (safer than under-estimating).
     """
     cached = _lambda_memory_cache.get(function_name)
     if cached is not None:
         return cached
+    memory_mb = 128
+    architecture = "x86_64"
     try:
         response = lambda_client.get_function_configuration(FunctionName=function_name)
         memory_mb = int(response.get("MemorySize", 128))
+        archs = response.get("Architectures") or ["x86_64"]
+        architecture = archs[0] if archs else "x86_64"
     except Exception as e:
         logger.warning(
             f"get_function_configuration failed for {function_name}: {e}. "
-            f"Assuming default 128 MB — cost estimate may be low."
+            f"Assuming default 128 MB x86_64 — cost estimate may be low."
         )
-        memory_mb = 128
-    _lambda_memory_cache[function_name] = memory_mb
-    return memory_mb
+    result = (memory_mb, architecture)
+    _lambda_memory_cache[function_name] = result
+    return result
 
 
 def _build_control_plane_rows(
@@ -653,9 +718,18 @@ def _build_control_plane_rows(
         return []
 
     athena_bytes = int(metrics.get("athena_bytes", 0.0))
-    memory_mb = _get_lambda_memory_mb(function_name)
+    memory_mb, architecture = _get_lambda_memory_mb(function_name)
+    # GB-second rate depends on architecture: arm64 is ~20% cheaper than x86_64.
+    gb_second_rate = (
+        LAMBDA_ARM64_GB_SECOND_PRICE
+        if architecture == "arm64"
+        else LAMBDA_X86_64_GB_SECOND_PRICE
+    )
     lambda_gb_seconds = (duration_ms / 1000.0) * (memory_mb / 1024.0)
-    est_lambda_cost = lambda_gb_seconds * LAMBDA_ARM64_GB_SECOND_PRICE
+    # Duration cost + per-request cost — request price is arch-independent.
+    est_lambda_cost = (
+        lambda_gb_seconds * gb_second_rate + invocations * LAMBDA_REQUEST_PRICE
+    )
     est_athena_cost = (athena_bytes / (1024**4)) * ATHENA_PRICE_PER_TB
 
     bedrock_by_model = metrics.get("bedrock_by_model") or {}
@@ -728,6 +802,12 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     ),
     (re.compile(r"chatwithdocument|chatstream"), "doc-chat"),
     # Policy discovery (more specific than 'config').
+    # Multi-doc discovery — an admin batch tool, distinct from schema
+    # (policy) discovery. Must precede the generic 'discovery' rule so
+    # MultiDocDiscoveryPrepareFunction / MultiDocDiscoveryEmbedFunction
+    # / etc. don't get lumped into policy-discovery.
+    (re.compile(r"multidocdiscovery"), "multi-doc-discovery"),
+    # Policy (schema) discovery (more specific than 'config').
     (re.compile(r"policydiscovery|discovery"), "policy-discovery"),
     # Config CRUD — narrower than 'config' alone, requires 'resolver' suffix.
     (re.compile(r"config.*resolver"), "config-mgmt"),
@@ -764,16 +844,22 @@ def _component_for_function(function_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _previous_hour() -> Tuple[str, str]:
-    """Return (YYYY-MM-DD, HH) for the most recently-sealed UTC hour."""
-    now = datetime.now(timezone.utc)
-    prev = now - timedelta(hours=1)
+def _previous_hour(anchor: Optional[datetime] = None) -> Tuple[str, str]:
+    """Return (YYYY-MM-DD, HH) for the most recently-sealed UTC hour
+    relative to ``anchor`` (default: now). Anchoring to the EventBridge
+    trigger time (via ``_parse_anchor_time``) keeps async retries from
+    silently rolling up the wrong partition after crossing a boundary."""
+    base = anchor or datetime.now(timezone.utc)
+    prev = base - timedelta(hours=1)
     return prev.strftime("%Y-%m-%d"), prev.strftime("%H")
 
 
-def _previous_day() -> str:
-    """Return YYYY-MM-DD for the most recently-sealed UTC day."""
-    return (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+def _previous_day(anchor: Optional[datetime] = None) -> str:
+    """Return YYYY-MM-DD for the most recently-sealed UTC day, anchored
+    to ``anchor`` (default: now). See ``_previous_hour`` for the retry
+    rationale."""
+    base = anchor or datetime.now(timezone.utc)
+    return (base - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def _hour_window(date_str: str, hour_str: str) -> Tuple[datetime, datetime]:
