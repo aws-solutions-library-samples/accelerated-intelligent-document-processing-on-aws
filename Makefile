@@ -283,6 +283,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd feature-platform/feature-template/feature-api && $(PYTHON) -m pytest -q -p no:cacheprovider
+	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
+	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running circuit breaker Lambda tests..."

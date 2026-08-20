@@ -23,6 +23,8 @@ What it checks
   3. Unknown productId                       -> byte-identical to (2), no oracle
   4. Malformed body (`0`)                    -> 400, not 502
   5. Oversized body                          -> 413, not 502
+  5b. 15 hostile payloads (injection, CRLF,   -> 4xx, never 5xx or a hang
+      null bytes, deep nesting, wrong types)
   6. Signed, entitled (optional)             -> 200; token verifies against the
                                                 published public key, is bound to
                                                 the calling account, carries `kid`,
@@ -166,6 +168,47 @@ def check_oversized_body(url: str, product_id: str, session, region: str) -> Non
         warn(f"oversized body returned {status} (expected 413): {text[:120]}")
 
 
+# A trimmed version of the offline corpus in test_payload_robustness.py. Run
+# against the DEPLOYED stage so the assertion covers API Gateway's own parsing and
+# limits, not just the handler's.
+_HOSTILE_PAYLOADS = [
+    ("json number", "0"),
+    ("json null", "null"),
+    ("json array", "[1,2,3]"),
+    ("not json", "not json at all"),
+    ("truncated", '{"productId":'),
+    ("numeric productId", '{"productId": 12345}'),
+    ("bool productId", '{"productId": true}'),
+    ("list productId", '{"productId": ["x"]}'),
+    ("deep nesting", "[" * 300 + "]" * 300),
+    ("crlf in productId", json.dumps({"productId": "prod-x\r\nforged"})),
+    ("null byte", json.dumps({"productId": "prod-x\u0000admin"})),
+    ("xss", json.dumps({"productId": "<script>alert(1)</script>"})),
+    ("sql-ish", json.dumps({"productId": "x' OR '1'='1"})),
+    ("format specifiers", json.dumps({"productId": "%s%s%n"})),
+    ("emoji", json.dumps({"productId": "prod-\U0001f512"})),
+]
+
+
+def check_hostile_payloads(url: str, session, region: str) -> None:
+    """No hostile payload may 5xx or hang. This is the class of bug that WAS
+    present: a one-byte body crashed the handler into a 502."""
+    problems = []
+    for label, body in _HOSTILE_PAYLOADS:
+        status, text = _post(url, body, session, region)
+        if status == 0:
+            problems.append(f"{label}: connection failed ({text[:60]})")
+        elif status >= 500:
+            problems.append(f"{label}: {status}")
+        elif status not in (400, 403, 413):
+            problems.append(f"{label}: unexpected {status}")
+    if problems:
+        for problem in problems:
+            bad(f"hostile payload not handled cleanly — {problem}")
+    else:
+        ok(f"{len(_HOSTILE_PAYLOADS)} hostile payloads all refused cleanly (no 5xx)")
+
+
 def check_entitled(
     url: str, product_id: str, session, region: str, public_key_file: Optional[str]
 ) -> None:
@@ -271,6 +314,7 @@ def main() -> int:
     check_no_product_oracle(args.endpoint, refused_body, session, args.region)
     check_malformed_body(args.endpoint, session, args.region)
     check_oversized_body(args.endpoint, args.product_id, session, args.region)
+    check_hostile_payloads(args.endpoint, session, args.region)
 
     if args.entitled_profile:
         entitled_session = boto3.Session(profile_name=args.entitled_profile)

@@ -289,6 +289,48 @@ Generic IaC checks flag several things here. Recorded so they are triaged once:
 | DynamoDB CMK (`CKV_AWS_119`) | **Accepted.** `SSEEnabled: true` uses an AWS-managed key. The roster holds AWS account ids, not credentials or document content. Switch to a CMK if your data-classification policy requires customer-managed keys. |
 | API Gateway X-Ray (`CKV_AWS_73`) | **Optional.** Observability rather than security; enable if you want traces. |
 
+### CI coverage, and what cannot be automated
+
+**In CI, per commit (offline).** `make test-packages-cicd` — which the
+`developer-tests` workflow now calls — runs this service's full suite: handler
+behaviour, the 16 template-security invariants, and the payload-robustness corpus.
+No AWS, no credentials, no cost. That corpus is the highest-value part: it caught a
+crash-on-hostile-input bug **in a security fix**, where a non-string `productId`
+hit `.strip()` before the type check, making the type guard unreachable dead code.
+
+**Manual, against a live stack.** `tests/dynamic_activation_test.py` (see above).
+Deliberately not per-commit, for reasons worth stating rather than discovering:
+
+- **The preflight refuses to deploy in a CI account** — correctly. A build account
+  owns no Marketplace SaaS product, so `ListEntities` finds nothing and the
+  ownership check fails. Deploying in CI means passing
+  `--skip-ownership-check`, i.e. testing with the safety guard switched off.
+- **The positive path cannot be automated in a build account.** Issuing a real
+  token needs product ownership *and* a genuinely subscribed buyer account. CI can
+  cover the negative and robustness assertions (unsigned → 403, hostile payload →
+  4xx, oracle equality); "token issued and verifies" needs the seller account.
+- **Teardown leaks retained resources.** `TokenSigningKey` and `ActivationsTable`
+  are `DeletionPolicy: Retain` — right for production, since destroying the key
+  invalidates every issued token — and `DeletionPolicy` takes a literal, so it
+  cannot be relaxed per-environment with `Fn::If`. A plain `delete-stack` therefore
+  orphans a KMS key and a table on **every** run, and KMS has no immediate delete
+  (7–30 day pending window, billed throughout). Use
+  `tests/teardown_test_stack.sh`, which captures the retained physical ids before
+  deleting the stack and then cleans them up. It refuses any stack name that does
+  not look like a test stack, because scheduling deletion of a production signing
+  key is not something a cleanup script should be able to do by accident.
+
+**Why not ZAP/DAST.** The goal — "hostile payloads must not elicit a response or
+break the service" — is right, and was a real bug here. But ZAP cannot reach the
+code: it does not SigV4-sign, so every request it sends is rejected by the
+`AWS_IAM` authorizer with 403 *before the Lambda is invoked*. An active scan would
+report a clean 403 wall and prove nothing about the parser. The same goal is met
+directly by the payload corpus — offline against the handler in CI, and over signed
+HTTP against a deployed stage in the dynamic test. If a scanner run is needed for
+compliance evidence, the honest way is a SigV4-signing forward proxy in front of
+ZAP; that is a bespoke harness, and it would be testing what the corpus already
+covers.
+
 ### SAST results
 
 `semgrep` (one of SRT's engines) reported **one** finding on this code and it was a

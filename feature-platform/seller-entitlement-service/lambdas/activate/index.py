@@ -390,8 +390,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if not isinstance(body, dict):
         return _response(400, {"error": "body must be a JSON object"})
 
-    product_id = (body.get("productId") or "").strip()
-    if not isinstance(product_id, str) or not product_id:
+    # Type-check BEFORE calling a string method. The previous form was
+    #     product_id = (body.get("productId") or "").strip()
+    #     if not isinstance(product_id, str) ...
+    # where `.strip()` ran first, so `{"productId": 12345}` raised AttributeError
+    # and the isinstance guard was unreachable dead code. Found by the payload
+    # corpus in tests/test_payload_robustness.py, not by review.
+    raw_product_id = body.get("productId")
+    if not isinstance(raw_product_id, str):
+        return _response(400, {"error": "productId must be a string"})
+    product_id = raw_product_id.strip()
+    if not product_id:
         return _response(400, {"error": "productId is required"})
 
     registry = _product_registry()
