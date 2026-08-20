@@ -77,6 +77,14 @@ _AGREEMENT_REGION = os.environ.get("AGREEMENT_REGION", "us-east-1")
 _SERVICE_VERSION = os.environ.get("SERVICE_VERSION", "unknown")
 _ACTIVATIONS_TABLE = os.environ.get("ACTIVATIONS_TABLE", "")
 _METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDPSellerEntitlement")
+# Only field in a legitimate body is a product id; anything larger is abuse.
+_MAX_BODY_BYTES = 4096
+# One response body for both "no agreement" and "unknown product", so the two
+# are indistinguishable to a caller.
+_NOT_ENTITLED_BODY = {
+    "error": "not_entitled",
+    "detail": "No active AWS Marketplace subscription for this account.",
+}
 _ALLOWED_ACCOUNTS = {
     a.strip() for a in os.environ.get("ALLOWED_ACCOUNTS", "").split(",") if a.strip()
 }
@@ -315,6 +323,12 @@ def _mint_token(
         "freeTier": free_tier,
         "iat": int(issued.timestamp()),
         "exp": int((issued + timedelta(seconds=_TOKEN_TTL_SECONDS)).timestamp()),
+        # Key identifier, so a verifier can select the right public key. KMS
+        # cannot auto-rotate a SIGN_VERIFY key, so rotation means introducing a
+        # second key and trusting both during the overlap — impossible without a
+        # `kid`, and impossible to add later without breaking every deployed
+        # verifier. Cheap now, so it goes in now.
+        "kid": _SIGNING_KEY_ARN,
     }
     payload = json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signature = _kms().sign(
@@ -354,21 +368,47 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
         return _response(401, {"error": "unauthenticated"})
 
+    raw_body = event.get("body") or "{}"
+    # Bound the parse before doing it. The endpoint admits any AWS principal, so
+    # an attacker can post up to API Gateway's 10 MB limit; a request body big
+    # enough to matter is never legitimate here (the only field is a product id).
+    if len(raw_body) > _MAX_BODY_BYTES:
+        logger.warning(
+            "Rejecting oversized activation body from %s (%d bytes)",
+            buyer_account_id,
+            len(raw_body),
+        )
+        return _response(413, {"error": "request body too large"})
     try:
-        body = json.loads(event.get("body") or "{}")
+        body = json.loads(raw_body)
     except ValueError:
         return _response(400, {"error": "body must be JSON"})
+    # `json.loads` happily returns a list/str/int/None. Calling .get() on those
+    # raised an unhandled AttributeError, so a one-byte body ("0") from ANY AWS
+    # account produced a 502 and a stack trace. Attacker-triggerable noise at
+    # best, and it buried real signals in the logs.
+    if not isinstance(body, dict):
+        return _response(400, {"error": "body must be a JSON object"})
 
     product_id = (body.get("productId") or "").strip()
-    if not product_id:
+    if not isinstance(product_id, str) or not product_id:
         return _response(400, {"error": "productId is required"})
 
     registry = _product_registry()
     product = registry.get(product_id)
     if not product:
-        # Don't reveal which products exist.
-        logger.warning("Activation requested for unknown productId %r", product_id)
-        return _response(404, {"error": "unknown product"})
+        # Same 403 + body as "not entitled", ON PURPOSE. Any AWS account can call
+        # this endpoint, so a distinct 404 would be a product-existence oracle —
+        # and a listing in "Limited" state is one whose productId is NOT public.
+        # The distinction is kept in the seller-side log, where it helps diagnose a
+        # legitimate integrator's typo without telling a prober anything.
+        logger.warning(
+            "Activation requested by %s for unknown productId %r — responding "
+            "not_entitled so product existence is not disclosed",
+            buyer_account_id,
+            product_id,
+        )
+        return _response(403, _NOT_ENTITLED_BODY)
 
     if buyer_account_id in _ALLOWED_ACCOUNTS:
         logger.info(
@@ -376,7 +416,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "subscription check (internal/testing path).",
             buyer_account_id,
         )
-        entitled, detail, free_tier = True, "allow-listed account", True
+        # Full paid capability, NOT free tier: the point of the allow-list is to
+        # test the paid path end to end. Marking it free-tier would silently give
+        # reduced capability and look like the bypass was broken. Consequence:
+        # every entry here is an account getting the full paid product for free.
+        entitled, detail, free_tier = True, "allow-listed account", False
     else:
         entitled, detail = _has_active_agreement(product_id, buyer_account_id)
         free_tier = bool(product.get("allowFreeTier")) and not entitled
@@ -406,13 +450,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             caller_arn=_caller_arn(event),
         )
         _emit_activation_metric(product_id, "refused")
-        return _response(
-            403,
-            {
-                "error": "not_entitled",
-                "detail": "No active AWS Marketplace subscription for this account.",
-            },
-        )
+        return _response(403, _NOT_ENTITLED_BODY)
 
     if not _SIGNING_KEY_ARN:
         logger.error("SIGNING_KEY_ARN is not configured; cannot mint a token.")

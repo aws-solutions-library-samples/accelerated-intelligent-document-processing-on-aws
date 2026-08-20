@@ -4,13 +4,13 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Version** | 3.1 |
+| **Last Updated** | 2026-08-20 |
+| **Applies to release** | v0.6.5.dev1 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 83 |
+| **Total Threats** | 93 |
 | **Classification** | Internal |
 
 ## Overview
@@ -21,15 +21,15 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **83** |
-| Critical risk (8–9) | 6 |
-| High risk (6–7) | 26 |
-| Medium risk (3–5) | 37 |
-| Low risk (1–2) | 14 |
-| Mitigated | 56 (67%) |
-| Partially mitigated | 19 (23%) |
+| Threats identified | **93** |
+| Critical risk (8–9) | 8 |
+| High risk (6–7) | 29 |
+| Medium risk (3–5) | 41 |
+| Low risk (1–2) | 15 |
+| Mitigated | 62 (67%) |
+| Partially mitigated | 22 (24%) |
 | Open (real gap, needs work) | **5 (6%)** |
-| Accepted risk | 3 (4%) |
+| Accepted risk | 4 (4%) |
 
 > **Counts are generated, not hand-maintained.** `deliverables/threat-model.tc.json`
 > and the tallies above are produced by
@@ -66,6 +66,8 @@ security/threat-modeling/
 │   └── bda-mode.md                              ← BDA mode threats
 │
 ├── feature-threats/                             ← Per-feature threat analysis
+│                                                  (incl. seller-entitlement-service.md,
+│                                                   the only SELLER-side asset owner)
 │   ├── agent-analysis.md                        ← Multi-agent AI system threats (AGT)
 │   ├── companion-chat.md                        ← Conversational AI + streaming threats (CHAT)
 │   ├── mcp-integration.md                       ← MCP / external tool threats (MCP)
@@ -124,6 +126,7 @@ security/threat-modeling/
 - **[Feature Platform](feature-threats/feature-platform.md)** — Third-party UI bundles in the host origin
 - **[Jobs API](feature-threats/jobs-api.md)** — M2M OAuth realm outside the group RBAC model
 - **[PII Anonymization](feature-threats/pii-anonymization.md)** — Redaction bypass, re-identification oracle
+- **[Seller Entitlement Service](feature-threats/seller-entitlement-service.md)** — Seller-side activation endpoint; identity spoofing, key compromise, wrong-account deploy
 
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
@@ -154,6 +157,7 @@ security/threat-modeling/
 | FEAT | Feature Platform | 4 | Critical (8) | [feature-platform.md](feature-threats/feature-platform.md) |
 | JOB | Jobs API | 3 | High (6) | [jobs-api.md](feature-threats/jobs-api.md) |
 | PII | PII Anonymization | 5 | High (6) | [pii-anonymization.md](feature-threats/pii-anonymization.md) |
+| SELL | Seller Entitlement Service | 10 | Very High (9) | [seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
 
 ## Top Priority Threats
 

@@ -185,12 +185,14 @@ def test_agreement_lookup_failure_fails_CLOSED(mod, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_product_is_404_without_disclosing_the_catalog(mod):
+def test_unknown_product_does_not_disclose_the_catalog(mod):
+    """Superseded 404: an unknown product now answers exactly like "not entitled",
+    so existence is not observable. See
+    test_unknown_product_is_indistinguishable_from_not_entitled."""
     resp = mod.handler(
         _event(account_id="111111111111", body={"productId": "prod-nope"}), None
     )
-    assert resp["statusCode"] == 404
-    # Must not leak which products exist.
+    assert resp["statusCode"] == 403
     assert "prod-paid" not in resp["body"]
 
 
@@ -424,3 +426,127 @@ def test_metric_emission_never_raises(mod, monkeypatch):
         mod.logger, "info", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
     )
     mod._emit_activation_metric("prod-paid", "granted")
+
+
+# ---------------------------------------------------------------------------
+# Security hardening. The endpoint admits ANY authenticated AWS principal, so
+# every one of these inputs is reachable by an attacker who merely has an AWS
+# account — the bar is "has credentials", not "is a customer".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body,label",
+    [
+        ("[1,2]", "JSON array"),
+        ('"hello"', "JSON string"),
+        ("null", "JSON null"),
+        ("0", "JSON number"),
+        ("true", "JSON bool"),
+    ],
+)
+def test_non_object_body_is_400_not_a_crash(mod, body, label):
+    """Regression: `json.loads` returns list/str/int/None for these, and calling
+    .get() on them raised an unhandled AttributeError — so a ONE-BYTE body ("0")
+    from any AWS account produced a 502 plus a stack trace, burying real signals."""
+    event = _event(account_id="111111111111")
+    event["body"] = body
+    resp = mod.handler(event, None)
+    assert resp["statusCode"] == 400, label
+    assert "must be a JSON object" in resp["body"]
+
+
+def test_oversized_body_is_rejected_before_parsing(mod):
+    """API Gateway accepts up to 10 MB; the only legitimate field here is a
+    product id, so anything large is abuse and must not reach json.loads."""
+    event = _event(account_id="111111111111")
+    event["body"] = json.dumps({"productId": "prod-paid", "pad": "x" * 20000})
+    resp = mod.handler(event, None)
+    assert resp["statusCode"] == 413
+
+
+def test_unknown_product_is_indistinguishable_from_not_entitled(mod, monkeypatch):
+    """No product-existence oracle.
+
+    Any AWS account can probe this endpoint, and a listing in "Limited" state has
+    a productId that is NOT public — so a distinct 404 would confirm an unreleased
+    product exists. Status AND body must match the not-entitled response exactly.
+    """
+    monkeypatch.setattr(
+        mod, "_has_active_agreement", lambda p, b: (False, "no active agreement")
+    )
+    unknown = mod.handler(
+        _event(account_id="111111111111", body={"productId": "prod-does-not-exist"}),
+        None,
+    )
+    refused = mod.handler(_event(account_id="111111111111"), None)
+
+    assert unknown["statusCode"] == refused["statusCode"] == 403
+    assert unknown["body"] == refused["body"]
+    # And it must not name the products that DO exist.
+    assert "prod-paid" not in unknown["body"]
+    assert "prod-freemium" not in unknown["body"]
+
+
+def test_refusal_never_leaks_internal_error_detail_to_the_caller(mod, monkeypatch):
+    """The roster records why; the caller is told only "not entitled".
+
+    An AccessDenied or ValidationException string would disclose seller-side
+    configuration to an arbitrary AWS account.
+    """
+    monkeypatch.setattr(
+        mod,
+        "_has_active_agreement",
+        lambda p, b: (
+            False,
+            "agreement lookup failed: AccessDeniedException arn:aws:...",
+        ),
+    )
+    resp = mod.handler(_event(account_id="111111111111"), None)
+    assert resp["statusCode"] == 403
+    assert "AccessDenied" not in resp["body"]
+    assert "arn:aws" not in resp["body"]
+
+
+def test_token_carries_a_key_id_so_rotation_is_possible(mod, monkeypatch):
+    """KMS cannot auto-rotate a SIGN_VERIFY key. Rotation means running two keys
+    and trusting both during the overlap, which a verifier cannot do without a
+    `kid` — and `kid` cannot be added later without breaking deployed verifiers."""
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "agmt-1"))
+    resp = mod.handler(_event(account_id="111111111111"), None)
+    claims = _claims(resp)
+    assert claims["kid"] == mod._SIGNING_KEY_ARN
+
+
+def test_response_never_contains_key_material(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_has_active_agreement", lambda p, b: (True, "agmt-1"))
+    resp = mod.handler(_event(account_id="111111111111"), None)
+    body = json.loads(resp["body"])
+    assert set(body) == {
+        "token",
+        "signature",
+        "signingAlgorithm",
+        "expiresAt",
+        "freeTier",
+    }
+
+
+def test_allow_listed_account_gets_FULL_capability_not_free_tier(mod, monkeypatch):
+    """The allow-list exists to test the PAID path.
+
+    Marking it free-tier would silently give reduced capability and look like the
+    bypass was broken. Documented consequence: every entry gets the full paid
+    product for free, which is why it must be empty in production.
+    """
+    monkeypatch.setattr(
+        mod,
+        "_has_active_agreement",
+        lambda p, b: pytest.fail(
+            "must not call Marketplace for an allow-listed account"
+        ),
+    )
+    monkeypatch.setattr(mod, "_ALLOWED_ACCOUNTS", {"333333333333"})
+    resp = mod.handler(_event(account_id="333333333333"), None)
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["freeTier"] is False
+    assert _claims(resp)["freeTier"] is False

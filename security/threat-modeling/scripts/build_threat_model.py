@@ -50,6 +50,7 @@ PREFIX_DOCS = {
     "FEAT": "Feature Platform",
     "JOB": "Jobs API",
     "PII": "PII Anonymization",
+    "SELL": "Seller Entitlement Service",
 }
 
 # Curated per-threat risk + mitigation status. This is the ONLY place status is
@@ -157,6 +158,17 @@ STATUS: dict[str, tuple[int, str]] = {
     "PII.T03": (6, "Mitigated"),
     "PII.T04": (6, "Mitigated"),
     "PII.T05": (3, "Partially Mitigated"),
+    # Seller Entitlement Service (seller-account assets, not customer)
+    "SELL.T01": (6, "Mitigated"),
+    "SELL.T02": (9, "Mitigated"),
+    "SELL.T03": (6, "Mitigated"),
+    "SELL.T04": (4, "Partially Mitigated"),
+    "SELL.T05": (8, "Mitigated"),
+    "SELL.T06": (4, "Partially Mitigated"),
+    "SELL.T07": (2, "Mitigated"),
+    "SELL.T08": (6, "Partially Mitigated"),
+    "SELL.T09": (4, "Mitigated"),
+    "SELL.T10": (4, "Accepted"),
 }
 
 BLOCK_RE = re.compile(

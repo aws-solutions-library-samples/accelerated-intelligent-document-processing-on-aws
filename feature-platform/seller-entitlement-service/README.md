@@ -247,6 +247,52 @@ step, and it means enforcement and billing share one piece of infrastructure
 rather than two. `ResolveCustomer` is already in the Lambda's IAM policy for the
 SaaS registration flow.
 
+## Security testing and scanner triage
+
+**Static (offline, runs with the unit tests).**
+`tests/test_template_security.py` asserts 16 security invariants that live in the
+CloudFormation template, where handler unit tests cannot see them and `cfn-lint`
+only checks syntax: SigV4 required, no `Authorization: NONE`, resource policy
+pinned to `POST /activate`, throttling and concurrency set, marketplace grants
+read-only, `kms:Sign` only, `dynamodb:UpdateItem` only, asymmetric key, no
+wildcard key-policy principal, retain policies, SSE + PITR, no hardcoded account
+ids. Each was **mutation-tested** — flipping `AWS_IAM`→`NONE`,
+`UpdateItem`→`dynamodb:*`, adding `kms:PutKeyPolicy` or `BatchMeterUsage`,
+widening the resource policy, disabling SSE, or planting an account id each makes
+a specific test fail.
+
+**Dynamic (live, against a deployed stack).**
+`tests/dynamic_activation_test.py` asserts what the deployed *stage* does, which
+can differ from the template after a console edit or a partly-applied change set:
+unsigned → 403, unentitled → 403 with no internal detail, unknown product →
+byte-identical to unentitled, malformed body → 400 (not 502), oversized → 413,
+and — with a subscribed account — a token that verifies against the published
+public key, is bound to the calling account, and carries `kid`.
+
+**Not applicable, deliberately.** The repository's ZAP DAST and RBAC harnesses do
+not fit this service and should not be stretched to: ZAP cannot SigV4-sign, so it
+could only ever confirm "everything is 403" (already covered by one line of the
+dynamic test), and the RBAC harness is built around Cognito groups on the host's
+`/op/<field>` API, which this service has none of.
+
+### IaC scanner findings — accepted or rejected, with reasons
+
+Generic IaC checks flag several things here. Recorded so they are triaged once:
+
+| Check | Decision |
+|---|---|
+| Lambda concurrency limit (`CKV_AWS_115`) | **Fixed.** `ReservedConcurrency` added — a real control for SELL.T04, since the endpoint is open to any AWS account. |
+| API Gateway caching (`CKV_AWS_120`) | **Rejected, and guarded by a test.** A cached activation response would keep answering "entitled" after a cancellation. Enabling it would turn a revenue control into a stale one. |
+| Lambda in a VPC (`CKV_AWS_117`) | **Rejected.** The function must reach public AWS APIs (Marketplace, KMS, DynamoDB); a VPC adds NAT/endpoints for no security gain. |
+| Lambda DLQ (`CKV_AWS_116`) | **N/A.** Invocation is synchronous via API Gateway; DLQs apply to async invocations. |
+| Log group / env var KMS CMK (`CKV_AWS_158`, `CKV_AWS_173`) | **Accepted.** Both are already encrypted with AWS-managed keys. The env vars hold a product registry and an account allow-list, not secrets. A CMK is reasonable for a stricter seller — add `KmsKeyId` if your policy requires it. |
+| DynamoDB CMK (`CKV_AWS_119`) | **Accepted.** `SSEEnabled: true` uses an AWS-managed key. The roster holds AWS account ids, not credentials or document content. Switch to a CMK if your data-classification policy requires customer-managed keys. |
+| API Gateway X-Ray (`CKV_AWS_73`) | **Optional.** Observability rather than security; enable if you want traces. |
+
+The repository's SRT scan runs automatically on merge requests and may surface
+findings under its own rule names; triage them there, adding suppressions to
+`scripts/srt/issues.json` with a rationale rather than silencing them locally.
+
 ## Verification status
 
 The seller-side entitlement query is **verified against a live seller account**,

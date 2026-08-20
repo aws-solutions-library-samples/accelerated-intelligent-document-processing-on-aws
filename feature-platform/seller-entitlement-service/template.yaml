@@ -84,6 +84,20 @@ Parameters:
       Region for the AWS Marketplace Agreement API. AWS Marketplace lives in
       us-east-1 and the API is not available in every Region.
 
+  ReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: >-
+      Reserved Lambda concurrency for the activation function. This is a security
+      control, not just a cost one: the endpoint is reachable by ANY AWS account,
+      so without a reservation a flood would consume the seller account's whole
+      Lambda concurrency pool and take down other seller-side functions with it.
+      It also bounds the rate at which the shared Marketplace SearchAgreements
+      quota can be consumed. Activation is a once-per-token-TTL call per install,
+      so 10 is generous; raise it only if you have many thousands of installs.
+
   LogLevel:
     Type: String
     Default: 'INFO'
@@ -236,12 +250,14 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Sign only — this role must not be able to change the key or its
-              # policy, so a compromise of the function cannot re-point trust.
+              # Sign ONLY. The function must not be able to change the key or
+              # its policy, so a compromise cannot re-point trust. GetPublicKey
+              # is deliberately absent: the function never needs it (the operator
+              # fetches the public key with their own credentials via the
+              # TokenPublicKeyCommand output), and an unused grant is one more
+              # thing a compromised function could use.
               - Effect: Allow
-                Action:
-                  - kms:Sign
-                  - kms:GetPublicKey
+                Action: kms:Sign
                 Resource: !GetAtt TokenSigningKey.Arn
 
   ActivateFunction:
@@ -250,6 +266,9 @@ Resources:
       CodeUri: ./lambdas/activate/
       Handler: index.handler
       Role: !GetAtt ActivateFunctionRole.Arn
+      # Bounds the blast radius of abuse from an arbitrary AWS account, and
+      # isolates the rest of the seller account's Lambda concurrency from it.
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
       Environment:
         Variables:
           PRODUCT_REGISTRY_JSON: !Ref ProductRegistryJson

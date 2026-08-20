@@ -24,7 +24,7 @@ product.
 from __future__ import annotations
 
 import json
-import subprocess
+import subprocess  # nosec B404 - fixed argv, no shell; see run_command()
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -256,7 +256,12 @@ def build_sam_deploy_command(
 def run_command(cmd: list[str], cwd: Optional[Path] = None) -> None:
     """Run a subprocess, raising SellerServiceError on failure."""
     try:
-        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+        # nosec B603 - argv is a fixed list built by build_sam_deploy_command()
+        # with no shell=True, so there is no shell to inject into; each operator
+        # value (stack name, region, product registry) is a single argv element
+        # and cannot split into extra arguments. Inputs are the operator's own
+        # CLI flags, not remote input.
+        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)  # nosec B603
     except FileNotFoundError as exc:
         raise SellerServiceError(
             f"`{cmd[0]}` not found. The AWS SAM CLI is required to deploy the "
