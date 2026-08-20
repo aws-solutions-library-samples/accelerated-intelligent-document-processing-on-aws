@@ -199,12 +199,19 @@ Resources:
             Effect: Allow
             Principal:
               Service: !Sub 'logs.${AWS::Region}.${AWS::URLSuffix}'
+            # The exact actions CloudWatch Logs needs for a CMK-encrypted log
+            # group — NOT kms:Encrypt* / kms:Decrypt* / kms:Describe*. Those
+            # trailing wildcards read as equivalent but are strictly broader
+            # (kms:DescribeCustomKeyStores, future Decrypt* verbs, …), and this
+            # narrow list is the form used by the main stack's
+            # CustomerManagedEncryptionKey. Only GenerateDataKey* and ReEncrypt*
+            # are genuinely needed as wildcards.
             Action:
-              - kms:Encrypt*
-              - kms:Decrypt*
+              - kms:Encrypt
+              - kms:Decrypt
               - kms:ReEncrypt*
               - kms:GenerateDataKey*
-              - kms:Describe*
+              - kms:DescribeKey
             Resource: '*'
             # Scoped to log groups in THIS account/region, so the grant to the
             # Logs service principal cannot be used from elsewhere.
@@ -384,6 +391,32 @@ Resources:
       # Reject unsigned/unauthorized calls at the edge.
       Auth:
         DefaultAuthorizer: AWS_IAM
+        # MUST be NONE, for two independent reasons.
+        #
+        # SAM defaults InvokeRole to CALLER_CREDENTIALS whenever the authorizer is
+        # AWS_IAM, which sets the integration's Credentials to the "pass the
+        # caller's identity through and invoke the backend as them" sentinel (an
+        # iam::*:user/* wildcard ARN). That is wrong here twice over:
+        #
+        #  1. It is incompatible with a resource policy. API Gateway rejects the
+        #     deployment outright: CreateDeployment returns 400 "Caller provided
+        #     credentials not allowed when resource policy is set", so the stack
+        #     fails on AWS::ApiGateway::Deployment and rolls back. See
+        #     aws/serverless-application-model#1708 (open).
+        #  2. Even if it deployed, it could never work. Invoking as the caller
+        #     would require every BUYER account to hold lambda:InvokeFunction on
+        #     the seller's function — which no buyer has, and which we must never
+        #     grant. Activation is inherently cross-account.
+        #
+        # NONE leaves Credentials null, which means "use resource-based
+        # permissions": the AWS::Lambda::Permission that SAM generates for this
+        # method, scoped by SourceArn to this API/stage/POST /activate.
+        #
+        # This does NOT weaken authentication. DefaultAuthorizer stays AWS_IAM, so
+        # callers must still SigV4-sign and requestContext.identity.accountId is
+        # still a verified account. InvokeRole governs only how API Gateway calls
+        # the Lambda, not who may call API Gateway.
+        InvokeRole: NONE
         ResourcePolicy:
           CustomStatements:
             - Effect: Allow
@@ -405,10 +438,64 @@ Resources:
         # attempts, including refusals.
         Format: '{"requestId":"$context.requestId","callerAccount":"$context.identity.accountId","status":"$context.status","path":"$context.path","time":"$context.requestTime"}'
 
+  # REST API stages (unlike HTTP APIs) reject AccessLogSetting unless the
+  # account-level API Gateway CloudWatch role is set ("CloudWatch Logs role ARN
+  # must be set in account settings to enable logging"). A fresh seller account
+  # has never had it set, so without these two resources this template fails on
+  # first deploy into exactly the account it is meant for. Same fix, and same
+  # reasoning, as nested/api-resolvers/template.yaml.
+  #
+  # AWS::ApiGateway::Account is a PER-ACCOUNT PER-REGION singleton: multiple
+  # stacks that declare it overwrite each other (last writer wins), which is
+  # harmless because every writer grants the same managed policy. Retain on
+  # delete so tearing down this stack does not clear the account setting out from
+  # under other APIs in the seller's account (the role is retained for the same
+  # reason) — note this means a teardown leaves the role behind by design.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PermissionsBoundary:
+        !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'apigateway.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # DependsOn is what orders the account setting before the stage: the stage
+  # reaches this log group by !GetAtt, so account -> log group -> stage.
   ActivationApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
+    DependsOn: ApiGatewayAccount
     Properties:
       LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}-activation'
+      RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
+
+  # Execution logs (MethodSettings LoggingLevel above) go to a log group whose
+  # name API Gateway hardcodes: API-Gateway-Execution-Logs_<restApiId>/<stageName>.
+  # Pre-declaring it is the only way to get retention + CMK encryption on it —
+  # otherwise API Gateway auto-creates it with no retention and no KMS key, which
+  # would leave buyer account ids sitting in a plaintext log group forever, and
+  # contradict this service's own CMK-everywhere posture.
+  ActivationApiExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: ApiGatewayAccount
+    Properties:
+      LogGroupName: !Sub 'API-Gateway-Execution-Logs_${ActivationApi}/prod'
       RetentionInDays: !Ref LogRetentionInDays
       KmsKeyId: !GetAtt LogEncryptionKey.Arn
 
@@ -447,9 +534,12 @@ Outputs:
 
   TokenPublicKeyCommand:
     Description: >-
-      Run this to fetch the PUBLIC key your extension uses to verify activation
-      tokens. Safe to embed in the published (public-read) extension artifacts —
-      it can verify tokens but not mint them.
+      Raw fetch of the PUBLIC key your extension uses to verify activation tokens.
+      Safe to embed in the published (public-read) extension artifacts — it can
+      verify tokens but not mint them. Prefer
+      `idp-feature-cli seller-service export-trust-bundle`, which returns this key
+      as PEM alongside the endpoint and the matching `kid`; this output is the
+      no-CLI fallback and returns base64 DER.
     Value: !Sub 'aws kms get-public-key --key-id ${TokenSigningKey.Arn} --region ${AWS::Region} --query PublicKey --output text'
 
   TokenSigningKeyArn:

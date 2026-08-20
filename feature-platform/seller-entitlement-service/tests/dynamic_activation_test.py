@@ -30,6 +30,23 @@ What it checks
                                                 the calling account, carries `kid`,
                                                 and expires in the future
 
+What it CANNOT check
+--------------------
+Whether the service is actually configured to serve your product. Check (3) is the
+reason: "unknown product" is deliberately byte-identical to "not entitled", so a
+service whose product registry is empty or mangled passes every check here
+perfectly while refusing every paying customer. That happened for real — SAM
+truncated the registry parameter to `{` — and this suite reported all-green
+against a completely non-functional endpoint.
+
+The registry is therefore verified where it can be seen rather than inferred:
+`idp-feature-cli seller-service deploy` reads it back off the deployed function
+and fails the deploy if it did not survive (`verify_deployed_registry`). A useful
+second signal is the roster — a *known* product that is merely unsubscribed gets
+recorded with reason "no active agreement", whereas an unknown product is refused
+before anything is written, so `seller-service activations` staying empty after a
+real attempt means the product is not registered.
+
 Usage:
     # (2)-(5) with credentials for an UNSUBSCRIBED account:
     python dynamic_activation_test.py \\
