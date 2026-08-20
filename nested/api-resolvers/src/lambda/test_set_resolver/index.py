@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
@@ -2683,6 +2683,21 @@ def get_test_sets():
                         "labeled" if validation_result.get("labeled") else "unlabeled"
                     )
 
+                    # Store the full contentSignature (base + src marker) in
+                    # the exact same format reconcile compares against, so a
+                    # newly-discovered folder does not force one wasted full
+                    # reconcile on the very next poll to normalise it.
+                    # If the marker check failed transiently (source is None),
+                    # skip the signature — reconcile will fill it in later,
+                    # rather than writing a poisoned literal ``|src=None``.
+                    content_signature = (
+                        _compute_content_signature(
+                            validation_result.get("signature", ""), source
+                        )
+                        if source is not None
+                        else None
+                    )
+
                     _create_test_set_tracking_entry(
                         prefix,
                         prefix,  # Use prefix as name
@@ -2692,7 +2707,7 @@ def get_test_sets():
                         created_at,
                         source,
                         label_state,
-                        validation_result.get("signature"),
+                        content_signature,
                     )
 
                     # Add to results
@@ -3171,34 +3186,20 @@ def _get_test_set_creation_time(s3_client, bucket, prefix):
     return earliest_time.isoformat()
 
 
-def _check_source_marker(s3_client, bucket, prefix):
-    """Return True/False for '.source' marker presence, or None on transient failure.
-
-    The reconcile signature folds this in so that a synthetic generator writing
-    the marker AFTER the folder was registered still forces a source re-check.
-    ``None`` is treated by the caller as "leave the signature unchanged" so a
-    throttled HeadObject doesn't cause spurious full reconciles every poll.
-    """
-    try:
-        s3_client.head_object(Bucket=bucket, Key=f"{prefix}/.source")
-        return True
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("404", "NoSuchKey", "NotFound"):
-            return False
-        return None
-    except Exception:
-        return None
-
-
 def _get_test_set_source(s3_client, bucket, prefix):
-    """Return 'synthetic' if the generator left a '.source' marker, 'uploaded'
-    if it is definitively absent (S3 404), or ``None`` if the answer is unknown
-    (a non-404 error like throttling or transient 5xx).
+    """One HeadObject on ``<prefix>/.source`` producing the row's ``source`` value.
 
-    Reconcile treats ``None`` as "don't overwrite the current source value" —
-    flipping a synthetic set to uploaded because a HeadObject was throttled
-    would misclassify it silently.
+    Returns ``'synthetic'`` if the marker is present, ``'uploaded'`` if it is
+    definitively absent (S3 404), or ``None`` if the answer is transiently
+    unknown (throttling / 5xx / non-ClientError). Callers must treat ``None``
+    as "don't overwrite the row's current source" — flipping synthetic → uploaded
+    on a bad AWS day would misclassify silently.
+
+    This is the *only* helper that reads the marker. Reconcile also uses its
+    return value to build the ``contentSignature`` so a late marker write
+    invalidates the fast path; feeding the signature from a second HeadObject
+    would race this one and let ``signature=src=uploaded`` coexist with
+    ``source='synthetic'`` in the same reconcile pass.
     """
     try:
         s3_client.head_object(Bucket=bucket, Key=f"{prefix}/.source")
@@ -3222,6 +3223,22 @@ def _get_test_set_source(s3_client, bucket, prefix):
             "returning None (source unchanged)."
         )
         return None
+
+
+def _compute_content_signature(base_signature, source):
+    """Combine the validator's base signature with the source marker's state.
+
+    Kept as one helper so the new-folder-discovery ``_create_test_set_tracking_entry``
+    and the reconcile path write signatures in the *exact same format*.
+    Divergence here forces every newly-discovered folder into one wasted full
+    reconcile on the next poll to normalise the signature.
+
+    ``source`` must be one of ``'synthetic' | 'uploaded'``. Callers must not
+    pass ``None`` — they should bail before reaching this helper, because a
+    signature containing the literal string ``|src=None`` would poison the
+    stored signature and trigger a full-scan retry every subsequent poll.
+    """
+    return f"{base_signature}|src={source}"
 
 
 def _create_test_set_tracking_entry(
@@ -3268,10 +3285,44 @@ def _create_test_set_tracking_entry(
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
 
 
-# Only rows in one of these terminal states are reconciled in place. UPDATING
-# means a copier/extractor is actively mutating the folder; overwriting fileCount
-# or status underneath it would race the eager-write paths.
+# Only rows in one of these terminal states are reconciled in place. UPDATING /
+# QUEUED / GENERATING mean a copier/extractor/generator is actively mutating the
+# folder; overwriting fileCount or status underneath them would race the
+# eager-write paths. Row-level protection here; ``ConditionExpression`` on the
+# UpdateItem closes the race window between the read and the write.
 _RECONCILE_STATUSES = {"COMPLETED", "FAILED"}
+
+# Minimum age of the row's ``updatedAt`` before reconcile is willing to
+# re-inspect S3. Without this, the UI's 3s poll (armed whenever any row is
+# non-terminal on the page) repeats two paginated ``list_objects_v2`` calls
+# plus a HeadObject per registered test set on every tick — for a 2000+ doc
+# set the ``baseline/`` prefix alone is 3+ LIST pages. 30s means one full
+# scan every ~30s regardless of poll cadence, and Refresh still fires an
+# immediate reconcile because it re-invokes ``getTestSets`` in a code path
+# that already bypassed the fast poll's arm-check.
+_RECONCILE_TTL_SECONDS = 30
+
+
+def _recently_reconciled(existing_row, ttl_seconds=_RECONCILE_TTL_SECONDS):
+    """Has this row been reconciled within the TTL window?
+
+    ``updatedAt`` is only ever set by the reconcile path itself, so its
+    presence-and-age answers "did we already do the S3 listing recently?"
+    An unparseable timestamp is treated as "not recent" — a degraded value
+    must not become a silent lockout.
+    """
+    updated_at = existing_row.get("updatedAt")
+    if not updated_at:
+        return False
+    try:
+        # Row's updatedAt is written as ISO with a trailing 'Z'.
+        parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return 0 <= age < ttl_seconds
 
 
 def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
@@ -3280,24 +3331,46 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
     Direct S3 edits (files added or removed under ``<prefix>/input/`` or
     ``<prefix>/baseline/``) don't fire any event; without this helper the
     ``getTestSets`` short-circuit at ``if prefix in existing_test_sets: continue``
-    leaves ``fileCount`` and ``status`` stale forever. Same treatment as new
-    folder discovery: recount, re-validate input/baseline pairing, flip status
-    to FAILED with the same error string when the pairing is broken.
+    leaves ``fileCount`` and ``status`` stale forever.
 
-    Returns a dict of the reconciled fields (fileCount/status/labelState/error/
-    source/updatedAt) merged with the existing row, so callers can propagate
-    into the GraphQL response without a second DDB read. Returns None when the
-    row is untouched.
+    **Not** literally the same treatment as new-folder discovery. New folders
+    hard-fail on partial ``input`` ↔ ``baseline`` pairing because that
+    indicates a broken upload. For a row that has already entered the
+    labeling lifecycle, partial pairing is a legitimate state — the
+    draft-labeling harvester writes baselines one document per poll (leaving
+    a partial state mid-run), and ``clear_draft_labels`` deliberately keeps
+    human-reviewed labels while removing machine drafts (leaving partial
+    pairing as *steady* state). Applying the new-folder rule to those cases
+    would flag every draft-labeling run as FAILED and demote the surviving
+    reviewed labels to ``labelState=unlabeled``. Reconcile therefore
+    refreshes ``fileCount`` and the signature on those rows but leaves
+    ``status`` / ``labelState`` / ``error`` alone.
+
+    Returns a dict of the reconciled fields merged with the existing row, so
+    callers can propagate into the GraphQL response without a second DDB
+    read. Returns None when the row is untouched.
     """
     try:
-        # Never touch a row that a copier/extractor is actively mutating; those
-        # paths eagerly write fileCount+status and reconciling on top of an
-        # in-flight edit would race them. This check is cheap belt — the
-        # actual race-safe guard is the ConditionExpression on the UpdateItem
-        # below, since ``existing_row`` was read minutes ago (S3 list + validate
-        # runs between) and a copier could have flipped the row to UPDATING in
-        # the meantime.
+        # Gate 1 — row-status. Copiers/extractors write fileCount+status
+        # eagerly under UPDATING/QUEUED; reconciling on top would race them.
         if existing_row.get("status") not in _RECONCILE_STATUSES:
+            return None
+
+        # Gate 2 — labeling-job-status. The draft-labeling harvester leaves
+        # the row's ``status`` at COMPLETED for the *entire* run while it
+        # writes baselines document-by-document. Partial pairing is the
+        # transient invariant of that flow — reconcile flagging it as FAILED
+        # would break every draft-labeling job that reached the resolver
+        # mid-run (i.e. all of them, since ``getTestSets`` polls every 3s).
+        if existing_row.get("labelJobStatus") == "RUNNING":
+            return None
+
+        # Gate 3 — per-row TTL. The reconcile fast path skips the DDB write
+        # when the signature matches, but it does NOT skip the S3 listing
+        # that computes the signature. Two paginated list_objects_v2 calls
+        # plus a HeadObject per registered set on every 3s poll is a
+        # meaningful backend cost. TTL guards against that.
+        if _recently_reconciled(existing_row):
             return None
 
         validation = _validate_test_set_files(
@@ -3316,15 +3389,27 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             )
             return None
 
-        # Signature includes the presence of the ``.source`` marker so that a
-        # synthetic generator writing it *after* the folder was registered
-        # invalidates the fast path and forces a source re-check. Without this
-        # the marker sits outside the input/baseline prefixes the signature
-        # tracks, and source stays 'uploaded' forever for late-writing
-        # generators.
-        source_marker_present = _check_source_marker(s3_client, bucket, prefix)
+        # One HeadObject on ``.source`` produces the row's source value AND
+        # the signature's src component — using two separate HeadObjects that
+        # could disagree on a marker landing between them would let
+        # ``|src=uploaded`` coexist with ``source='synthetic'`` and force a
+        # spurious full reconcile on the next poll.
+        detected_source = _get_test_set_source(s3_client, bucket, prefix)
+
+        # If the marker check failed transiently we cannot build a coherent
+        # signature (writing ``|src=None`` would poison the stored value and
+        # trigger a full-scan retry every subsequent poll until the next
+        # write happens to succeed). Bail — the next reconcile after the TTL
+        # expires will retry.
+        if detected_source is None:
+            logger.warning(
+                f"Skipping reconcile for {prefix}: source marker check failed "
+                "transiently — cannot build a coherent signature."
+            )
+            return None
+
         base_signature = validation.get("signature", "")
-        new_signature = f"{base_signature}|src={source_marker_present}"
+        new_signature = _compute_content_signature(base_signature, detected_source)
         old_signature = existing_row.get("contentSignature")
 
         # Fast path: signature unchanged AND we already have one on the row =>
@@ -3333,32 +3418,48 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         if old_signature and old_signature == new_signature:
             return None
 
-        new_status = "COMPLETED" if validation["valid"] else "FAILED"
-        new_error = validation.get("error")
-
-        # labelState transitions have three legitimate final states: 'unlabeled'
-        # (documents only, no baselines), 'draft' (machine-generated labels
-        # awaiting human review), and 'labeled' (either uploaded ground truth
-        # or reviewed drafts). The validator only sees folder shape, so it
-        # cannot distinguish 'draft' from 'labeled' — both look like matching
-        # input↔baseline pairs. Preserve 'draft' when the shape is valid;
-        # writing 'labeled' would silently promote unreviewed machine drafts
-        # into "verified" ground truth, which is exactly what the draft-label
-        # workflow exists to prevent.
-        if validation.get("labeled"):
-            if existing_row.get("labelState") == "draft":
-                new_label_state = "draft"
-            else:
-                new_label_state = "labeled"
-        else:
-            new_label_state = "unlabeled"
-
         new_file_count = validation.get("input_count", 0)
-        # Source may only appear after registration (the synthetic generator
-        # drops '.source' asynchronously); re-check on every reconcile. If the
-        # HeadObject fails transiently the helper returns None, meaning "we
-        # don't know" — do NOT overwrite the existing value in that case.
-        detected_source = _get_test_set_source(s3_client, bucket, prefix)
+        existing_label_state = existing_row.get("labelState")
+
+        # Distinguish "genuinely broken" from "inside the labeling lifecycle".
+        # partial_pairing = the validator sees an input without a matching
+        # baseline. For a new folder that means a botched upload. For a row
+        # that carries ``labelState in ('draft','labeled')``, that same shape
+        # is the normal transient/steady state of the draft-labeling and
+        # clear_draft_labels flows respectively.
+        partial_pairing = (
+            not validation["valid"]
+            and (validation.get("error") or "").startswith(
+                "Missing baseline files for:"
+            )
+        )
+        inside_labeling_lifecycle = existing_label_state in ("draft", "labeled")
+
+        if partial_pairing and inside_labeling_lifecycle:
+            # Refresh fileCount and signature only; leave status / labelState /
+            # error alone. This is the "clear_draft_labels kept human labels"
+            # case, and also the "mid-harvest polling raced us" case if the
+            # labelJobStatus gate didn't catch it.
+            new_status = existing_row.get("status")
+            new_error = existing_row.get("error")
+            new_label_state = existing_label_state
+        else:
+            new_status = "COMPLETED" if validation["valid"] else "FAILED"
+            new_error = validation.get("error")
+            # labelState transitions: 'unlabeled', 'draft' (machine labels
+            # awaiting review), 'labeled' (uploaded or reviewed). The
+            # validator only sees folder shape; a fully-paired folder could
+            # be either 'draft' or 'labeled'. Preserve 'draft' when it was
+            # already there — writing 'labeled' would silently promote
+            # unreviewed drafts to "verified" ground truth, which is exactly
+            # what the draft-labeling workflow exists to prevent.
+            if validation.get("labeled"):
+                if existing_label_state == "draft":
+                    new_label_state = "draft"
+                else:
+                    new_label_state = "labeled"
+            else:
+                new_label_state = "unlabeled"
 
         # Determine which fields actually changed so we don't issue a DDB write
         # (or a DDB stream event) for a no-op.
@@ -3369,11 +3470,7 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             changed["status"] = new_status
         if existing_row.get("labelState") != new_label_state:
             changed["labelState"] = new_label_state
-        # detected_source is None on a transient HeadObject failure — skip.
-        if (
-            detected_source is not None
-            and existing_row.get("source") != detected_source
-        ):
+        if existing_row.get("source") != detected_source:
             changed["source"] = detected_source
         # Error handling is asymmetric: SET when we have one, REMOVE when we
         # don't. Use ``in`` rather than truthiness so an empty-string error
