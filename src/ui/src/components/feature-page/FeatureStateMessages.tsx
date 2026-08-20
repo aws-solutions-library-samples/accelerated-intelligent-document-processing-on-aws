@@ -291,6 +291,44 @@ function formatDate(iso: string | null): string | null {
  * admin-only "Cancel Subscription" button that invokes `unsubscribeFeature`
  * server-side (flips entitlement to EXPIRED).
  */
+/**
+ * Shown when the host is granting access to a PAID extension without having
+ * verified a subscription — `auto` (checks off) or `advisory` (check
+ * unreachable, allowed rather than locked out).
+ *
+ * This state is otherwise invisible: the page looks identical to a real
+ * subscription. Making it visible is the point — it removes the plausible
+ * deniability of running a paid extension unsubscribed by accident, and it tells
+ * an admin who *is* paying that their entitlement isn't being confirmed (usually
+ * a missing `aws-marketplace:SearchAgreements` permission) so they can fix it.
+ *
+ * Deliberately a warning, not an error, and it blocks nothing: the host gate is
+ * advisory by design, and blocking here would lock out a paying customer whenever
+ * the Marketplace API had a bad day.
+ */
+export const UnverifiedSubscriptionBanner: React.FC<{
+  featureDisplayName: string;
+  /** Why it's unverified — from `unverifiedReason(source)`. */
+  reason: string;
+  /** The listing, so an admin can go and subscribe properly. */
+  marketplaceUrl?: string;
+}> = ({ featureDisplayName, reason, marketplaceUrl }) => (
+  <Alert type="warning" header="Subscription not verified" statusIconAriaLabel="Warning">
+    <SpaceBetween size="s">
+      <Box variant="span">
+        Access to <b>{featureDisplayName}</b> is being allowed without a confirmed AWS Marketplace subscription. {reason}
+      </Box>
+      {marketplaceUrl && (
+        <Box>
+          <Button iconName="external" href={marketplaceUrl} target="_blank">
+            View subscription on AWS Marketplace
+          </Button>
+        </Box>
+      )}
+    </SpaceBetween>
+  </Alert>
+);
+
 export const ActiveSubscriptionBanner: React.FC<{
   entitlement: FeatureEntitlement;
   /** Admin-only: if true, render the Cancel Subscription button. */

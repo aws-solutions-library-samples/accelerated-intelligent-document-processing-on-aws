@@ -89,6 +89,12 @@ DEPLOYED_TEMPLATES = [
     "feature-platform/feature-template/template.yaml",
     "feature-platform/sample-feature/template.yaml",
     "feature-platform/sample-health-insurance-review/template.yaml",
+    # Deployed standalone into an AWS Marketplace SELLER account rather than by
+    # the main stack, so `test_nested_stacks_forward_permissions_boundary` does
+    # not apply to it — but it creates an IAM role, so the boundary assertions
+    # do. It was omitted at first and the suite passed anyway, giving false
+    # assurance; that is exactly the failure mode this list has to avoid.
+    "feature-platform/seller-entitlement-service/template.yaml",
 ]
 
 

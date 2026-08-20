@@ -152,13 +152,31 @@ in the most misleading way possible. Called from a buyer account it returns HTTP
 1. It's a **seller-side** API. AWS's SaaS guidance is that these calls "must be
    signed by credentials from your AWS Marketplace Seller account".
 2. Entitlement records only exist for SaaS **Contract** products. A usage-based
-   SaaS *Subscription* meters instead and has no entitlements at all.
+   SaaS *Subscription* meters instead and has no entitlements at all. Verified
+   against the live listing **from the seller account** with the correct product
+   code — it still returns an empty list, so this is a property of the pricing
+   model, not a permissions problem.
 
 A fail-closed gate on that would deny every legitimate customer while logging
 nothing — and would look perfectly healthy in CI against the simulator. AWS
 License Manager (`ListReceivedLicenses`) was also ruled out: it fails with
 `AccessDeniedException: Service role not found` until a service role is created
 in the buyer account, which we can't require of a customer.
+
+Verified against the live listing across **every** caller/subscription combination:
+
+| Caller | Subscribed to this product? | `GetEntitlements` | `SearchAgreements` |
+|---|---|---|---|
+| Buyer account | no | `[]` | `[]` (correct negative) |
+| Buyer account | **yes** | **`[]`** | **ACTIVE agreement** (correct positive) |
+| **Seller** account | n/a (product owner) | **`[]`** | ACTIVE agreement via `PartyType=Proposer` |
+
+`GetEntitlements` returns an empty list in **every** case — including from the
+seller account, and including for a genuinely subscribed buyer. There is no
+configuration in which it answers this question for a usage-based SaaS listing,
+because such a listing has no entitlement records at all. `SearchAgreements`
+answers correctly in every case.
+
 
 The three outcomes are deliberately distinct:
 
@@ -188,6 +206,14 @@ scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
 
 It runs both APIs side by side with a positive control, so an empty result is
 distinguishable from a broken one.
+
+> **Simulator-backed modes count as UNVERIFIED.** `simulator` and `marketplace`
+> both mean boto3 was pointed at whatever `FeaturePlatformSimulatorEndpoint`
+> names, so neither is evidence of a real subscription. They therefore report
+> `entitlementVerified: false`, raise the "Subscription not verified" banner, and
+> fire the `UnverifiedEntitlementGrant` metric — the same treatment as `auto` and
+> `advisory`. Only `marketplace-live` counts as checked. Expect the banner in
+> development; if you see it in production, the stack is pointed at a simulator.
 
 ### "Update available" badges
 
