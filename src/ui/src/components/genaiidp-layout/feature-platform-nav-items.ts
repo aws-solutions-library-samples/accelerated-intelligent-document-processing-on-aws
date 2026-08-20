@@ -35,6 +35,9 @@ const COMING_SOON_EXTENSIONS: { displayName: string; description: string }[] = [
 
 /**
  * Lifecycle status of a feature, used to choose the nav badge:
+ *   - 'unavailable' — a marketplace extension that isn't published for this
+ *                     Region, so it cannot be installed here at all. Outranks
+ *                     'subscribe': subscribing first would dead-end.
  *   - 'subscribe' — marketplace feature, not yet subscribed (no entitlement
  *                   signal here, so inferred: catalog-only + source=marketplace)
  *   - 'install'   — installable now: not installed, and either an OSS feature
@@ -44,7 +47,7 @@ const COMING_SOON_EXTENSIONS: { displayName: string; description: string }[] = [
  *   - 'update'    — installed at an older version than the catalog latest
  *   - 'ready'     — installed and up to date
  */
-type FeatureStatus = 'subscribe' | 'install' | 'update' | 'ready';
+type FeatureStatus = 'unavailable' | 'subscribe' | 'install' | 'update' | 'ready';
 
 /**
  * Merged nav entry used internally by the builder. `installed === null` means
@@ -57,12 +60,18 @@ interface NavEntry {
   source: 'oss' | 'marketplace';
   /** `null` when the feature is catalog-only (not installed). */
   installed: InstalledFeature | null;
-  /** True when installed at an older version than the catalog `latestVersion`. */
+  /** True when installed at an older version than the published latest. */
   updateAvailable: boolean;
+  /** False only when the catalog says this extension isn't published here. */
+  availableInRegion: boolean;
 }
 
 function statusOf(entry: NavEntry): FeatureStatus {
   if (entry.installed) return entry.updateAvailable ? 'update' : 'ready';
+  // Region availability is checked before subscription: an extension that isn't
+  // published for this Region can't be installed even with a valid subscription,
+  // so prompting to subscribe would dead-end.
+  if (!entry.availableInRegion) return 'unavailable';
   // Not installed. Marketplace features must be subscribed first; the nav
   // can't see entitlement state, so it surfaces 'subscribe' and the feature
   // page resolves the actual subscribe-vs-install step. OSS features install
@@ -86,6 +95,9 @@ function mergeEntries(installed: InstalledFeature[], catalog: CatalogFeature[]):
       source: c?.source === 'marketplace' ? 'marketplace' : 'oss',
       installed: f,
       updateAvailable: f.updateAvailable,
+      // An installed feature demonstrably works here, whatever the catalog now
+      // says about this Region.
+      availableInRegion: true,
     });
   }
 
@@ -102,6 +114,9 @@ function mergeEntries(installed: InstalledFeature[], catalog: CatalogFeature[]):
         source: c.source === 'marketplace' ? 'marketplace' : 'oss',
         installed: null,
         updateAvailable: false,
+        // Absent on an older host → treat as available rather than inventing a
+        // restriction we can't substantiate.
+        availableInRegion: c.availableInRegion !== false,
       });
     }
   }
@@ -112,10 +127,11 @@ function mergeEntries(installed: InstalledFeature[], catalog: CatalogFeature[]):
 // Badge text + colour per lifecycle status. 'ready' renders no badge (clean
 // nav for the common installed-and-current case); status is implied by the
 // absence of a CTA badge plus the hover description.
-const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey' } | null> = {
-  // "Subscribe" is the Marketplace path, which is a future capability — no
-  // Marketplace extensions exist yet, so the badge is marked accordingly.
-  subscribe: { text: 'Subscribe (future)', color: 'grey' },
+const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey' | 'red' } | null> = {
+  // Not published for this Region — cannot be installed here at all, so don't
+  // invite a subscription that couldn't be used.
+  unavailable: { text: 'Not in this Region', color: 'red' },
+  subscribe: { text: 'Subscribe', color: 'grey' },
   install: { text: 'Install', color: 'blue' },
   update: { text: 'Update', color: 'blue' },
   ready: null,

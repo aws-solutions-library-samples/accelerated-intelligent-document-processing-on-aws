@@ -3,16 +3,73 @@
 
 """AppSync Query.checkFeatureEntitlement resolver.
 
-Resolves the caller's entitlement state for a given feature by calling
-`marketplace-entitlement:GetEntitlements`. Works against both the real AWS
-Marketplace endpoint and the local marketplace-simulator — `boto3` picks the
-endpoint from the `AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE` env var
-(set by the nested stack when `SimulatorEntitlementEndpoint` is non-empty).
+Resolves the caller's entitlement state for a given feature. There are two
+production-capable paths plus the dev simulator, selected by
+`SIMULATOR_SOURCE_TAG`:
 
-Each feature's Marketplace product code is read from its `InstalledFeatures`
-row — baked from the feature manifest at publish time and written at install —
-so the host needs no per-feature product-code configuration. The caller's
-CustomerIdentifier is resolved from:
+    auto             → every feature ACTIVE, no API call (no simulator, no
+                       Marketplace endpoint configured)
+    simulator |      → `marketplace-entitlement:GetEntitlements`, with boto3
+    marketplace        pointed at `AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE`
+                       (the local marketplace-simulator, or an admin-supplied
+                       endpoint). UNCHANGED — this is the dev/CI path.
+    marketplace-live → the buyer-side AWS Marketplace **Agreement** API
+                       (`SearchAgreements`). Also simulatable: boto3 honors
+                       `AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT` (derived from the
+                       service model, same convention as the entitlement
+                       override), so a marketplace-simulator can back this path
+                       too. The mode is chosen independently of whether an
+                       endpoint is set — see docs/feature-platform.md
+                       "Deployment modes".
+
+Why `marketplace-live` doesn't just call GetEntitlements
+-------------------------------------------------------
+`GetEntitlements` cannot work as a buyer-side gate, for two independent reasons
+that were confirmed empirically before this was written:
+
+1. **It's a seller-side API.** AWS's guidance for SaaS integrations is that
+   these calls "must be signed by credentials from your AWS Marketplace Seller
+   account", and the documented IAM policy groups `GetEntitlements` with
+   `ResolveCustomer` / `BatchMeterUsage` as seller-side actions.
+2. **Entitlements only exist for SaaS *Contract* products.** In the contract
+   model AWS communicates entitlements through the Entitlement Service; a
+   usage-based SaaS *Subscription* meters instead and has no entitlement records
+   at all. For such a listing GetEntitlements returns an empty list forever.
+
+Critically, it does not FAIL in either case — called from a buyer account with
+someone else's product code it returns HTTP 200 with `{"Entitlements": []}`. A
+fail-closed gate built on that denies every legitimate customer while logging
+nothing, and looks perfectly healthy against the simulator. So the live path
+uses `SearchAgreements` (documented for buyers: "Acceptor can perform search
+across all agreements that they participated in as acceptor"), filtered to this
+product via `ResourceIdentifier` — which needs only plain IAM, no License
+Manager service role.
+
+The live path deliberately distinguishes three outcomes, because two of them
+look identical if you only check for emptiness:
+
+    ACTIVE   an ACTIVE PurchaseAgreement exists for this product → entitled.
+    NONE     the call SUCCEEDED and returned nothing. Authoritative: unlike
+             GetEntitlements, SearchAgreements is scoped to the caller's own
+             account, so empty really does mean "no agreement here".
+    UNKNOWN  the call ERRORED (IAM not granted, API unavailable in this
+             partition/region). We CANNOT distinguish this from "not
+             subscribed", so we degrade to advisory-ACTIVE and log loudly.
+             Failing closed on a host misconfiguration would brick a paying
+             customer's extension.
+
+Known false-negative: if an AWS Organization holds the subscription in the
+management account while this stack runs in a member account, SearchAgreements
+from the member account reports nothing. That is why NONE is surfaced to the UI
+as "couldn't confirm your subscription" with the Subscribe CTA rather than a hard
+block, and why the authoritative commercial gate is the extension's own runtime
+entitlement check — not this resolver.
+
+Each feature's Marketplace product identity is read from its `InstalledFeatures`
+row (baked from the feature manifest and written at install), falling back to the
+**catalog** entry — which is what makes the NOT-YET-INSTALLED path work at all,
+since that row doesn't exist before install. The caller's CustomerIdentifier is
+resolved from:
   1. `X-Amzn-Marketplace-Customer-Identifier` header via event.request.headers
      (when the main stack is deployed inside a subscribed account), or
   2. The env var `DEFAULT_CUSTOMER_IDENTIFIER` (dev/simulator convenience).
@@ -36,9 +93,11 @@ Environment:
     DEFAULT_BUYER_ACCOUNT_ID   buyer AWS account used as the GetEntitlements
                                filter when no CustomerIdentifier is available
                                (the deterministic key shared with subscribeFeature).
-    SIMULATOR_SOURCE_TAG       "auto" | "simulator" | "marketplace"
+    SIMULATOR_SOURCE_TAG       "auto" | "simulator" | "marketplace" | "marketplace-live"
+    MARKETPLACE_AGREEMENT_REGION  Region for the Agreement API (default us-east-1)
     CONFIGURATION_BUCKET       (optional) bucket holding catalog.json; used to
-                               detect OSS features. Blank disables the OSS check.
+                               detect OSS features and to resolve productCode /
+                               productId before install. Blank disables both.
     CATALOG_KEY                Catalog key (default config_library/catalog.json)
     LOG_LEVEL                  Logging level (default INFO)
 """
@@ -47,7 +106,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.config import Config
@@ -62,6 +121,12 @@ _SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "marketplace")
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
 _CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
+# The AWS Marketplace Agreement API is not available in every region; us-east-1
+# is where AWS Marketplace itself lives and is the documented default.
+_AGREEMENT_REGION = os.environ.get("MARKETPLACE_AGREEMENT_REGION", "us-east-1")
+# The live, buyer-side path. Kept as a distinct tag rather than an ad-hoc branch
+# so `simulator` / `marketplace` (dev + CI) behave EXACTLY as before.
+_LIVE_TAG = "marketplace-live"
 
 _dynamodb = boto3.resource("dynamodb")
 
@@ -100,13 +165,13 @@ def _config_s3():
     return _config_s3_client
 
 
-def _read_catalog_source(feature_id: str) -> Optional[str]:
-    """Return the catalog.json `source` ("oss"/"marketplace") for `feature_id`.
+def _read_catalog_entry(feature_id: str) -> Optional[Dict[str, Any]]:
+    """Return the catalog.json entry for `feature_id`, or None if absent.
 
-    Returns None when the catalog is unavailable or the feature is absent.
     Single GetObject against ConfigurationBucket — never lists. Mirrors
-    `_read_catalog_entry` in get_feature_launch_url so the two resolvers agree
-    on which features are open-source (install-direct, no entitlement).
+    `_read_catalog_entry` in get_feature_launch_url so the two resolvers agree on
+    which features are open-source (install-direct, no entitlement) and on each
+    feature's Marketplace identity.
     """
     if not _CONFIGURATION_BUCKET:
         return None
@@ -124,8 +189,7 @@ def _read_catalog_source(feature_id: str) -> Optional[str]:
         return None
     for entry in catalog.get("features") or []:
         if isinstance(entry, dict) and entry.get("featureId") == feature_id:
-            src = entry.get("source")
-            return src if isinstance(src, str) else None
+            return entry
     return None
 
 
@@ -190,6 +254,81 @@ def _get_entitlements(
         logger.warning("GetEntitlements failed for product %s: %s", product_code, exc)
         return []
     return resp.get("Entitlements", []) or []
+
+
+# Lazily constructed AWS Marketplace Agreement API client (buyer-side).
+_agreement_client_obj = None
+
+
+def _agreement_client():
+    global _agreement_client_obj
+    if _agreement_client_obj is None:
+        _agreement_client_obj = boto3.client(
+            "marketplace-agreement",
+            region_name=_AGREEMENT_REGION,
+            config=_CLIENT_CONFIG,
+        )
+    return _agreement_client_obj
+
+
+def _search_active_agreements(product_id: str) -> Tuple[str, Optional[datetime]]:
+    """Buyer-side subscription check via the AWS Marketplace Agreement API.
+
+    Returns (outcome, latest_end_time) where outcome is:
+
+        "ACTIVE"   at least one ACTIVE PurchaseAgreement for this product
+        "NONE"     the call succeeded and matched nothing — authoritative for
+                   THIS account (see the module docstring's caveat about an
+                   Organization holding the subscription elsewhere)
+        "UNKNOWN"  the call failed; indistinguishable from NONE, so the caller
+                   must degrade to advisory rather than deny
+
+    The filter combination (PartyType + AgreementType + ResourceIdentifier +
+    Status) is the documented buyer form and was verified against a live account.
+    `ResourceIdentifier` matches the SaaS product ENTITY id (`prod-…`), which is
+    why the catalog carries `productId` alongside `productCode`.
+    """
+    if not product_id:
+        logger.warning(
+            "No productId available; cannot run a buyer-side agreement check. "
+            "Add `productId` to the feature's catalog entry."
+        )
+        return "UNKNOWN", None
+    try:
+        resp = _agreement_client().search_agreements(
+            catalog="AWSMarketplace",
+            filters=[
+                {"name": "PartyType", "values": ["Acceptor"]},
+                {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+                {"name": "ResourceIdentifier", "values": [product_id]},
+                {"name": "Status", "values": ["ACTIVE"]},
+            ],
+        )
+    except (ClientError, BotoCoreError) as exc:
+        # AccessDenied (IAM not granted / not propagated), an unsupported
+        # partition, throttling — all indistinguishable from "not subscribed".
+        logger.warning(
+            "SearchAgreements failed for product %s: %s. Treating entitlement as "
+            "UNKNOWN (advisory allow) rather than denying a possibly-paying "
+            "customer.",
+            product_id,
+            exc,
+        )
+        return "UNKNOWN", None
+
+    summaries = resp.get("agreementViewSummaries") or []
+    if not summaries:
+        return "NONE", None
+
+    end_times: List[datetime] = []
+    for summary in summaries:
+        end = summary.get("endTime")
+        if isinstance(end, datetime):
+            end_times.append(end if end.tzinfo else end.replace(tzinfo=timezone.utc))
+        elif isinstance(end, (int, float)):
+            end_times.append(datetime.fromtimestamp(end, tz=timezone.utc))
+    # An open-ended agreement has no endTime — ACTIVE with no expiry.
+    return "ACTIVE", max(end_times) if end_times else None
 
 
 def _parse_expiration(raw: Any) -> Optional[datetime]:
@@ -269,13 +408,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "source": "auto",
         }
 
+    # Read the catalog entry ONCE: it tells us whether this is an OSS feature and
+    # carries the Marketplace identity we need before the feature is installed.
+    catalog_entry = _read_catalog_entry(feature_id) or {}
+
     # OSS features have no AWS Marketplace contract — they install directly
     # regardless of whether a simulator/Marketplace endpoint is configured.
     # Short-circuit to ACTIVE so the UI shows the Install prompt instead of
     # "Subscription required". This mirrors get_feature_launch_url, which skips
     # the entitlement check for source=="oss" catalog entries. Only consult the
     # entitlement endpoint for marketplace features below.
-    if _read_catalog_source(feature_id) == "oss":
+    if catalog_entry.get("source") == "oss":
         return {
             "featureId": feature_id,
             "state": "ACTIVE",
@@ -286,11 +429,66 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     # Resolve product code from the feature's InstalledFeatures row (baked from
-    # the manifest at install). In simulator mode, synthesize one when absent to
-    # match what subscribe_feature synthesizes, so subscribe → check find the
-    # same entitlement row. In marketplace mode, return NONE when absent (rather
-    # than crashing) so the UI can still render the page.
-    product_code = _installed_product_code(feature_id)
+    # the manifest at install), FALLING BACK TO THE CATALOG. The fallback is what
+    # makes the not-yet-installed path work: that DDB row only exists after
+    # install, so before install the row lookup necessarily comes back empty and
+    # this resolver used to report NONE/source="none" even for a genuinely
+    # subscribed customer — the UI then showed "no entitlement" with no way
+    # forward. The catalog has had productCode all along.
+    product_code = _installed_product_code(feature_id) or (
+        catalog_entry.get("productCode") or None
+    )
+    product_id = catalog_entry.get("productId") or ""
+
+    # --- Live, buyer-side path -------------------------------------------
+    # Checked BEFORE the productCode bail-out below, because this path keys on
+    # productId (the SaaS product ENTITY id) — productCode is only useful to the
+    # seller-side GetEntitlements API, which cannot answer this question at all.
+    if _SOURCE_TAG == _LIVE_TAG:
+        outcome, end_time = _search_active_agreements(product_id)
+        if outcome == "ACTIVE":
+            return {
+                "featureId": feature_id,
+                "state": "ACTIVE",
+                "expiresAt": end_time.isoformat().replace("+00:00", "Z")
+                if end_time
+                else None,
+                "customerIdentifier": None,
+                "productCode": product_code,
+                "source": _LIVE_TAG,
+            }
+        if outcome == "NONE":
+            # Authoritative for this account: SearchAgreements is scoped to the
+            # caller, so an empty successful result really is "not subscribed
+            # here". The UI shows Subscribe.
+            return {
+                "featureId": feature_id,
+                "state": "NONE",
+                "expiresAt": None,
+                "customerIdentifier": None,
+                "productCode": product_code,
+                "source": _LIVE_TAG,
+            }
+        # UNKNOWN — the call failed, so we genuinely cannot tell "not
+        # subscribed" from "host misconfigured". Degrade to advisory ACTIVE
+        # rather than block: the extension performs its own runtime entitlement
+        # check, so a wrongly-permissive host gate costs nothing, whereas a
+        # wrongly-restrictive one bricks a paying customer's extension.
+        logger.warning(
+            "Entitlement for %r is UNKNOWN (Agreement API unavailable); "
+            "returning advisory ACTIVE. The extension's own runtime check "
+            "remains the authoritative gate.",
+            feature_id,
+        )
+        return {
+            "featureId": feature_id,
+            "state": "ACTIVE",
+            "expiresAt": None,
+            "customerIdentifier": None,
+            "productCode": product_code,
+            "source": "advisory",
+        }
+
     if not product_code:
         if _SOURCE_TAG == "simulator":
             product_code = f"prod-{feature_id}-sim"

@@ -161,6 +161,8 @@ export type CapacityResult = {
 export type CatalogFeature = {
   artifactBucket?: Maybe<Scalars['String']['output']>;
   artifactPrefix?: Maybe<Scalars['String']['output']>;
+  availableInRegion?: Maybe<Scalars['Boolean']['output']>;
+  availableRegions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   description?: Maybe<Scalars['String']['output']>;
   displayName: Scalars['String']['output'];
   docsUrl?: Maybe<Scalars['String']['output']>;

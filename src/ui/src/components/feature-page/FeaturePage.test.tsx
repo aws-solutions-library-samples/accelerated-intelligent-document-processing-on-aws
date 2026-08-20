@@ -14,9 +14,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import FeaturePage from './FeaturePage';
-import type { FeatureEntitlement, InstalledFeature } from '../../types/feature-platform';
+import type { CatalogFeature, FeatureEntitlement, InstalledFeature } from '../../types/feature-platform';
 
 vi.mock('../../hooks/use-installed-features');
+vi.mock('../../hooks/use-catalog-features');
 vi.mock('../../hooks/use-feature-entitlement');
 vi.mock('../../hooks/use-feature-launch-url');
 vi.mock('../../hooks/use-subscribe-feature');
@@ -28,12 +29,14 @@ vi.mock('./FeatureLoader', () => ({
 }));
 
 import useInstalledFeatures from '../../hooks/use-installed-features';
+import useCatalogFeatures from '../../hooks/use-catalog-features';
 import useFeatureEntitlement from '../../hooks/use-feature-entitlement';
 import useFeatureLaunchUrl from '../../hooks/use-feature-launch-url';
 import useSubscribeFeature from '../../hooks/use-subscribe-feature';
 import useUnsubscribeFeature from '../../hooks/use-unsubscribe-feature';
 
 const mockedUseInstalled = vi.mocked(useInstalledFeatures);
+const mockedUseCatalog = vi.mocked(useCatalogFeatures);
 const mockedUseEntitlement = vi.mocked(useFeatureEntitlement);
 const mockedUseLaunchUrl = vi.mocked(useFeatureLaunchUrl);
 const mockedUseSubscribe = vi.mocked(useSubscribeFeature);
@@ -85,8 +88,37 @@ function renderPage(groups: string[]) {
   );
 }
 
+/** Default: no catalog entry, matching the pre-mock behavior of these tests. */
+function mockCatalog(entry?: Partial<CatalogFeature>) {
+  mockedUseCatalog.mockReturnValue({
+    features: [],
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+    byId: () =>
+      entry
+        ? ({
+            featureId: 'docs-by-status',
+            displayName: 'DemoFeature - Docs By Status',
+            latestVersion: '1.0.0',
+            iconUrl: null,
+            description: null,
+            docsUrl: null,
+            showInNav: true,
+            source: 'marketplace',
+            productCode: 'prod123',
+            marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/x',
+            availableInRegion: true,
+            availableRegions: [],
+            ...entry,
+          } as CatalogFeature)
+        : undefined,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockCatalog();
   mockedUseLaunchUrl.mockReturnValue({
     fetch: vi.fn(),
     loading: false,
@@ -101,6 +133,75 @@ beforeEach(() => {
     unsubscribe: vi.fn(),
     loading: false,
     error: null,
+  });
+});
+
+describe('FeaturePage region availability', () => {
+  it('shows "Not available in this Region" instead of a dead-end Subscribe CTA', () => {
+    // The whole point: a Subscribe button here would take the admin's money (or
+    // at least their time) for something they cannot install in this Region.
+    mockCatalog({ availableInRegion: false, availableRegions: ['us-west-2', 'eu-central-1'] });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Not available in this Region/i)).toBeInTheDocument();
+    expect(screen.getByText(/us-west-2, eu-central-1/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Subscribe$/i })).not.toBeInTheDocument();
+  });
+
+  it('does not flag an ALREADY-INSTALLED feature as region-unavailable', () => {
+    // It demonstrably works here, whatever the catalog now claims.
+    mockCatalog({ availableInRegion: false, availableRegions: ['us-west-2'] });
+    mockedUseInstalled.mockReturnValue({
+      features: [installed()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => installed(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Not available in this Region/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
+  });
+
+  it('treats an absent availableInRegion (older host) as available', () => {
+    mockCatalog({ availableInRegion: null, availableRegions: null });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Not available in this Region/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Subscription required/i)).toBeInTheDocument();
   });
 });
 

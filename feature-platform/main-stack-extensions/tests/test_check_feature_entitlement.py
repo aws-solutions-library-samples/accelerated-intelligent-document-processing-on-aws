@@ -465,3 +465,271 @@ def test_marketplace_feature_still_gated_when_catalog_present(
     )
     assert result["state"] == "NONE"
     assert result["source"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Catalog fallback for productCode — makes the NOT-YET-INSTALLED path work.
+# ---------------------------------------------------------------------------
+
+
+def _mp_catalog_entry(**over) -> dict:
+    entry = {
+        "featureId": "idp-auto-optimizer",
+        "displayName": "Auto Optimizer",
+        "source": "marketplace",
+        "latestVersion": "0.1.0",
+        "productCode": "q0k0s3zuuga46hle6fecx547",
+        "productId": "prod-a5ee62vs2xa72",
+        "marketplaceListingUrl": "https://aws.amazon.com/marketplace/pp/prodview-x",
+    }
+    entry.update(over)
+    return entry
+
+
+def test_product_code_falls_back_to_catalog_when_not_installed(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Before install there is no InstalledFeatures row — the catalog must serve.
+
+    Previously this returned state=NONE / source="none" even for a subscribed
+    customer, so the UI said "no entitlement" with no way forward.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],  # table exists, but NO row seeded
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    # No ExpirationDate → an entitlement with no expiry, i.e. ACTIVE.
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["productCode"] == "q0k0s3zuuga46hle6fecx547"
+    assert result["state"] == "ACTIVE"
+
+
+def test_installed_row_still_wins_over_catalog(monkeypatch, mock_stack, load_lambda):
+    """The install row is baked from the manifest, so it stays authoritative."""
+    bucket = mock_stack["bucket"]
+    table = mock_stack["table_name"]
+    _put_catalog(bucket, [_mp_catalog_entry(productCode="from-catalog")])
+    _seed_row(table, "idp-auto-optimizer", product_code="from-install-row")
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=table,
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(mod, entitlements=[], expected_product="from-install-row")
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["productCode"] == "from-install-row"
+
+
+# ---------------------------------------------------------------------------
+# marketplace-live: buyer-side AWS Marketplace Agreement API (SearchAgreements).
+#
+# GetEntitlements cannot serve as the gate — it is seller-side, and a usage-based
+# SaaS listing has no entitlement records at all, so from a buyer account it
+# returns HTTP 200 with an EMPTY list rather than an error. A fail-closed gate
+# built on that silently denies every real customer. Hence SearchAgreements, and
+# hence the three-way ACTIVE / NONE / UNKNOWN distinction below.
+# ---------------------------------------------------------------------------
+
+
+def _stub_agreements(
+    mod, summaries=None, *, error=None, expected_product="prod-a5ee62vs2xa72"
+):
+    client = mod._agreement_client()
+    stubber = Stubber(client)
+    expected_params = {
+        "catalog": "AWSMarketplace",
+        "filters": [
+            {"name": "PartyType", "values": ["Acceptor"]},
+            {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+            {"name": "ResourceIdentifier", "values": [expected_product]},
+            {"name": "Status", "values": ["ACTIVE"]},
+        ],
+    }
+    if error:
+        stubber.add_client_error(
+            "search_agreements",
+            service_error_code=error,
+            expected_params=expected_params,
+        )
+    else:
+        stubber.add_response(
+            "search_agreements",
+            {"agreementViewSummaries": summaries or []},
+            expected_params,
+        )
+    stubber.activate()
+    return stubber
+
+
+def _live_event():
+    return make_appsync_event(
+        "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+    )
+
+
+def test_live_active_agreement_is_active(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    end = datetime.now(timezone.utc) + timedelta(days=30)
+    _stub_agreements(
+        mod,
+        [{"agreementId": "agmt-1", "status": "ACTIVE", "endTime": end}],
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "marketplace-live"
+    assert result["expiresAt"].startswith(end.isoformat()[:10])
+
+
+def test_live_open_ended_agreement_has_no_expiry(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [{"agreementId": "agmt-1", "status": "ACTIVE"}])
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["expiresAt"] is None
+
+
+def test_live_empty_result_is_an_authoritative_none(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A SUCCESSFUL empty response really means "not subscribed in this account".
+
+    Unlike GetEntitlements, SearchAgreements is scoped to the caller, so this is
+    a real negative and the UI should show Subscribe.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [])
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "NONE"
+    assert result["source"] == "marketplace-live"
+
+
+def test_live_api_error_degrades_to_advisory_active(
+    monkeypatch, mock_stack, load_lambda
+):
+    """An ERRORED call is indistinguishable from "not subscribed" — so allow.
+
+    Failing closed on a missing IAM grant or an unsupported partition would lock
+    a paying customer out of an extension they bought. The extension's own
+    runtime entitlement check remains the authoritative gate, so a permissive
+    host gate costs nothing.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, error="AccessDeniedException")
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+
+
+def test_live_missing_product_id_is_advisory_not_denial(
+    monkeypatch, mock_stack, load_lambda
+):
+    """No productId in the catalog → we cannot check, so don't pretend we did."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_catalog_entry()
+    del entry["productId"]
+    _put_catalog(bucket, [entry])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+
+
+def test_live_mode_still_short_circuits_oss(monkeypatch, mock_stack, load_lambda):
+    """The OSS path must not be affected by any of this."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "oss"
+
+
+def test_auto_mode_unchanged_by_live_support(monkeypatch, mock_stack, load_lambda):
+    """`auto` must remain a zero-API-call short circuit."""
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+    result = mod.handler(_live_event(), None)
+    assert result == {
+        "featureId": "idp-auto-optimizer",
+        "state": "ACTIVE",
+        "expiresAt": None,
+        "customerIdentifier": None,
+        "productCode": None,
+        "source": "auto",
+    }

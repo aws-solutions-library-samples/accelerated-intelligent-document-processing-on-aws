@@ -42,6 +42,20 @@ export interface CatalogFeature {
   productCode: string | null;
   /** Marketplace-only: public listing page the Subscribe CTA links to. */
   marketplaceListingUrl: string | null;
+  /**
+   * Whether this feature can be installed in the host stack's own region.
+   * Marketplace extensions are region-scoped: `sam package` bakes an absolute,
+   * region-specific s3:// CodeUri into the published template, and a Lambda's
+   * code bucket must live in the function's region. When false, show where it
+   * IS available instead of a Subscribe button that dead-ends.
+   * Always true for OSS features; null/absent from an older host → treat as true.
+   */
+  availableInRegion: boolean | null;
+  /**
+   * Regions this feature publishes artifacts to. Empty for OSS features (they
+   * ship with the host, so they aren't region-scoped).
+   */
+  availableRegions: string[] | null;
 }
 
 export interface InstalledFeature {
@@ -67,7 +81,17 @@ export interface FeatureEntitlement {
   expiresAt: string | null;
   customerIdentifier: string | null;
   productCode: string | null;
-  source: 'marketplace' | 'simulator' | 'auto' | 'none';
+  /**
+   * Which mechanism produced this state:
+   * - `marketplace` — GetEntitlements via a configured endpoint (simulator or override)
+   * - `simulator` — the local marketplace-simulator
+   * - `marketplace-live` — the real buyer-side AWS Marketplace Agreement API
+   * - `advisory` — the live check was UNREACHABLE, so ACTIVE was assumed rather
+   *   than locking a possibly-paying customer out. Not a confirmed subscription.
+   * - `auto` — entitlement checks disabled; everything treated as subscribed
+   * - `oss` / `none` — open-source feature, or no product code registered
+   */
+  source: 'marketplace' | 'marketplace-live' | 'advisory' | 'simulator' | 'auto' | 'oss' | 'none';
   /**
    * URL the UI must redirect the admin to (new tab) in order to accept
    * pricing, EULA, and the AWS Customer Agreement. Populated only by the
