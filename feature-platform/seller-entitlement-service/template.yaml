@@ -35,6 +35,9 @@ Metadata:
       TokenTtlSeconds:
         default: "Activation token TTL (seconds)"
 
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+
 Mappings:
   # Stamped by `make version` (one sed target). This template is deployed
   # directly by a seller via `sam deploy` / `idp-feature-cli seller-service
@@ -98,6 +101,16 @@ Parameters:
       quota can be consumed. Activation is a once-per-token-TTL call per install,
       so 10 is generous; raise it only if you have many thousands of installs.
 
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional IAM permissions boundary ARN applied to created roles. Required by
+      organisations whose SCP mandates a boundary on every role — without it, stack
+      creation fails there. Matches the pattern used by the other feature-platform
+      templates (this exact omission previously broke FeaturePlatformStack, see
+      lib/idp_sdk/tests/unit/test_permissions_boundary_coverage.py).
+
   LogLevel:
     Type: String
     Default: 'INFO'
@@ -153,6 +166,57 @@ Resources:
     Properties:
       AliasName: !Sub 'alias/${AWS::StackName}-activation-signing'
       TargetKeyId: !Ref TokenSigningKey
+
+  ##########################################################################
+  # Log encryption key
+  #
+  # The repo standard is CMK-encrypted log groups (115 of 135 across the other
+  # templates). These logs carry buyer AWS account ids and caller role ARNs —
+  # customer-identifying data for a seller — so they get the same treatment.
+  #
+  # Separate from TokenSigningKey because that one is SIGN_VERIFY and cannot
+  # encrypt. NOT retained on delete: unlike the signing key, losing this only
+  # makes already-expiring log data unreadable, and retaining it would leave an
+  # orphan behind every test deployment.
+  ##########################################################################
+  LogEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'CloudWatch Logs encryption for ${AWS::StackName}'
+      KeyUsage: ENCRYPT_DECRYPT
+      KeySpec: SYMMETRIC_DEFAULT
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.${AWS::URLSuffix}'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            # Scoped to log groups in THIS account/region, so the grant to the
+            # Logs service principal cannot be used from elsewhere.
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  LogEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-logs'
+      TargetKeyId: !Ref LogEncryptionKey
 
   ##########################################################################
   # Activation roster
@@ -213,6 +277,7 @@ Resources:
             Principal:
               Service: !Sub 'lambda.${AWS::URLSuffix}'
             Action: sts:AssumeRole
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
@@ -294,6 +359,7 @@ Resources:
     Properties:
       LogGroupName: !Sub '/aws/lambda/${ActivateFunction}'
       RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
 
   ##########################################################################
   # Public REST API with AWS_IAM authorization
@@ -344,6 +410,7 @@ Resources:
     Properties:
       LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}-activation'
       RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
 
   ##########################################################################
   # Observability — a seller almost always wants to know about refusals.

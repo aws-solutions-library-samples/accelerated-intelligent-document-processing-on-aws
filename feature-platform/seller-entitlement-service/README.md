@@ -285,7 +285,8 @@ Generic IaC checks flag several things here. Recorded so they are triaged once:
 | API Gateway caching (`CKV_AWS_120`) | **Rejected, and guarded by a test.** A cached activation response would keep answering "entitled" after a cancellation. Enabling it would turn a revenue control into a stale one. |
 | Lambda in a VPC (`CKV_AWS_117`) | **Rejected.** The function must reach public AWS APIs (Marketplace, KMS, DynamoDB); a VPC adds NAT/endpoints for no security gain. |
 | Lambda DLQ (`CKV_AWS_116`) | **N/A.** Invocation is synchronous via API Gateway; DLQs apply to async invocations. |
-| Log group / env var KMS CMK (`CKV_AWS_158`, `CKV_AWS_173`) | **Accepted.** Both are already encrypted with AWS-managed keys. The env vars hold a product registry and an account allow-list, not secrets. A CMK is reasonable for a stricter seller — add `KmsKeyId` if your policy requires it. |
+| Log group KMS CMK (`CKV_AWS_158`) | **Fixed.** Originally accepted on the grounds that AWS-managed encryption applies — but that contradicted this repository's own standard (115 of 135 log groups elsewhere use a CMK), and these logs carry buyer account ids and caller role ARNs. A dedicated `LogEncryptionKey` now encrypts both log groups, with the CloudWatch Logs grant scoped by encryption context. |
+| Lambda env var KMS CMK (`CKV_AWS_173`) | **Accepted.** Env vars hold a product registry and an account allow-list, not secrets, and AWS already encrypts them at rest with an AWS-managed key. |
 | DynamoDB CMK (`CKV_AWS_119`) | **Accepted.** `SSEEnabled: true` uses an AWS-managed key. The roster holds AWS account ids, not credentials or document content. Switch to a CMK if your data-classification policy requires customer-managed keys. |
 | API Gateway X-Ray (`CKV_AWS_73`) | **Optional.** Observability rather than security; enable if you want traces. |
 

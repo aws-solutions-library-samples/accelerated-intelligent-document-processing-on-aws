@@ -263,3 +263,61 @@ def test_api_caching_is_not_enabled(resources):
         assert settings.get("CachingEnabled") is not True, (
             "API Gateway caching would serve stale entitlement decisions"
         )
+
+
+def test_activation_role_has_a_permissions_boundary(resources):
+    """Required by organisations whose SCP mandates a boundary on every role.
+
+    Without it, IAM role creation is denied there and the whole stack rolls back —
+    the exact defect that previously broke FeaturePlatformStack. Also asserted
+    repo-wide by lib/idp_sdk/tests/unit/test_permissions_boundary_coverage.py,
+    which this template is now registered in; duplicated here so the failure is
+    visible next to the rest of this service's invariants.
+    """
+    props = resources["ActivateFunctionRole"]["Properties"]
+    assert "PermissionsBoundary" in props, (
+        "ActivateFunctionRole has no PermissionsBoundary — SCP-enforced accounts "
+        "cannot deploy this stack"
+    )
+
+
+def test_log_groups_are_cmk_encrypted(resources):
+    """These logs carry buyer AWS account ids and caller role ARNs — customer-
+    identifying data for a seller — and CMK-encrypted log groups are the repo
+    standard (115 of 135 elsewhere)."""
+    for name in ("ActivateFunctionLogGroup", "ActivationApiAccessLogGroup"):
+        props = resources[name]["Properties"]
+        assert "KmsKeyId" in props, f"{name} is not KMS-encrypted"
+        assert "LogEncryptionKey" in str(props["KmsKeyId"])
+
+
+def test_log_key_grants_cloudwatch_logs_narrowly(resources):
+    """The grant to the Logs service principal must be scoped by encryption
+    context to this account/region, or it is usable from elsewhere."""
+    statements = resources["LogEncryptionKey"]["Properties"]["KeyPolicy"]["Statement"]
+    logs_stmts = [
+        st
+        for st in statements
+        if isinstance(st.get("Principal"), dict)
+        and "logs." in str(st["Principal"].get("Service", ""))
+    ]
+    assert logs_stmts, "no statement grants CloudWatch Logs use of the key"
+    for st in logs_stmts:
+        condition = st.get("Condition") or {}
+        assert condition, "CloudWatch Logs grant has no Condition — unscoped"
+        assert "kms:EncryptionContext:aws:logs:arn" in str(condition), (
+            "grant is not scoped by log-group encryption context"
+        )
+
+
+def test_log_key_is_separate_from_the_signing_key(resources):
+    """The signing key is SIGN_VERIFY and cannot encrypt; conflating them would
+    also widen what a log-encryption grant reaches."""
+    assert resources["LogEncryptionKey"]["Properties"]["KeyUsage"] == "ENCRYPT_DECRYPT"
+    assert resources["TokenSigningKey"]["Properties"]["KeyUsage"] == "SIGN_VERIFY"
+
+
+def test_log_key_is_not_retained(resources):
+    """Unlike the signing key, retaining this would orphan a key on every test
+    teardown while only protecting already-expiring log data."""
+    assert resources["LogEncryptionKey"].get("DeletionPolicy") != "Retain"
