@@ -2125,9 +2125,17 @@ def remove_documents_from_test_set(args):
     )
     new_count = validation.get("input_count", 0)
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    # REMOVE contentSignature so the next getTestSets reconcile takes the full
+    # path once — the file listing we just did doesn't include the '.source'
+    # bit the reconcile's signature also folds in, so we can't cheaply build a
+    # correct new signature here. Reconcile will backfill it. Otherwise every
+    # remove would leave a stale signature that would burn a wasted full
+    # validate + DDB write on the next poll.
     tracking_table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET fileCount = :c, lastAddResult = :r",
+        UpdateExpression=(
+            "SET fileCount = :c, lastAddResult = :r REMOVE contentSignature"
+        ),
         ExpressionAttributeValues={
             ":c": new_count,
             ":r": f"Removed {removed} document(s)",
@@ -3126,10 +3134,19 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
 
     except Exception as e:
         logger.error(f"Error validating test set files for {prefix}: {str(e)}")
+        # ``validation_failed=True`` is the sentinel that says "the return
+        # values below are not observations of the folder — they're placeholders
+        # from a transient failure." Reconcile MUST check this before writing:
+        # otherwise a throttled S3 call would return ``input_count=0``,
+        # ``valid=False`` and no ``labeled`` key, and reconcile would happily
+        # write that over a valid COMPLETED/labeled/N-file row, destroying its
+        # state until the next successful call.
         return {
             "valid": False,
+            "validation_failed": True,
             "error": f"Validation error: {str(e)}",
             "input_count": 0,
+            "labeled": False,
             "signature": "",
         }
 
@@ -3154,13 +3171,57 @@ def _get_test_set_creation_time(s3_client, bucket, prefix):
     return earliest_time.isoformat()
 
 
+def _check_source_marker(s3_client, bucket, prefix):
+    """Return True/False for '.source' marker presence, or None on transient failure.
+
+    The reconcile signature folds this in so that a synthetic generator writing
+    the marker AFTER the folder was registered still forces a source re-check.
+    ``None`` is treated by the caller as "leave the signature unchanged" so a
+    throttled HeadObject doesn't cause spurious full reconciles every poll.
+    """
+    try:
+        s3_client.head_object(Bucket=bucket, Key=f"{prefix}/.source")
+        return True
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        return None
+    except Exception:
+        return None
+
+
 def _get_test_set_source(s3_client, bucket, prefix):
-    """Return 'synthetic' if the generator left a '.source' marker, else 'uploaded'."""
+    """Return 'synthetic' if the generator left a '.source' marker, 'uploaded'
+    if it is definitively absent (S3 404), or ``None`` if the answer is unknown
+    (a non-404 error like throttling or transient 5xx).
+
+    Reconcile treats ``None`` as "don't overwrite the current source value" —
+    flipping a synthetic set to uploaded because a HeadObject was throttled
+    would misclassify it silently.
+    """
     try:
         s3_client.head_object(Bucket=bucket, Key=f"{prefix}/.source")
         return "synthetic"
-    except Exception:
-        return "uploaded"
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        # S3 answers 404 as 404, but HeadObject with s3v4 sometimes surfaces
+        # missing objects as NoSuchKey; treat both as definitively absent.
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return "uploaded"
+        logger.warning(
+            f"HeadObject for {prefix}/.source failed transiently ({code}); "
+            "returning None (source unchanged)."
+        )
+        return None
+    except Exception as e:
+        # Anything that isn't a ClientError is definitely not "the object is
+        # missing" — SDK/config bug, network unreachable, etc. Same treatment.
+        logger.warning(
+            f"Unexpected error checking {prefix}/.source: {e}; "
+            "returning None (source unchanged)."
+        )
+        return None
 
 
 def _create_test_set_tracking_entry(
@@ -3231,14 +3292,39 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
     try:
         # Never touch a row that a copier/extractor is actively mutating; those
         # paths eagerly write fileCount+status and reconciling on top of an
-        # in-flight edit would race them.
+        # in-flight edit would race them. This check is cheap belt — the
+        # actual race-safe guard is the ConditionExpression on the UpdateItem
+        # below, since ``existing_row`` was read minutes ago (S3 list + validate
+        # runs between) and a copier could have flipped the row to UPDATING in
+        # the meantime.
         if existing_row.get("status") not in _RECONCILE_STATUSES:
             return None
 
         validation = _validate_test_set_files(
             s3_client, bucket, prefix, allow_unlabeled=True
         )
-        new_signature = validation.get("signature", "")
+
+        # A transient S3 failure in the validator returns a sentinel dict
+        # (``validation_failed=True``) whose fields would otherwise look like
+        # "the folder is now empty and broken" — writing that over a real row
+        # destroys its state. Bail without a DDB write; the next successful
+        # reconcile will handle it.
+        if validation.get("validation_failed"):
+            logger.warning(
+                f"Skipping reconcile for {prefix}: validation failed transiently "
+                f"({validation.get('error')})"
+            )
+            return None
+
+        # Signature includes the presence of the ``.source`` marker so that a
+        # synthetic generator writing it *after* the folder was registered
+        # invalidates the fast path and forces a source re-check. Without this
+        # the marker sits outside the input/baseline prefixes the signature
+        # tracks, and source stays 'uploaded' forever for late-writing
+        # generators.
+        source_marker_present = _check_source_marker(s3_client, bucket, prefix)
+        base_signature = validation.get("signature", "")
+        new_signature = f"{base_signature}|src={source_marker_present}"
         old_signature = existing_row.get("contentSignature")
 
         # Fast path: signature unchanged AND we already have one on the row =>
@@ -3249,13 +3335,30 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
 
         new_status = "COMPLETED" if validation["valid"] else "FAILED"
         new_error = validation.get("error")
-        new_label_state = (
-            "labeled" if validation.get("labeled") else "unlabeled"
-        )
+
+        # labelState transitions have three legitimate final states: 'unlabeled'
+        # (documents only, no baselines), 'draft' (machine-generated labels
+        # awaiting human review), and 'labeled' (either uploaded ground truth
+        # or reviewed drafts). The validator only sees folder shape, so it
+        # cannot distinguish 'draft' from 'labeled' — both look like matching
+        # input↔baseline pairs. Preserve 'draft' when the shape is valid;
+        # writing 'labeled' would silently promote unreviewed machine drafts
+        # into "verified" ground truth, which is exactly what the draft-label
+        # workflow exists to prevent.
+        if validation.get("labeled"):
+            if existing_row.get("labelState") == "draft":
+                new_label_state = "draft"
+            else:
+                new_label_state = "labeled"
+        else:
+            new_label_state = "unlabeled"
+
         new_file_count = validation.get("input_count", 0)
         # Source may only appear after registration (the synthetic generator
-        # drops '.source' asynchronously); re-check on every reconcile.
-        new_source = _get_test_set_source(s3_client, bucket, prefix)
+        # drops '.source' asynchronously); re-check on every reconcile. If the
+        # HeadObject fails transiently the helper returns None, meaning "we
+        # don't know" — do NOT overwrite the existing value in that case.
+        detected_source = _get_test_set_source(s3_client, bucket, prefix)
 
         # Determine which fields actually changed so we don't issue a DDB write
         # (or a DDB stream event) for a no-op.
@@ -3266,11 +3369,16 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             changed["status"] = new_status
         if existing_row.get("labelState") != new_label_state:
             changed["labelState"] = new_label_state
-        if existing_row.get("source") != new_source:
-            changed["source"] = new_source
+        # detected_source is None on a transient HeadObject failure — skip.
+        if (
+            detected_source is not None
+            and existing_row.get("source") != detected_source
+        ):
+            changed["source"] = detected_source
         # Error handling is asymmetric: SET when we have one, REMOVE when we
-        # don't. Track both so the DDB update below can emit REMOVE.
-        clear_error = existing_row.get("error") and not new_error
+        # don't. Use ``in`` rather than truthiness so an empty-string error
+        # attribute would also trigger REMOVE.
+        clear_error = "error" in existing_row and not new_error
         if new_error and existing_row.get("error") != new_error:
             changed["error"] = new_error
         if existing_row.get("contentSignature") != new_signature:
@@ -3283,9 +3391,16 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         changed["updatedAt"] = now
 
         # Build one UpdateItem with SET for changed fields and (optionally)
-        # REMOVE for the error attribute when the set is clean again.
-        expr_names = {}
-        expr_values = {}
+        # REMOVE for the error attribute when the set is clean again. The
+        # ConditionExpression rejects the write if the row is no longer in a
+        # reconcilable status — that closes the race with TestSetFileCopier /
+        # TestSetZipExtractor writing UPDATING in the window between our
+        # ``get_test_sets`` read and this write.
+        expr_names = {"#st": "status"}
+        expr_values = {
+            ":completed": "COMPLETED",
+            ":failed": "FAILED",
+        }
         set_parts = []
         for i, (field, value) in enumerate(changed.items()):
             name_key = f"#f{i}"
@@ -3301,12 +3416,33 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             expr_names["#err"] = "error"
             update_expression += " REMOVE #err"
 
-        db_client.update_item(
-            key={"PK": f"testset#{prefix}", "SK": "metadata"},
-            update_expression=update_expression,
-            expression_attribute_names=expr_names,
-            expression_attribute_values=expr_values,
+        # Use boto3 directly here (rather than db_client.update_item) because
+        # DynamoDBClient.update_item does not expose ConditionExpression, and
+        # the race guard against a mid-window UPDATING transition is the whole
+        # reason for this write's condition.
+        tracking_table = boto3.resource("dynamodb").Table(
+            os.environ["TRACKING_TABLE"]
         )
+        try:
+            tracking_table.update_item(
+                Key={"PK": f"testset#{prefix}", "SK": "metadata"},
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expr_names,
+                ExpressionAttributeValues=expr_values,
+                ConditionExpression="#st IN (:completed, :failed)",
+            )
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                logger.info(
+                    f"Skipping reconcile for {prefix}: row moved to a "
+                    "non-terminal status between our read and write "
+                    "(likely a copier/extractor took over)."
+                )
+                return None
+            raise
         logger.info(
             f"Reconciled test set {prefix}: {sorted(changed.keys())}"
             + (" (+cleared error)" if clear_error else "")

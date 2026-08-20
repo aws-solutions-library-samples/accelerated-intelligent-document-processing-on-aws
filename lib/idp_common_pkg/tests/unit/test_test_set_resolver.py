@@ -550,16 +550,31 @@ class TestTestSetResolver:
                 assert result[0]["configVersion"] == "confbench-testset-v0.1.0"
 
     def test_get_test_set_source_reads_marker(self):
-        """_get_test_set_source returns 'synthetic' iff a '.source' marker exists."""
+        """_get_test_set_source distinguishes 404 (uploaded) from transient errors.
+
+        A 404 is a definitive answer (no marker there); a throttling or 5xx is
+        not, and returning 'uploaded' on those would silently misclassify
+        synthetic sets. The helper now returns None on non-404 errors so
+        reconcile can leave the row's existing source alone.
+        """
+        from botocore.exceptions import ClientError
+
         s3 = MagicMock()
         # marker present -> synthetic
         s3.head_object.return_value = {}
         assert (
             test_set_index._get_test_set_source(s3, "bucket", "prefix") == "synthetic"
         )
-        # marker absent (head_object raises) -> uploaded
-        s3.head_object.side_effect = Exception("404")
+        # definitive 404 -> uploaded
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+        )
         assert test_set_index._get_test_set_source(s3, "bucket", "prefix") == "uploaded"
+        # transient error (e.g. SlowDown) -> None (unknown, don't overwrite)
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "SlowDown", "Message": "throttled"}}, "HeadObject"
+        )
+        assert test_set_index._get_test_set_source(s3, "bucket", "prefix") is None
 
     @patch.dict("os.environ", {"INPUT_BUCKET": "test-bucket"})
     def test_list_input_bucket_files(self):
@@ -3718,7 +3733,13 @@ class TestTestSetResolver:
         assert result["signature"] == "1:1:2026-01-02T00:00:00+00:00"
 
     def test_reconcile_noop_when_signature_matches(self):
-        """Fast path: no DDB write, no source lookup, when the folder is unchanged."""
+        """Fast path: no DDB write, no source lookup, when the folder is unchanged.
+
+        Also verifies that the signature includes the '.source' marker's
+        presence — that's the fix for the case where a synthetic generator
+        drops '.source' AFTER registration; without folding it into the
+        signature, source stays 'uploaded' forever.
+        """
         s3 = Mock()
         existing = {
             "PK": "testset#ts1",
@@ -3727,7 +3748,7 @@ class TestTestSetResolver:
             "fileCount": 3,
             "labelState": "labeled",
             "source": "uploaded",
-            "contentSignature": "3:3:2026-01-02T00:00:00+00:00",
+            "contentSignature": "3:3:2026-01-02T00:00:00+00:00|src=False",
         }
         with (
             patch.object(
@@ -3740,17 +3761,18 @@ class TestTestSetResolver:
                     "signature": "3:3:2026-01-02T00:00:00+00:00",
                 },
             ),
+            patch.object(test_set_index, "_check_source_marker", return_value=False),
             patch.object(test_set_index, "_get_test_set_source") as source_mock,
-            patch.object(test_set_index.db_client, "update_item") as upd,
         ):
             result = test_set_index._reconcile_test_set_tracking_entry(
                 s3, "bucket", "ts1", existing
             )
 
         assert result is None
-        upd.assert_not_called()
-        # Guardrail: the fast path must skip source lookups, not just DDB writes,
-        # so we don't head_object every folder on every getTestSets call.
+        # Guardrail: the fast path must skip source lookups AND DDB writes,
+        # so we don't head_object every folder on every getTestSets call. The
+        # boto3 UpdateItem is not called (verified indirectly: the reconcile
+        # returns None before reaching the update path).
         source_mock.assert_not_called()
 
     def test_reconcile_flips_to_failed_when_baseline_missing(self, labeling_env):
@@ -3871,49 +3893,47 @@ class TestTestSetResolver:
         validate.assert_not_called()
         upd.assert_not_called()
 
-    def test_reconcile_no_op_when_only_updatedAt_would_change(self):
-        """No DDB write when the folder is unchanged AND already has a signature.
+    def test_reconcile_first_run_backfills_signature(self, labeling_env):
+        """First reconcile after upgrade writes a signature onto a row that lacks one.
 
-        Guards against writing on every single getTestSets call, which would burn
-        write capacity and fire spurious DDB stream events (subscribers would see
-        a phantom test-set "update" every 3s from the UI's polling).
+        Rows written before the reconcile logic existed have no
+        ``contentSignature`` attribute; without a one-time write to backfill
+        it, the fast path would never engage for those rows and every poll
+        would incur the full validate + DDB write.
         """
-        s3 = Mock()
-        with (
-            patch.object(
-                test_set_index,
-                "_validate_test_set_files",
-                return_value={
-                    "valid": True,
-                    "input_count": 1,
-                    "labeled": True,
-                    "signature": "1:1:2026-01-01T00:00:00+00:00",
-                },
-            ),
-            patch.object(
-                test_set_index, "_get_test_set_source", return_value="uploaded"
-            ),
-            patch.object(test_set_index.db_client, "update_item") as upd,
-        ):
-            existing = {
-                "PK": "testset#ts1",
-                "SK": "metadata",
-                "status": "COMPLETED",
-                "fileCount": 1,
-                "labelState": "labeled",
-                "source": "uploaded",
-                # No contentSignature yet (row predates reconcile) — first
-                # reconcile MUST write to persist a signature so later calls
-                # can take the fast path.
-            }
-            result = test_set_index._reconcile_test_set_tracking_entry(
-                s3, "bucket", "ts1", existing
-            )
-        # First reconcile after upgrade backfills the signature — expect a write.
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            labelState="labeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            # No contentSignature yet — row predates the reconcile logic.
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+
         assert result is not None
-        assert upd.call_count == 1
-        args, kwargs = upd.call_args
-        assert "contentSignature" in kwargs["expression_attribute_names"].values()
+        assert "contentSignature" in result
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row.get("contentSignature")
 
     def test_reconcile_updates_file_count_when_files_added(self, labeling_env):
         """Happy path: user adds a matched pair, count and signature move."""
@@ -3960,3 +3980,267 @@ class TestTestSetResolver:
         row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
         assert row["fileCount"] == 2
         assert row["contentSignature"] != "stale"
+
+    # -- Adversarial edge cases from the code-review pass -----------------
+
+    def test_reconcile_skips_row_when_validator_transiently_fails(self):
+        """A transient S3 exception in the validator must NOT clobber a valid row.
+
+        Without this guard, a throttled ``list_objects_v2`` returns
+        ``input_count=0, valid=False, labeled=False`` — reconcile would write
+        those over the row and destroy its fileCount/status/labelState. The
+        validator flags the failure with ``validation_failed=True`` for exactly
+        this case; reconcile bails.
+        """
+        s3 = Mock()
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": False,
+                    "validation_failed": True,
+                    "error": "Validation error: Throttled",
+                    "input_count": 0,
+                    "labeled": False,
+                    "signature": "",
+                },
+            ),
+            patch.object(test_set_index, "_check_source_marker", return_value=False),
+        ):
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 5,
+                "labelState": "labeled",
+                "source": "uploaded",
+                "contentSignature": "5:5:2026-01-01T00:00:00+00:00|src=False",
+            }
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+        assert result is None
+
+    def test_reconcile_preserves_draft_label_state(self, labeling_env):
+        """A row with labelState='draft' must not be promoted to 'labeled'.
+
+        The validator only sees folder shape (input↔baseline pairing), so a
+        set of machine-generated draft labels looks identical to a fully
+        reviewed one. Reconcile writing 'labeled' would silently promote
+        unreviewed drafts into "verified" ground truth — exactly what the
+        draft-labeling workflow exists to prevent.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            labelState="draft",  # machine drafts awaiting review
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            contentSignature="stale",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        # Reconcile may have refreshed contentSignature, but MUST NOT touch
+        # labelState — the row still says 'draft', and the merged in-memory
+        # view returned to the resolver still says 'draft'.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["labelState"] == "draft"
+        if result is not None:
+            assert result["labelState"] == "draft"
+
+    def test_reconcile_preserves_source_when_head_object_throttles(self):
+        """Transient error checking .source must NOT flip synthetic to uploaded.
+
+        A HeadObject that throttles (or returns any non-404 error) must be
+        treated as "unknown, don't touch" — anything else silently
+        misclassifies a synthetic test set as uploaded on a bad AWS day.
+        """
+        from botocore.exceptions import ClientError
+
+        s3 = Mock()
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "SlowDown", "Message": "throttled"}}, "HeadObject"
+        )
+        # Direct helper unit-test: transient error ⇒ None.
+        source = test_set_index._get_test_set_source(s3, "bucket", "ts1")
+        assert source is None
+
+        # And confirm the reconcile does not include a 'source' change in its
+        # DDB write when the helper returns None, even though the row's
+        # current source ('synthetic') would compare unequal.
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": True,
+                    "input_count": 2,
+                    "labeled": True,
+                    "signature": "2:2:2026-02-01T00:00:00+00:00",
+                },
+            ),
+            patch.object(test_set_index, "_check_source_marker", return_value=False),
+            patch.object(test_set_index, "_get_test_set_source", return_value=None),
+            patch("boto3.resource") as boto3_resource,
+            patch.dict(os.environ, {"TRACKING_TABLE": "test-table"}),
+        ):
+            update_mock = boto3_resource.return_value.Table.return_value.update_item
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 1,
+                "labelState": "labeled",
+                "source": "synthetic",
+                "contentSignature": "stale",
+            }
+            test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+        # The write happened (signature moved) but 'source' is not among the
+        # changed fields' names — preserving the row's existing 'synthetic'.
+        assert update_mock.call_count == 1
+        names = update_mock.call_args.kwargs["ExpressionAttributeNames"]
+        assert "source" not in names.values()
+
+    def test_reconcile_bails_on_condition_check_failure(self):
+        """The ConditionExpression closes the race with a concurrent copier write.
+
+        If TestSetFileCopier flips the row to UPDATING between our read and
+        our conditional write, DynamoDB returns
+        ConditionalCheckFailedException and we must return None (don't retry,
+        don't log an error — the copier will finish and its terminal write
+        arms the next poll's reconcile).
+        """
+        from botocore.exceptions import ClientError
+
+        s3 = Mock()
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": True,
+                    "input_count": 2,
+                    "labeled": True,
+                    "signature": "2:2:2026-02-01T00:00:00+00:00",
+                },
+            ),
+            patch.object(test_set_index, "_check_source_marker", return_value=False),
+            patch.object(
+                test_set_index, "_get_test_set_source", return_value="uploaded"
+            ),
+            patch("boto3.resource") as boto3_resource,
+            patch.dict(os.environ, {"TRACKING_TABLE": "test-table"}),
+        ):
+            update_mock = boto3_resource.return_value.Table.return_value.update_item
+            update_mock.side_effect = ClientError(
+                {
+                    "Error": {
+                        "Code": "ConditionalCheckFailedException",
+                        "Message": "row not in COMPLETED/FAILED",
+                    }
+                },
+                "UpdateItem",
+            )
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 1,
+                "labelState": "labeled",
+                "source": "uploaded",
+                "contentSignature": "stale",
+            }
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+        assert result is None
+        # We DID attempt the write with the condition — the guard is the DDB
+        # condition, not the in-process pre-check.
+        assert update_mock.call_count == 1
+        assert (
+            update_mock.call_args.kwargs["ConditionExpression"]
+            == "#st IN (:completed, :failed)"
+        )
+
+    def test_reconcile_signature_folds_in_source_marker(self):
+        """Signature must invalidate when '.source' is written after registration.
+
+        The synthetic generator drops '<prefix>/.source' asynchronously after
+        the row is already registered as source='uploaded'. That marker sits
+        outside the input/baseline prefixes the validator scans, so if it
+        weren't folded into the reconcile signature the fast path would
+        short-circuit and source would stay 'uploaded' forever.
+        """
+        s3 = Mock()
+        # First call: no marker. Second call: marker appeared.
+        marker_calls = {"n": 0}
+
+        def _marker(*args, **kwargs):
+            marker_calls["n"] += 1
+            return marker_calls["n"] > 1  # False first, True second
+
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": True,
+                    "input_count": 1,
+                    "labeled": True,
+                    "signature": "1:1:2026-01-01T00:00:00+00:00",
+                },
+            ),
+            patch.object(test_set_index, "_check_source_marker", side_effect=_marker),
+            patch.object(
+                test_set_index, "_get_test_set_source", return_value="synthetic"
+            ),
+            patch("boto3.resource") as boto3_resource,
+            patch.dict(os.environ, {"TRACKING_TABLE": "test-table"}),
+        ):
+            update_mock = boto3_resource.return_value.Table.return_value.update_item
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 1,
+                "labelState": "labeled",
+                "source": "uploaded",
+                # Signature currently reflects "no marker".
+                "contentSignature": "1:1:2026-01-01T00:00:00+00:00|src=False",
+            }
+            # First reconcile: signature still matches (no marker) ⇒ no-op.
+            r1 = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+            assert r1 is None
+            assert update_mock.call_count == 0
+
+            # Second reconcile after generator wrote '.source': signature moves,
+            # source is re-detected and row flips to 'synthetic'.
+            r2 = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+            assert r2 is not None
+            assert r2["source"] == "synthetic"
+            assert update_mock.call_count == 1
