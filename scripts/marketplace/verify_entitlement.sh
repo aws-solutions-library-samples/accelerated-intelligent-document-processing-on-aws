@@ -41,12 +41,21 @@ set -uo pipefail
 PRODUCT_CODE="${1:-q0k0s3zuuga46hle6fecx547}"
 PRODUCT_ID="${2:-prod-a5ee62vs2xa72}"
 LISTING_ID="${3:-prodview-44jb64lvdxr3y}"
-export AWS_PROFILE="${MP_PROFILE:-default}"
+# NB `${MP_PROFILE-default}` uses `-`, not `:-`, on purpose: `:-` substitutes for
+# an EMPTY value as well as an unset one, which made `MP_PROFILE=` (documented
+# below as "use ambient credentials") silently fall back to the default profile
+# and probe the wrong account.
+AWS_PROFILE_SELECTED="${MP_PROFILE-default}"
 REGION="${MP_REGION:-us-east-1}"
-# Ambient static credentials would override AWS_PROFILE. Clear them so the
-# profile is authoritative; pass MP_PROFILE= (empty) to keep ambient creds.
-if [[ -n "${MP_PROFILE:-default}" ]]; then
+if [[ -n "$AWS_PROFILE_SELECTED" ]]; then
+  # Ambient static credentials would override AWS_PROFILE. Clear them so the
+  # profile is authoritative.
+  export AWS_PROFILE="$AWS_PROFILE_SELECTED"
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+else
+  # MP_PROFILE= (explicitly empty) -> use whatever credentials are in the
+  # environment, e.g. a subscribed buyer account's temporary session.
+  unset AWS_PROFILE
 fi
 export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
 

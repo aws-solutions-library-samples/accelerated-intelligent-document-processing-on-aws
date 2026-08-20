@@ -9,7 +9,7 @@
 # catalog as available to install.
 featureId: pii-anonymizer
 displayName: "PII Anonymization"
-version: 0.1.0
+version: 0.2.0
 description: |
   [EXPERIMENTAL] Detect and redact PII (names, SSNs, dates of birth, addresses,
   phone numbers, emails, and more) from documents BEFORE they reach the

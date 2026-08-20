@@ -31,7 +31,7 @@ declare const __FEATURE_VERSION__: string;
 const App: React.FC<FeatureContext> = ({
   featureApiEndpoint,
   getAuthToken,
-  subscriptionActive,
+  uiAccessAllowed,
   installedVersion,
 }) => {
   const api = useMemo(
@@ -45,12 +45,12 @@ const App: React.FC<FeatureContext> = ({
   const configVersion = `sample-health-insurance-review-v${installedVersion || __FEATURE_VERSION__}`;
 
   useEffect(() => {
-    if (!subscriptionActive) return;
+    if (!uiAccessAllowed) return;
     api
       .getConfig()
       .then((c) => setDiscoveryBucket(c.discoveryBucket))
       .catch(() => setDiscoveryBucket(null));
-  }, [api, subscriptionActive]);
+  }, [api, uiAccessAllowed]);
 
   return (
     <Container
@@ -64,7 +64,7 @@ const App: React.FC<FeatureContext> = ({
       }
     >
       <SpaceBetween size="l">
-        {!subscriptionActive && (
+        {!uiAccessAllowed && (
           <Alert type="info" header="Read-only">
             This feature&apos;s subscription is not active. Views are shown but
             data is not loaded.
@@ -78,7 +78,7 @@ const App: React.FC<FeatureContext> = ({
               id: 'claims',
               label: 'Claims Dashboard',
               content: (
-                <ClaimsDashboardView api={api} enabled={subscriptionActive} />
+                <ClaimsDashboardView api={api} enabled={uiAccessAllowed} />
               ),
             },
             {
@@ -88,7 +88,7 @@ const App: React.FC<FeatureContext> = ({
                 <RulesDiscoveryView
                   discoveryBucket={discoveryBucket}
                   configVersion={configVersion}
-                  enabled={subscriptionActive}
+                  enabled={uiAccessAllowed}
                 />
               ),
             },

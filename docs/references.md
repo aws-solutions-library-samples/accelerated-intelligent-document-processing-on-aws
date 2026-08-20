@@ -39,6 +39,24 @@ its capabilities.
   analyze each cluster, generate JSON schemas, and reflect to catch overlaps.
   See also [Discovery](./discovery.md).
 
+- **[Automate document processing with Quick Automate and the IDP Accelerator](https://aws.amazon.com/blogs/machine-learning/automate-document-processing-with-quick-automate-and-the-idp-accelerator/)**
+  *(Aug 2026)* — A business-level case for pairing the accelerator with Amazon
+  Quick Automate: the accelerator classifies and extracts, assesses results
+  against expected schemas, and flags anomalies (missing fields, inconsistent
+  figures, incomplete forms) for human review; Quick Automate's no-code visual
+  workflow builder then chains the downstream decisions, API calls, and system
+  actions. Framed as a mortgage-lending scenario for a fictional lender —
+  document handling cut from 15–20 minutes to under 6 minutes per loan file
+  ("up to 70 percent"), with the post explicitly labeling the company and its
+  metrics illustrative rather than measured. The concrete integration mechanism
+  is in the companion
+  [Amazon Quick integration workshop](../workshop/amazon-quick-integration-workshop.md):
+  deploy with `EnableMCP=true`, register the accelerator's AgentCore Gateway as
+  an MCP integration in Amazon Quick over service-to-service OAuth, then drive
+  `IDPTools__process` / `get_results` from a Quick workflow that writes the
+  extracted fields to an Excel workbook in S3. See also
+  [MCP Server](./mcp-server.md) and [Human-in-the-Loop Review](./human-review.md).
+
 ## Customer Stories
 
 Reference deployments showing measurable accuracy, cost, and throughput results.
