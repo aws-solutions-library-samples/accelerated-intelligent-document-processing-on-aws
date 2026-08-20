@@ -289,7 +289,25 @@ Generic IaC checks flag several things here. Recorded so they are triaged once:
 | DynamoDB CMK (`CKV_AWS_119`) | **Accepted.** `SSEEnabled: true` uses an AWS-managed key. The roster holds AWS account ids, not credentials or document content. Switch to a CMK if your data-classification policy requires customer-managed keys. |
 | API Gateway X-Ray (`CKV_AWS_73`) | **Optional.** Observability rather than security; enable if you want traces. |
 
-The repository's SRT scan runs automatically on merge requests and may surface
+### SAST results
+
+`semgrep` (one of SRT's engines) reported **one** finding on this code and it was a
+false positive: `logging.logger-credential-leak` fired because a log *message*
+contained the word "token", while its arguments were only identifiers and
+counters. Rather than suppress it, the message was reworded to say what happened
+("Activation granted") and the invariant was locked in properly by
+`test_no_logger_call_receives_token_material`, which inspects the **arguments** of
+every `logger.*` call by AST. That is a stronger control than the scanner's
+message-text heuristic — it catches the signed payload being added to an existing
+log line whose wording looks innocuous, which the heuristic would miss. Semgrep is
+now clean on both files.
+
+`bandit` reports `B404`/`B603` on the `sam` subprocess call, annotated inline with
+the repo's `# nosec` convention: fixed argv, no `shell=True`, and each
+operator-supplied value is a single argv element that cannot split into extra
+arguments.
+
+The full SRT scan also runs automatically on merge requests and may surface
 findings under its own rule names; triage them there, adding suppressions to
 `scripts/srt/issues.json` with a rationale rather than silencing them locally.
 

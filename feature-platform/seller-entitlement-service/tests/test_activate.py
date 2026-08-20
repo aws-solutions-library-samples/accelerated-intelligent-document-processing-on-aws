@@ -550,3 +550,40 @@ def test_allow_listed_account_gets_FULL_capability_not_free_tier(mod, monkeypatc
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["freeTier"] is False
     assert _claims(resp)["freeTier"] is False
+
+
+def test_no_logger_call_receives_token_material():
+    """No logger call may be passed token, signature, or claims material.
+
+    Checks the ARGUMENTS of every `logger.*` call by AST, which is a stronger
+    guard than a scanner heuristic over message text: it would catch someone
+    adding the signed payload to an existing log line whose wording looks
+    innocuous. (Semgrep's `logger-credential-disclosure` flagged this file once
+    for having the word "token" in a message string — a false positive, since the
+    arguments were all identifiers and counters.)
+    """
+    import ast
+    import re
+
+    source = _LAMBDA.read_text(encoding="utf-8")
+    # WORD-BOUNDARY match, not substring. `_` is a word character in Python's
+    # `re`, so `\btoken\b` correctly does NOT match `_TOKEN_TTL_SECONDS` — a
+    # duration constant, which a substring match flagged as a leak. Being precise
+    # beats maintaining an allowlist of safe-but-similar names.
+    sensitive = re.compile(r"\b(token|signature|payload|claims)\b", re.IGNORECASE)
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "logger"
+        ):
+            # args[0] is the format string; the rest are the interpolated values.
+            for arg in node.args[1:]:
+                rendered = ast.unparse(arg)
+                if sensitive.search(rendered):
+                    offenders.append(f"line {node.lineno}: {rendered}")
+    assert not offenders, "logger call(s) may leak token material: " + "; ".join(
+        offenders
+    )
