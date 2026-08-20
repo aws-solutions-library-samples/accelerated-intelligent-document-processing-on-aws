@@ -90,6 +90,29 @@ def test_no_method_disables_authorization(template):
         assert needle not in raw, f"found {needle!r} — that makes the API anonymous"
 
 
+def test_api_does_not_invoke_the_backend_with_caller_credentials(resources):
+    """`InvokeRole: NONE` is load-bearing, in two ways.
+
+    SAM defaults `InvokeRole` to `CALLER_CREDENTIALS` whenever the authorizer is
+    `AWS_IAM`, setting the integration credentials to `arn:aws:iam::*:user/*`.
+    That combination is (a) rejected by API Gateway at deploy time when a resource
+    policy is also set — `CreateDeployment` 400s with "Caller provided credentials
+    not allowed when resource policy is set", rolling the whole stack back — and
+    (b) unworkable regardless, because invoking as the caller would require every
+    buyer account to hold `lambda:InvokeFunction` on the seller's function.
+
+    Both failures are silent in review and neither is visible to a handler unit
+    test, so assert the property directly. See
+    aws/serverless-application-model#1708.
+    """
+    auth = resources["ActivationApi"]["Properties"]["Auth"]
+    assert auth.get("InvokeRole") == "NONE", (
+        "InvokeRole must be NONE. Omitting it makes SAM pass caller credentials to "
+        "the integration, which fails the deployment (resource policy conflict) and "
+        "would require buyers to hold lambda:InvokeFunction on the seller's function"
+    )
+
+
 def test_resource_policy_is_scoped_to_the_activate_method_only(resources):
     """`Principal: '*'` is intended (any AWS account may *attempt* activation),
     but the Resource must pin it to POST /activate. A wildcard resource would
@@ -285,7 +308,13 @@ def test_log_groups_are_cmk_encrypted(resources):
     """These logs carry buyer AWS account ids and caller role ARNs — customer-
     identifying data for a seller — and CMK-encrypted log groups are the repo
     standard (115 of 135 elsewhere)."""
-    for name in ("ActivateFunctionLogGroup", "ActivationApiAccessLogGroup"):
+    for name in (
+        "ActivateFunctionLogGroup",
+        "ActivationApiAccessLogGroup",
+        # Pre-declared precisely so it is encrypted and expires; API Gateway would
+        # otherwise auto-create it in plaintext with no retention.
+        "ActivationApiExecutionLogGroup",
+    ):
         props = resources[name]["Properties"]
         assert "KmsKeyId" in props, f"{name} is not KMS-encrypted"
         assert "LogEncryptionKey" in str(props["KmsKeyId"])
@@ -308,6 +337,58 @@ def test_log_key_grants_cloudwatch_logs_narrowly(resources):
         assert "kms:EncryptionContext:aws:logs:arn" in str(condition), (
             "grant is not scoped by log-group encryption context"
         )
+
+
+def test_account_cloudwatch_role_is_present_and_retained(resources):
+    """Without the account-level API Gateway CloudWatch role, a REST stage with
+    AccessLogSetting is rejected outright — "CloudWatch Logs role ARN must be set
+    in account settings" — so a fresh seller account cannot deploy this template
+    at all. It must also be Retain: AWS::ApiGateway::Account is an account/region
+    singleton, and deleting this stack would otherwise clear the setting out from
+    under any other API in the seller's account."""
+    account = resources["ApiGatewayAccount"]
+    assert account["Type"] == "AWS::ApiGateway::Account"
+    assert account["DeletionPolicy"] == "Retain", (
+        "deleting this stack would disable access logging for every other API "
+        "Gateway API in the seller's account"
+    )
+    role = resources["ApiGatewayCloudWatchRole"]
+    assert role["DeletionPolicy"] == "Retain"
+    assert "PermissionsBoundary" in role["Properties"]
+    assert "AmazonAPIGatewayPushToCloudWatchLogs" in str(
+        role["Properties"]["ManagedPolicyArns"]
+    )
+
+
+def test_kms_key_policies_use_no_overly_broad_wildcard_actions(resources):
+    """Trailing-wildcard KMS actions grant more than they appear to.
+
+    `kms:Decrypt*` / `kms:Encrypt*` / `kms:Describe*` read as if they mean the one
+    obvious verb, but they also match every current and FUTURE action with that
+    prefix — `kms:DescribeCustomKeyStores`, for instance. Only `GenerateDataKey*`
+    and `ReEncrypt*` need to be wildcards (they have real variant forms that
+    CloudWatch Logs uses).
+
+    A sole `kms:*` for the account root is exempt: AWS explicitly warns against
+    key policies that do not grant root full access, because it can permanently
+    orphan the key.
+    """
+    allowed_wildcards = {"kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:GenerateDataKeyPair*"}
+    for name in ("TokenSigningKey", "LogEncryptionKey"):
+        for stmt in resources[name]["Properties"]["KeyPolicy"]["Statement"]:
+            if stmt.get("Effect") != "Allow":
+                continue
+            actions = _actions(stmt)
+            principal = stmt.get("Principal") or {}
+            is_root = "root" in str(principal.get("AWS", ""))
+            if is_root and actions == ["kms:*"]:
+                continue
+            for action in actions:
+                assert "*" not in action or action in allowed_wildcards, (
+                    f"{name} statement {stmt.get('Sid')!r} grants {action!r} — a "
+                    "trailing wildcard that is broader than intended; name the "
+                    "exact action instead"
+                )
 
 
 def test_log_key_is_separate_from_the_signing_key(resources):
