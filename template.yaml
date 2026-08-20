@@ -4908,9 +4908,13 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
             - Effect: Allow
               Action:
+                # Copy-only migration: reads the source parquet's timestamp
+                # column to infer the hour, then PutObject at the new key.
+                # Does NOT delete the source — a partial-failure rollback
+                # (Glue table reverts to the no-hour projection) needs the
+                # originals present so historical data stays visible.
                 - s3:GetObject
                 - s3:PutObject
-                - s3:DeleteObject
               Resource:
                 - !If
                   - ShouldCreateReportingBucket
@@ -4984,7 +4988,7 @@ Resources:
         ]
       Handler: index.handler
       Runtime: python3.12
-      CodeUri: ./patterns/unified/src/data_mart_rollup_function
+      CodeUri: ./src/lambda/data_mart_rollup
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
       MemorySize: 512
       Timeout: 900
@@ -5051,6 +5055,17 @@ Resources:
                 - tag:GetResources
               # Tag API is account-scoped; no resource-level scoping available.
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - cloudformation:ListStackResources
+              # Rollup walks the CFN stack tree (root + nested) to discover
+              # all IDP Lambdas — nested-stack Lambdas carry the nested
+              # stack's aws:cloudformation:stack-name tag, not the root's,
+              # so a tag query on just STACK_NAME misses 57 of 68 Lambdas
+              # on a typical topology. Scoped to this stack's tree.
+              Resource:
+                - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+                - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-*/*"
             - Effect: Allow
               Action:
                 - lambda:GetFunctionConfiguration

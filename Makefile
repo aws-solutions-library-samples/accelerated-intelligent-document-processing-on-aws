@@ -167,7 +167,7 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo "Data-plane Lambda tag check"
 	@if ! make check-data-plane-tags; then \
-		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/planning/monitor-data-mart.md §10.3)$(NC)"; \
+		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -177,7 +177,7 @@ check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all ma
 	@$(PYTHON) scripts/check_filtered_scans.py || \
 		(echo -e "$(RED)ERROR: Unpaginated filtered DynamoDB scan(s) found!$(NC)" && exit 1)
 
-check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/planning/monitor-data-mart.md §10.3)
+check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
 

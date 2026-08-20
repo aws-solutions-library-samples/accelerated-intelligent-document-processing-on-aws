@@ -1,7 +1,16 @@
+---
+title: "Reporting SQL Layer"
+---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Reporting SQL Layer — rollup tables on top of `metering`
 
 **Status:** Shipped (Phase 1).
 **Owner:** Taniya Mathur.
+
+## 1. Overview
 
 A SQL layer on top of the raw `metering` Parquet lake that lets
 consumers (idp-monitor, in-tree analytics agents, and any future
@@ -12,6 +21,11 @@ Three new Athena/Glue tables and one scheduled rollup Lambda; no
 other infrastructure. This doc is the reference for the shape of the
 tables, the partitioning contract, and the tagging model that drives
 control-plane cost attribution.
+
+Related module docs (developer tier):
+
+- [`lib/idp_common_pkg/idp_common/reporting/README.md`](../lib/idp_common_pkg/idp_common/reporting/README.md) — the write path (`save_reporting_data.py`).
+- [`docs/reporting-database.md`](reporting-database.md) — Glue database + table catalogue reference.
 
 ---
 
@@ -83,7 +97,7 @@ explicitly.
 
 ## Rollup Lambda
 
-`DataMartRollupFunction` (`patterns/unified/src/data_mart_rollup_function/index.py`).
+`DataMartRollupFunction` (`src/lambda/data_mart_rollup/index.py`).
 Two EventBridge schedules dispatch based on the `mode` field:
 
 - `{"mode": "hourly"}` — every hour at :05 UTC. Writes

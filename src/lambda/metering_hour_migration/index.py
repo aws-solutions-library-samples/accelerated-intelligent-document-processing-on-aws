@@ -217,11 +217,25 @@ def _iter_old_layout_keys(bucket: str) -> Iterator[str]:
 
 
 def _migrate_one(bucket: str, key: str) -> None:
-    """Copy ``key`` to its hour-partitioned target and delete the original.
+    """Copy ``key`` to its hour-partitioned target. Does NOT delete the
+    original.
 
-    Interruption between copy and delete is safe — a re-run treats already-
+    Copy-only is the rollback-safe path: if the migration fails partway
+    through and CFN rolls the Glue table back to its pre-migration
+    projection (``date=X/*.parquet``, no ``hour=Y/`` subdir), the still-
+    present originals are what the projection reads — data stays visible.
+
+    Duplicate storage after a successful migration is intentional and
+    inexpensive (metering parquet files are small + Snappy-compressed).
+    The already-migrated files under ``hour=HH/`` are what the new
+    projection reads. The originals at ``date=X/*.parquet`` are invisible
+    to Athena post-migration and can be removed by an operator later —
+    ``scripts/migrate_metering_hour_partition.py --cleanup`` is the
+    supported way, or a plain S3 lifecycle rule works too.
+
+    Interruption during the copy is safe — a re-run treats already-
     migrated files as no-ops (they carry ``/hour=`` in the key and the
-    lister skips them).
+    lister skips them). CopyObject is atomic per-key.
     """
     hour = _infer_hour(bucket, key)
     target = _new_key(key, hour)
@@ -234,7 +248,6 @@ def _migrate_one(bucket: str, key: str) -> None:
         Key=target,
         CopySource={"Bucket": bucket, "Key": key},
     )
-    s3_client.delete_object(Bucket=bucket, Key=key)
 
 
 def _infer_hour(bucket: str, key: str) -> str:

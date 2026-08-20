@@ -146,10 +146,41 @@ The `metering` table captures detailed usage metrics and cost information for ea
 | number_of_pages | int | Number of pages in the document |
 | unit_cost | double | Cost per unit in USD (e.g., cost per token, cost per page) |
 | estimated_cost | double | Calculated total cost in USD (value × unit_cost) |
-| timestamp | timestamp | When the operation was performed |
+| timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
+| initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
 | config_version | string | Configuration version used for processing |
 
-This table is partitioned by date (YYYY-MM-DD format).
+**Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
+Partition values reflect **completion time** (write time), not queue
+time. `WHERE date = 'X'` means "docs completed on X", NOT "docs queued
+on X" — filter on `initial_event_time` explicitly when you need
+queue-time semantics. Add `AND hour = 'HH'` to partition-prune queries
+scoped to a specific hour.
+
+### Rollup tables (populated by the scheduled `DataMartRollupFunction`)
+
+For aggregate cost/volume queries over wider ranges, consumers should
+read from the pre-aggregated Athena tables — a full-day scan of raw
+metering is ~10× more expensive than the equivalent daily rollup query:
+
+| Table | Grain | Written by | Use for |
+|---|---|---|---|
+| `metering_hourly` | hour × config_version × service_api × unit | Hourly rollup Lambda, at N+1:05 UTC for hour N | Ranges of `2h` to `24h` |
+| `metering_daily` | day × config_version × service_api × unit | Daily rollup Lambda, at D+1 00:15 UTC for day D | Ranges of `> 24h` |
+| `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, from CloudWatch metrics | Per-Lambda control-plane cost attribution |
+
+Aggregate columns on `metering_hourly` / `metering_daily`:
+`n_doc_events, sum_value, sum_cost, sum_pages`. **Naming note:**
+`n_doc_events` is event count, not unique document count — a document
+reprocessed across multiple hours produces one row per hour. Consumers
+who need cross-hour unique-doc counts must query raw `metering` with
+`COUNT(DISTINCT document_id)`.
+
+See [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
+consumer tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
+the tagging model that drives control-plane discovery, and the
+automated migration path (a CFN custom resource) for the new `hour`
+partition key.
 
 ### Cost Calculation and Pricing
 
@@ -266,7 +297,19 @@ To use the reporting database with Athena:
 
 ### Sample Queries
 
-Here are some example queries to get you started:
+Here are some example queries to get you started.
+
+> **Semantic note:** in `metering`, `WHERE date = 'X'` filters on
+> **completion time**. Every sample below that filters `metering` by
+> `date` is asking "docs completed in this range", not "docs queued".
+> For queue-time semantics, filter on the `initial_event_time` column
+> instead.
+
+> **Performance note:** for wide date ranges (>24h), prefer
+> `metering_daily` / `metering_hourly` over raw `metering` — same
+> shape of query, but KB-scale scan instead of GB-scale. See
+> [Reporting SQL Layer](reporting-sql-layer.md) for the tier picker.
+
 
 **Overall accuracy by document type:**
 ```sql

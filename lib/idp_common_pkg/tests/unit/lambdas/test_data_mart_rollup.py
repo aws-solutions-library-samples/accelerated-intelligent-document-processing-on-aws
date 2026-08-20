@@ -19,7 +19,7 @@ Coverage focus:
 import importlib.util
 import os
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,7 +30,7 @@ def _load_module():
         "data_mart_rollup",
         os.path.join(
             os.path.dirname(__file__),
-            "../../../../../patterns/unified/src/data_mart_rollup_function/index.py",
+            "../../../../../src/lambda/data_mart_rollup/index.py",
         ),
     )
     assert spec and spec.loader, "Could not load rollup Lambda module"
@@ -118,6 +118,45 @@ class TestTimeWindows:
         assert start == datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
         assert end == datetime(2026, 8, 18, 15, 0, tzinfo=timezone.utc)
 
+    def test_anchor_from_event_time_pins_retry_to_trigger_time(self, rollup):
+        """Async retry must roll up the ORIGINAL trigger's hour, not
+        wall-clock. If EventBridge fires at 14:05 UTC for hour 13 and
+        the first attempt fails at 15:07 UTC (crossing hour boundary),
+        the retry must still target hour 13 — not accidentally start
+        rolling up hour 14 by using datetime.now()."""
+        event = {"time": "2026-08-18T14:05:00Z"}
+        anchor = rollup._parse_anchor_time(event)
+        assert anchor == datetime(2026, 8, 18, 14, 5, tzinfo=timezone.utc)
+        date, hour = rollup._previous_hour(anchor)
+        assert (date, hour) == ("2026-08-18", "13")
+
+    def test_anchor_without_event_time_falls_back_to_now(self, rollup):
+        """Manual `aws lambda invoke` payloads don't include a `time`
+        field. Fall back to wall-clock so the escape hatch keeps working."""
+        with patch.object(rollup, "datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(
+                2026, 8, 18, 15, 30, tzinfo=timezone.utc
+            )
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            # patch also patches datetime.fromisoformat inside the module,
+            # so provide a passthrough
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            anchor = rollup._parse_anchor_time({})
+        assert anchor.hour == 15
+
+    def test_anchor_malformed_event_time_falls_back_to_now(self, rollup):
+        """A garbage `time` field must not crash the rollup — fall back
+        to now() with a warning. Prod ain't the place to enforce ISO 8601."""
+        with patch.object(rollup, "datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(
+                2026, 8, 18, 15, 30, tzinfo=timezone.utc
+            )
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            # fromisoformat is called on the raw string — make it raise
+            mock_dt.fromisoformat.side_effect = ValueError("not iso")
+            anchor = rollup._parse_anchor_time({"time": "definitely-not-a-timestamp"})
+        assert anchor.hour == 15
+
 
 @pytest.mark.unit
 class TestMeteringHourlyRollup:
@@ -172,7 +211,7 @@ class TestMeteringDailyRollup:
         captured_sql = []
         with (
             patch.object(rollup, "_partition_already_written", return_value=False),
-            patch.object(rollup, "_require_all_24_hours_present"),
+            patch.object(rollup, "_require_hourly_matches_raw_metering"),
             patch.object(
                 rollup,
                 "_run_athena",
@@ -281,36 +320,100 @@ class TestMeteringDailyRollup:
 
 @pytest.mark.unit
 class TestControlPlaneDiscovery:
-    """Discovery is subtractive: all IDP Lambdas minus data-plane
-    (whitelist model, §10.3). Correctness of this set determines
-    whether Control Plane Cost KPI is accurate."""
+    """Discovery is subtractive: all IDP Lambdas in the stack TREE minus
+    data-plane (whitelist model, §10.3). Nested-stack Lambdas MUST be
+    included — a Lambda in a nested stack carries the nested stack's
+    aws:cloudformation:stack-name tag, not the root stack's. Filtering by
+    root name alone missed 57 of 68 Lambdas on this repo's live topology."""
 
-    def test_subtracts_data_plane_arns_stack_scoped(self, rollup):
-        """Discovery must scope BOTH the ``all_idp`` list AND the
-        ``data_plane`` subtraction to this stack via the
-        ``aws:cloudformation:stack-name`` tag. An account with multiple
-        IDP stacks would otherwise subtract sibling stacks' data-plane
-        Lambdas from this stack's list (harmless), or worse — return
-        their Lambdas' ARNs (bug)."""
+    def test_stack_tree_bfs_walks_nested_stacks(self, rollup):
+        """Regression: enumerate_stack_tree must recurse into nested stacks.
+        Skipping this walk was the bug that silently invisible-ed every
+        Lambda under nested/api-resolvers/ (test-results, test-runner,
+        config-mgmt, capacity-planner, finetuning, user-mgmt, etc.)."""
+        # Map of stack name → its list_stack_resources page(s).
+        pages_by_stack = {
+            "root": [
+                {
+                    "StackResourceSummaries": [
+                        {
+                            "ResourceType": "AWS::CloudFormation::Stack",
+                            "PhysicalResourceId": "arn:aws:cloudformation:us-east-1:1:stack/root-APIRESOLVERSTACK/abc",
+                        },
+                        {
+                            "ResourceType": "AWS::CloudFormation::Stack",
+                            "PhysicalResourceId": "arn:aws:cloudformation:us-east-1:1:stack/root-BEDROCKKB/def",
+                        },
+                        {
+                            "ResourceType": "AWS::Lambda::Function",
+                            "PhysicalResourceId": "root-something",
+                        },
+                    ]
+                }
+            ],
+            "root-APIRESOLVERSTACK": [
+                {
+                    "StackResourceSummaries": [
+                        {
+                            "ResourceType": "AWS::CloudFormation::Stack",
+                            "PhysicalResourceId": "arn:aws:cloudformation:us-east-1:1:stack/root-APIRESOLVERSTACK-DEEP/xyz",
+                        }
+                    ]
+                }
+            ],
+        }
+
+        def paginate(**kwargs):
+            return iter(
+                pages_by_stack.get(
+                    kwargs["StackName"], [{"StackResourceSummaries": []}]
+                )
+            )
+
+        paginator = MagicMock()
+        paginator.paginate.side_effect = paginate
+        cfn = MagicMock()
+        cfn.get_paginator.return_value = paginator
+
+        with patch("boto3.client", return_value=cfn):
+            tree = rollup._enumerate_stack_tree("root")
+        # BFS: root, then its direct children, then grandchildren.
+        assert tree == [
+            "root",
+            "root-APIRESOLVERSTACK",
+            "root-BEDROCKKB",
+            "root-APIRESOLVERSTACK-DEEP",
+        ]
+
+    def test_discovery_subtracts_data_plane_across_full_tree(self, rollup):
+        """Discovery scopes BOTH the ``all_idp`` list AND the ``data_plane``
+        subtraction to the full stack tree, not just the root. On a shared
+        account with multiple IDP stacks, only THIS stack's data-plane
+        Lambdas are subtracted from THIS stack's control-plane list."""
+        stack_tree = ["idp-test-stack", "idp-test-stack-APIRESOLVERSTACK-abc"]
+        # Root-stack Lambda (previously the only one seen) + a nested one
+        # (which the old code missed).
         all_idp = [
-            "arn:aws:lambda:us-east-1:1:function:OCRFunction",
-            "arn:aws:lambda:us-east-1:1:function:TestResultsResolver",
-            "arn:aws:lambda:us-east-1:1:function:ConfigResolver",
+            "arn:aws:lambda:us-east-1:1:function:OCRFunction",  # root, data plane
+            "arn:aws:lambda:us-east-1:1:function:TestResultsResolver",  # nested, control
+            "arn:aws:lambda:us-east-1:1:function:ConfigResolver",  # nested, control
         ]
         data_plane = ["arn:aws:lambda:us-east-1:1:function:OCRFunction"]
 
         def fake_get(tags):
-            if tags == {"aws:cloudformation:stack-name": ["idp-test-stack"]}:
+            if tags == {"aws:cloudformation:stack-name": stack_tree}:
                 return list(all_idp)
-            # BOTH filters combined → stack-scoped data plane subtraction.
             if tags == {
-                "aws:cloudformation:stack-name": ["idp-test-stack"],
+                "aws:cloudformation:stack-name": stack_tree,
                 "idp:plane": ["data"],
             }:
                 return list(data_plane)
             return []
 
-        with patch.object(rollup, "_get_resources_by_tag", side_effect=fake_get):
+        with (
+            patch.object(rollup, "_enumerate_stack_tree", return_value=stack_tree),
+            patch.object(rollup, "_get_resources_by_tag", side_effect=fake_get),
+        ):
             control = rollup._discover_control_plane_lambdas()
         assert set(control) == {
             "arn:aws:lambda:us-east-1:1:function:TestResultsResolver",
@@ -322,16 +425,20 @@ class TestControlPlaneDiscovery:
         is drift-detector fodder — WARN log for the operator to fix."""
         import logging
 
+        stack_tree = ["idp-test-stack"]
         all_idp = [
             "arn:aws:lambda:us-east-1:1:function:MyExtractionFunctionRedacted",
         ]
 
         def fake_get(tags):
-            if tags == {"aws:cloudformation:stack-name": ["idp-test-stack"]}:
+            if tags == {"aws:cloudformation:stack-name": stack_tree}:
                 return list(all_idp)
             return []
 
-        with patch.object(rollup, "_get_resources_by_tag", side_effect=fake_get):
+        with (
+            patch.object(rollup, "_enumerate_stack_tree", return_value=stack_tree),
+            patch.object(rollup, "_get_resources_by_tag", side_effect=fake_get),
+        ):
             with caplog.at_level(logging.WARNING):
                 control = rollup._discover_control_plane_lambdas()
 
@@ -437,7 +544,9 @@ class TestControlPlaneRowBuilding:
     def test_row_no_bedrock_emits_one_null_model_row(self, rollup):
         """Component that didn't call Bedrock this hour → one row with
         bedrock_model=None capturing Lambda+Athena cost only."""
-        with patch.object(rollup, "_get_lambda_memory_mb", return_value=512):
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")
+        ):
             rows = rollup._build_control_plane_rows(
                 function_name="TestRunnerFunction",
                 component="test-runner",
@@ -464,7 +573,9 @@ class TestControlPlaneRowBuilding:
     def test_row_per_bedrock_model(self, rollup):
         """A component that called two Bedrock models emits one row per
         model, each with the correct per-model pricing applied."""
-        with patch.object(rollup, "_get_lambda_memory_mb", return_value=1024):
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
+        ):
             rows = rollup._build_control_plane_rows(
                 function_name="AnalyticsAgentFn",
                 component="analytics-agent",
@@ -495,28 +606,77 @@ class TestControlPlaneRowBuilding:
             < 1e-6
         )
 
-    def test_lambda_cost_scales_with_actual_memory(self, rollup):
-        """Cost estimate uses the Lambda's real MemorySize (not the
-        previous fixed 512 MB assumption). 4 GB memory → 8× the
-        cost that a 512 MB assumption would give at the same duration."""
-        with patch.object(rollup, "_get_lambda_memory_mb", return_value=4096):
+    def test_lambda_cost_scales_with_actual_memory_at_same_arch(self, rollup):
+        """Memory contribution: 4 GB → 8× the cost of 512 MB, holding
+        architecture (and per-request cost) constant."""
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(4096, "arm64")
+        ):
             rows_4gb = rollup._build_control_plane_rows(
                 function_name="BigFn",
                 component="test-runner",
                 hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
                 metrics={"duration_ms": 5000.0, "invocations": 1.0},
             )
-        with patch.object(rollup, "_get_lambda_memory_mb", return_value=512):
+        with patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "arm64")):
             rows_512 = rollup._build_control_plane_rows(
                 function_name="SmallFn",
                 component="test-runner",
                 hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
                 metrics={"duration_ms": 5000.0, "invocations": 1.0},
             )
+        # Ratio isn't exactly 8 because the per-request cost is a fixed
+        # additive term that doesn't scale with memory. Loosening the
+        # tolerance to ±0.1 keeps the intent — 4 GB is materially more
+        # than 512 MB — while accounting for the constant request term.
         assert (
             abs(rows_4gb[0]["est_lambda_cost"] / rows_512[0]["est_lambda_cost"] - 8)
-            < 0.01
+            < 0.1
         )
+
+    def test_x86_64_priced_higher_than_arm64_at_same_memory(self, rollup):
+        """Same memory, same duration, different arch → x86_64 is
+        ~25% more per GB-second. Confirms the arch dim isn't ignored."""
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
+        ):
+            rows_arm = rollup._build_control_plane_rows(
+                function_name="ArmFn",
+                component="test-runner",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={"duration_ms": 5000.0, "invocations": 1.0},
+            )
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "x86_64")
+        ):
+            rows_x86 = rollup._build_control_plane_rows(
+                function_name="X86Fn",
+                component="test-runner",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={"duration_ms": 5000.0, "invocations": 1.0},
+            )
+        ratio = rows_x86[0]["est_lambda_cost"] / rows_arm[0]["est_lambda_cost"]
+        # 0.0000166667 / 0.0000133334 ≈ 1.25 (per-request cost is tiny).
+        assert 1.20 < ratio < 1.30
+
+    def test_lambda_cost_includes_per_request_price(self, rollup):
+        """Per-request cost ($0.20/1M) must be added — previously omitted
+        entirely, undercounting by ~20% for high-invocation, short-duration
+        Lambdas (LookupFunction: 100+ req/hour, <100ms each)."""
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(128, "x86_64")
+        ):
+            rows = rollup._build_control_plane_rows(
+                function_name="ManyInvokesFn",
+                component="api-dispatch",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    "duration_ms": 0.001,  # essentially zero duration
+                    "invocations": 1_000_000.0,
+                },
+            )
+        # 1M invocations × $0.20/1M = $0.20 request cost dominates.
+        assert rows[0]["est_lambda_cost"] >= 0.20 - 0.001
 
     def test_flatten_cw_response_missing_values(self, rollup):
         """CloudWatch returns an empty Values list when there's no data

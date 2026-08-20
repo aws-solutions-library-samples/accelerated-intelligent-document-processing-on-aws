@@ -313,30 +313,45 @@ def _require_all_24_hours_present(target_date: str) -> None:
 def _discover_control_plane_lambdas() -> List[str]:
     """Return control-plane Lambda ARNs (all IDP Lambdas minus data-plane).
 
-    "IDP Lambdas" = anything CloudFormation created in this stack. CFN
-    auto-tags every resource with ``aws:cloudformation:stack-name`` — we
-    filter on that instead of maintaining a custom ``idp:stack`` tag. Data
-    plane is the small explicit whitelist tagged ``idp:plane=data``.
-    Everything else is implicitly control plane. See §10.3.
+    "IDP Lambdas" = anything CloudFormation created in this stack **tree**
+    (root + nested). CFN auto-tags every resource with
+    ``aws:cloudformation:stack-name`` set to the *immediate* stack that
+    owns it — so a Lambda in a nested stack carries the nested stack's
+    name, NOT the root. Filtering by root name alone misses everything
+    in nested stacks (57 of 68 Lambdas on this repo's live topology).
+
+    Fix: enumerate the full stack tree via ``cloudformation:ListStackResources``
+    starting from the root stack, then pass every discovered stack
+    name in the ``Values=[...]`` filter of the tag query.
+
+    Data plane is the small explicit whitelist tagged ``idp:plane=data``.
+    Everything else in the tree is implicitly control plane. See §10.3.
     """
     if not STACK_NAME:
         logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
         return []
 
-    all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": [STACK_NAME]})
-    # Scope the data-plane query to THIS stack too — a shared account with
-    # multiple IDP stacks would otherwise include sibling stacks' Lambdas.
+    stack_tree = _enumerate_stack_tree(STACK_NAME)
+    logger.info(
+        f"Stack tree from root {STACK_NAME!r}: {len(stack_tree)} stack(s) — {stack_tree}"
+    )
+
+    all_idp = _get_resources_by_tag(
+        {"aws:cloudformation:stack-name": stack_tree}
+    )
+    # Scope the data-plane query to the SAME tree — a shared account with
+    # multiple IDP stacks would otherwise cross-contaminate.
     data_plane = set(
         _get_resources_by_tag(
-            {"aws:cloudformation:stack-name": [STACK_NAME], "idp:plane": ["data"]}
+            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
         )
     )
 
     control_plane = [arn for arn in all_idp if arn not in data_plane]
 
-    # Emit a WARN log for any Lambda under `patterns/unified/` (data-plane
-    # code home by convention) that lacks the tag — drift detector for the
-    # location-based linter's blind spots.
+    # Emit a WARN log for any Lambda that looks like a known data-plane
+    # processor but lacks the tag — drift detector for the whitelist linter's
+    # blind spots (e.g., a rename that didn't update DATA_PLANE_WHITELIST).
     unified_prefix_hint = [
         "ocr",
         "classification",
@@ -344,7 +359,6 @@ def _discover_control_plane_lambdas() -> List[str]:
         "assessment",
         "summarization",
         "evaluation",
-        "workflow",
         "workflowtracker",
     ]
     for arn in control_plane:
@@ -355,6 +369,45 @@ def _discover_control_plane_lambdas() -> List[str]:
                 f"{arn} — expected idp:plane=data tag"
             )
     return control_plane
+
+
+def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
+    """Walk the CFN stack tree BFS from the root, returning every
+    stack name (root + all nested, at any depth).
+
+    Uses ``cloudformation:ListStackResources`` — for each stack, any
+    resource of type ``AWS::CloudFormation::Stack`` is a nested stack
+    whose ``PhysicalResourceId`` is the child's ARN. Extract the child
+    stack name from the ARN, recurse.
+    """
+    cfn = boto3.client("cloudformation")
+    result: List[str] = [root_stack_name]
+    to_visit = [root_stack_name]
+    visited = {root_stack_name}
+    while to_visit:
+        current = to_visit.pop(0)
+        try:
+            paginator = cfn.get_paginator("list_stack_resources")
+            for page in paginator.paginate(StackName=current):
+                for r in page.get("StackResourceSummaries", []):
+                    if r.get("ResourceType") != "AWS::CloudFormation::Stack":
+                        continue
+                    # PhysicalResourceId is the nested stack's ARN:
+                    #   arn:aws:cloudformation:region:acct:stack/<name>/<uuid>
+                    arn = r.get("PhysicalResourceId") or ""
+                    if not arn or "/" not in arn:
+                        continue
+                    nested_name = arn.split("/", 2)[1]
+                    if nested_name in visited:
+                        continue
+                    visited.add(nested_name)
+                    result.append(nested_name)
+                    to_visit.append(nested_name)
+        except Exception as e:
+            # A single nested-stack listing failure shouldn't tank
+            # discovery — log and continue with what we have.
+            logger.warning(f"Failed to list resources of stack {current!r}: {e}")
+    return result
 
 
 def _get_resources_by_tag(tags: Dict[str, List[str]]) -> List[str]:

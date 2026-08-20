@@ -79,6 +79,7 @@ def emit_control_plane_cost_metric(
     bedrock_tokens_in: Optional[int] = None,
     bedrock_tokens_out: Optional[int] = None,
     bedrock_model: Optional[str] = None,
+    function_name: Optional[str] = None,
 ) -> None:
     """Emit control-plane cost metrics for a single Lambda invocation.
 
@@ -87,14 +88,17 @@ def emit_control_plane_cost_metric(
     natively — do not call this for duration.
 
     Metric shape (namespace ``IDPControlPlane``):
-      - ``AthenaBytesScanned`` (dim: ``Component``)
-      - ``BedrockInputTokens`` (dim: ``Component``, ``Model``)
-      - ``BedrockOutputTokens`` (dim: ``Component``, ``Model``)
+      - ``AthenaBytesScanned`` (dims: ``Component``, ``FunctionName``)
+      - ``BedrockInputTokens`` (dims: ``Component``, ``FunctionName``, ``Model``)
+      - ``BedrockOutputTokens`` (dims: ``Component``, ``FunctionName``, ``Model``)
 
-    The hourly rollup Lambda (main IDP stack) reads these via
-    ``cloudwatch:GetMetricData`` and writes rows to ``control_plane_hourly``
-    for the dashboard's Control Plane Cost KPI. See
-    ``docs/reporting-sql-layer.md`` §10 for the design.
+    Why the ``FunctionName`` dimension: the rollup Lambda reads these
+    per-function so a component's Athena/Bedrock cost is attributed to
+    the specific Lambda that spent it. Without this dimension, a
+    component-scoped query (dim: ``Component`` only) returns ONE
+    aggregated stream and the rollup would over-count by the number of
+    Lambdas in the component (each row picks up the whole component's
+    total). See ``docs/reporting-sql-layer.md`` §10.5.
 
     Args:
         component: Short label identifying the feature area
@@ -110,6 +114,9 @@ def emit_control_plane_cost_metric(
         bedrock_model: Bedrock model ID (e.g., ``us.anthropic.claude-...``).
             Required whenever ``bedrock_tokens_in`` or
             ``bedrock_tokens_out`` is set — priced-per-token per-model.
+        function_name: The emitting Lambda's function name. Defaults to
+            the ``AWS_LAMBDA_FUNCTION_NAME`` env var — set by the Lambda
+            runtime. Override only in tests or non-Lambda callers.
 
     Failure mode is fire-and-forget: if CloudWatch is unreachable, log a
     warning and continue. Cost visibility is best-effort — never a
@@ -124,6 +131,14 @@ def emit_control_plane_cost_metric(
             bedrock_tokens_in = None
             bedrock_tokens_out = None
 
+    # FunctionName pins each metric stream to the emitter — prevents the
+    # per-Lambda over-counting that a component-only dimension would produce.
+    fn_name = function_name or os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "unknown")
+    base_dims = [
+        {"Name": "Component", "Value": component},
+        {"Name": "FunctionName", "Value": fn_name},
+    ]
+
     metric_data: List[Dict[str, Any]] = []
     if athena_bytes is not None:
         metric_data.append(
@@ -131,7 +146,7 @@ def emit_control_plane_cost_metric(
                 "MetricName": "AthenaBytesScanned",
                 "Value": float(athena_bytes),
                 "Unit": "Bytes",
-                "Dimensions": [{"Name": "Component", "Value": component}],
+                "Dimensions": list(base_dims),
             }
         )
     if bedrock_tokens_in is not None:
@@ -141,7 +156,7 @@ def emit_control_plane_cost_metric(
                 "Value": float(bedrock_tokens_in),
                 "Unit": "Count",
                 "Dimensions": [
-                    {"Name": "Component", "Value": component},
+                    *base_dims,
                     {"Name": "Model", "Value": bedrock_model or "unknown"},
                 ],
             }
@@ -153,7 +168,7 @@ def emit_control_plane_cost_metric(
                 "Value": float(bedrock_tokens_out),
                 "Unit": "Count",
                 "Dimensions": [
-                    {"Name": "Component", "Value": component},
+                    *base_dims,
                     {"Name": "Model", "Value": bedrock_model or "unknown"},
                 ],
             }

@@ -26,7 +26,12 @@ class TestEmitControlPlaneCostMetric:
     def _run_and_capture(self, **kwargs):
         """Invoke the helper with a mocked CloudWatch client and return
         the ``put_metric_data`` call kwargs (or None if no call was made).
+
+        Defaults ``function_name`` to a fixed value so tests don't depend
+        on the ``AWS_LAMBDA_FUNCTION_NAME`` env var — production emits
+        that dim automatically from the Lambda runtime.
         """
+        kwargs.setdefault("function_name", "TestFn")
         mock_cw = MagicMock()
         with patch("idp_common.metrics.get_cloudwatch_client", return_value=mock_cw):
             emit_control_plane_cost_metric(**kwargs)
@@ -36,9 +41,14 @@ class TestEmitControlPlaneCostMetric:
 
     def test_athena_only_emits_one_metric(self):
         """An Athena-only Lambda emits exactly one metric —
-        ``AthenaBytesScanned`` — with the ``Component`` dimension."""
+        ``AthenaBytesScanned`` — with the ``Component`` + ``FunctionName``
+        dimensions. FunctionName is required so the rollup can attribute
+        cost per-Lambda rather than duplicating a component total across
+        every Lambda in the component."""
         call = self._run_and_capture(
-            component="monitor-dashboard", athena_bytes=12_345_678
+            component="monitor-dashboard",
+            athena_bytes=12_345_678,
+            function_name="MonitorDashboardResolver",
         )
         assert call is not None
         assert call["Namespace"] == "IDPControlPlane"
@@ -47,14 +57,21 @@ class TestEmitControlPlaneCostMetric:
         assert m["MetricName"] == "AthenaBytesScanned"
         assert m["Value"] == 12_345_678.0
         assert m["Unit"] == "Bytes"
-        assert {"Name": "Component", "Value": "monitor-dashboard"} in m["Dimensions"]
+        dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+        assert dims == {
+            "Component": "monitor-dashboard",
+            "FunctionName": "MonitorDashboardResolver",
+        }
 
-    def test_bedrock_emits_input_and_output_tokens_with_model_dim(self):
+    def test_bedrock_emits_input_and_output_tokens_with_all_dims(self):
         """Bedrock invocations emit BOTH input + output token metrics.
-        Both carry ``Component`` and ``Model`` dimensions — pricing is
-        per-token per-model, so Model is a hard requirement here."""
+        Both carry ``Component``, ``FunctionName``, ``Model`` dimensions —
+        without ``FunctionName`` the rollup would multiply the component's
+        cost across every Lambda in the component (real bug: 6x for the
+        analytics-agent component on a live stack)."""
         call = self._run_and_capture(
             component="monitor-agent",
+            function_name="ScheduledMonitorAgentLambda",
             bedrock_tokens_in=1000,
             bedrock_tokens_out=250,
             bedrock_model="us.anthropic.claude-opus-4-1",
@@ -64,8 +81,29 @@ class TestEmitControlPlaneCostMetric:
         assert names == {"BedrockInputTokens", "BedrockOutputTokens"}
         for m in call["MetricData"]:
             dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-            assert dims.get("Component") == "monitor-agent"
-            assert dims.get("Model") == "us.anthropic.claude-opus-4-1"
+            assert dims == {
+                "Component": "monitor-agent",
+                "FunctionName": "ScheduledMonitorAgentLambda",
+                "Model": "us.anthropic.claude-opus-4-1",
+            }
+
+    def test_function_name_defaults_to_lambda_env_var(self):
+        """Production callers don't need to pass ``function_name`` — the
+        helper reads ``AWS_LAMBDA_FUNCTION_NAME`` (set by the Lambda
+        runtime) automatically. This test locks that convention in."""
+        import os
+
+        mock_cw = MagicMock()
+        with (
+            patch("idp_common.metrics.get_cloudwatch_client", return_value=mock_cw),
+            patch.dict(os.environ, {"AWS_LAMBDA_FUNCTION_NAME": "MyProdLambda"}),
+        ):
+            emit_control_plane_cost_metric(
+                component="analytics-agent", athena_bytes=100
+            )
+        call = mock_cw.put_metric_data.call_args.kwargs
+        dims = {d["Name"]: d["Value"] for d in call["MetricData"][0]["Dimensions"]}
+        assert dims["FunctionName"] == "MyProdLambda"
 
     def test_mixed_athena_and_bedrock_emits_all_three(self):
         """A Lambda that hits both Athena AND Bedrock (e.g., the

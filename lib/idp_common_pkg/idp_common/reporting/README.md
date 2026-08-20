@@ -250,6 +250,35 @@ The module supports saving document processing metering data for cost tracking a
 result = reporter.save_metering_data(document)
 ```
 
+**Partitioning:** `save_metering_data` partitions rows by **write time**
+(= document completion time, since the writer runs at workflow end) —
+NOT by queue time. Every metering row lands under
+`metering/date=<YYYY-MM-DD>/hour=<HH>/` reflecting the completion
+timestamp.
+
+**Columns:** `document_id`, `context`, `service_api`, `unit`, `value`,
+`number_of_pages`, `unit_cost`, `estimated_cost`, `timestamp` (completion
+time — same as partition), `initial_event_time` (original queue time,
+preserved for consumers who need queue-time semantics), `config_version`.
+
+**Semantic note for consumers of raw `metering`:** `WHERE date = 'X'`
+means "docs completed on X", NOT "docs queued on X". Filter on
+`initial_event_time` explicitly when you need queue-time semantics.
+
+**Rollup tables (populated by the scheduled `DataMartRollupFunction`,
+main stack):** for aggregate cost/volume queries over wide date ranges,
+consumers should read from the pre-aggregated Athena tables rather
+than raw metering:
+
+- `metering_hourly` — hourly rollup, hour × config_version × service_api × unit
+- `metering_daily` — daily rollup, day × config_version × service_api × unit
+- `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
+
+See [`docs/reporting-sql-layer.md`](../../../../../docs/reporting-sql-layer.md)
+for the tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
+the tagging model, and the migration path for the new `hour` partition
+key.
+
 ### Document Sections
 
 The module supports saving document section extraction results as Parquet files with dynamic schema inference. This functionality processes each section in the document, loads the extraction results from S3, and saves them in a structured, partitioned format suitable for analytics.
@@ -346,8 +375,20 @@ reporting-bucket/
 │           └── another-doc-id_20240115_144001_789_results.parquet
 ├── metering/
 │   └── date=YYYY-MM-DD/
-│       ├── doc-id_20240115_143052_123_results.parquet
-│       └── another-doc-id_20240115_144001_789_results.parquet
+│       └── hour=HH/
+│           ├── doc-id_20240115_143052_123_results.parquet
+│           └── another-doc-id_20240115_144001_789_results.parquet
+├── metering_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── <athena INSERT output>.parquet
+├── metering_daily/
+│   └── date=YYYY-MM-DD/
+│       └── <athena INSERT output>.parquet
+├── control_plane_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── data.parquet
 └── document_sections/
     ├── invoice/
     │   └── date=YYYY-MM-DD/

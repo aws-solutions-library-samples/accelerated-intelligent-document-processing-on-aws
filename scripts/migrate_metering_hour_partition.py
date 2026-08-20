@@ -28,17 +28,22 @@ Usage
         --bucket <reporting-bucket> \\
         --dry-run
 
-    # For real (uses S3 CopyObject + DeleteObject, no download)
+    # For real (parallel S3 CopyObject; downloads each parquet to read the
+    # hour from its `timestamp` column)
     python scripts/migrate_metering_hour_partition.py \\
         --bucket <reporting-bucket>
 
 Safety
 ------
-- Files are copied to the new key first, then the old key is deleted.
-  Interruption between copy and delete is safe — a re-run treats already-
-  migrated files as no-ops (they carry ``/hour=`` in the key).
+- **Copy-only**, not copy-then-delete: originals are preserved. If a
+  future stack update rolls the Glue table back to the no-hour projection,
+  historical data stays visible via the still-present originals. Duplicate
+  storage is small (parquet + Snappy) and can be removed by an operator's
+  S3 lifecycle rule if desired.
 - Skips writes to Athena — the projection picks up the new partitions
   automatically once objects land under the ``hour=`` subpath.
+- Parallelized with a ThreadPoolExecutor; ``--concurrency`` (default 50)
+  matches the in-Lambda migration handler.
 - Pass ``--profile`` to select an AWS CLI profile.
 """
 
@@ -48,6 +53,7 @@ import argparse
 import io
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterator, Optional
 
 import boto3
@@ -102,59 +108,75 @@ def new_key(old_key: str, hour: str) -> Optional[str]:
     return f"metering/date={date_part}/hour={hour}/{filename}"
 
 
+def _process_one(
+    s3, bucket: str, key: str, dry_run: bool, default_hour: str
+) -> str:
+    """Migrate a single key (called from the parallel pool).
+
+    Returns one of: ``"moved"`` (or ``"dry-moved"``), ``"skipped"``,
+    ``"error"``. Errors log to stderr; they don't abort other workers.
+    """
+    if HOUR_KEY_PATTERN.search(key):
+        return "skipped"
+    try:
+        hour = infer_hour_from_parquet(s3, bucket, key)
+    except Exception as e:
+        print(f"  WARN read failed for {key}: {e}", file=sys.stderr)
+        hour = None
+    if hour is None:
+        hour = default_hour
+
+    target = new_key(key, hour)
+    if target is None:
+        print(f"  SKIP {key} — path shape did not match")
+        return "skipped"
+
+    if dry_run:
+        print(f"  DRY-RUN {key} -> {target}")
+        return "dry-moved"
+
+    try:
+        # Copy-only: leaves originals in place so a future rollback of the
+        # Glue table's projection stays safe. See docs/reporting-sql-layer.md.
+        s3.copy_object(
+            Bucket=bucket,
+            Key=target,
+            CopySource={"Bucket": bucket, "Key": key},
+        )
+        print(f"  COPIED {key} -> {target}")
+        return "moved"
+    except Exception as e:
+        print(f"  ERROR {key}: {e}", file=sys.stderr)
+        return "error"
+
+
 def migrate(
     bucket: str,
     dry_run: bool,
     default_hour: str = "00",
-    fallback_hour_on_missing: bool = True,
+    concurrency: int = 50,
 ) -> tuple[int, int, int]:
-    """Move every un-hour-partitioned metering parquet under ``bucket``.
+    """Copy every un-hour-partitioned metering parquet under ``bucket`` to
+    its ``date=X/hour=HH/`` target — in parallel.
 
-    Returns (moved, skipped, errors).
+    Copy-only (see module docstring). Returns (moved, skipped, errors).
     """
     s3 = boto3.client("s3")
+    keys = list(iter_metering_parquet_keys(s3, bucket))
     moved = skipped = errors = 0
-    for key in iter_metering_parquet_keys(s3, bucket):
-        if HOUR_KEY_PATTERN.search(key):
-            skipped += 1
-            continue
-
-        hour: Optional[str]
-        try:
-            hour = infer_hour_from_parquet(s3, bucket, key)
-        except Exception as e:
-            print(f"  WARN read failed for {key}: {e}", file=sys.stderr)
-            hour = None
-        if hour is None:
-            if not fallback_hour_on_missing:
-                print(f"  SKIP {key} — no timestamp column")
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futures = [
+            ex.submit(_process_one, s3, bucket, k, dry_run, default_hour)
+            for k in keys
+        ]
+        for f in as_completed(futures):
+            outcome = f.result()
+            if outcome in ("moved", "dry-moved"):
+                moved += 1
+            elif outcome == "skipped":
                 skipped += 1
-                continue
-            hour = default_hour
-
-        target = new_key(key, hour)
-        if target is None:
-            print(f"  SKIP {key} — path shape did not match")
-            skipped += 1
-            continue
-
-        if dry_run:
-            print(f"  DRY-RUN {key} -> {target}")
-            moved += 1
-            continue
-
-        try:
-            s3.copy_object(
-                Bucket=bucket,
-                Key=target,
-                CopySource={"Bucket": bucket, "Key": key},
-            )
-            s3.delete_object(Bucket=bucket, Key=key)
-            print(f"  MOVED {key} -> {target}")
-            moved += 1
-        except Exception as e:
-            print(f"  ERROR {key}: {e}", file=sys.stderr)
-            errors += 1
+            else:
+                errors += 1
     return moved, skipped, errors
 
 
@@ -175,6 +197,12 @@ def main() -> int:
         default="00",
         help="Fallback hour partition when a file has no readable timestamp column (default: 00)",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=50,
+        help="Number of parallel CopyObject workers (default: 50, matching the in-Lambda migration handler)",
+    )
     args = parser.parse_args()
 
     if args.profile:
@@ -184,6 +212,7 @@ def main() -> int:
         bucket=args.bucket,
         dry_run=args.dry_run,
         default_hour=args.default_hour,
+        concurrency=args.concurrency,
     )
     print(f"\nSummary: moved={moved} skipped={skipped} errors={errors}")
     return 1 if errors else 0
