@@ -34,7 +34,9 @@ that were confirmed empirically before this was written:
 2. **Entitlements only exist for SaaS *Contract* products.** In the contract
    model AWS communicates entitlements through the Entitlement Service; a
    usage-based SaaS *Subscription* meters instead and has no entitlement records
-   at all. For such a listing GetEntitlements returns an empty list forever.
+   at all. For such a listing GetEntitlements returns an empty list forever —
+   VERIFIED, including from the seller account with the correct product code, so
+   this is not a permissions artefact.
 
 Critically, it does not FAIL in either case — called from a buyer account with
 someone else's product code it returns HTTP 200 with `{"Entitlements": []}`. A
@@ -128,7 +130,63 @@ _AGREEMENT_REGION = os.environ.get("MARKETPLACE_AGREEMENT_REGION", "us-east-1")
 # so `simulator` / `marketplace` (dev + CI) behave EXACTLY as before.
 _LIVE_TAG = "marketplace-live"
 
+_METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "GENAIDP")
+
 _dynamodb = boto3.resource("dynamodb")
+
+
+def _emit_unverified_grant_metric(feature_id: str, source: str) -> None:
+    """Record that a PAID extension was granted access without verification.
+
+    Emitted when the host answers ACTIVE for a marketplace feature from `auto`
+    (checks disabled) or `advisory` (check unreachable, allowed rather than
+    locking out a possibly-paying customer). Both states are invisible in the
+    product otherwise — the page looks exactly like a real subscription — so this
+    is the operator-side signal that they are happening at all, and how often.
+
+    Uses **CloudWatch Embedded Metric Format** (a structured log line) rather
+    than `idp_common.metrics.put_metric` / `PutMetricData`, deliberately:
+    `checkFeatureEntitlement` runs on every page load, so a synchronous
+    CloudWatch API call would add latency to an interactive path and require
+    `cloudwatch:PutMetricData` on this role. EMF costs one log write and no IAM.
+
+    Never raises: a metric must not be able to break the resolver.
+    """
+    try:
+        logger.info(
+            json.dumps(
+                {
+                    "_aws": {
+                        # Required by the EMF spec — a record without it is
+                        # ingested as a plain log line and silently produces no
+                        # metric, which is the worst outcome for a signal whose
+                        # whole job is to be noticed.
+                        "Timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "CloudWatchMetrics": [
+                            {
+                                "Namespace": _METRIC_NAMESPACE,
+                                "Dimensions": [["FeatureId", "EntitlementSource"]],
+                                "Metrics": [
+                                    {
+                                        "Name": "UnverifiedEntitlementGrant",
+                                        "Unit": "Count",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "FeatureId": feature_id,
+                    "EntitlementSource": source,
+                    "UnverifiedEntitlementGrant": 1,
+                    "message": (
+                        f"Granted access to paid feature {feature_id!r} without a "
+                        f"verified subscription (source={source})"
+                    ),
+                }
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break the query
+        logger.warning("Could not emit UnverifiedEntitlementGrant metric: %s", exc)
 
 
 def _installed_product_code(feature_id: str) -> Optional[str]:
@@ -394,11 +452,25 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if not feature_id or not isinstance(feature_id, str):
         raise ValueError("featureId is required")
 
-    # Auto-subscribe mode: stack was deployed without a marketplace simulator
-    # or external Marketplace endpoint. Every catalog feature is treated as
-    # subscribed so the UI goes straight to the Install prompt; no Marketplace
-    # call is needed (and the boto3 client is never instantiated).
+    # Read the catalog entry ONCE: it tells us whether this is an OSS feature and
+    # carries the Marketplace identity we need before the feature is installed.
+    #
+    # NB: this read now happens in `auto` mode too, which it previously skipped.
+    # The cost is one extra S3 GetObject per call on auto-mode stacks; the reason
+    # is that `auto` cannot otherwise tell a PAID extension from an OSS one, and
+    # a metric that misses the primary bypass path is not worth emitting. Every
+    # other branch already performs this same read, so it is consistent with the
+    # resolver's existing cost, not a new class of work.
+    catalog_entry = _read_catalog_entry(feature_id) or {}
+    is_marketplace_feature = (catalog_entry.get("source") or "oss") == "marketplace"
+
+    # Auto-subscribe mode: subscription checks are switched off for this stack.
+    # Every catalog feature is treated as subscribed so the UI goes straight to
+    # the Install prompt; no Marketplace call is made (the boto3 client is never
+    # instantiated).
     if _SOURCE_TAG == "auto":
+        if is_marketplace_feature:
+            _emit_unverified_grant_metric(feature_id, "auto")
         return {
             "featureId": feature_id,
             "state": "ACTIVE",
@@ -407,10 +479,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "productCode": None,
             "source": "auto",
         }
-
-    # Read the catalog entry ONCE: it tells us whether this is an OSS feature and
-    # carries the Marketplace identity we need before the feature is installed.
-    catalog_entry = _read_catalog_entry(feature_id) or {}
 
     # OSS features have no AWS Marketplace contract — they install directly
     # regardless of whether a simulator/Marketplace endpoint is configured.
@@ -480,6 +548,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "remains the authoritative gate.",
             feature_id,
         )
+        _emit_unverified_grant_metric(feature_id, "advisory")
         return {
             "featureId": feature_id,
             "state": "ACTIVE",
@@ -565,6 +634,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     resolved_cid = customer_identifier
     if resolved_cid is None and entitlements:
         resolved_cid = entitlements[0].get("CustomerIdentifier")
+
+    # A simulator / endpoint-override ACTIVE is not a real subscription check:
+    # boto3 was pointed at whatever AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE
+    # names. Record it for a paid feature so a production host aimed at a
+    # simulator is visible rather than rendering as a clean "subscription active".
+    if evaluated["state"] == "ACTIVE" and is_marketplace_feature:
+        _emit_unverified_grant_metric(feature_id, _SOURCE_TAG)
 
     return {
         "featureId": feature_id,

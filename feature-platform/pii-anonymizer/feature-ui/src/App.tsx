@@ -24,7 +24,7 @@ import type { FeatureContext } from './types';
 const App: React.FC<FeatureContext> = ({
   featureApiEndpoint,
   getAuthToken,
-  subscriptionActive,
+  uiAccessAllowed,
   installedVersion,
 }) => {
   const api = useMemo(
@@ -35,12 +35,12 @@ const App: React.FC<FeatureContext> = ({
   const [hookArn, setHookArn] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!subscriptionActive) return;
+    if (!uiAccessAllowed) return;
     api
       .getConfig()
       .then((c) => setHookArn(c.hookFunctionArn))
       .catch(() => setHookArn(null));
-  }, [api, subscriptionActive]);
+  }, [api, uiAccessAllowed]);
 
   return (
     <Container
@@ -61,7 +61,7 @@ const App: React.FC<FeatureContext> = ({
           and the use cases you need — via GitHub issues at{' '}
           <b>github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws</b>.
         </Alert>
-        {!subscriptionActive && (
+        {!uiAccessAllowed && (
           <Alert type="info" header="Read-only">
             This feature&apos;s subscription is not active. Views are shown but
             data is not loaded.
@@ -76,7 +76,7 @@ const App: React.FC<FeatureContext> = ({
               label: 'Config Pairing',
               content: (
                 <ConfigPairingView
-                  enabled={subscriptionActive}
+                  enabled={uiAccessAllowed}
                   hookFunctionArn={hookArn}
                 />
               ),
@@ -84,7 +84,7 @@ const App: React.FC<FeatureContext> = ({
             {
               id: 'report',
               label: 'Redaction Report',
-              content: <RedactionReportView api={api} enabled={subscriptionActive} />,
+              content: <RedactionReportView api={api} enabled={uiAccessAllowed} />,
             },
           ]}
         />

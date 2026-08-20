@@ -13,7 +13,7 @@ export interface FeatureContext {
   featureApiEndpoint: string | null;
   getAuthToken: () => Promise<string>;
   mainStackName: string;
-  subscriptionActive: boolean;
+  uiAccessAllowed: boolean;
 }
 
 export interface FeatureRegistration {

@@ -518,3 +518,96 @@ describe('FeaturePage 7-state renderer', () => {
     await waitFor(() => expect(refreshInstalled).toHaveBeenCalled());
   });
 });
+
+describe('FeaturePage unverified-subscription warning', () => {
+  const paidInstalled = () => installed({ featureId: 'docs-by-status' });
+
+  it('warns when a PAID extension is served from auto mode', () => {
+    // auto = subscription checks switched off. The page is otherwise
+    // indistinguishable from a real subscription, which is exactly why this
+    // must not be silent.
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'auto' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription not verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/FeaturePlatformSubscriptionMode=auto/)).toBeInTheDocument();
+    // Still renders the feature — the host gate is advisory, not a block.
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
+  });
+
+  it('warns when the live check was unreachable (advisory) and names the cause', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'advisory' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription not verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/SearchAgreements/)).toBeInTheDocument();
+  });
+
+  it('does NOT warn for an OSS extension in auto mode', () => {
+    // OSS has no subscription to verify; warning would be pure noise on the
+    // default deployment.
+    mockCatalog({ source: 'oss' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'auto' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription not verified/i)).not.toBeInTheDocument();
+  });
+
+  it('does NOT warn when the subscription was actually verified', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'marketplace-live' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription not verified/i)).not.toBeInTheDocument();
+  });
+});

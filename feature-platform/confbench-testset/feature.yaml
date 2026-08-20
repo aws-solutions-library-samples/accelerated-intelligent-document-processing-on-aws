@@ -25,7 +25,7 @@ featureId: confbench-testset
 # entries alphabetically by displayName. The featureId stays `confbench-testset`
 # — it is the stable identity used by IAM tags, registration, and artifact keys.
 displayName: "Test Set - ConfBench"
-version: 0.1.1
+version: 0.1.2
 description: |
   Deploy the amazon/ConfBench benchmark dataset — 75 verified FCC invoices with
   up to 21 Augraphy noise-degradation variants each (1,346 documents, 32.71 GB
