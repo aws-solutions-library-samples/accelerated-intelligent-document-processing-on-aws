@@ -3672,3 +3672,291 @@ class TestTestSetResolver:
 
         doc = table.get_item(Key={"PK": "doc#ts1-run/a.pdf", "SK": "none"})["Item"]
         assert doc["TestSetId"] == "original-set"
+
+    # -- Reconcile existing folders on direct-S3 edits --------------------
+    #
+    # Manual S3 additions to <prefix>/input/ or <prefix>/baseline/ don't fire
+    # any event notification, so the ``getTestSets`` lazy scan is the only place
+    # fileCount / status can be refreshed. Before this reconcile path existed,
+    # the ``if prefix in existing_test_sets: continue`` short-circuit left rows
+    # stale forever.
+
+    def test_validator_returns_signature_of_current_state(self):
+        """The signature must move whenever input or baseline listings change.
+
+        The reconcile fast-path relies on this: identical signature means no
+        DDB write. If the validator ever returns a constant signature, every
+        reconcile would over-write (or never over-write) the row.
+        """
+        from datetime import datetime, timezone
+
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.side_effect = lambda **kw: (
+            [
+                {
+                    "Contents": [
+                        {
+                            "Key": "ts1/input/a.pdf",
+                            "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        }
+                    ]
+                }
+            ]
+            if "input" in kw["Prefix"]
+            else [
+                {
+                    "Contents": [
+                        {
+                            "Key": "ts1/baseline/a.pdf/sections/1/result.json",
+                            "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+                        }
+                    ]
+                }
+            ]
+        )
+        result = test_set_index._validate_test_set_files(s3, "bucket", "ts1")
+        assert result["signature"] == "1:1:2026-01-02T00:00:00+00:00"
+
+    def test_reconcile_noop_when_signature_matches(self):
+        """Fast path: no DDB write, no source lookup, when the folder is unchanged."""
+        s3 = Mock()
+        existing = {
+            "PK": "testset#ts1",
+            "SK": "metadata",
+            "status": "COMPLETED",
+            "fileCount": 3,
+            "labelState": "labeled",
+            "source": "uploaded",
+            "contentSignature": "3:3:2026-01-02T00:00:00+00:00",
+        }
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": True,
+                    "input_count": 3,
+                    "labeled": True,
+                    "signature": "3:3:2026-01-02T00:00:00+00:00",
+                },
+            ),
+            patch.object(test_set_index, "_get_test_set_source") as source_mock,
+            patch.object(test_set_index.db_client, "update_item") as upd,
+        ):
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+
+        assert result is None
+        upd.assert_not_called()
+        # Guardrail: the fast path must skip source lookups, not just DDB writes,
+        # so we don't head_object every folder on every getTestSets call.
+        source_mock.assert_not_called()
+
+    def test_reconcile_flips_to_failed_when_baseline_missing(self, labeling_env):
+        """Same treatment as new-folder discovery: missing baseline → FAILED + error."""
+        table, s3 = labeling_env
+
+        # Seed a completed set with 2 paired documents.
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/b.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=2,
+            labelState="labeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            # Stale signature so reconcile actually runs.
+            contentSignature="stale",
+        )
+
+        # User drops a third input file with no matching baseline.
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/c.pdf", Body=b"x")
+
+        # Directly invoke reconcile (bypasses the GSI + orphan-cleanup wiring).
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+
+        assert result is not None
+        assert result["status"] == "FAILED"
+        assert "c.pdf" in result["error"]
+        assert result["fileCount"] == 3
+
+        # DDB row reflects the same fields.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "FAILED"
+        assert row["fileCount"] == 3
+        assert "c.pdf" in row["error"]
+        # createdAt must NOT be overwritten by reconcile — the folder still
+        # exists; only its contents shifted. UI code that sorts by createdAt
+        # would jitter otherwise.
+        assert row["createdAt"] == "2026-01-01T00:00:00Z"
+        assert "updatedAt" in row
+
+    def test_reconcile_clears_error_when_baseline_added_back(self, labeling_env):
+        """A row FAILED yesterday must recover when the missing baseline arrives."""
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="FAILED",
+            fileCount=1,
+            labelState="unlabeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            error="Missing baseline files for: a.pdf",
+            contentSignature="stale",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+
+        assert result is not None
+        assert result["status"] == "COMPLETED"
+        # The reconcile helper strips the error from the in-memory dict when
+        # DDB REMOVEs it, so the resolver's returned entry is clean.
+        assert "error" not in result
+
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+        assert "error" not in row
+
+    def test_reconcile_skips_row_in_non_terminal_status(self):
+        """UPDATING/PROCESSING rows must not be reconciled — a copier is mid-write."""
+        s3 = Mock()
+        with (
+            patch.object(test_set_index, "_validate_test_set_files") as validate,
+            patch.object(test_set_index.db_client, "update_item") as upd,
+        ):
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3,
+                "bucket",
+                "ts1",
+                {"PK": "testset#ts1", "SK": "metadata", "status": "UPDATING"},
+            )
+        assert result is None
+        validate.assert_not_called()
+        upd.assert_not_called()
+
+    def test_reconcile_no_op_when_only_updatedAt_would_change(self):
+        """No DDB write when the folder is unchanged AND already has a signature.
+
+        Guards against writing on every single getTestSets call, which would burn
+        write capacity and fire spurious DDB stream events (subscribers would see
+        a phantom test-set "update" every 3s from the UI's polling).
+        """
+        s3 = Mock()
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": True,
+                    "input_count": 1,
+                    "labeled": True,
+                    "signature": "1:1:2026-01-01T00:00:00+00:00",
+                },
+            ),
+            patch.object(
+                test_set_index, "_get_test_set_source", return_value="uploaded"
+            ),
+            patch.object(test_set_index.db_client, "update_item") as upd,
+        ):
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 1,
+                "labelState": "labeled",
+                "source": "uploaded",
+                # No contentSignature yet (row predates reconcile) — first
+                # reconcile MUST write to persist a signature so later calls
+                # can take the fast path.
+            }
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+        # First reconcile after upgrade backfills the signature — expect a write.
+        assert result is not None
+        assert upd.call_count == 1
+        args, kwargs = upd.call_args
+        assert "contentSignature" in kwargs["expression_attribute_names"].values()
+
+    def test_reconcile_updates_file_count_when_files_added(self, labeling_env):
+        """Happy path: user adds a matched pair, count and signature move."""
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            labelState="labeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            contentSignature="stale",
+        )
+
+        # Add a matched pair.
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/b.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+
+        assert result is not None
+        assert result["fileCount"] == 2
+        assert result["status"] == "COMPLETED"
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["fileCount"] == 2
+        assert row["contentSignature"] != "stale"

@@ -893,6 +893,7 @@ export const getTestSets = /* GraphQL */ `
       labelJobStatus
       status
       createdAt
+      updatedAt
       error
       lastAddResult
       documentClassType

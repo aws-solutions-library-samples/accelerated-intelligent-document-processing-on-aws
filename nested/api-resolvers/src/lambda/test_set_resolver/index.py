@@ -2593,6 +2593,9 @@ def get_test_sets():
                 "labelJobStatus": item.get("labelJobStatus"),
                 "status": item.get("status"),
                 "createdAt": item["createdAt"],
+                # Set by _reconcile_test_set_tracking_entry when direct-S3
+                # edits are detected; absent on rows that predate reconcile.
+                "updatedAt": item.get("updatedAt"),
                 "error": item.get(
                     "error"
                 ),  # Include error message for failed test sets
@@ -2620,8 +2623,31 @@ def get_test_sets():
                 prefix = prefix_info["Prefix"].rstrip("/")
                 s3_test_sets.add(prefix)
 
-                # Skip if already exists in DynamoDB
+                # Already-registered folders: reconcile in place. Skipping here
+                # (as the original code did) leaves fileCount and status stale
+                # forever when a user drops more files into `<prefix>/input/`
+                # directly in S3 — no S3 notification fires for that, so this
+                # lazy scan is the only chance to refresh the DDB row.
                 if prefix in existing_test_sets:
+                    reconciled = _reconcile_test_set_tracking_entry(
+                        s3_client,
+                        test_set_bucket,
+                        prefix,
+                        existing_test_sets[prefix],
+                    )
+                    if reconciled is not None:
+                        # Refresh the in-memory row + the result entry we
+                        # already appended for this test set.
+                        existing_test_sets[prefix] = reconciled
+                        for entry in result:
+                            if entry["id"] == prefix:
+                                entry["fileCount"] = reconciled.get("fileCount")
+                                entry["status"] = reconciled.get("status")
+                                entry["labelState"] = reconciled.get("labelState")
+                                entry["source"] = reconciled.get("source")
+                                entry["error"] = reconciled.get("error")
+                                entry["updatedAt"] = reconciled.get("updatedAt")
+                                break
                     continue
 
                 # Check if this looks like a test set (has an input/ folder)
@@ -2658,6 +2684,7 @@ def get_test_sets():
                         created_at,
                         source,
                         label_state,
+                        validation_result.get("signature"),
                     )
 
                     # Add to results
@@ -2999,10 +3026,24 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
     valid but unlabeled and awaits generateDraftLabels. A partially labeled set is an
     error either way, since it indicates a botched upload rather than a deliberate
     label-later flow.
+
+    Also returns a ``signature`` string summarizing the current on-disk state
+    (input/baseline counts + max LastModified). Callers use it as a cheap
+    change-detector: identical signature => nothing to reconcile.
     """
     try:
         input_files = set()
         baseline_files = set()
+        latest_modified = None
+
+        def _observe(obj):
+            # Track the max LastModified across every input+baseline object so a
+            # single deleted file still moves the signature (count changes) and a
+            # single overwritten baseline moves it too (LastModified changes).
+            nonlocal latest_modified
+            lm = obj.get("LastModified")
+            if lm is not None and (latest_modified is None or lm > latest_modified):
+                latest_modified = lm
 
         # Get input files
         paginator = s3_client.get_paginator("list_objects_v2")
@@ -3012,12 +3053,14 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 if not key.endswith("/"):  # Skip directories
                     filename = key.split("/")[-1]
                     input_files.add(filename)
+                    _observe(obj)
 
         # Get baseline folder names (first folder after /baseline/)
         for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/baseline/"):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if not key.endswith("/"):  # Skip directories
+                    _observe(obj)
                     # Extract folder name after /baseline/
                     parts = key.split(f"{prefix}/baseline/", 1)
                     if len(parts) == 2 and "/" in parts[1]:
@@ -3026,9 +3069,20 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                         if folder_name:
                             baseline_files.add(folder_name)
 
+        signature = "{}:{}:{}".format(
+            len(input_files),
+            len(baseline_files),
+            latest_modified.isoformat() if latest_modified is not None else "",
+        )
+
         # Validate matching
         if len(input_files) == 0:
-            return {"valid": False, "error": "No input files found", "input_count": 0}
+            return {
+                "valid": False,
+                "error": "No input files found",
+                "input_count": 0,
+                "signature": signature,
+            }
 
         if len(baseline_files) == 0:
             if allow_unlabeled:
@@ -3036,11 +3090,13 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                     "valid": True,
                     "input_count": len(input_files),
                     "labeled": False,
+                    "signature": signature,
                 }
             return {
                 "valid": False,
                 "error": "No baseline files found",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
         missing_baselines = input_files - baseline_files
@@ -3049,6 +3105,7 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": f"Missing baseline files for: {', '.join(list(missing_baselines)[:3])}{'...' if len(missing_baselines) > 3 else ''}",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
         extra_baselines = baseline_files - input_files
@@ -3057,9 +3114,15 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": f"Extra baseline files: {', '.join(list(extra_baselines)[:3])}{'...' if len(extra_baselines) > 3 else ''}",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
-        return {"valid": True, "input_count": len(input_files), "labeled": True}
+        return {
+            "valid": True,
+            "input_count": len(input_files),
+            "labeled": True,
+            "signature": signature,
+        }
 
     except Exception as e:
         logger.error(f"Error validating test set files for {prefix}: {str(e)}")
@@ -3067,6 +3130,7 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
             "valid": False,
             "error": f"Validation error: {str(e)}",
             "input_count": 0,
+            "signature": "",
         }
 
 
@@ -3108,6 +3172,7 @@ def _create_test_set_tracking_entry(
     created_at=None,
     source=None,
     label_state=None,
+    content_signature=None,
 ):
     """Create tracking table entry for direct upload test set"""
     try:
@@ -3132,12 +3197,134 @@ def _create_test_set_tracking_entry(
             item["labelState"] = label_state
         if error:
             item["error"] = error
+        if content_signature:
+            item["contentSignature"] = content_signature
 
         db_client.put_item(item)
         logger.info(f"Created tracking entry for direct upload test set {test_set_id}")
 
     except Exception as e:
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
+
+
+# Only rows in one of these terminal states are reconciled in place. UPDATING
+# means a copier/extractor is actively mutating the folder; overwriting fileCount
+# or status underneath it would race the eager-write paths.
+_RECONCILE_STATUSES = {"COMPLETED", "FAILED"}
+
+
+def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
+    """Reconcile an already-registered test set against its current S3 contents.
+
+    Direct S3 edits (files added or removed under ``<prefix>/input/`` or
+    ``<prefix>/baseline/``) don't fire any event; without this helper the
+    ``getTestSets`` short-circuit at ``if prefix in existing_test_sets: continue``
+    leaves ``fileCount`` and ``status`` stale forever. Same treatment as new
+    folder discovery: recount, re-validate input/baseline pairing, flip status
+    to FAILED with the same error string when the pairing is broken.
+
+    Returns a dict of the reconciled fields (fileCount/status/labelState/error/
+    source/updatedAt) merged with the existing row, so callers can propagate
+    into the GraphQL response without a second DDB read. Returns None when the
+    row is untouched.
+    """
+    try:
+        # Never touch a row that a copier/extractor is actively mutating; those
+        # paths eagerly write fileCount+status and reconciling on top of an
+        # in-flight edit would race them.
+        if existing_row.get("status") not in _RECONCILE_STATUSES:
+            return None
+
+        validation = _validate_test_set_files(
+            s3_client, bucket, prefix, allow_unlabeled=True
+        )
+        new_signature = validation.get("signature", "")
+        old_signature = existing_row.get("contentSignature")
+
+        # Fast path: signature unchanged AND we already have one on the row =>
+        # no S3 delta since last reconcile. Rows written before this change lack
+        # contentSignature entirely — reconcile them once so they get a baseline.
+        if old_signature and old_signature == new_signature:
+            return None
+
+        new_status = "COMPLETED" if validation["valid"] else "FAILED"
+        new_error = validation.get("error")
+        new_label_state = (
+            "labeled" if validation.get("labeled") else "unlabeled"
+        )
+        new_file_count = validation.get("input_count", 0)
+        # Source may only appear after registration (the synthetic generator
+        # drops '.source' asynchronously); re-check on every reconcile.
+        new_source = _get_test_set_source(s3_client, bucket, prefix)
+
+        # Determine which fields actually changed so we don't issue a DDB write
+        # (or a DDB stream event) for a no-op.
+        changed = {}
+        if existing_row.get("fileCount") != new_file_count:
+            changed["fileCount"] = new_file_count
+        if existing_row.get("status") != new_status:
+            changed["status"] = new_status
+        if existing_row.get("labelState") != new_label_state:
+            changed["labelState"] = new_label_state
+        if existing_row.get("source") != new_source:
+            changed["source"] = new_source
+        # Error handling is asymmetric: SET when we have one, REMOVE when we
+        # don't. Track both so the DDB update below can emit REMOVE.
+        clear_error = existing_row.get("error") and not new_error
+        if new_error and existing_row.get("error") != new_error:
+            changed["error"] = new_error
+        if existing_row.get("contentSignature") != new_signature:
+            changed["contentSignature"] = new_signature
+
+        if not changed and not clear_error:
+            return None
+
+        now = datetime.utcnow().isoformat() + "Z"
+        changed["updatedAt"] = now
+
+        # Build one UpdateItem with SET for changed fields and (optionally)
+        # REMOVE for the error attribute when the set is clean again.
+        expr_names = {}
+        expr_values = {}
+        set_parts = []
+        for i, (field, value) in enumerate(changed.items()):
+            name_key = f"#f{i}"
+            value_key = f":v{i}"
+            expr_names[name_key] = field
+            expr_values[value_key] = value
+            set_parts.append(f"{name_key} = {value_key}")
+
+        update_expression = "SET " + ", ".join(set_parts)
+        if clear_error:
+            # Only include #err in ExpressionAttributeNames when it appears in
+            # the expression — DynamoDB errors on unused attribute names.
+            expr_names["#err"] = "error"
+            update_expression += " REMOVE #err"
+
+        db_client.update_item(
+            key={"PK": f"testset#{prefix}", "SK": "metadata"},
+            update_expression=update_expression,
+            expression_attribute_names=expr_names,
+            expression_attribute_values=expr_values,
+        )
+        logger.info(
+            f"Reconciled test set {prefix}: {sorted(changed.keys())}"
+            + (" (+cleared error)" if clear_error else "")
+        )
+
+        # Merge into the in-memory row so the caller can return fresh values
+        # without a second DDB read.
+        merged = dict(existing_row)
+        merged.update(changed)
+        if clear_error:
+            merged.pop("error", None)
+        return merged
+
+    except Exception as e:
+        # Reconcile is best-effort; a transient S3/DDB failure must not break
+        # the whole getTestSets response. The next call will retry.
+        logger.error(f"Error reconciling test set {prefix}: {str(e)}")
+        return None
 
 
 def list_bucket_files(args):
