@@ -65,6 +65,19 @@ help: ## Show this help message
 all: lint test ## Run lint + test (default)
 
 ##@ Setup
+.PHONY: install-first-party
+install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: make install-first-party PIP="uv pip")
+	@# ONE invocation, deliberately — see the dependency-confusion note on
+	@# FIRST_PARTY_EDITABLES above. Splitting this lets pip resolve a
+	@# not-yet-installed sibling ("idp-sdk", "idp_common") from public PyPI, where
+	@# those names are squatted by third parties.
+	@#
+	@# PIP is overridable because CI builds its venv with `uv venv`, which does not
+	@# install pip into it; CI passes PIP="uv pip".
+	$(PIP) install $(FIRST_PARTY_EDITABLES)
+	@# Fails if any first-party package resolved from PyPI rather than the checkout.
+	$(PYTHON) scripts/check_first_party_deps.py
+
 setup: ## Install all packages into current Python environment (no venv)
 	@# Always use the current shell's pip, ignoring .venv even if it exists
 	@SETUP_PIP=$$(python3 -m pip --version >/dev/null 2>&1 && echo "python3 -m pip" || echo "pip3"); \

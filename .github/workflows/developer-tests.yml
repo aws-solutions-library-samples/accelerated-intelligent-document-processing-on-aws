@@ -86,7 +86,14 @@ jobs:
         run: |
           uv pip install 'ruff==0.15.13'
           uv pip install typer rich boto3
-          cd lib/idp_common_pkg && uv pip install -e ".[test]" && cd ../..
+          # ALL first-party packages in a single pip pass. They depend on each
+          # other by bare name and those names are squatted on public PyPI, so a
+          # split install would resolve a sibling from PyPI — see the
+          # FIRST_PARTY_EDITABLES note in the Makefile. The target also runs
+          # scripts/check_first_party_deps.py, which fails if any of them did.
+          # Previously CI installed only idp_common_pkg, so the package/Lambda
+          # suites could not even import idp_sdk.
+          make install-first-party PIP="uv pip"
 
       - name: Run linting checks
         run: make lint-cicd
