@@ -505,9 +505,13 @@ export type FeatureConfigPresetResult = {
 
 /** Subscription / entitlement state for a feature. */
 export type FeatureEntitlement = {
+  catalogLicenseMode?: Maybe<Scalars['String']['output']>;
   customerIdentifier?: Maybe<Scalars['String']['output']>;
+  declaredLicenseMode?: Maybe<Scalars['String']['output']>;
   expiresAt?: Maybe<Scalars['AWSDateTime']['output']>;
   featureId: Scalars['String']['output'];
+  licenseMode?: Maybe<Scalars['String']['output']>;
+  licenseModeMismatch?: Maybe<Scalars['Boolean']['output']>;
   marketplaceUrl?: Maybe<Scalars['String']['output']>;
   productCode?: Maybe<Scalars['String']['output']>;
   source: Scalars['String']['output'];
@@ -1704,6 +1708,7 @@ export type RegisterFeatureInput = {
   iconUrl?: InputMaybe<Scalars['String']['input']>;
   installedBy?: InputMaybe<Scalars['String']['input']>;
   installedVersion: Scalars['String']['input'];
+  licenseMode?: InputMaybe<Scalars['String']['input']>;
   marketplaceListingUrl?: InputMaybe<Scalars['String']['input']>;
   productCode?: InputMaybe<Scalars['String']['input']>;
   stackId: Scalars['String']['input'];
