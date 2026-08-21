@@ -742,6 +742,31 @@ ocr:
 
 Set `ocr.features` per configuration to match the documents each stack processes.
 
+### The `SIGNATURES` feature
+
+With `SIGNATURES` enabled, Textract reports each region it believes contains a
+signature, as a **detection confidence plus a bounding box** — not text. Those
+detections reach the rest of the pipeline in three places:
+
+- **Page text** (used by the extraction prompt and the Web UI markdown view) —
+  the linearizer inserts an inline `[SIGNATURE]` token per detection, and an
+  `OCR signature detections` block is appended listing each one's normalized
+  position and confidence.
+- **`textConfidence.json`** (used by the confidence/assessment prompt) — the same
+  block, appended after the per-line confidence table.
+- **`pageData.json`** — a `signatures` array, which the Web UI page viewer lists
+  under **Signature detections** with a clickable bounding box and a
+  colour-coded confidence.
+
+**Read the confidence.** A detection is not proof of a signature: Textract will
+flag a stray pen mark, smudge or scanning artifact, typically at *low*
+confidence (single- or low-double-digit). The inline `[SIGNATURE]` token alone
+cannot tell you this, which is why the position + confidence block exists. If you
+extract a boolean "is this signed?" field, say so in the field description — that
+a signature means handwritten name or initials, that a nearby date is not
+evidence of one, and that a low-confidence detection or a stray mark does not
+count — and consider a few-shot example showing the unsigned case.
+
 ### Bedrock OCR Benefits
 
 - Better handling of complex layouts and tables
