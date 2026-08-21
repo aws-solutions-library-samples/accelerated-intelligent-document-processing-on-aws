@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 import boto3
 from rich.console import Console
 
-from .manifest import FeatureManifest, load_manifest
+from .manifest import FeatureManifest, bake_marketplace_identity, load_manifest
 from .publisher import FeaturePublisher
 
 
@@ -72,18 +72,11 @@ def _bake_wrapper_tokens(
     ``Description``. All tokens are OPTIONAL: a placeholder that isn't present
     is simply a no-op, so wrappers that don't use them are unaffected.
     """
-    return (
+    return bake_marketplace_identity(
         wrapper_yaml.replace("<FEATURE_VERSION_TOKEN>", manifest.version)
         .replace("<FEATURE_ARTIFACT_PREFIX_TOKEN>", artifact_prefix)
-        .replace("<FEATURE_BUCKET_TOKEN>", artifact_bucket)
-        .replace("<FEATURE_PRODUCT_CODE_TOKEN>", manifest.marketplace.productCode or "")
-        .replace("<FEATURE_LISTING_URL_TOKEN>", manifest.marketplace.listingUrl or "")
-        # Absent → "none": an extension that says nothing about its licensing is
-        # not claiming to enforce anything, and the host must not infer that it
-        # does. The host's own catalog default is the strict one.
-        .replace(
-            "<FEATURE_LICENSE_MODE_TOKEN>", manifest.marketplace.licenseMode or "none"
-        )
+        .replace("<FEATURE_BUCKET_TOKEN>", artifact_bucket),
+        manifest.marketplace,
     )
 
 

@@ -107,10 +107,19 @@ def _register(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     declared_mode = item.get("licenseMode")
     if declared_mode is not None and declared_mode not in _LICENSE_MODES:
+        # Deliberately does NOT name a source file. The host has no idea where the
+        # extension got this value: the bundled SDK bakes it from the manifest's
+        # `marketplace.licenseMode`, but an extension is equally free to declare it
+        # as a CloudFormation Mappings constant, a stack parameter, or anything
+        # else its ui-deployer can read — the host only requires it in the payload.
+        # An earlier version of this message told the operator to fix "the
+        # manifest", which is wrong advice for any extension that declares it
+        # elsewhere.
         logger.warning(
-            "Feature %s declared licenseMode=%r, which is not one of %s. Dropping "
-            "it; the host will fall back to the catalog entry. Fix the feature's "
-            "manifest (marketplace.licenseMode).",
+            "Feature %s sent licenseMode=%r in its registerFeature payload, which "
+            "is not one of %s. Dropping it; the host will fall back to its catalog "
+            "entry for this feature. Fix whatever the extension's ui-deployer "
+            "reads the value from.",
             item["featureId"],
             declared_mode,
             ", ".join(_LICENSE_MODES),

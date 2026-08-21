@@ -229,6 +229,16 @@ enforce anything. That default is the opposite of the host catalog's
 (`marketplace-live`) on purpose — you must never lock a paying customer out, and
 the host must never over-claim verification.
 
+**Or declare it wherever you already keep it.** The host does not care where the
+value came from — only that `licenseMode` is in the `registerFeature` payload your
+ui-deployer sends, alongside the `productCode` and `marketplaceListingUrl` it
+already sends. If your template already holds the mode as a `Mappings` constant
+that your functions read, use that and *omit* `marketplace.licenseMode`: two
+declarations of one fact is the drift this field exists to detect, and the
+mismatch detector would then be firing on a bug you introduced by having two
+sources. The manifest route exists because it is where `productCode` and
+`listingUrl` already live, not because it is privileged.
+
 This does not change what you enforce or where. Your own runtime check against
 your seller-side service remains the authoritative gate; `licenseMode` only tells
 the host which authority to agree with.
