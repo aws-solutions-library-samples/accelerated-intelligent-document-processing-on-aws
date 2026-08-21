@@ -2178,7 +2178,101 @@ class OcrService:
         # Join all lines into a single markdown string
         markdown_table = "\n".join(markdown_lines)
 
+        # Signature detections are their own block type with no Text, so the
+        # LINE-only loop above skips them entirely — which meant the SIGNATURES
+        # feature's output (and, critically, its confidence) never reached the
+        # confidence/assessment prompt that consumes this artifact.
+        signature_summary = self._format_signature_summary(
+            self._extract_signature_detections(blocks)
+        )
+        if signature_summary:
+            markdown_table = f"{markdown_table}\n\n{signature_summary}"
+
         return {"text": markdown_table}
+
+    @staticmethod
+    def _extract_signature_detections(
+        blocks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Pull SIGNATURE detections out of Textract-format blocks.
+
+        Emitted only when the OCR backend was asked for the ``SIGNATURES``
+        feature. Each detection carries a confidence and geometry but no text, so
+        every LINE-oriented consumer drops it unless handled explicitly.
+
+        Args:
+            blocks: Textract-format block list.
+
+        Returns:
+            ``[{"id", "confidence", "geometry"}, ...]`` in block order, where
+            ``confidence`` is 0-100 rounded to 1dp (or None) and ``geometry`` is
+            the normalized 0-1 dict from :meth:`_extract_geometry` (or None).
+        """
+        signatures: List[Dict[str, Any]] = []
+        for index, block in enumerate(blocks or [], start=1):
+            if not isinstance(block, dict) or block.get("BlockType") != "SIGNATURE":
+                continue
+            confidence = block.get("Confidence")
+            if confidence is not None:
+                confidence = round(confidence, 1)
+            signatures.append(
+                {
+                    "id": block.get("Id") or f"sig{index}",
+                    "confidence": confidence,
+                    "geometry": OcrService._extract_geometry(block),
+                }
+            )
+        return signatures
+
+    @staticmethod
+    def _format_signature_summary(signatures: List[Dict[str, Any]]) -> str:
+        """
+        Render signature detections as a compact, self-describing text block.
+
+        Appended to both the page text and the text-confidence artifact so the
+        extraction and confidence prompts see *which* signature regions were
+        detected, *where*, and with *what* confidence. The inline ``[SIGNATURE]``
+        token that the linearizer emits carries none of that: it is unpositioned
+        (reading-order placement can put it next to an unrelated field) and
+        indistinguishable between a real signature and a 10%-confidence smudge.
+
+        Deliberately NOT a markdown table — page text is scanned by the agentic
+        extraction table parser, which would otherwise pick this up as a document
+        table.
+
+        Args:
+            signatures: Output of :meth:`_extract_signature_detections`.
+
+        Returns:
+            The summary block, or "" when there are no detections.
+        """
+        if not signatures:
+            return ""
+
+        lines = [
+            "--- OCR signature detections ---",
+            "Regions the OCR engine flagged as containing a signature, matching "
+            "the inline [SIGNATURE] token(s) above. Coordinates are normalized "
+            "0-1 from the page's top-left. Confidence is the engine's "
+            "signature-detection confidence (0-100); a low value means a faint "
+            "or ambiguous mark.",
+        ]
+        for index, sig in enumerate(signatures, start=1):
+            confidence = sig.get("confidence")
+            confidence_text = "unknown" if confidence is None else f"{confidence}"
+            box = (sig.get("geometry") or {}).get("boundingBox") or {}
+            if box:
+                position = (
+                    f"left={box.get('left', 0.0):.3f} "
+                    f"top={box.get('top', 0.0):.3f} "
+                    f"width={box.get('width', 0.0):.3f} "
+                    f"height={box.get('height', 0.0):.3f}"
+                )
+            else:
+                position = "position=unknown"
+            lines.append(f"signature {index}: confidence={confidence_text} {position}")
+        return "\n".join(lines)
 
     # Current consolidated OCR page-data schema version. Bump when the shape of
     # pageData.json changes in a backward-incompatible way.
@@ -2244,6 +2338,11 @@ class OcrService:
 
         Geometry is normalized 0-1 (Textract convention), matching what the UI
         bounding-box renderer already consumes.
+
+        Signature detections (Textract ``SIGNATURES`` feature) are carried in a
+        separate ``signatures`` list rather than as pseudo-lines: they have
+        confidence and geometry but no text, so mixing them into ``lines`` would
+        expose them to the value-matching geometry grounder as if they were text.
 
         Args:
             raw_ocr_content: Textract-format dict ({"Blocks": [...]}) when the
@@ -2366,6 +2465,10 @@ class OcrService:
                     }
                 )
 
+        signatures = self._extract_signature_detections(blocks)
+        if signatures and any(sig.get("geometry") for sig in signatures):
+            geometry_available = True
+
         return {
             "schemaVersion": self.PAGE_DATA_SCHEMA_VERSION,
             "provider": provider,
@@ -2373,7 +2476,9 @@ class OcrService:
             "geometryAvailable": geometry_available,
             "confidenceAvailable": confidence_available,
             "wordsAvailable": words_available,
+            "signaturesAvailable": bool(signatures),
             "lines": lines,
+            "signatures": signatures,
         }
 
     def _write_page_data(
@@ -2472,6 +2577,20 @@ class OcrService:
                 logger.error(f"No text content found in document{page_info}")
             else:
                 logger.info(f"Successfully extracted basic text{page_info}")
+
+        # Append the signature detections. The linearizer renders each one as a
+        # bare inline "[SIGNATURE]" token — unpositioned and with no confidence —
+        # so on its own it cannot be attributed to a specific field, and a
+        # 10%-confidence smudge is indistinguishable from a real signature. The
+        # summary gives the downstream extraction prompt both facts.
+        signatures = self._extract_signature_detections(response.get("Blocks", []))
+        summary = self._format_signature_summary(signatures)
+        if summary:
+            logger.info(
+                f"Appended {len(signatures)} signature detection(s){page_info} "
+                f"to page text"
+            )
+            text = f"{text}\n\n{summary}"
 
         return {"text": text}
 

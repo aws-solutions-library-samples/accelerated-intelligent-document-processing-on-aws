@@ -31,11 +31,24 @@ interface OcrPageDataLine {
   } | null;
 }
 
+/**
+ * One signature region the OCR engine detected (Textract SIGNATURES feature).
+ * Kept separate from `lines` because it has confidence and geometry but no text.
+ */
+interface OcrPageDataSignature {
+  id?: string;
+  confidence?: number | null;
+  geometry?: {
+    boundingBox?: { left: number; top: number; width: number; height: number };
+  } | null;
+}
+
 interface OcrPageData {
   provider?: string;
   geometryAvailable?: boolean;
   confidenceAvailable?: boolean;
   lines?: OcrPageDataLine[];
+  signatures?: OcrPageDataSignature[];
 }
 
 /** One page's artifact URIs, as supplied by PagesPanel. */
@@ -134,6 +147,7 @@ const PageTextEditorModal = ({
   const [originalTextContent, setOriginalTextContent] = useState('');
   const [pageData, setPageData] = useState<OcrPageData | null>(null);
   const [selectedLineIndex, setSelectedLineIndex] = useState<number | null>(null);
+  const [selectedSignatureIndex, setSelectedSignatureIndex] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,20 +156,24 @@ const PageTextEditorModal = ({
 
   const geometryAvailable = Boolean(pageData?.geometryAvailable);
   const lines = useMemo(() => pageData?.lines ?? [], [pageData]);
+  // Signature regions the OCR engine detected. Older documents predate the
+  // artifact carrying them, so absence is normal.
+  const signatures = useMemo(() => pageData?.signatures ?? [], [pageData]);
   // Whether any line actually carries a confidence score (matches the per-line
   // score column and legend below), so the description can reflect reality.
   const hasConfidence = useMemo(() => lines.some((l) => l.confidence != null), [lines]);
 
-  // Only the currently-selected line's box is drawn on the image (the section
-  // Visual Editor pattern). Drawing every line at once is unreadable.
+  // Only the currently-selected row's box is drawn on the image (the section
+  // Visual Editor pattern). Drawing every line at once is unreadable. Lines and
+  // signature regions share one selection: picking one clears the other.
   const activeFieldGeometry = useMemo(() => {
-    if (selectedLineIndex === null) return null;
-    const line = lines[selectedLineIndex];
-    if (!line?.geometry?.boundingBox) return null;
+    const selected =
+      selectedSignatureIndex !== null ? signatures[selectedSignatureIndex] : selectedLineIndex !== null ? lines[selectedLineIndex] : null;
+    if (!selected?.geometry?.boundingBox) return null;
     // Carry the current page number so PageImageViewer keeps the box on the page
     // being viewed (not page 1). pageData lines are scoped to the current page.
-    return { boundingBox: line.geometry.boundingBox, page: currentPageNumber };
-  }, [selectedLineIndex, lines, currentPageNumber]);
+    return { boundingBox: selected.geometry.boundingBox, page: currentPageNumber };
+  }, [selectedLineIndex, selectedSignatureIndex, lines, signatures, currentPageNumber]);
 
   // All pages with an image, so PageImageViewer can navigate across them.
   const documentPages = useMemo(() => pages.filter((p) => p.ImageUri).map((p) => ({ Id: String(p.Id), ImageUri: p.ImageUri })), [pages]);
@@ -170,6 +188,7 @@ const PageTextEditorModal = ({
   // Reset line selection / default view whenever the shown page changes.
   useEffect(() => {
     setSelectedLineIndex(null);
+    setSelectedSignatureIndex(null);
     setViewMode('ocr-lines');
     setMarkdownSubMode('rendered');
   }, [currentPageId]);
@@ -227,7 +246,7 @@ const PageTextEditorModal = ({
             // If this backend produced no OCR lines (e.g. an older document with
             // no pageData, or an empty page), default the right pane to Markdown
             // so there is always something to show rather than an empty list.
-            if (!parsed.lines || parsed.lines.length === 0) {
+            if (!parsed.lines?.length && !parsed.signatures?.length) {
               setViewMode('markdown');
             }
           } else {
@@ -358,6 +377,7 @@ const PageTextEditorModal = ({
     setOriginalTextContent('');
     setPageData(null);
     setSelectedLineIndex(null);
+    setSelectedSignatureIndex(null);
     setError(null);
     setHasUnsavedChanges(false);
     if (onClose) {
@@ -500,6 +520,8 @@ const PageTextEditorModal = ({
                       {hasConfidence
                         ? ' The number on the right is the OCR confidence score for the line.'
                         : ' Confidence scores are not available for this page.'}
+                      {signatures.length > 0 &&
+                        ' Detected signature regions are listed at the end — a low confidence there means a faint or ambiguous mark rather than a clear signature.'}
                     </Box>
                     {hasVisualView && !geometryAvailable && (
                       <Box margin={{ bottom: 'xs' }}>
@@ -516,25 +538,29 @@ const PageTextEditorModal = ({
                         backgroundColor: '#fff',
                       }}
                     >
-                      {lines.length === 0 ? (
+                      {lines.length === 0 && signatures.length === 0 ? (
                         <Box padding="m" color="text-body-secondary">
                           No OCR text lines available for this page.
                         </Box>
                       ) : (
                         lines.map((line, index) => {
                           const canHighlight = hasVisualView && Boolean(line.geometry?.boundingBox);
-                          const isSelected = selectedLineIndex === index;
+                          const isSelected = selectedSignatureIndex === null && selectedLineIndex === index;
+                          const select = () => {
+                            setSelectedSignatureIndex(null);
+                            setSelectedLineIndex(isSelected ? null : index);
+                          };
                           return (
                             <div
                               // eslint-disable-next-line react/no-array-index-key -- lines are a stable ordered OCR list
                               key={`ocr-line-${index}`}
-                              onClick={() => canHighlight && setSelectedLineIndex(isSelected ? null : index)}
+                              onClick={() => canHighlight && select()}
                               role={canHighlight ? 'button' : undefined}
                               tabIndex={canHighlight ? 0 : undefined}
                               onKeyDown={(e) => {
                                 if (canHighlight && (e.key === 'Enter' || e.key === ' ')) {
                                   e.preventDefault();
-                                  setSelectedLineIndex(isSelected ? null : index);
+                                  select();
                                 }
                               }}
                               style={{
@@ -561,8 +587,68 @@ const PageTextEditorModal = ({
                           );
                         })
                       )}
+                      {/* Signature regions have confidence + geometry but no text,
+                          so they are listed separately from the OCR lines. Without
+                          this they were invisible in the UI even though the OCR
+                          engine had flagged them. */}
+                      {signatures.length > 0 && (
+                        <>
+                          <Box padding={{ vertical: 'xxs', horizontal: 's' }} fontSize="body-s" color="text-label" fontWeight="bold">
+                            Signature detections ({signatures.length})
+                          </Box>
+                          {signatures.map((signature, index) => {
+                            const canHighlight = hasVisualView && Boolean(signature.geometry?.boundingBox);
+                            const isSelected = selectedSignatureIndex === index;
+                            const select = () => {
+                              setSelectedLineIndex(null);
+                              setSelectedSignatureIndex(isSelected ? null : index);
+                            };
+                            return (
+                              <div
+                                key={signature.id ?? `ocr-signature-${index}`}
+                                onClick={() => canHighlight && select()}
+                                role={canHighlight ? 'button' : undefined}
+                                tabIndex={canHighlight ? 0 : undefined}
+                                onKeyDown={(e) => {
+                                  if (canHighlight && (e.key === 'Enter' || e.key === ' ')) {
+                                    e.preventDefault();
+                                    select();
+                                  }
+                                }}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                  padding: '4px 8px',
+                                  borderBottom: '1px solid #f2f3f3',
+                                  cursor: canHighlight ? 'pointer' : 'default',
+                                  backgroundColor: isSelected ? '#f0f7ff' : 'transparent',
+                                  borderLeft: isSelected ? '3px solid #0972d3' : '3px solid transparent',
+                                }}
+                              >
+                                <span style={{ fontSize: '13px' }}>
+                                  <em>[SIGNATURE] region {index + 1}</em>
+                                </span>
+                                {signature.confidence != null && (
+                                  <span
+                                    style={{
+                                      flexShrink: 0,
+                                      color: confidenceColor(signature.confidence),
+                                      fontSize: '12px',
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {signature.confidence}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
                     </div>
-                    {hasConfidence && (
+                    {(hasConfidence || signatures.some((s) => s.confidence != null)) && (
                       <Box fontSize="body-s" color="text-body-secondary" margin={{ top: 'xxs' }}>
                         Confidence color: <Badge color="green">≥ {CONFIDENCE_HIGH}</Badge>{' '}
                         <Badge color="severity-medium">≥ {CONFIDENCE_MEDIUM}</Badge> <Badge color="red">below</Badge>

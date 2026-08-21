@@ -381,6 +381,17 @@ convention), matching what the UI bounding-box renderer consumes.
   "geometryAvailable": true,     // any unit has geometry
   "confidenceAvailable": true,   // any unit has confidence
   "wordsAvailable": true,        // any line has word children
+  "signaturesAvailable": true,   // the page has signature detections
+  "signatures": [                // SIGNATURES feature; [] when not requested/found
+    {
+      "id": "sig-1",
+      "confidence": 11.0,        // 0–100 detection confidence, optional
+      "geometry": {              // optional; normalized 0–1
+        "boundingBox": { "left": 0.57, "top": 0.88, "width": 0.04, "height": 0.02 },
+        "polygon": [ { "x": 0.57, "y": 0.88 } ]
+      }
+    }
+  ],
   "lines": [
     {
       "id": "line-1",
@@ -414,6 +425,31 @@ convention), matching what the UI bounding-box renderer consumes.
 The producer derives `pageData.json` in-process from the same OCR result already
 used for `rawText.json`/`textConfidence.json` (`OcrService._build_page_data`),
 so it adds **no extra OCR calls**.
+
+### Signature detections
+
+When the OCR backend is asked for the Textract `SIGNATURES` feature, each
+detection is a block with a **confidence and geometry but no text**. They are
+kept in their own `signatures` array rather than mixed into `lines`, because the
+`ocr_only` geometry grounder matches extracted values against line *text* and a
+textless pseudo-line has nothing to match.
+
+The same detections are surfaced in two other places, both of which previously
+dropped them silently:
+
+- **`textConfidence.json`** — appended after the LINE table as an `OCR signature
+  detections` block, so the confidence prompt can see that a signature region was
+  flagged and with what confidence.
+- **The parsed page text** (`result.json`, which feeds the extraction prompt and
+  the UI markdown view) — same block, appended after the text.
+
+The linearizer already emits an inline `[SIGNATURE]` token per detection, but on
+its own that token is not usable evidence: it is placed by reading order (so it
+can land beside an unrelated field) and carries no confidence, making a genuine
+signature indistinguishable from a 10%-confidence smudge. The appended block adds
+the normalized position and the detection confidence for each one. It is
+deliberately **not** formatted as a markdown table, since page text is scanned by
+the agentic extraction table parser.
 
 ## Lambda Integration Example
 

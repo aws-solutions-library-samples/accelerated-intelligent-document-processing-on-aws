@@ -1329,3 +1329,169 @@ class TestBuildPageData:
         assert len(page_data["lines"]) == 2
         assert page_data["lines"][0]["confidence"] == 99.0
         assert page_data["lines"][0]["geometry"] is None
+
+
+@pytest.mark.unit
+class TestSignatureDetections:
+    """Textract SIGNATURES output must survive into every downstream artifact.
+
+    A SIGNATURE block has confidence and geometry but no text, so every
+    LINE-oriented consumer dropped it: it was absent from pageData.json (no UI
+    box, no confidence shown) and from textConfidence.json (so the confidence
+    prompt never saw it), and in the page text it appeared only as a bare,
+    unpositioned "[SIGNATURE]" token that a real signature and a 10%-confidence
+    smudge share.
+    """
+
+    SIGNATURE_BLOCK = {
+        "BlockType": "SIGNATURE",
+        "Id": "sig-1",
+        "Confidence": 11.0227,
+        "Geometry": {
+            "BoundingBox": {
+                "Left": 0.5717,
+                "Top": 0.8781,
+                "Width": 0.0368,
+                "Height": 0.0218,
+            },
+            "Polygon": [{"X": 0.5717, "Y": 0.8781}],
+        },
+    }
+
+    LINE_BLOCK = {
+        "BlockType": "LINE",
+        "Id": "line-1",
+        "Text": "Signature of taxpayer",
+        "Confidence": 99.9,
+        "TextType": "PRINTED",
+        "Geometry": {
+            "BoundingBox": {"Left": 0.07, "Top": 0.87, "Width": 0.11, "Height": 0.01}
+        },
+    }
+
+    @pytest.fixture
+    def service(self):
+        with patch("boto3.client"):
+            return OcrService(region="us-east-1", enhanced_features=["SIGNATURES"])
+
+    def test_extract_signature_detections(self):
+        signatures = OcrService._extract_signature_detections(
+            [self.LINE_BLOCK, self.SIGNATURE_BLOCK]
+        )
+
+        assert len(signatures) == 1
+        assert signatures[0]["id"] == "sig-1"
+        assert signatures[0]["confidence"] == 11.0  # rounded to 1dp
+        assert signatures[0]["geometry"]["boundingBox"] == {
+            "left": 0.5717,
+            "top": 0.8781,
+            "width": 0.0368,
+            "height": 0.0218,
+        }
+
+    def test_extract_signature_detections_tolerates_sparse_blocks(self):
+        signatures = OcrService._extract_signature_detections(
+            [
+                "not-a-dict",
+                {"BlockType": "SIGNATURE"},  # no Id, Confidence or Geometry
+            ]
+        )
+
+        assert signatures == [{"id": "sig2", "confidence": None, "geometry": None}]
+
+    def test_summary_reports_confidence_and_position(self):
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK])
+        )
+
+        assert "confidence=11.0" in summary
+        assert "left=0.572" in summary
+        assert "top=0.878" in summary
+        # Must NOT be a markdown table: page text is scanned by the agentic
+        # table parser, which would otherwise treat this as a document table.
+        assert "|" not in summary
+
+    def test_summary_is_empty_without_detections(self):
+        assert OcrService._format_signature_summary([]) == ""
+
+    def test_page_data_carries_signatures(self, service):
+        raw = {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}
+
+        page_data = service._build_page_data(raw, "Signature of taxpayer", "textract")
+
+        assert page_data["signaturesAvailable"] is True
+        assert len(page_data["signatures"]) == 1
+        assert page_data["signatures"][0]["confidence"] == 11.0
+        # Signatures stay OUT of `lines` — they have no text, and the geometry
+        # grounder matches extracted values against line text.
+        assert [line["text"] for line in page_data["lines"]] == [
+            "Signature of taxpayer"
+        ]
+
+    def test_page_data_without_signatures(self, service):
+        page_data = service._build_page_data(
+            {"Blocks": [self.LINE_BLOCK]}, "Signature of taxpayer", "textract"
+        )
+
+        assert page_data["signaturesAvailable"] is False
+        assert page_data["signatures"] == []
+
+    def test_page_data_geometry_available_from_signature_alone(self, service):
+        """A page whose only geometry is a signature box still reports geometry."""
+        line_without_geometry = {
+            "BlockType": "LINE",
+            "Id": "line-2",
+            "Text": "text only",
+            "Confidence": 99.0,
+        }
+
+        page_data = service._build_page_data(
+            {"Blocks": [line_without_geometry, self.SIGNATURE_BLOCK]},
+            "text only",
+            "textract",
+        )
+
+        assert page_data["geometryAvailable"] is True
+
+    def test_text_confidence_data_includes_signatures(self, service):
+        result = service._generate_text_confidence_data(
+            {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}
+        )
+
+        text = result["text"]
+        # The LINE table is unchanged...
+        assert "| Signature of taxpayer | 99.9 |" in text
+        # ...and the signature detection is appended with its confidence.
+        assert "OCR signature detections" in text
+        assert "confidence=11.0" in text
+
+    def test_text_confidence_data_unchanged_without_signatures(self, service):
+        result = service._generate_text_confidence_data({"Blocks": [self.LINE_BLOCK]})
+
+        assert "signature detections" not in result["text"]
+        assert result["text"].endswith("| Signature of taxpayer | 99.9 |")
+
+    def test_parsed_page_text_appends_summary(self, service):
+        """The summary rides along with the parsed page text (extraction prompt)."""
+        with patch("textractor.parsers.response_parser.parse") as mock_parse:
+            mock_parse.return_value.to_markdown.return_value = (
+                "Signature of taxpayer\n[SIGNATURE]"
+            )
+            result = service._parse_textract_response(
+                {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}, page_id=2
+            )
+
+        text = result["text"]
+        assert text.startswith("Signature of taxpayer\n[SIGNATURE]")
+        assert "OCR signature detections" in text
+        assert "confidence=11.0" in text
+        assert "left=0.572" in text
+
+    def test_parsed_page_text_unchanged_without_signatures(self, service):
+        with patch("textractor.parsers.response_parser.parse") as mock_parse:
+            mock_parse.return_value.to_markdown.return_value = "Signature of taxpayer"
+            result = service._parse_textract_response(
+                {"Blocks": [self.LINE_BLOCK]}, page_id=2
+            )
+
+        assert result["text"] == "Signature of taxpayer"
