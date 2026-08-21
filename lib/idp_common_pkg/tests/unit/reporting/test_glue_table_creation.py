@@ -496,6 +496,12 @@ class TestGlueTableCreation:
         assert {"Name": "estimated_cost", "Type": "double"} in columns
         assert {"Name": "timestamp", "Type": "timestamp"} in columns
         assert {"Name": "initial_event_time", "Type": "timestamp"} in columns
+        # Pin the column count so a spurious extra column is caught.
+        # 10 = document_id, context, service_api, unit, value,
+        # number_of_pages, unit_cost, estimated_cost, timestamp,
+        # initial_event_time. Update this line INTENTIONALLY when
+        # adding a real new column.
+        assert len(columns) == 10
 
         # Verify storage descriptor settings
         storage = call_args["TableInput"]["StorageDescriptor"]

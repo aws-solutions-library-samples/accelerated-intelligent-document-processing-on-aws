@@ -33,22 +33,48 @@ Related module docs (developer tier):
 
 | # | Table | Grain | Populated by |
 |---|---|---|---|
-| 1 | `metering_hourly` | hour × document_class × config_version × service_api | Scheduled hourly rollup Lambda, Athena `INSERT INTO` from raw `metering` |
-| 2 | `metering_daily` | date × document_class × config_version × service_api | Same rollup Lambda, `INSERT INTO` from `metering_hourly` |
-| 3 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, writes Parquet directly from CloudWatch data |
+| 1 | `metering_hourly` | hour × config_version × service_api × unit | Scheduled hourly rollup Lambda, Athena `INSERT INTO` from raw `metering` |
+| 2 | `metering_daily` | date × config_version × service_api × unit | Same rollup Lambda, `INSERT INTO` from `metering_hourly` |
+| 3 | `metering_docs_hourly` | hour × config_version | Same rollup Lambda, `INSERT INTO` from raw `metering` via a MAX-per-doc subquery |
+| 4 | `metering_docs_daily` | date × config_version | Same rollup Lambda, `INSERT INTO` from `metering_docs_hourly` |
+| 5 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, writes Parquet directly from CloudWatch data |
 
-**Aggregated columns on the two metering rollup tables:**
-`n_doc_events, sum_value, sum_cost, sum_pages`. No per-doc columns,
-no status, no timing — those queries stay on raw `metering`
-(column-scoped scan is already cheap).
+**Column split — cost vs docs (Phase 1 change).** Cost columns
+(`sum_value`, `sum_cost`) live on `metering_hourly` / `metering_daily`
+because they aggregate cleanly per (service_api, unit). Document-level
+metrics (`n_docs`, `sum_pages`) live on the separate `metering_docs_*`
+tables at the coarser (hour, config_version) grain — `number_of_pages`
+is stamped identically on every metering row for a given document, so
+grouping by `service_api` would fan out the page count by the number
+of (service_api, unit) combinations a doc touched (e.g. a 10-page doc
+touching 6 service rows would report 60 pages). The `metering_docs_*`
+tables aggregate via a `MAX(number_of_pages) GROUP BY document_id`
+subquery to collapse the fan-out.
 
-**Naming note:** `n_doc_events` (not `n_docs`) — a document
-reprocessed across multiple hours produces one metering row per
-hour it lands in, and `COUNT(DISTINCT document_id)` at hour grain
-de-dupes only within the hour. Consumers who need cross-hour or
-cross-day *unique* document counts must query raw `metering` with
-`COUNT(DISTINCT document_id)`. Cost/token/page sums are accurate at
-every grain because the underlying values are additive.
+**Columns on `metering_hourly` / `metering_daily`** (cost per service/unit):
+`hour_ts` (or `day`), `config_version`, `service_api`, `unit`,
+`sum_value`, `sum_cost`.
+
+**Columns on `metering_docs_hourly` / `metering_docs_daily`** (doc-grain
+volume/pages): `hour_ts` (or `day`), `config_version`, `n_docs`,
+`sum_pages`.
+
+**Naming note — `n_docs` counts differently at hour vs day grain.**
+On `metering_docs_hourly`, `n_docs = COUNT(DISTINCT document_id)`
+within the hour — accurate for that hour. On `metering_docs_daily`,
+`n_docs = SUM(hourly n_docs)`, which counts a document once per hour
+it appeared in — a "doc-hours" count, not a cross-day unique count.
+For strict cross-day unique-doc counts, query raw `metering` with
+`COUNT(DISTINCT document_id)`.
+
+**Where status/timing data actually lives** — NOT on `metering`.
+`metering` carries only cost primitives: `document_id`, `context`,
+`service_api`, `unit`, `value`, `number_of_pages`, `unit_cost`,
+`estimated_cost`, `timestamp`, `initial_event_time`, `config_version`.
+Document status (`SUCCESS`/`FAILED`/`ABORTED`), pipeline stage,
+error text, and wall-clock duration are in the tracking DynamoDB
+table, not in Athena. A future `document_lifecycle` table (Phase 2)
+would move these into the SQL layer for KPI queries.
 
 **All three tables are append-only.** A partition is written once and
 never rewritten. The write-time partitioning of `metering` (see §2.3)
@@ -64,11 +90,15 @@ by requested range:
 | `2h – 24h` | `metering_hourly` | raw `metering` for the current hour |
 | `> 24h` | `metering_daily` | `metering_hourly` for the current day |
 
-Sealed hour and day rows never change once written, so any consumer
-`SELECT` that hits them benefits from Athena result reuse — a second
-dashboard-open within the workgroup's result-reuse TTL returns
-instantly. (Result reuse applies to consumer reads, not to the
-rollup Lambda's `INSERT`.)
+Sealed hour and day rows never change once written, so consumer
+`SELECT`s against them are safe candidates for Athena result reuse.
+**Result reuse is NOT enabled automatically.** Athena's per-query
+`ResultReuseConfiguration.ResultReuseByAgeConfiguration.Enabled` is
+off by default and the `primary` workgroup this pipeline uses has no
+default reuse TTL set. Consumers who want it must set it explicitly
+on each `StartQueryExecution` (e.g. `MaxAgeInMinutes=60` for a
+one-hour cache). The rollup Lambda's own `INSERT`s never benefit
+from reuse — Athena caches SELECT results only.
 
 ### 2.3 `metering` partitioning: write time, not queue time
 
@@ -92,6 +122,25 @@ predicate `WHERE date = '2026-08-18'` shifts meaning from "docs
 queued that day" to "docs completed that day". Consumers who need
 queue-time semantics filter on the `initial_event_time` column
 explicitly.
+
+**Upgrade cutover — partition semantics differ before and after.**
+The migration custom resource that relocates historical
+`date=X/*.parquet` files into `date=X/hour=HH/` subdirs infers the
+hour from each file's own `timestamp` column. Before Phase 1, that
+`timestamp` was queue-derived; after Phase 1, new writes are
+completion-derived. So on any given stack:
+
+- **New writes (post-upgrade)** — `date`/`hour` partition = completion time.
+- **Historical rows (pre-upgrade, migrated in place)** — `date`/`hour`
+  partition = queue time (whatever the `timestamp` column said at the
+  time). Dates aren't relocated by the migration — only hours are added.
+
+A query spanning the cutover mixes both semantics silently. In
+practice this only affects docs that crossed midnight during
+processing (the two interpretations agree for everything else). If
+you need the cutover boundary programmatically, look at the earliest
+`hour_ts` in `metering_hourly` — that's the point new-semantic rows
+start appearing.
 
 ---
 
@@ -306,14 +355,36 @@ control-plane Lambda:
 | Metric | Emitted by | How |
 |---|---|---|
 | `AWS/Lambda/Duration` + `Invocations` | Native (all Lambdas) | Zero code — CloudWatch emits automatically. |
-| `IDPControlPlane/AthenaBytesScanned` (dim `Component`) | Any control-plane Lambda that runs an Athena query | Emit at end of `athena.get_query_execution`, one `PutMetricData` call with `bytes_scanned` value. |
-| `IDPControlPlane/BedrockInputTokens` / `BedrockOutputTokens` (dim `Component`, `Model`) | Any control-plane Lambda that calls Bedrock | Emit at end of every `converse` / `invoke_model` response with the token counts from the response envelope. |
+| `IDPControlPlane/AthenaBytesScanned` (dims: `Component`, `FunctionName`) | Any control-plane Lambda that runs an Athena query | Emit at end of `athena.get_query_execution`, one `PutMetricData` call with `bytes_scanned` value. |
+| `IDPControlPlane/BedrockInputTokens` / `BedrockOutputTokens` (dims: `Component`, `FunctionName`, `Model`) | Any control-plane Lambda that calls Bedrock | Emit at end of every `converse` / `invoke_model` response with the token counts from the response envelope. |
+
+`FunctionName` is load-bearing — the rollup Lambda scopes its
+`GetMetricData` calls on `FunctionName` alone (not `Component`) so a
+Lambda whose emitter-side hardcoded component label differs from the
+rollup-side derived label (e.g. a Lambda that vendors the analytics
+agent — emitted as `analytics-agent` but mapped to a different
+component by `_COMPONENT_RULES`) still has its metrics found. The
+`Component` and `Model` dims are informational — useful for direct
+CloudWatch queries by an operator but not required by the rollup.
 
 Both custom metrics are one-line calls to a shared helper —
 `idp_common.metrics.emit_control_plane_cost_metric(...)` — that
 callers get for free via `idp_common`. Fire-and-forget; logs a
 warning (never raises) on CloudWatch failure so the calling Lambda's
-business logic keeps working.
+business logic keeps working. `FunctionName` is auto-populated from
+`AWS_LAMBDA_FUNCTION_NAME` — callers pass only `component` (and
+`bedrock_model` for Bedrock metrics).
+
+**Phase 1 emitter coverage.** As of the initial Phase 1 landing, the
+only in-repo caller of the helper is the analytics agent's Athena tool
+(`lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py`),
+which emits `AthenaBytesScanned`. **`BedrockInputTokens` /
+`BedrockOutputTokens` are not yet emitted by any in-repo Lambda** —
+the rollup Lambda reads them if present, but until the agent-chat /
+monitor-agent / test-runner Lambdas start emitting, the corresponding
+columns in `control_plane_hourly` will be `0` and `est_bedrock_cost`
+will always be `$0` for control-plane rows. Wiring Bedrock emission
+is a Phase 2 task tracked separately.
 
 ---
 
@@ -327,7 +398,10 @@ future dashboards):
 - **Pick the tier** by requested range (see §2). Live tail from raw
   `metering` for the current hour/day is expected.
 - **Assume append-only.** A partition, once written, never changes.
-  Athena result reuse is safe for sealed partitions.
+  Athena result reuse is safe for sealed partitions — enable it
+  explicitly on each `StartQueryExecution` via
+  `ResultReuseConfiguration.ResultReuseByAgeConfiguration` (it's off
+  by default on the `primary` workgroup this pipeline uses).
 - **Freshness:** hourly rollup for hour N lands at N+1:05 UTC. Daily
   rollup for day D lands at D+1 00:15 UTC. Consumers can display "as
   of HH:05" for hourly and "as of 00:15" for daily.

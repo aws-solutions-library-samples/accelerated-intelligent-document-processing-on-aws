@@ -199,6 +199,70 @@ class TestMeteringHourlyRollup:
         assert "hour = '13'" in sql
         # Must GROUP BY the rollup dimensions
         assert "GROUP BY" in sql
+        # Pages + doc counts DO NOT belong in this table — they fan out
+        # by service_api. They live in metering_docs_hourly instead.
+        assert "sum_pages" not in sql, (
+            "metering_hourly must NOT compute sum_pages — number_of_pages "
+            "is stamped on every metering row and grouping by service_api "
+            "would multiply pages by the number of (service_api, unit) "
+            "combinations a doc touched (6x for a typical doc)."
+        )
+        assert "n_doc_events" not in sql, (
+            "metering_hourly must NOT compute n_doc_events — same "
+            "fan-out problem as sum_pages. Doc-grain counts belong "
+            "in metering_docs_hourly."
+        )
+
+
+@pytest.mark.unit
+class TestMeteringDocsHourlyRollup:
+    """Doc-grain rollup fixes the fan-out bug: number_of_pages is a
+    document-level value stamped identically on every metering row for
+    that doc, so ``SUM(number_of_pages) GROUP BY service_api`` returns
+    6× the true page count for a doc that hit 6 (service_api, unit)
+    combinations. metering_docs_hourly aggregates at (hour, config_version)
+    grain via a MAX-per-doc subquery.
+    """
+
+    def test_docs_rollup_sql_uses_doc_grain_subquery(self, rollup):
+        """The SQL MUST use MAX(number_of_pages) per document in an inner
+        subquery before aggregating — otherwise pages fan out by
+        service_api count."""
+        captured = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured.append(sql) or "qid-docs",
+            ),
+        ):
+            result = rollup._rollup_metering_docs_hourly("2026-08-18", "13")
+        assert result["skipped"] is False
+        sql = captured[0]
+        assert '"metering_docs_hourly"' in sql
+        # Doc-grain subquery — MAX-collapses pages before outer aggregate.
+        assert "MAX(number_of_pages)" in sql
+        # Grain is (hour_ts, config_version) — NOT service_api / unit.
+        assert (
+            "service_api"
+            not in sql.split("INSERT")[1].split("SELECT")[1].split("FROM")[0]
+        ), (
+            "Outer SELECT must not include service_api or unit as dims — "
+            "that's the fan-out bug this table exists to avoid."
+        )
+        assert "date = '2026-08-18'" in sql
+        assert "hour = '13'" in sql
+
+    def test_docs_rollup_skips_when_partition_exists(self, rollup):
+        """Idempotency guard."""
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=True),
+            patch.object(rollup, "_run_athena") as mock_athena,
+        ):
+            result = rollup._rollup_metering_docs_hourly("2026-08-18", "13")
+        assert result["skipped"] is True
+        mock_athena.assert_not_called()
 
 
 @pytest.mark.unit
@@ -219,19 +283,26 @@ class TestMeteringDailyRollup:
             ),
         ):
             rollup._run_daily()
-        sql = captured_sql[0]
-        assert '"metering_daily"' in sql
-        assert '"metering_hourly"' in sql
-        assert (
-            '"metering"' not in sql or 'FROM "idp-reporting"."metering_hourly"' in sql
-        )
-        # Uses the renamed n_doc_events column (was n_docs).
-        assert "n_doc_events" in sql
-        assert "SUM(n_docs)" not in sql
+        # Two INSERTs — one to metering_daily (cost), one to metering_docs_daily
+        # (volume/pages). Both read from their sibling hourly rollup, not raw.
+        joined = " ".join(captured_sql)
+        assert '"metering_daily"' in joined
+        assert '"metering_docs_daily"' in joined
+        assert '"metering_hourly"' in joined
+        assert '"metering_docs_hourly"' in joined
+        # metering_daily is cost-only — no fanned-out volume columns
+        cost_sql = next(s for s in captured_sql if '"metering_daily"' in s)
+        assert "sum_pages" not in cost_sql
+        assert "n_doc_events" not in cost_sql
+        # metering_docs_daily has doc-grain fields
+        docs_sql = next(s for s in captured_sql if '"metering_docs_daily"' in s)
+        assert "SUM(n_docs)" in docs_sql
+        assert "SUM(sum_pages)" in docs_sql
 
     def test_daily_skip_when_partition_exists(self, rollup):
         with (
             patch.object(rollup, "_partition_already_written", return_value=True),
+            patch.object(rollup, "_require_hourly_matches_raw_metering"),
             patch.object(rollup, "_run_athena") as mock_athena,
         ):
             result = rollup._run_daily()
@@ -592,19 +663,52 @@ class TestControlPlaneRowBuilding:
             )
         assert len(rows) == 2
         by_model = {r["bedrock_model"]: r for r in rows}
-        # Opus pricing: $15 in / $75 out per 1K
+        # Opus pricing: $15 in / $75 out per MILLION tokens.
+        # 1000 tokens in → $15 * 1000 / 1e6 = $0.015
+        # 500 tokens out → $75 * 500 / 1e6 = $0.0375
         opus = by_model["us.anthropic.claude-opus-4-1"]
         assert opus["bedrock_tokens_in"] == 1000
         assert opus["bedrock_tokens_out"] == 500
-        assert (
-            abs(opus["est_bedrock_cost"] - (1000 * 15 / 1000 + 500 * 75 / 1000)) < 1e-6
-        )
-        # Haiku pricing: $0.80 in / $4 out per 1K
+        expected_opus = 1000 * 15 / 1_000_000 + 500 * 75 / 1_000_000
+        assert abs(opus["est_bedrock_cost"] - expected_opus) < 1e-9
+        # Haiku pricing: $0.80 in / $4 out per MILLION tokens.
         haiku = by_model["us.anthropic.claude-haiku-4-5"]
-        assert (
-            abs(haiku["est_bedrock_cost"] - (2000 * 0.80 / 1000 + 1000 * 4 / 1000))
-            < 1e-6
-        )
+        expected_haiku = 2000 * 0.80 / 1_000_000 + 1000 * 4 / 1_000_000
+        assert abs(haiku["est_bedrock_cost"] - expected_haiku) < 1e-9
+
+    def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(self, rollup):
+        """Regression pin for the earlier 1000× overstate.
+
+        AWS charges $3 per MILLION Sonnet input tokens. A prior version
+        of the code divided by 1000 instead of 1_000_000, so 1M tokens
+        got billed at $3000. This test locks in the correct math with
+        a very-round-number sanity check that any future rewrite has to
+        stay consistent with.
+        """
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
+        ):
+            rows = rollup._build_control_plane_rows(
+                function_name="AnalyticsAgentFn",
+                component="analytics-agent",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    # Non-zero activity so _build_control_plane_rows doesn't
+                    # early-return; Bedrock cost is what we're pinning.
+                    "duration_ms": 1.0,
+                    "invocations": 1.0,
+                    "athena_bytes": 0.0,
+                    "bedrock_by_model": {
+                        # 1M input, 0 output → $3.00 flat
+                        "us.anthropic.claude-sonnet-4-20250514": {
+                            "in": 1_000_000,
+                            "out": 0,
+                        },
+                    },
+                },
+            )
+        # 1_000_000 * 3 / 1_000_000 = 3.00 — NOT 3000.
+        assert abs(rows[0]["est_bedrock_cost"] - 3.00) < 1e-6
 
     def test_lambda_cost_scales_with_actual_memory_at_same_arch(self, rollup):
         """Memory contribution: 4 GB → 8× the cost of 512 MB, holding
@@ -704,6 +808,70 @@ class TestControlPlaneRowBuilding:
         }
         result = rollup._flatten_cw_response(response)
         assert result["duration"] == 1500.0
+
+    def test_partition_check_reraises_on_transient_error(self, rollup):
+        """A transient Athena throttle on the idempotency probe must NOT
+        fall through to fail-open — that would let an INSERT run against
+        an already-populated partition and permanently double-count."""
+        with patch.object(
+            rollup,
+            "_run_athena_query_with_results",
+            side_effect=RuntimeError("ThrottlingException: Rate exceeded"),
+        ):
+            with pytest.raises(RuntimeError, match="Throttling"):
+                rollup._partition_already_written(
+                    table="metering_hourly", date="2026-08-18", hour="13"
+                )
+
+    def test_partition_check_swallows_only_table_missing(self, rollup):
+        """First deploy: the rollup tables exist per the CFN template
+        but Athena's Glue catalog view may transiently report them as
+        missing until the first partition materializes. TABLE_NOT_FOUND
+        is the ONE error we treat as 'not yet written' — everything else
+        propagates."""
+        with patch.object(
+            rollup,
+            "_run_athena_query_with_results",
+            side_effect=RuntimeError("TABLE_NOT_FOUND: metering_hourly does not exist"),
+        ):
+            assert (
+                rollup._partition_already_written(
+                    table="metering_hourly", date="2026-08-18", hour="13"
+                )
+                is False
+            )
+
+    def test_athena_query_scopes_on_functionname_not_component(self, rollup):
+        """The AthenaBytesScanned query must NOT filter by Component —
+        callers of emit_control_plane_cost_metric may hardcode a
+        component label (e.g. athena_tool passes "analytics-agent")
+        that doesn't match what _COMPONENT_RULES derives for a Lambda
+        vendoring that code (e.g. ChatStreamProcessorFunction → doc-chat).
+        FunctionName alone is sufficient — the rollup derives Component
+        locally at row-build time.
+        """
+        captured: list = []
+
+        def fake_get_metric_data(MetricDataQueries, **_kwargs):  # noqa: N803
+            captured.extend(MetricDataQueries)
+            return {"MetricDataResults": []}
+
+        mock_cw = MagicMock()
+        mock_cw.get_metric_data.side_effect = fake_get_metric_data
+        mock_cw.list_metrics.return_value = {"Metrics": []}
+
+        with patch.object(rollup, "cloudwatch_client", mock_cw):
+            rollup._get_cw_metrics_for_function(
+                function_name="ChatStreamProcessorFunction",
+                hour_start=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                hour_end=datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc),
+            )
+        athena_q = next(q for q in captured if q["Id"] == "athena_bytes")
+        dim_names = {d["Name"] for d in athena_q["MetricStat"]["Metric"]["Dimensions"]}
+        assert dim_names == {"FunctionName"}, (
+            f"Expected FunctionName-only, got {dim_names}. "
+            f"Adding Component here reintroduces the label-mismatch drop."
+        )
 
 
 @pytest.mark.unit

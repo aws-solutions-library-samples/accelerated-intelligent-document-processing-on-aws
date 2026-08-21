@@ -217,25 +217,33 @@ def _iter_old_layout_keys(bucket: str) -> Iterator[str]:
 
 
 def _migrate_one(bucket: str, key: str) -> None:
-    """Copy ``key`` to its hour-partitioned target. Does NOT delete the
+    """Copy ``key`` to its hour-partitioned target, then delete the
     original.
 
-    Copy-only is the rollback-safe path: if the migration fails partway
-    through and CFN rolls the Glue table back to its pre-migration
-    projection (``date=X/*.parquet``, no ``hour=Y/`` subdir), the still-
-    present originals are what the projection reads — data stays visible.
+    Copy-then-delete is the correct rollback behavior. Athena reads a
+    partition location recursively — if we left originals in place and
+    CFN rolled the Glue table back to the pre-migration projection
+    (``date=X/``), Athena would scan BOTH the originals AND the copies
+    under ``date=X/hour=HH/`` and every migrated day would double-count.
+    Deleting the original after a verified copy leaves exactly one
+    physical location per row regardless of which projection the Glue
+    table ends up on.
 
-    Duplicate storage after a successful migration is intentional and
-    inexpensive (metering parquet files are small + Snappy-compressed).
-    The already-migrated files under ``hour=HH/`` are what the new
-    projection reads. The originals at ``date=X/*.parquet`` are invisible
-    to Athena post-migration and can be removed by an operator later —
-    ``scripts/migrate_metering_hour_partition.py --cleanup`` is the
-    supported way, or a plain S3 lifecycle rule works too.
+    Failure modes:
+    - **Mid-copy failure** — the target key doesn't land; original
+      stays. Safe: original is still the sole location, projection
+      (whichever version is committed) reads it correctly. Retry via
+      MigrationVersion bump; the lister re-yields un-hour-partitioned
+      keys.
+    - **Copy-succeeded-delete-failed** — the target key AND original
+      both exist for this one file. Same double-count risk as the
+      "leave originals" design, but scoped to one file rather than the
+      whole dataset. A re-run picks up the delete idempotently
+      (``delete_object`` on a missing key is a no-op).
 
-    Interruption during the copy is safe — a re-run treats already-
-    migrated files as no-ops (they carry ``/hour=`` in the key and the
-    lister skips them). CopyObject is atomic per-key.
+    CopyObject is atomic per-key; DeleteObject is idempotent. A re-run
+    treats already-migrated files (``/hour=`` in the key) as no-ops
+    via the lister's filter.
     """
     hour = _infer_hour(bucket, key)
     target = _new_key(key, hour)
@@ -248,6 +256,7 @@ def _migrate_one(bucket: str, key: str) -> None:
         Key=target,
         CopySource={"Bucket": bucket, "Key": key},
     )
+    s3_client.delete_object(Bucket=bucket, Key=key)
 
 
 def _infer_hour(bucket: str, key: str) -> str:

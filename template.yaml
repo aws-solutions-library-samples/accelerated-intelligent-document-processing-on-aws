@@ -4698,14 +4698,10 @@ Resources:
               Type: string
             - Name: unit
               Type: string
-            - Name: n_doc_events
-              Type: bigint
             - Name: sum_value
               Type: double
             - Name: sum_cost
               Type: double
-            - Name: sum_pages
-              Type: bigint
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -4760,12 +4756,124 @@ Resources:
               Type: string
             - Name: unit
               Type: string
-            - Name: n_doc_events
-              Type: bigint
             - Name: sum_value
               Type: double
             - Name: sum_cost
               Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Doc-grain hourly rollup — n_docs + sum_pages at (hour, config_version)
+  # grain. Kept in a separate table from metering_hourly because pages and
+  # doc counts fan out across (service_api, unit) — SUM(number_of_pages)
+  # grouped by service_api overcounts by the number of metering rows per
+  # doc (a 10-page doc with 6 service rows would report 60 pages).
+  # See docs/reporting-sql-layer.md §2.
+  MeteringDocsHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_docs_hourly"
+        Description: "Hourly doc-grain rollup — n_docs + sum_pages per (hour, config_version). See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_docs_hourly/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_docs_hourly/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: config_version
+              Type: string
+            - Name: n_docs
+              Type: bigint
+            - Name: sum_pages
+              Type: bigint
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  # Doc-grain daily rollup — n_doc_hours + sum_pages_hours at (day, config_version).
+  # SUM from metering_docs_hourly, so a document reprocessed across N hours
+  # is counted N times (each hour it appeared in). For strict cross-day
+  # unique-doc count, query raw metering with COUNT(DISTINCT document_id).
+  MeteringDocsDailyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_docs_daily"
+        Description: "Daily doc-grain rollup — n_docs + sum_pages per (day, config_version). See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_docs_daily/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_docs_daily/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: day
+              Type: date
+            - Name: config_version
+              Type: string
+            - Name: n_docs
+              Type: bigint
             - Name: sum_pages
               Type: bigint
           Compressed: true
@@ -4908,13 +5016,16 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
             - Effect: Allow
               Action:
-                # Copy-only migration: reads the source parquet's timestamp
-                # column to infer the hour, then PutObject at the new key.
-                # Does NOT delete the source — a partial-failure rollback
-                # (Glue table reverts to the no-hour projection) needs the
-                # originals present so historical data stays visible.
+                # Copy-then-delete migration: reads the source parquet's
+                # timestamp column to infer the hour, PutObject at the new
+                # `date=X/hour=HH/` key, then DeleteObject on the original.
+                # Athena reads a partition location recursively, so leaving
+                # originals in place would cause a rolled-back Glue table
+                # (reverted to `date=X/`) to double-scan; the delete is what
+                # makes rollback correct.
                 - s3:GetObject
                 - s3:PutObject
+                - s3:DeleteObject
               Resource:
                 - !If
                   - ShouldCreateReportingBucket

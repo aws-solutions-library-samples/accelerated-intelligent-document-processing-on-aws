@@ -35,11 +35,12 @@ Usage
 
 Safety
 ------
-- **Copy-only**, not copy-then-delete: originals are preserved. If a
-  future stack update rolls the Glue table back to the no-hour projection,
-  historical data stays visible via the still-present originals. Duplicate
-  storage is small (parquet + Snappy) and can be removed by an operator's
-  S3 lifecycle rule if desired.
+- **Copy-then-delete** per key. Athena reads a partition location
+  recursively, so leaving originals in place would cause a rolled-back
+  Glue table (reverted to ``date=X/``) to double-scan the ``hour=HH/``
+  copies. Deleting the source after a verified copy keeps exactly one
+  physical location per row regardless of which Glue projection is
+  committed. A re-run picks up any missed deletes idempotently.
 - Skips writes to Athena — the projection picks up the new partitions
   automatically once objects land under the ``hour=`` subpath.
 - Parallelized with a ThreadPoolExecutor; ``--concurrency`` (default 50)
@@ -136,14 +137,16 @@ def _process_one(
         return "dry-moved"
 
     try:
-        # Copy-only: leaves originals in place so a future rollback of the
-        # Glue table's projection stays safe. See docs/reporting-sql-layer.md.
+        # Copy-then-delete: after a verified copy, remove the original so
+        # a rolled-back projection (that would read `date=X/` recursively)
+        # doesn't double-scan both the source and the new hour subdir.
         s3.copy_object(
             Bucket=bucket,
             Key=target,
             CopySource={"Bucket": bucket, "Key": key},
         )
-        print(f"  COPIED {key} -> {target}")
+        s3.delete_object(Bucket=bucket, Key=key)
+        print(f"  MOVED {key} -> {target}")
         return "moved"
     except Exception as e:
         print(f"  ERROR {key}: {e}", file=sys.stderr)
@@ -156,10 +159,10 @@ def migrate(
     default_hour: str = "00",
     concurrency: int = 50,
 ) -> tuple[int, int, int]:
-    """Copy every un-hour-partitioned metering parquet under ``bucket`` to
-    its ``date=X/hour=HH/`` target — in parallel.
+    """Move every un-hour-partitioned metering parquet under ``bucket`` to
+    its ``date=X/hour=HH/`` target — in parallel (copy-then-delete).
 
-    Copy-only (see module docstring). Returns (moved, skipped, errors).
+    Returns (moved, skipped, errors).
     """
     s3 = boto3.client("s3")
     keys = list(iter_metering_parquet_keys(s3, bucket))

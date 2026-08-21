@@ -304,6 +304,19 @@ Here are some example queries to get you started.
 > `date` is asking "docs completed in this range", not "docs queued".
 > For queue-time semantics, filter on the `initial_event_time` column
 > instead.
+>
+> **Cross-table `date` divergence — read this before joining tables
+> by `date`.** `metering` partitions on completion time (write time);
+> the sibling reporting tables `evaluation_metrics/*` and
+> `document_sections_*` still partition on queue time
+> (`initial_event_time`). A document processed across midnight lands
+> in a different partition depending on which table you look at. If
+> you're joining `metering` with any of those tables, either:
+> (1) filter each side by its own partition and accept the day-boundary
+> skew, (2) join on `document_id` alone and filter downstream by a
+> single semantic (either `metering.timestamp` or
+> `metering.initial_event_time`), or (3) prefer daily/weekly aggregates
+> where the skew averages out.
 
 > **Performance note:** for wide date ranges (>24h), prefer
 > `metering_daily` / `metering_hourly` over raw `metering` — same

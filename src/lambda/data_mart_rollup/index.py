@@ -58,8 +58,12 @@ ATHENA_PRICE_PER_TB = 5.0  # $5 per TB scanned
 LAMBDA_ARM64_GB_SECOND_PRICE = 0.0000133334  # per GB-second on arm64
 LAMBDA_X86_64_GB_SECOND_PRICE = 0.0000166667  # per GB-second on x86_64
 LAMBDA_REQUEST_PRICE = 0.20 / 1_000_000  # $0.20 per 1M requests, both archs
-# Bedrock per-1K-token prices, keyed by model ID prefix. Fallback to
-# Claude Sonnet pricing for unknown models — best-effort.
+# Bedrock **per-MILLION-token** prices in USD, keyed by model ID prefix.
+# AWS publishes prices per million tokens; storing them as-is here means
+# the formula in _build_control_plane_rows divides by 1_000_000 (NOT 1_000).
+# A previous version divided by 1000 and overstated cost by 1000× — the
+# unit tests below the constants and the docs pin this now.
+# Fallback to Claude Sonnet pricing for unknown models — best-effort.
 BEDROCK_PRICING = {
     "us.anthropic.claude-opus": {"in": 15.0, "out": 75.0},
     "us.anthropic.claude-sonnet": {"in": 3.0, "out": 15.0},
@@ -70,6 +74,8 @@ BEDROCK_PRICING = {
     "amazon.nova-micro": {"in": 0.035, "out": 0.14},
 }
 DEFAULT_BEDROCK_PRICE = {"in": 3.0, "out": 15.0}
+# Divisor for the token-count × price math. Prices above are per million.
+BEDROCK_TOKENS_PER_UNIT = 1_000_000
 
 athena_client = boto3.client("athena")
 cloudwatch_client = boto3.client("cloudwatch")
@@ -149,6 +155,9 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         "target_date": target_date,
         "target_hour": target_hour,
         "metering_hourly": _rollup_metering_hourly(target_date, target_hour),
+        "metering_docs_hourly": _rollup_metering_docs_hourly(
+            target_date, target_hour
+        ),
         "control_plane_hourly": _rollup_control_plane_hourly(target_date, target_hour),
     }
     logger.info(f"Hourly rollup complete: {results}")
@@ -156,13 +165,15 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 
 
 def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
-    """Write ``metering_hourly`` for the given hour if not already written.
+    """Write ``metering_hourly`` (cost per service/unit) for the given hour
+    if not already written.
 
-    Rollup dimensions: ``(hour_ts, document_class, config_version,
-    service_api)``. Note that ``metering`` today has no ``document_class``
-    column — Phase 1 uses ``config_version`` and ``service_api`` as the
-    grouping dimensions, and adds ``document_class`` in a follow-up when
-    the classification service starts emitting it into metering rows.
+    Rollup dimensions: ``(hour_ts, config_version, service_api, unit)``.
+    Cost-only columns: sum_value, sum_cost. Document-level metrics
+    (n_docs, sum_pages) live in a separate table ``metering_docs_hourly``
+    because pages and unique-doc counts fan out across (service_api, unit)
+    — including them here would produce a 6× overcount for a doc with 6
+    service rows.
     """
     if _partition_already_written(
         table="metering_hourly", date=target_date, hour=target_hour
@@ -174,10 +185,6 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         return {"skipped": True, "reason": "partition_exists"}
 
     # nosec B608 — target_date/target_hour are derived from datetime, not user input.
-    # `n_doc_events` (not `n_docs`) — a doc reprocessed lands multiple
-    # metering rows, and COUNT(DISTINCT document_id) at hour grain
-    # de-dupes only within the hour. Consumers who need cross-hour
-    # unique-doc counts should query raw metering.
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_hourly"
         SELECT
@@ -185,15 +192,67 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
             config_version,
             service_api,
             unit,
-            COUNT(DISTINCT document_id) AS n_doc_events,
             SUM(value) AS sum_value,
             SUM(estimated_cost) AS sum_cost,
-            SUM(number_of_pages) AS sum_pages,
             '{target_date}' AS date,
             '{target_hour}' AS hour
         FROM "{DATABASE}"."metering"
         WHERE date = '{target_date}' AND hour = '{target_hour}'
         GROUP BY 1, 2, 3, 4
+    """  # nosec B608
+    query_id = _run_athena(sql)
+    return {"query_execution_id": query_id, "skipped": False}
+
+
+def _rollup_metering_docs_hourly(
+    target_date: str, target_hour: str
+) -> Dict[str, Any]:
+    """Write ``metering_docs_hourly`` (doc-grain volume + pages) for the
+    given hour if not already written.
+
+    Grain: ``(hour_ts, config_version)`` — one row per config_version per
+    hour, NOT per service_api. ``number_of_pages`` is a document-level
+    value stamped identically on every metering row for that doc, so
+    grouping by service_api would fan out the page count by the number
+    of (service_api, unit) combinations a doc touched.
+
+    SQL: outer aggregate over a doc-grain subquery that MAX()-collapses
+    the per-doc fan-out first.
+    """
+    if _partition_already_written(
+        table="metering_docs_hourly", date=target_date, hour=target_hour
+    ):
+        logger.info(
+            f"metering_docs_hourly partition date={target_date} "
+            f"hour={target_hour} already exists — skipping (idempotent)"
+        )
+        return {"skipped": True, "reason": "partition_exists"}
+
+    # nosec B608 — target_date/target_hour are derived from datetime, not user input.
+    # Inner subquery: one row per (hour_ts, config_version, document_id)
+    # with MAX(number_of_pages) — pages is stamped identically across
+    # every metering row for a doc, so MAX is the doc's page count.
+    # Outer aggregate: COUNT(*) of docs, SUM of the MAX-per-doc pages.
+    sql = f"""
+        INSERT INTO "{DATABASE}"."metering_docs_hourly"
+        SELECT
+            hour_ts,
+            config_version,
+            COUNT(*) AS n_docs,
+            SUM(max_pages) AS sum_pages,
+            '{target_date}' AS date,
+            '{target_hour}' AS hour
+        FROM (
+            SELECT
+                date_trunc('hour', "timestamp") AS hour_ts,
+                config_version,
+                document_id,
+                MAX(number_of_pages) AS max_pages
+            FROM "{DATABASE}"."metering"
+            WHERE date = '{target_date}' AND hour = '{target_hour}'
+            GROUP BY 1, 2, 3
+        )
+        GROUP BY 1, 2
     """  # nosec B608
     query_id = _run_athena(sql)
     return {"query_execution_id": query_id, "skipped": False}
@@ -234,7 +293,6 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
         component = _component_for_function(function_name)
         metrics = _get_cw_metrics_for_function(
             function_name=function_name,
-            component=component,
             hour_start=hour_start,
             hour_end=hour_end,
         )
@@ -262,7 +320,9 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
 
 
 def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
-    """Rollup the previous fully-sealed UTC day relative to ``anchor``.
+    """Rollup the previous fully-sealed UTC day relative to ``anchor``
+    — writes both ``metering_daily`` (cost) and ``metering_docs_daily``
+    (doc-grain volume/pages).
 
     Before writing, verify that every hour present in raw metering is
     also present in ``metering_hourly`` for the target date (see
@@ -274,43 +334,75 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     """
     target_date = _previous_day(anchor)
     logger.info(f"Daily rollup targeting date={target_date}")
+
+    result: Dict[str, Any] = {"mode": "daily", "target_date": target_date}
+
+    _require_hourly_matches_raw_metering(target_date)
+
+    # --- metering_daily (cost per service/unit) ---
     if _partition_already_written(table="metering_daily", date=target_date):
         logger.info(
             f"metering_daily partition date={target_date} already exists — "
             f"skipping (idempotent)"
         )
-        return {"mode": "daily", "target_date": target_date, "skipped": True}
+        result["metering_daily"] = {"skipped": True}
+    else:
+        # nosec B608 — target_date is derived from datetime, not user input.
+        sql = f"""
+            INSERT INTO "{DATABASE}"."metering_daily"
+            SELECT
+                date '{target_date}' AS day,
+                config_version,
+                service_api,
+                unit,
+                SUM(sum_value) AS sum_value,
+                SUM(sum_cost) AS sum_cost,
+                '{target_date}' AS date
+            FROM "{DATABASE}"."metering_hourly"
+            WHERE date = '{target_date}'
+            GROUP BY 1, 2, 3, 4
+        """  # nosec B608
+        result["metering_daily"] = {
+            "query_execution_id": _run_athena(sql),
+            "skipped": False,
+        }
 
-    _require_hourly_matches_raw_metering(target_date)
+    # --- metering_docs_daily (doc-grain volume/pages) ---
+    if _partition_already_written(table="metering_docs_daily", date=target_date):
+        logger.info(
+            f"metering_docs_daily partition date={target_date} already exists — "
+            f"skipping (idempotent)"
+        )
+        result["metering_docs_daily"] = {"skipped": True}
+    else:
+        # Sums the hourly doc-grain rollups. A doc reprocessed across
+        # multiple hours is counted once per hour (a "doc-hour"), same
+        # for its pages. For strict cross-day unique-doc counts, query
+        # raw metering with COUNT(DISTINCT document_id). See §2 in the doc.
+        # nosec B608 — target_date is derived from datetime, not user input.
+        sql = f"""
+            INSERT INTO "{DATABASE}"."metering_docs_daily"
+            SELECT
+                date '{target_date}' AS day,
+                config_version,
+                SUM(n_docs) AS n_docs,
+                SUM(sum_pages) AS sum_pages,
+                '{target_date}' AS date
+            FROM "{DATABASE}"."metering_docs_hourly"
+            WHERE date = '{target_date}'
+            GROUP BY 1, 2
+        """  # nosec B608
+        result["metering_docs_daily"] = {
+            "query_execution_id": _run_athena(sql),
+            "skipped": False,
+        }
 
-    # nosec B608 — target_date is derived from datetime, not user input.
-    # `n_doc_events` (not `n_docs`) — a doc reprocessed in a different hour
-    # is counted once per hour, so summing across hours may exceed unique
-    # doc count. Consumers who need unique-doc counts should query raw
-    # `metering` with COUNT(DISTINCT document_id) — see §2 in the doc.
-    sql = f"""
-        INSERT INTO "{DATABASE}"."metering_daily"
-        SELECT
-            date '{target_date}' AS day,
-            config_version,
-            service_api,
-            unit,
-            SUM(n_doc_events) AS n_doc_events,
-            SUM(sum_value) AS sum_value,
-            SUM(sum_cost) AS sum_cost,
-            SUM(sum_pages) AS sum_pages,
-            '{target_date}' AS date
-        FROM "{DATABASE}"."metering_hourly"
-        WHERE date = '{target_date}'
-        GROUP BY 1, 2, 3, 4
-    """  # nosec B608
-    query_id = _run_athena(sql)
-    return {
-        "mode": "daily",
-        "target_date": target_date,
-        "query_execution_id": query_id,
-        "skipped": False,
-    }
+    # Legacy top-level keys for backward-compat with the existing test
+    # + operator invocation shape (skipped/query_execution_id flags).
+    result["skipped"] = bool(result["metering_daily"].get("skipped"))
+    if "query_execution_id" in result["metering_daily"]:
+        result["query_execution_id"] = result["metering_daily"]["query_execution_id"]
+    return result
 
 
 def _require_hourly_matches_raw_metering(target_date: str) -> None:
@@ -403,6 +495,12 @@ def _discover_control_plane_lambdas() -> List[str]:
         "summarization",
         "evaluation",
         "workflowtracker",
+        # BDA + Rule Validation + result-stitcher — all per-doc, all should
+        # carry idp:plane=data. Missing here previously meant a rename to
+        # e.g. RuleValidationFunctionV2 wouldn't have been surfaced.
+        "rulevalidation",
+        "bda",
+        "processresults",
     ]
     for arn in control_plane:
         function_name = arn.rsplit(":", 1)[-1].lower()
@@ -476,7 +574,6 @@ def _get_resources_by_tag(tags: Dict[str, List[str]]) -> List[str]:
 
 def _get_cw_metrics_for_function(
     function_name: str,
-    component: str,
     hour_start: datetime,
     hour_end: datetime,
 ) -> Dict[str, Any]:
@@ -530,12 +627,18 @@ def _get_cw_metrics_for_function(
                 "Metric": {
                     "Namespace": "IDPControlPlane",
                     "MetricName": "AthenaBytesScanned",
-                    # FunctionName dim is what makes per-Lambda attribution
-                    # correct — without it, a Component-only query returns
-                    # the same aggregate to every Lambda in the component
-                    # and we'd multiply cost by the Lambda count.
+                    # Query by FunctionName ONLY (not Component). The
+                    # helper emits with both dims, but relying on Component
+                    # here would cause silent drops when the emitter's
+                    # hardcoded component label differs from the rollup's
+                    # derived label (e.g. ChatStreamProcessorFunction
+                    # vendors the analytics agent → emitted as
+                    # analytics-agent, but _COMPONENT_RULES maps
+                    # chatstream → doc-chat). FunctionName is unique per
+                    # Lambda, so it's sufficient for attribution — the
+                    # rollup already derives the component label locally
+                    # from function_name for the output row.
                     "Dimensions": [
-                        {"Name": "Component", "Value": component},
                         {"Name": "FunctionName", "Value": function_name},
                     ],
                 },
@@ -555,29 +658,28 @@ def _get_cw_metrics_for_function(
         "invocations": flat.get("invocations", 0.0),
         "athena_bytes": flat.get("athena_bytes", 0.0),
         "bedrock_by_model": _get_bedrock_tokens_by_model(
-            component, function_name, hour_start, hour_end
+            function_name, hour_start, hour_end
         ),
     }
 
 
 def _get_bedrock_tokens_by_model(
-    component: str,
     function_name: str,
     hour_start: datetime,
     hour_end: datetime,
 ) -> Dict[str, Dict[str, float]]:
-    """List Bedrock token metrics for this (component, function) pair
-    and return ``{model_id: {"in": tokens, "out": tokens}}``.
+    """List Bedrock token metrics for this function and return
+    ``{model_id: {"in": tokens, "out": tokens}}``.
 
-    The emitter (``emit_control_plane_cost_metric``) writes metrics with
-    dims ``[Component, FunctionName, Model]`` — the ``FunctionName`` dim
-    is what makes this per-function attribution correct. Without it, a
-    component-only query returns the SAME aggregate for every Lambda in
-    the component and we'd over-count by the Lambda count.
+    Scopes on ``FunctionName`` alone (not ``Component``) because the
+    emitter's hardcoded component label can drift from the rollup's
+    derived label — see the comment on the athena_bytes query above.
+    ``FunctionName`` is unique per Lambda so it's sufficient for
+    attribution.
 
     GetMetricData needs an exact dimension set, so we ListMetrics first
     to discover the Model values emitted by THIS function, then query
-    one aggregate per (Component, FunctionName, Model). See §10.5 in
+    one aggregate per (FunctionName, Model). See §10.5 in
     docs/reporting-sql-layer.md.
     """
     models: List[str] = []
@@ -585,11 +687,13 @@ def _get_bedrock_tokens_by_model(
     for metric_name in ("BedrockInputTokens", "BedrockOutputTokens"):
         next_token: Optional[str] = None
         while True:
+            # Discover Model values emitted by THIS function only.
+            # See the Component-drop comment above the athena_bytes
+            # query for why we scope on FunctionName alone.
             kwargs: Dict[str, Any] = {
                 "Namespace": "IDPControlPlane",
                 "MetricName": metric_name,
                 "Dimensions": [
-                    {"Name": "Component", "Value": component},
                     {"Name": "FunctionName", "Value": function_name},
                 ],
             }
@@ -625,8 +729,10 @@ def _get_bedrock_tokens_by_model(
                         "Metric": {
                             "Namespace": "IDPControlPlane",
                             "MetricName": metric_name,
+                            # FunctionName + Model only — same rationale as
+                            # the athena_bytes query above (drop Component
+                            # to avoid label-mismatch drops).
                             "Dimensions": [
-                                {"Name": "Component", "Value": component},
                                 {"Name": "FunctionName", "Value": function_name},
                                 {"Name": "Model", "Value": model},
                             ],
@@ -737,8 +843,12 @@ def _build_control_plane_rows(
     # Common (Lambda + Athena) fields shared across per-model rows.
     def _row(model: Optional[str], tokens_in: int, tokens_out: int) -> Dict[str, Any]:
         price = _bedrock_price_for_model(model)
+        # BEDROCK_PRICING values are per MILLION tokens (AWS's published
+        # unit), not per thousand. Dividing by 1_000_000 gives the correct
+        # cost — an earlier version divided by 1000 and overstated 1000×.
         est_bedrock_cost = (
-            tokens_in * price["in"] / 1000.0 + tokens_out * price["out"] / 1000.0
+            tokens_in * price["in"] / BEDROCK_TOKENS_PER_UNIT
+            + tokens_out * price["out"] / BEDROCK_TOKENS_PER_UNIT
         )
         return {
             "hour_ts": hour_ts,
@@ -786,8 +896,12 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     # Monitor (marketplace) dashboard resolver + AI-summary agent.
     (re.compile(r"monitoringmetrics|dashboardresolver"), "monitor-dashboard"),
     (re.compile(r"monitor.*agent"), "monitor-agent"),
-    # Rollup Lambda itself — matched before generic 'rollup' catch-alls
-    # so a future 'rollup-*' Lambda doesn't get grabbed.
+    # Rollup Lambda itself. Note: this rule DOES also match any future
+    # Lambda whose logical ID contains "rollup" — intentional, because
+    # any future rollup Lambda is by definition still control-plane
+    # scheduled aggregation. If a genuinely-different `rollup-*` Lambda
+    # gets added (e.g. a per-doc pipeline stage that happens to be
+    # named `rollup_scores`), add a more-specific rule ABOVE this one.
     (re.compile(r"datamartrollup|rollup"), "rollup-lambda"),
     # Test infrastructure — all matched here so 'testresults' / 'testrunner'
     # don't fall through to 'test-set-mgmt' via the 'testset' rule.
@@ -875,6 +989,13 @@ def _partition_already_written(
 ) -> bool:
     """Cheap idempotency check — does the target partition already have
     at least one row?
+
+    Narrow fail-open policy: ONLY treats "table does not exist" as
+    not-yet-written (the first-invocation-after-deploy case). Any other
+    error — throttle, permission blip, malformed response — RE-RAISES.
+    Fail-open on transient errors lets an INSERT run against an
+    already-populated partition and permanently double-counts cost;
+    re-raising lets the caller's DLQ + async retry recover.
     """
     where = f"date = '{date}'"
     if hour is not None:
@@ -884,14 +1005,34 @@ def _partition_already_written(
         rows = _run_athena_query_with_results(sql)
         return bool(rows)
     except Exception as e:
-        # If the query fails (e.g., table doesn't exist yet on first
-        # invocation after deploy), treat as "not written" and let the
-        # INSERT proceed. First INSERT to a table on Athena creates
-        # partitions on demand.
-        logger.info(
-            f"Idempotency check failed for {table} — assuming not written. ({e})"
+        # Only "table does not exist" is safe to swallow — Athena reports
+        # this as TABLE_NOT_FOUND, EntityNotFoundException, or (from Glue)
+        # "does not exist" in the message. First INSERT to a table on
+        # Athena creates partitions on demand, so treating this as
+        # not-written is correct on the first-invocation-after-deploy path.
+        msg = str(e).lower()
+        table_missing_markers = (
+            "table_not_found",
+            "entitynotfoundexception",
+            "does not exist",
+            "table not found",
         )
-        return False
+        if any(m in msg for m in table_missing_markers):
+            logger.info(
+                f"Idempotency check for {table}: table does not exist yet — "
+                f"assuming not written. ({e})"
+            )
+            return False
+        # Anything else — throttle, timeout, permission blip — must NOT be
+        # papered over. Re-raise so async retry + DLQ can recover; a
+        # fail-open here would let an INSERT run against a populated
+        # partition and permanently double-count.
+        logger.warning(
+            f"Idempotency check for {table} failed with a non-table-missing "
+            f"error; re-raising so the rollup aborts and Lambda's async retry "
+            f"can replay: {e}"
+        )
+        raise
 
 
 def _run_athena(sql: str) -> str:
@@ -925,6 +1066,12 @@ def _run_athena_query_with_results(sql: str) -> List[List[str]]:
 def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
     """Poll get_query_execution until the query terminates.
 
+    On success, emit the query's ``DataScannedInBytes`` under
+    component=``rollup-lambda`` so the rollup's own INSERT-INTO cost
+    shows up in ``control_plane_hourly``. The rollup is likely the
+    single largest control-plane Athena consumer — leaving it out
+    would understate its own cost line to zero.
+
     On timeout, call StopQueryExecution before raising — otherwise an
     orphaned Athena query keeps scanning (and billing) after we've
     given up on it, and a retry starts a fresh one on top.
@@ -934,6 +1081,7 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
         response = athena_client.get_query_execution(QueryExecutionId=query_id)
         state = response["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
+            _emit_self_athena_cost(response)
             return
         if state in ("FAILED", "CANCELLED"):
             reason = response["QueryExecution"]["Status"].get(
@@ -956,6 +1104,28 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
                 f"Athena query {query_id} did not complete in {timeout_sec}s"
             )
         time.sleep(1)
+
+
+def _emit_self_athena_cost(query_execution_response: Dict[str, Any]) -> None:
+    """Emit AthenaBytesScanned for the rollup Lambda's own query, so its
+    Athena spend shows up under component=``rollup-lambda`` in
+    ``control_plane_hourly``. Fire-and-forget — never blocks the rollup.
+    """
+    try:
+        from idp_common.metrics import emit_control_plane_cost_metric
+
+        bytes_scanned = (
+            query_execution_response.get("QueryExecution", {})
+            .get("Statistics", {})
+            .get("DataScannedInBytes")
+        )
+        if bytes_scanned is not None:
+            emit_control_plane_cost_metric(
+                component="rollup-lambda",
+                athena_bytes=int(bytes_scanned),
+            )
+    except Exception:  # nosec — cost telemetry must not affect the rollup
+        pass
 
 
 def _s3_object_exists(key: str) -> bool:
