@@ -989,7 +989,9 @@ def test_seller_side_modes_both_report_simulated(
     )
 
 
-@pytest.mark.parametrize("mode", ["auto", "simulator", "marketplace", "marketplace-live"])
+@pytest.mark.parametrize(
+    "mode", ["auto", "simulator", "marketplace", "marketplace-live"]
+)
 def test_oss_reports_oss_in_every_mode(monkeypatch, mock_stack, load_lambda, mode):
     """Being open-source is a property of the extension, not the deployment.
 
@@ -1038,7 +1040,9 @@ def test_unknown_catalog_entry_is_not_treated_as_oss(
         configuration_bucket=bucket,
     )
     result = mod.handler(
-        make_appsync_event("checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}),
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
         None,
     )
     assert result["source"] != "oss", (
