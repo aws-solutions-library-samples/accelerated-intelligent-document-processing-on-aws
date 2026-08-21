@@ -75,6 +75,18 @@ export interface InstalledFeature {
   installedBy: string | null;
 }
 
+/**
+ * Which authority must confirm an extension's subscription. Declared per
+ * extension — in the host catalog and in the extension's own template — so one
+ * stack can confirm a listed product against real AWS Marketplace while checking
+ * in-development extensions against a simulator.
+ *
+ * Same three words as the `source` vocabulary, deliberately, so the host and the
+ * extension speak one language. Note `none` here means "check nothing", which is
+ * not what the `none` *source* means ("no product code registered").
+ */
+export type FeatureLicenseMode = 'none' | 'simulated' | 'marketplace-live';
+
 export interface FeatureEntitlement {
   featureId: string;
   state: FeatureEntitlementState;
@@ -92,6 +104,22 @@ export interface FeatureEntitlement {
    * - `oss` / `none` — open-source feature, or no product code registered
    */
   source: 'marketplace-live' | 'simulated' | 'advisory' | 'auto' | 'oss' | 'none';
+  /**
+   * Which AUTHORITY the host checked this extension against — per-extension, not
+   * per-stack. `source` says what the answer was and whether it can be trusted;
+   * this says who was asked.
+   */
+  licenseMode?: FeatureLicenseMode | null;
+  /** What the installed extension declares it enforces. Null before install. */
+  declaredLicenseMode?: FeatureLicenseMode | null;
+  /** What the host catalog declares it should check. */
+  catalogLicenseMode?: FeatureLicenseMode | null;
+  /**
+   * The two disagree. The host uses the extension's value and explains rather
+   * than blocking — a second gate that can disagree with the extension's own is
+   * the original problem in mirror image.
+   */
+  licenseModeMismatch?: boolean | null;
   /**
    * URL the UI must redirect the admin to (new tab) in order to accept
    * pricing, EULA, and the AWS Customer Agreement. Populated only by the

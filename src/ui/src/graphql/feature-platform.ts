@@ -62,6 +62,10 @@ export const CHECK_FEATURE_ENTITLEMENT = /* GraphQL */ `
       customerIdentifier
       productCode
       source
+      licenseMode
+      declaredLicenseMode
+      catalogLicenseMode
+      licenseModeMismatch
     }
   }
 `;

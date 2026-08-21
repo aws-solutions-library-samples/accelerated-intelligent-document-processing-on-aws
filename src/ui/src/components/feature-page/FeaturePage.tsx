@@ -21,7 +21,7 @@ import { awsRegion } from '../../aws-exports';
 import FeatureLoader from './FeatureLoader';
 import FeatureCatalogBrowser from './FeatureCatalogBrowser';
 import { resolveFeatureDocsUrl } from './feature-docs-url';
-import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
+import { isUnverifiedGrant, isVerifiedEntitlement, licenseModeMismatchNote, unverifiedReason } from './entitlement-source';
 import {
   ActiveSubscriptionBanner,
   AwaitingAdminInstall,
@@ -219,12 +219,23 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
         docsUrl={docsUrl}
         marketplaceUrl={marketplaceUrl}
         canSubscribe={isAdmin}
+        licenseMode={entitlement?.licenseMode}
         onSubscribe={isAdmin ? handleSubscribe : undefined}
         subscribing={subscribing}
         subscribeError={subscribeError?.message ?? null}
       />
     );
   }
+
+  // Paid extension being served without a confirmed subscription — `auto`
+  // (checks off), `advisory` (check unreachable) or `simulated` (aimed at a
+  // simulator). Only for marketplace features: an OSS extension has no
+  // subscription to verify, so warning about it would be noise.
+  //
+  // Computed here rather than in the installed-only block below because the
+  // not-yet-installed screens make the same claim ("Your subscription is
+  // active") and were making it just as wrongly.
+  const unverifiedGrant = !isOss && isUnverifiedGrant(state, entitlement?.source);
 
   // --- ACTIVE + not installed ---------------------------------------------
   if (state === 'ACTIVE' && !installed) {
@@ -234,12 +245,13 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
         description={featureDescription}
         docsUrl={docsUrl}
         isOss={isOss}
+        unverified={unverifiedGrant}
         loading={launchLoading}
         onInstall={handleInstall}
         errorMessage={launchError?.message ?? null}
       />
     ) : (
-      <AwaitingAdminInstall featureDisplayName={featureDisplayName} docsUrl={docsUrl} isOss={isOss} />
+      <AwaitingAdminInstall featureDisplayName={featureDisplayName} docsUrl={docsUrl} isOss={isOss} unverified={unverifiedGrant} />
     );
   }
 
@@ -316,36 +328,52 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
   // to "update" backwards.
   const hasUpdate = installed.updateAvailable && !!installed.latestVersion;
 
-  // Paid extension being served without a confirmed subscription. Only for
-  // marketplace features — an OSS extension has no subscription to verify, so
-  // warning about it would be noise.
-  const showUnverifiedWarning = !isOss && isUnverifiedGrant(state, entitlementSource);
-
   return (
     <SpaceBetween size="l">
-      {showUnverifiedWarning && (
-        <UnverifiedSubscriptionBanner
-          featureDisplayName={featureDisplayName}
-          reason={unverifiedReason(entitlementSource)}
-          marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
-        />
-      )}
-      {/* Only a real (or simulated) Marketplace subscription gets a subscription
-          banner. Excluded:
+      {/* EXACTLY ONE subscription banner. These two used to render together, so
+          an advisory grant produced a yellow "Subscription not verified"
+          immediately above a green "Subscription active · Source: advisory" —
+          the page contradicting itself, and making the extension's own honest
+          "no subscription found" panel look like a third opinion.
+
+          Unverified wins, because it is the true statement of the pair, and it
+          carries the Cancel action so the simulator dev loop keeps its off
+          switch. `ActiveSubscriptionBanner` now renders only when the
+          subscription really was confirmed. Excluded from both:
             - `oss` — an open-source extension has no subscription at all;
               check_feature_entitlement short-circuits it to ACTIVE. Showing
               "Subscription active / Source: oss" with a Cancel button offered
               admins an action that cannot work.
-            - `auto` — checks are switched off, so there is no contract to cancel.
-          Mirrors the !isOss guard on the unverified warning above. */}
-      {entitlement && !isOss && entitlement.source !== 'auto' && (
-        <ActiveSubscriptionBanner
-          entitlement={entitlement}
+            - `auto` — checks are switched off, so there is no contract to cancel
+              (and `auto` is an unverified source, so it lands on the banner
+              above). */}
+      {unverifiedGrant ? (
+        <UnverifiedSubscriptionBanner
+          featureDisplayName={featureDisplayName}
+          source={entitlementSource}
+          reason={unverifiedReason(entitlementSource)}
+          // Appended to the existing banner rather than added as another one —
+          // the contradictory-banner stack is what the previous change removed.
+          mismatchNote={licenseModeMismatchNote(entitlement)}
+          marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
           canCancel={canCancelSubscription}
           onCancel={canCancelSubscription ? handleCancel : undefined}
           cancelling={cancelling}
           cancelError={cancelError?.message ?? null}
         />
+      ) : (
+        entitlement &&
+        !isOss &&
+        entitlement.source !== 'auto' && (
+          <ActiveSubscriptionBanner
+            entitlement={entitlement}
+            mismatchNote={licenseModeMismatchNote(entitlement)}
+            canCancel={canCancelSubscription}
+            onCancel={canCancelSubscription ? handleCancel : undefined}
+            cancelling={cancelling}
+            cancelError={cancelError?.message ?? null}
+          />
+        )
       )}
       {hasUpdate ? (
         <UpdateAvailableBanner
@@ -356,11 +384,8 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
           loading={launchLoading}
         />
       ) : (
-        // Pass the real source and let UpToDateBanner decide which ones are worth
-        // naming (it suppresses `oss` and `auto`). This used to pass 'auto' for OSS
-        // as a "don't annotate" sentinel and fall back to 'marketplace' — a value
-        // that is no longer a valid entitlement source at all.
-        <UpToDateBanner version={installed.installedVersion} source={entitlement?.source ?? 'oss'} />
+        // Version only — the subscription is stated once, by the banner above.
+        <UpToDateBanner version={installed.installedVersion} />
       )}
       <LearnMore docsUrl={docsUrl} />
       {featureContent}

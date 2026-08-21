@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
+import { isUnverifiedGrant, isVerifiedEntitlement, licenseModeMismatchNote, unverifiedReason } from './entitlement-source';
+import type { FeatureEntitlement } from '../../types/feature-platform';
 
 describe('isVerifiedEntitlement', () => {
   it('is true only for ACTIVE from the real buyer-side check', () => {
@@ -91,5 +92,52 @@ describe('unverifiedReason', () => {
   it('falls back to a generic explanation', () => {
     expect(unverifiedReason('none')).toBeTruthy();
     expect(unverifiedReason(undefined)).toBeTruthy();
+  });
+});
+
+describe('licenseModeMismatchNote', () => {
+  const ent = (over: Partial<FeatureEntitlement> = {}): FeatureEntitlement => ({
+    featureId: 'idp-auto-optimizer',
+    state: 'ACTIVE',
+    expiresAt: null,
+    customerIdentifier: null,
+    productCode: 'p',
+    source: 'marketplace-live',
+    ...over,
+  });
+
+  it('is null when there is no mismatch', () => {
+    expect(licenseModeMismatchNote(ent())).toBeNull();
+    expect(licenseModeMismatchNote(ent({ licenseModeMismatch: false }))).toBeNull();
+    expect(licenseModeMismatchNote(null)).toBeNull();
+    expect(licenseModeMismatchNote(undefined)).toBeNull();
+  });
+
+  it('names the reported case specifically — catalog simulated, extension live', () => {
+    // The dangerous direction: the page would otherwise show a simulator-backed
+    // subscription that the extension is going to ignore.
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'marketplace-live', catalogLicenseMode: 'simulated' }),
+    );
+    expect(note).toMatch(/real AWS Marketplace subscription/i);
+    expect(note).toMatch(/simulator development/i);
+    expect(note).toMatch(/licenseMode/);
+  });
+
+  it('falls back to a generic note for any other disagreement', () => {
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'simulated', catalogLicenseMode: 'marketplace-live' }),
+    );
+    expect(note).toMatch(/simulated/);
+    expect(note).toMatch(/marketplace-live/);
+  });
+
+  it('says the host follows the EXTENSION, not the catalog', () => {
+    // Aligning the host with the extension is the only way the two gates agree;
+    // the note must not imply the host is about to check the catalog's authority.
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'marketplace-live', catalogLicenseMode: 'simulated' }),
+    );
+    expect(note).toMatch(/checking real AWS Marketplace to match the extension/i);
   });
 });

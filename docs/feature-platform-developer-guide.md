@@ -176,6 +176,11 @@ Two extra fields let you tell the cases apart:
 | `entitlementSource` | How the host reached its verdict — see the table below |
 | `entitlementVerified` | `true` **only** when `entitlementSource` is `marketplace-live` and the state is ACTIVE. That is the only verified source |
 
+The host also returns `licenseMode`, `declaredLicenseMode`, `catalogLicenseMode`
+and `licenseModeMismatch` on `checkFeatureEntitlement`. Those are host-side
+diagnostics rendered by the host's own feature page; they are **not** added to
+`FeatureContext`, so the contract your extension consumes is unchanged.
+
 `entitlementSource` reports **what happened when the host checked**, which is a
 different axis from what kind of extension you are (that's the catalog's
 `oss` / `marketplace`). One extension yields different sources depending on the
@@ -183,9 +188,9 @@ deployment:
 
 | Source | Means | Verified |
 |---|---|---|
-| `marketplace-live` | Real buyer-side `SearchAgreements` answered | ✅ |
+| `marketplace-live` | Real buyer-side `SearchAgreements` answered — **against real AWS**. Reported only when no `AWS_ENDPOINT_URL_MARKETPLACE_*` override is in effect; the host derives this from the endpoint, not from `FeaturePlatformSubscriptionMode`, so no parameter combination can make a simulator answer claim this source | ✅ |
 | `oss` | Not a paid extension — reported in *every* deployment mode | n/a |
-| `simulated` | Seller-side `GetEntitlements` against the bundled simulator or an admin-supplied endpoint. That API returns an empty list from a buyer account, so it proves nothing against real AWS | ✗ |
+| `simulated` | The answer did not come from real AWS Marketplace: either seller-side `GetEntitlements` (which returns an empty list from a buyer account, so it proves nothing), or **any** check made while a Marketplace endpoint override points boto3 at a simulator — including `SubscriptionMode=marketplace-live` | ✗ |
 | `advisory` | The live check was **attempted and failed** (missing `aws-marketplace:SearchAgreements`, or the API is unavailable in the Region) and access was allowed rather than locking out a possibly-paying customer | ✗ |
 | `auto` | Subscription checks are switched **off** stack-wide | ✗ |
 | `none` | No `productCode` registered — state is `NONE`, access denied | ✗ |
@@ -193,6 +198,40 @@ deployment:
 There is no separate source for "pre-release": a `Limited`-visibility Marketplace
 listing is still a real listing and reports `marketplace-live`. `simulated` means a
 simulator, i.e. development.
+
+> **`marketplace-live` cannot be forged by configuration.** The reported source is
+> derived from the endpoint the host's call actually used, not from any parameter.
+> A simulator-backed check reports `simulated`, so `entitlementVerified` stays
+> `false` and your warning still fires. If you match on the union literally, note
+> that this **narrows** what `marketplace-live` means; it adds no new value, so no
+> code change is required.
+
+### Declare which authority YOU enforce against
+
+Set `marketplace.licenseMode` in your `feature.yaml`:
+
+```yaml
+marketplace:
+  productCode: <your product code>
+  listingUrl: https://aws.amazon.com/marketplace/pp/prodview-XYZ
+  licenseMode: marketplace-live   # none | simulated | marketplace-live
+```
+
+It is baked into your template at publish time and forwarded to the host through
+`registerFeature` at install, where it lands on your `InstalledFeatures` row. The
+host **prefers your value over its own catalog entry**, so its check lands on the
+same authority you honour rather than on whatever the stack happens to be pointed
+at — and it surfaces a mismatch when its catalog disagrees, instead of showing a
+simulator-backed "Subscription active" you are going to ignore.
+
+Omitting it means `none`: an extension that says nothing is not claiming to
+enforce anything. That default is the opposite of the host catalog's
+(`marketplace-live`) on purpose — you must never lock a paying customer out, and
+the host must never over-claim verification.
+
+This does not change what you enforce or where. Your own runtime check against
+your seller-side service remains the authoritative gate; `licenseMode` only tells
+the host which authority to agree with.
 
 Use `entitlementVerified` to decide whether to **warn**; never to decide whether
 to **serve**.
@@ -228,10 +267,11 @@ What actually works, in descending order of strength:
    seller-side and handle it commercially.
 
 The host does its part by making unverified access **visible** rather than
-silent: the feature page shows a "Subscription not verified" warning, and the
-`UnverifiedEntitlementGrant` CloudWatch metric (namespace `GENAIDP`, dimensions
-`FeatureId` + `EntitlementSource`) fires whenever a paid extension is served from
-`auto` or `advisory`. Note this is **customer-side observability** — it lands in
+silent: the feature page shows a single "Access allowed without a verified
+subscription · source: `<source>`" warning — and *only* that one, never alongside
+a green "Subscription active" — and the `UnverifiedEntitlementGrant` CloudWatch
+metric (namespace `GENAIDP`, dimensions `FeatureId` + `EntitlementSource`) fires
+whenever a paid extension is served from `auto`, `advisory` or `simulated`. Note this is **customer-side observability** — it lands in
 the customer's CloudWatch, not the seller's — so it helps an admin notice a
 misconfigured or unsubscribed stack. It is not revenue protection.
 
