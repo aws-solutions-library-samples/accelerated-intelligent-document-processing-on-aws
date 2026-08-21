@@ -1,5 +1,5 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: MIT-0
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Sampling uncertainty for a measured per-field accuracy.
@@ -85,7 +85,7 @@ export const accuracyIntervalForField = (metrics: {
 /** "±5.9" — the half-width in percentage points, for the table cell. */
 export const formatMargin = (interval: AccuracyInterval | null): string => (interval ? `±${(interval.margin * 100).toFixed(1)}` : '—');
 
-/** "84.1% – 95.9%" — the authoritative bounds, for the popover. */
+/** "82.6% – 94.5%" — the authoritative bounds, for the popover. */
 export const formatBounds = (interval: AccuracyInterval | null): string =>
   interval ? `${(interval.low * 100).toFixed(1)}% – ${(interval.high * 100).toFixed(1)}%` : '—';
 

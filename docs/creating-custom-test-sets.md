@@ -75,8 +75,8 @@ need fewer documents; fields appearing once per document drive the requirement.
 
 | Documents | Observations per field | 95% margin |
 |---|---|---|
-| 20 | 20 | ±13.6 pts |
-| 100 | 100 | ±5.9 pts |
+| 20 | 20 | ±13.7 pts |
+| 100 | 100 | ±6.0 pts |
 | 300 | 300 | ±3.4 pts |
 | 500 | 500 | ±2.6 pts |
 

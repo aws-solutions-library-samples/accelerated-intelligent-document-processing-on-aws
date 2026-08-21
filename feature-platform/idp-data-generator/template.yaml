@@ -727,14 +727,24 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref BootstrapTrackingTable
         - Statement:
+            # UpdateItem (and only UpdateItem — no delete, no batch write) so
+            # _reap_dead_jobs can fail a job whose runtime stopped heartbeating.
+            # Without this the reaper's broad except swallows AccessDenied and the
+            # job stays IN_PROGRESS forever.
+            - Effect: Allow
+              Action: [dynamodb:UpdateItem]
+              Resource: !GetAtt BootstrapTrackingTable.Arn
             - Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:Scan]
               Resource:
                 - !Sub
                   - "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}"
                   - T: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationTableName' }
+            # UpdateItem on the host table: _release_host_test_set clears a reaped
+            # job's test-set record off GENERATING (conditional on GENERATING), which
+            # is what actually stops the spinner in Test Studio.
             - Effect: Allow
-              Action: [dynamodb:GetItem]
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]
               Resource:
                 - !Sub
                   - "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}"

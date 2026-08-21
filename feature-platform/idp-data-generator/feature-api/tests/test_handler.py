@@ -230,3 +230,76 @@ class TestReapDeadJobs:
         mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
 
         assert table.get_item(Key={"jobId": "j1"})["Item"]["status"] == "IN_PROGRESS"
+
+
+class TestWritePathsAreGranted:
+    """Every DynamoDB write this handler makes must have an IAM grant in the template.
+
+    Source-level, and deliberately so. The reap path shipped review-clean once with no
+    write grant at all: moto does not enforce IAM, both writes are wrapped in a broad
+    except, and an AccessDeniedException logged at info reads exactly like routine
+    cleanup noise. So the behavioural tests above all passed against code that could
+    never write in a real account. Nothing but reading the template catches that, and
+    the same shape recurs every time a write is added to a function whose Policies
+    block is somewhere else in a 900-line file.
+    """
+
+    # dynamodb call -> the IAM action it needs, and the SAM policy templates that imply it
+    _WRITE_ACTIONS = {
+        "update_item": (
+            "dynamodb:UpdateItem",
+            ("DynamoDBCrudPolicy", "DynamoDBWritePolicy"),
+        ),
+        "put_item": ("dynamodb:PutItem", ("DynamoDBCrudPolicy", "DynamoDBWritePolicy")),
+        "delete_item": ("dynamodb:DeleteItem", ("DynamoDBCrudPolicy",)),
+    }
+
+    @staticmethod
+    def _api_function_policies() -> str:
+        """The FeatureApiFunction Policies block, as raw text.
+
+        Not parsed YAML: the block is full of short-form intrinsics (!Sub, !GetAtt,
+        !Ref) that a plain safe_load rejects, and a substring check is enough to
+        answer "is this action granted anywhere for this function".
+        """
+        template = (_HANDLER_DIR.parent / "template.yaml").read_text(encoding="utf-8")
+        start = template.index("  FeatureApiFunction:")
+        policies = template.index("      Policies:", start)
+        end = template.index("      Events:", policies)
+        return template[policies:end]
+
+    def test_every_write_call_has_a_matching_grant(self):
+        handler_src = (_HANDLER_DIR / "handler.py").read_text(encoding="utf-8")
+        policies = self._api_function_policies()
+
+        for call, (action, templates) in self._WRITE_ACTIONS.items():
+            if f".{call}(" not in handler_src:
+                continue
+            granted = action in policies or any(t in policies for t in templates)
+            assert granted, (
+                f"handler.py calls {call}() but FeatureApiFunction's Policies grant "
+                f"neither {action} nor {' / '.join(templates)}. The write will be "
+                f"denied at runtime and the broad except will hide it."
+            )
+
+    def test_the_host_table_grant_covers_the_release_write(self):
+        """The host grant is a hand-written Statement, so it is the easiest to miss.
+
+        _release_host_test_set writes the *host* table, which no policy template covers
+        (it is an ImportValue from the main stack, not a resource in this template), so
+        the previous test would pass on the bootstrap grant alone.
+        """
+        policies = self._api_function_policies()
+        host_grants = [
+            line
+            for line in policies.splitlines()
+            if "TrackingTableName" in line and "Bootstrap" not in line
+        ]
+        assert host_grants, "no grant references the host TrackingTableName at all"
+
+        host_block = policies[policies.index("TrackingTableName") - 600 :]
+        assert "dynamodb:UpdateItem" in host_block, (
+            "the host TrackingTable grant is read-only, so _release_host_test_set "
+            "cannot clear a reaped job's test set off GENERATING — the spinner then "
+            "waits for the host resolver's much longer window instead."
+        )

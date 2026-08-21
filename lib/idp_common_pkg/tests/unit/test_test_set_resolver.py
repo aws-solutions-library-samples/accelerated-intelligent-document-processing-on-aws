@@ -3902,6 +3902,54 @@ class TestLabelStateReconciliation:
         assert items[0]["labelState"] == "unlabeled"
         assert any("labelState" in w[1] for w in writes)
 
+    def test_a_set_still_being_written_is_not_demoted(self, env):
+        """Mid-copy incomplete coverage is temporary, so acting on it makes a flicker.
+
+        The copier lands input/ keys before the matching baseline/ folders, so a probe
+        during UPDATING sees coverage that is genuinely incomplete *right now* and would
+        demote the set. It self-heals at COMPLETED, which is the problem: the user
+        watching the list sees "Labeled" flip to "Unlabeled" and back for no reason they
+        can act on.
+        """
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "labeled",
+                "fileCount": 2,
+                "status": "UPDATING",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+        assert all("labelState" not in w[1] for w in writes)
+        # And no marker, so the set is genuinely re-probed once the copy settles rather
+        # than being recorded as validated at this fileCount.
+        assert "labelProbedFileCount" not in items[0]
+
+    def test_a_completed_set_is_still_reconciled(self, env):
+        """The in-flux guard must key on status, not disable reconciliation."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "labeled",
+                "fileCount": 2,
+                "status": "COMPLETED",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert any("labelState" in w[1] for w in writes)
+
     def test_a_correct_state_is_not_rewritten(self, env):
         """Probing is not licence to write: an agreeing state costs no update."""
         s3, _table, writes = env

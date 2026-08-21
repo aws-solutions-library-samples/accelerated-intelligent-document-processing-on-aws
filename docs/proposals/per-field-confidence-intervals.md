@@ -17,8 +17,8 @@ Concretely, at a measured 90% accuracy:
 
 | Observations for the field | 95% margin of error |
 |---|---|
-| 20 | ±13.6 pts |
-| 100 | ±5.9 pts |
+| 20 | ±13.7 pts |
+| 100 | ±6.0 pts |
 | 300 | ±3.4 pts |
 | 500 | ±2.6 pts |
 
@@ -36,7 +36,7 @@ Two columns in the Test Results per-field table, and the same two values on the 
 - **`accuracyMarginPct`** — half-width of the 95% interval, in percentage points, plus
   `accuracyLowPct` / `accuracyHighPct` for the bounds.
 
-Rendered as `90.0% ±5.9 (n=100)`, with the interval in the cell popover. Sort remains on
+Rendered as `90.0% ±6.0 (n=100)`, with the interval in the cell popover. Sort remains on
 accuracy; a field whose interval is wider than a configurable threshold gets a subdued
 "low evidence" hint rather than a warning colour — this is a precision statement, not a
 failure.

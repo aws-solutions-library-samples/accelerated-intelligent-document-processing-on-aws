@@ -56,6 +56,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -311,6 +312,23 @@ def _parse_suggestions(text: str) -> list:
 STALE_HEARTBEAT_MINUTES = int(os.environ.get("STALE_HEARTBEAT_MINUTES", "15"))
 
 
+def _log_cleanup_failure(what: str, exc: BaseException) -> None:
+    """Log a failed cleanup write at a level that matches what it means.
+
+    A refused condition is the expected outcome of losing a race — the record moved on
+    without us — so it stays quiet. Anything else is a real fault, and AccessDenied
+    especially: a missing IAM grant is permanent, affects every call, and shipped once
+    already precisely because it hid at info level among condition failures.
+    """
+    code = ""
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "")
+    if code == "ConditionalCheckFailedException":
+        logger.info("%s: the record moved on first", what)
+        return
+    logger.warning("%s: %s", what, exc, exc_info=True)
+
+
 def _release_host_test_set(test_set_id: Optional[str], error: str) -> None:
     """Move a host test-set record off GENERATING after its job was reaped.
 
@@ -333,7 +351,7 @@ def _release_host_test_set(test_set_id: Optional[str], error: str) -> None:
         )
         logger.warning("Released host test set %s after reaping its job", test_set_id)
     except Exception as e:  # noqa: BLE001 — cleanup must not fail the list
-        logger.info("Did not release host test set %s: %s", test_set_id, e)
+        _log_cleanup_failure(f"Did not release host test set {test_set_id}", e)
 
 
 def _reap_dead_jobs(table, jobs):
@@ -396,8 +414,8 @@ def _reap_dead_jobs(table, jobs):
             # heartbeat has already proven the runtime dead — is the difference between
             # 15 minutes and half a day.
             _release_host_test_set(job.get("testSetId"), message)
-        except Exception:  # noqa: BLE001 — reaping must not fail the list
-            logger.warning("Could not reap job %s", job.get("jobId"), exc_info=True)
+        except Exception as e:  # noqa: BLE001 — reaping must not fail the list
+            _log_cleanup_failure(f"Could not reap job {job.get('jobId')}", e)
 
 
 def _handle_list_active_jobs() -> Dict[str, Any]:

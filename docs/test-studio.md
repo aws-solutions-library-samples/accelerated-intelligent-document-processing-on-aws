@@ -1109,8 +1109,8 @@ enough to expose it. At a measured 90% accuracy:
 
 | Observations | 95% margin |
 |---|---|
-| 20 | ±13.6 pts |
-| 100 | ±5.9 pts |
+| 20 | ±13.7 pts |
+| 100 | ±6.0 pts |
 | 300 | ±3.4 pts |
 | 500 | ±2.6 pts |
 
@@ -1143,6 +1143,16 @@ same population. It does not account for:
   documents carry less information than 300 from 300 documents — so the margin reads
   tighter than it should. Compare **Observations** against the run's document count to see
   when this applies.
+- **Fields that never appear in the set.** An observation where the field is absent from
+  both the ground truth and the prediction counts as a correct one (a true negative), so a
+  field no document in your set contains reports **100% accuracy** — correctly, in that
+  the system was right to extract nothing, but it tells you nothing about whether the
+  field would be extracted when present. Optional fields on documents that do not carry
+  them behave this way routinely: in one 5-document generated set, three of 38 fields were
+  legitimately absent from every document. The wide margin flags these (100% on 5
+  observations is ±21.7 points), but before acting on any field at 100%, check whether it
+  actually appears — a field's accuracy is only about extraction if there was something to
+  extract.
 
 Runs aggregated before this was added still show both columns: the values are derived from
 the confusion-matrix counts those runs already stored.

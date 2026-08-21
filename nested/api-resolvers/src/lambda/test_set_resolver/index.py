@@ -3024,10 +3024,20 @@ MAX_LABEL_STATE_PROBES = 25
 
 # And a wall-clock bound, because the count cap does not limit latency: each probe
 # paginates a set's input/ and baseline/ prefixes, so 25 probes over 500-document sets is
-# unbounded time on the query TestSets.tsx polls every 3 seconds. Same idiom as
-# HARVEST_TIME_BUDGET_SECONDS. Sets not reached are picked up by the next call, which is
-# true rather than aspirational because each probe records its result.
+# far more time than belongs on the query TestSets.tsx polls every 3 seconds. Same idiom
+# as HARVEST_TIME_BUDGET_SECONDS. Sets not reached are picked up by the next call, which
+# is true rather than aspirational because each probe records its result.
+#
+# Checked between probes, not inside one, so this bounds how many probes are *started*
+# rather than capping total duration: a single enormous set can overrun it by however
+# long its own pagination takes. The function timeout is the real backstop there. Worth
+# knowing before treating 5 seconds as a latency guarantee.
 LABEL_STATE_PROBE_BUDGET_SECONDS = 5
+
+# Statuses in which a set's S3 contents are still being written, so coverage read from
+# S3 is not evidence about the set's real label state. Used to skip reconciliation
+# rather than act on a half-copied prefix.
+IN_FLUX_TEST_SET_STATUSES = frozenset({"UPDATING", "COPYING", "GENERATING", "QUEUED"})
 
 
 # How long a test set may sit in a non-terminal status before the host gives up on it.
@@ -3160,6 +3170,14 @@ def _reconcile_label_state(items):
             break
         # A labeling job owns this set's labelState; see the docstring.
         if item.get("labelJobId") or item.get("labelJobStatus"):
+            continue
+        # A set whose contents are still being written is not evidence of anything. The
+        # copier lands input/ keys before the matching baseline/ folders, so probing
+        # mid-copy sees real-but-temporary incomplete coverage and demotes a labelled
+        # set. It self-heals — fileCount changes at COMPLETED, which invalidates the
+        # marker and forces a re-probe — but the user watching the list sees the badge
+        # flip and flip back, and the probes spent to get there are wasted.
+        if item.get("status") in IN_FLUX_TEST_SET_STATUSES:
             continue
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
         if not test_set_id:
