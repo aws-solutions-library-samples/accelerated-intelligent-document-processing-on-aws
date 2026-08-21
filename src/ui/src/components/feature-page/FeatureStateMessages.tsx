@@ -4,7 +4,7 @@
 import React from 'react';
 import { Alert, Box, Button, Container, Header, Link, SpaceBetween, Spinner } from '@cloudscape-design/components';
 
-import type { FeatureEntitlement } from '../../types/feature-platform';
+import type { FeatureEntitlement, FeatureLicenseMode } from '../../types/feature-platform';
 
 /** "Learn more" external doc link, rendered when a docsUrl is available. */
 export const LearnMore: React.FC<{ docsUrl?: string | null }> = ({ docsUrl }) =>
@@ -76,49 +76,81 @@ export const SubscriptionRequired: React.FC<{
   marketplaceUrl?: string;
   /** Admin-only: if true, render the in-UI Subscribe button. Non-admins see the marketplace link only. */
   canSubscribe?: boolean;
+  /**
+   * The authority this extension is checked against. When it is
+   * `marketplace-live` the in-UI Subscribe button is suppressed: that button
+   * drives `subscribeFeature`, which on a simulator-configured stack redirects to
+   * the simulator's buyer console — a subscription the extension will ignore,
+   * because it only honours real AWS Marketplace. The listing link below is the
+   * only real path, and a real subscription can only be created there anyway.
+   */
+  licenseMode?: FeatureLicenseMode | null;
   /** Click handler for the in-UI Subscribe button (wired to useSubscribeFeature). */
   onSubscribe?: () => void;
   /** Loading indicator for the Subscribe button. */
   subscribing?: boolean;
   /** Error string from the last subscribe attempt (if any). */
   subscribeError?: string | null;
-}> = ({ featureDisplayName, description, docsUrl, marketplaceUrl, canSubscribe, onSubscribe, subscribing, subscribeError }) => (
-  <Container
-    header={
-      <Header variant="h1" description={description || 'This feature requires an active AWS Marketplace subscription.'}>
-        {featureDisplayName}
-      </Header>
-    }
-  >
-    <SpaceBetween size="l">
-      <Alert type="info" header="Subscription required" statusIconAriaLabel="Info">
-        You don&apos;t have an active subscription for <b>{featureDisplayName}</b> yet. Click <b>Subscribe</b> to open the AWS Marketplace
-        listing in a new tab, where you accept pricing, the seller EULA, and the AWS Customer Agreement. Once the subscription is active, an
-        admin can install the extension into this IDP stack.
-      </Alert>
-      {subscribeError && (
-        <Alert type="error" header="Failed to subscribe">
-          {subscribeError}
+}> = ({
+  featureDisplayName,
+  description,
+  docsUrl,
+  marketplaceUrl,
+  canSubscribe,
+  licenseMode,
+  onSubscribe,
+  subscribing,
+  subscribeError,
+}) => {
+  const offerInUiSubscribe = canSubscribe && !!onSubscribe && licenseMode !== 'marketplace-live';
+  return (
+    <Container
+      header={
+        <Header variant="h1" description={description || 'This feature requires an active AWS Marketplace subscription.'}>
+          {featureDisplayName}
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        <Alert type="info" header="Subscription required" statusIconAriaLabel="Info">
+          You don&apos;t have an active subscription for <b>{featureDisplayName}</b> yet.{' '}
+          {offerInUiSubscribe ? (
+            <>
+              Click <b>Subscribe</b> to open the AWS Marketplace listing in a new tab, where you accept pricing, the seller EULA, and the
+              AWS Customer Agreement.
+            </>
+          ) : (
+            <>
+              Open the AWS Marketplace listing to accept pricing, the seller EULA, and the AWS Customer Agreement. A real AWS Marketplace
+              subscription can only be created there.
+            </>
+          )}{' '}
+          Once the subscription is active, an admin can install the extension into this IDP stack.
         </Alert>
-      )}
-      <Box>
-        <SpaceBetween direction="horizontal" size="s">
-          {canSubscribe && onSubscribe && (
-            <Button variant="primary" iconName="external" loading={subscribing} onClick={onSubscribe}>
-              Subscribe
-            </Button>
-          )}
-          {marketplaceUrl && (
-            <Button variant={canSubscribe && onSubscribe ? 'normal' : 'primary'} iconName="external" href={marketplaceUrl} target="_blank">
-              View on AWS Marketplace
-            </Button>
-          )}
-        </SpaceBetween>
-      </Box>
-      <LearnMore docsUrl={docsUrl} />
-    </SpaceBetween>
-  </Container>
-);
+        {subscribeError && (
+          <Alert type="error" header="Failed to subscribe">
+            {subscribeError}
+          </Alert>
+        )}
+        <Box>
+          <SpaceBetween direction="horizontal" size="s">
+            {offerInUiSubscribe && (
+              <Button variant="primary" iconName="external" loading={subscribing} onClick={onSubscribe}>
+                Subscribe
+              </Button>
+            )}
+            {marketplaceUrl && (
+              <Button variant={offerInUiSubscribe ? 'normal' : 'primary'} iconName="external" href={marketplaceUrl} target="_blank">
+                View on AWS Marketplace
+              </Button>
+            )}
+          </SpaceBetween>
+        </Box>
+        <LearnMore docsUrl={docsUrl} />
+      </SpaceBetween>
+    </Container>
+  );
+};
 
 /** Installable (not yet installed) — admin sees this.
  *
@@ -340,6 +372,8 @@ export const UnverifiedSubscriptionBanner: React.FC<{
   source: FeatureEntitlement['source'];
   /** Why it's unverified — from `unverifiedReason(source)`. */
   reason: string;
+  /** Optional operator note from `licenseModeMismatchNote()`. */
+  mismatchNote?: string | null;
   /** The listing, so an admin can go and subscribe properly. */
   marketplaceUrl?: string;
   /**
@@ -352,12 +386,13 @@ export const UnverifiedSubscriptionBanner: React.FC<{
   onCancel?: () => void;
   cancelling?: boolean;
   cancelError?: string | null;
-}> = ({ featureDisplayName, source, reason, marketplaceUrl, canCancel, onCancel, cancelling, cancelError }) => (
+}> = ({ featureDisplayName, source, reason, mismatchNote, marketplaceUrl, canCancel, onCancel, cancelling, cancelError }) => (
   <Alert type="warning" header={`Access allowed without a verified subscription · source: ${source}`} statusIconAriaLabel="Warning">
     <SpaceBetween size="s">
       <Box variant="span">
         Access to <b>{featureDisplayName}</b> is being allowed without a confirmed AWS Marketplace subscription. {reason}
       </Box>
+      {mismatchNote && <Box variant="span">{mismatchNote}</Box>}
       {(marketplaceUrl || (canCancel && onCancel)) && (
         <Box>
           <SpaceBetween direction="horizontal" size="s">
@@ -385,6 +420,12 @@ export const UnverifiedSubscriptionBanner: React.FC<{
 
 export const ActiveSubscriptionBanner: React.FC<{
   entitlement: FeatureEntitlement;
+  /**
+   * Optional operator note from `licenseModeMismatchNote()`. A stale catalog entry
+   * is worth saying even when the subscription itself verified fine — otherwise
+   * the only place it appears is the resolver's logs.
+   */
+  mismatchNote?: string | null;
   /** Admin-only: if true, render the Cancel Subscription button. */
   canCancel?: boolean;
   /** Click handler wired to useUnsubscribeFeature. */
@@ -393,7 +434,7 @@ export const ActiveSubscriptionBanner: React.FC<{
   cancelling?: boolean;
   /** Error string from the last cancel attempt (if any). */
   cancelError?: string | null;
-}> = ({ entitlement, canCancel, onCancel, cancelling, cancelError }) => {
+}> = ({ entitlement, mismatchNote, canCancel, onCancel, cancelling, cancelError }) => {
   const expires = formatDate(entitlement.expiresAt);
   const source = entitlement.source ?? 'marketplace';
   const header = expires ? `Subscription active · expires ${expires}` : 'Subscription active';
@@ -411,6 +452,7 @@ export const ActiveSubscriptionBanner: React.FC<{
       }
     >
       Source: <b>{source}</b>
+      {mismatchNote && <Box margin={{ top: 's' }}>{mismatchNote}</Box>}
       {cancelError && (
         <Box margin={{ top: 's' }}>
           <Alert type="error" header="Failed to cancel subscription">

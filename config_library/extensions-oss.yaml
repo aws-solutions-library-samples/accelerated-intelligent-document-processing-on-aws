@@ -16,6 +16,11 @@
 # self-registers and shows up once installed (supports "unadvertised"
 # features) — the catalog entry only adds it to the not-yet-installed list.
 #
+# No `licenseMode` field here, unlike extensions-marketplace.yaml: an
+# open-source extension has no AWS Marketplace contract, so there is no authority
+# to check. Absent means `none`, and publish.py writes that into the catalog
+# explicitly so every entry the host reads has one shape.
+#
 # See docs/feature-platform-developer-guide.md. Counterpart for paid
 # extensions: extensions-marketplace.yaml.
 

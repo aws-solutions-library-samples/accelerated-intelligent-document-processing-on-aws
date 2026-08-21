@@ -75,3 +75,28 @@ export function unverifiedReason(source: Source | undefined): string {
   }
   return 'The subscription state for this extension was not verified.';
 }
+
+/**
+ * Extra sentence for the case where the host and the extension were configured to
+ * check different authorities.
+ *
+ * The host resolves to the EXTENSION's declaration, so its check is already
+ * aligned; what is left is an operator problem — the catalog entry is stale or
+ * wrong. Returned as a note appended to whichever single banner is already being
+ * rendered rather than as a banner of its own: the contradictory-banner stack is
+ * exactly what the previous change removed.
+ *
+ * Deliberately not a block. Two independent gates that can disagree is the
+ * original problem in mirror image, and the extension's own gate is the answer.
+ */
+export function licenseModeMismatchNote(entitlement: FeatureEntitlement | null | undefined): string | null {
+  if (!entitlement?.licenseModeMismatch) return null;
+  const declared = entitlement.declaredLicenseMode;
+  const inCatalog = entitlement.catalogLicenseMode;
+  if (declared === 'marketplace-live' && inCatalog === 'simulated') {
+    // The reported case, and the one that actually misleads: the page would
+    // otherwise show a simulator-backed subscription the extension will ignore.
+    return 'This extension requires a real AWS Marketplace subscription, but this stack’s catalog lists it for simulator development. The host is checking real AWS Marketplace to match the extension; update the catalog entry (licenseMode) to agree.';
+  }
+  return `This extension enforces its subscription against ${declared ?? 'an unknown authority'}, but this stack’s catalog lists it as ${inCatalog ?? 'unknown'}. The host is following the extension; update the catalog entry (licenseMode) to agree.`;
+}

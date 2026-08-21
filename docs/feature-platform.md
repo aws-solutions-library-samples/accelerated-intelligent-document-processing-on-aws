@@ -207,32 +207,95 @@ scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
 It runs both APIs side by side with a positive control, so an empty result is
 distinguishable from a broken one.
 
-> **Anything simulator-backed counts as UNVERIFIED — including
-> `marketplace-live`.** `FeaturePlatformSubscriptionMode` chooses *which API* the
-> host calls; `FeaturePlatformSimulatorEndpoint` chooses *where the call goes*.
-> They are independent, and only the second decides what the host may claim: if a
-> Marketplace endpoint override is in effect, the answer came from a server the
-> operator chose, so it is reported as `entitlementSource: simulated` whatever the
-> mode says. That reports `entitlementVerified: false`, raises the "Access allowed
+### The authority is per extension, not per stack
+
+Each extension declares a **`licenseMode`** naming the authority that must confirm
+its subscription — `none`, `simulated`, or `marketplace-live` — and one stack
+resolves different extensions against different authorities:
+
+| Mode | Who answers | Reported source |
+|---|---|---|
+| `marketplace-live` | buyer-side `SearchAgreements` against **real AWS** | `marketplace-live` (verified) |
+| `simulated` | seller-side `GetEntitlements` against the stack's marketplace-simulator | `simulated` |
+| `none` | nobody | `oss` for an OSS extension, `auto` for a paid one |
+
+That is what lets one stack host a **listed, published** extension confirmed
+against real AWS Marketplace *alongside* **in-development** extensions checked
+against a simulator, and OSS extensions checked against nothing. Choosing the
+authority once for the whole stack made that impossible: pointing the stack at a
+simulator pointed it there for everything, including a live listed product — so
+the host showed a simulator-backed "Subscription active" for an extension that
+only honours real Marketplace, and the extension correctly disagreed.
+
+It is declared in two places, deliberately:
+
+| Where | Governs |
+|---|---|
+| `config_library/extensions-marketplace.yaml` | the **host's** check for that extension |
+| the extension's own `template.yaml` (from its `feature.yaml` manifest) | the **extension's** own check |
+
+The extension's value is propagated to the host through `registerFeature` at
+install and stored on the `InstalledFeatures` row, which is what makes the
+catalog entry verifiable rather than aspirational: the host prefers it, so its
+check lands on the authority the extension actually honours, and it reports a
+mismatch when the two disagree.
+
+**Resolution order** for a feature's host-side authority:
+
+1. `licenseMode` on the `InstalledFeatures` row (propagated at install), else
+2. `licenseMode` in the catalog entry, else
+3. the legacy stack-wide `FeaturePlatformSubscriptionMode`, else
+4. `marketplace-live` for a marketplace catalog entry / `none` for OSS.
+
+Steps 2–3 are what keep an existing stack working: current catalogs always carry
+an explicit value (publish.py bakes one), so step 3 is reached only by a
+catalog.json published before the field existed.
+
+**The two defaults are deliberately opposite.** Missing on the *host* side means
+`marketplace-live`; missing on the *extension* side means `none`. The failure
+directions differ: an extension must never lock a paying customer out of something
+they bought, so it degrades to serve-and-declare; a host must never *over-claim*
+verification for something in the marketplace catalog, so it degrades to the
+strictest authority. Please keep both.
+
+`licenseMode` is **not** inferred from `marketplaceListingUrl`. That would break
+the simulator dev loop for paid extensions — the case this design exists to
+support, since a listed product still has to be developed against a simulator
+before release — and listing-URL presence tracks "somebody filled in the entry
+template", not "this listing is live".
+
+**What stays stack-scoped:** where the simulator *lives*
+(`FeaturePlatformSimulatorEndpoint`), and a kill switch
+(`FeaturePlatformSubscriptionMode=auto`, "check nothing on this stack"). Location
+is a property of the deployment; authority is a property of the extension.
+
+**When the two disagree,** the host warns rather than enforcing on the extension's
+behalf: it stops *claiming* an authority the extension does not use — no green
+"Subscription active" sourced from a simulator for that extension, and no
+simulator Subscribe button for it — but it does not add a second gate. Two
+independent gates that can disagree is the original problem in mirror image, and
+the extension's own gate is already the answer.
+
+> **Anything simulator-backed counts as UNVERIFIED — including a
+> `marketplace-live` extension whose call was redirected.** A feature's
+> `licenseMode` chooses *which API* the host calls;
+> `FeaturePlatformSimulatorEndpoint` says *where a simulated call goes*. Only the
+> endpoint the call actually used decides what the host may claim: an answer from
+> anything other than real AWS is reported as `entitlementSource: simulated`. That reports `entitlementVerified: false`, raises the "Access allowed
 > without a verified subscription" banner, and fires the
 > `UnverifiedEntitlementGrant` metric — the same treatment as `auto` and
 > `advisory`. Only a `marketplace-live` check against **real AWS** counts as
 > checked. Expect the banner in development; if you see it in production, the
 > stack is pointed at a simulator.
 >
-> Deriving this from the endpoint rather than from the mode parameter is
-> deliberate: previously the source was the parameter, so
-> `FeaturePlatformSubscriptionMode=marketplace-live` plus a simulator endpoint
-> reported simulator answers as a *verified live Marketplace check* — silently
-> fooling any extension following the documented advice to trust
-> `entitlementVerified`. The combination itself is legitimate (it is how the
-> buyer-side path is developed) and is **not** refused at deploy time; what was
-> wrong was the claim, not the configuration.
->
-> `simulator` and `marketplace` stay distinct as *deployment* settings because
-> they behave differently in the resolver (only `simulator` synthesises a
-> productCode), but the source reported to extensions is deliberately decoupled
-> from the mode name.
+> Deriving this from the endpoint rather than from a parameter is deliberate:
+> previously the source was the `FeaturePlatformSubscriptionMode` parameter, so
+> `marketplace-live` plus a simulator endpoint reported simulator answers as a
+> *verified live Marketplace check* — silently fooling any extension following the
+> documented advice to trust `entitlementVerified`. The live authority is now
+> pinned to real AWS by construction, and the reported source is anchored to the
+> endpoint each individual call used, so the invariant survives a stack that
+> resolves different extensions against different authorities.
 >
 > **Developing against the simulator.** The bundled marketplace-simulator
 > implements a subset of the Agreement API: it rejects the buyer-side `PartyType`

@@ -4,6 +4,13 @@ moto does not implement marketplace-entitlement, so we use botocore.stub.Stubber
 to programme the boto3 client inside the module after import. The product code
 now comes from the feature's InstalledFeatures row (DynamoDB, via moto) — baked
 from the manifest at install — rather than a host env map.
+
+The authority is PER EXTENSION (`licenseMode`), so most fixtures below take one:
+`_mp_catalog_entry()` declares `marketplace-live` (what publish.py bakes for a
+listed product) and tests that want the simulator dev loop pass
+`licenseMode="simulated"`. Clients are cached per (service, endpoint), and the
+Stubber is attached to the client the handler will actually reuse — which is also
+what makes the mixed-mode leak test meaningful.
 """
 
 from __future__ import annotations
@@ -19,11 +26,18 @@ from botocore.stub import Stubber
 
 _CATALOG_KEY = "config_library/catalog.json"
 
+# A stand-in for the marketplace-simulator. `.invalid` is reserved by RFC 2606, so
+# a stub that leaks into a real request fails loudly instead of reaching anything.
+SIMULATOR_ENDPOINT = "https://simulator.example.invalid"
 
-def _seed_row(table_name, feature_id, *, product_code=None):
+
+def _seed_row(table_name, feature_id, *, product_code=None, license_mode=None):
     item = {"featureId": feature_id}
     if product_code is not None:
         item["productCode"] = product_code
+    # What the EXTENSION declares it enforces, propagated through registerFeature.
+    if license_mode is not None:
+        item["licenseMode"] = license_mode
     boto3.resource("dynamodb", region_name="us-east-1").Table(table_name).put_item(
         Item=item
     )
@@ -48,6 +62,7 @@ def _preload(
     endpoint_override=None,
     endpoint_var="AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT",
     agreement_region=None,
+    simulator_endpoint=SIMULATOR_ENDPOINT,
 ):
     monkeypatch.setenv("INSTALLED_FEATURES_TABLE", table_name)
     monkeypatch.setenv("DEFAULT_CUSTOMER_IDENTIFIER", default_customer)
@@ -65,11 +80,24 @@ def _preload(
         monkeypatch.delenv(var, raising=False)
     if endpoint_override is not None:
         monkeypatch.setenv(endpoint_var, endpoint_override)
+    # WHERE the simulator lives — stack-scoped. Separate from WHICH authority an
+    # extension uses, which is the whole point of the per-extension licenseMode.
+    monkeypatch.setenv("MARKETPLACE_SIMULATOR_ENDPOINT", simulator_endpoint or "")
     if agreement_region is not None:
         monkeypatch.setenv("MARKETPLACE_AGREEMENT_REGION", agreement_region)
     else:
         monkeypatch.delenv("MARKETPLACE_AGREEMENT_REGION", raising=False)
     return load_lambda("check_feature_entitlement")
+
+
+def _authority(mod, mode):
+    """The authority a feature with this licenseMode resolves to.
+
+    Tests use it to reach the exact client the handler will reuse — clients are
+    cached per (service, endpoint), so stubbing the authority's client is
+    stubbing the handler's client.
+    """
+    return mod._authority_for_mode(mode, "test")
 
 
 def _put_catalog(bucket: str, features: list) -> None:
@@ -93,7 +121,7 @@ def _stub(
     Pass `expected_account` to assert the buyer-account filter
     (CUSTOMER_AWS_ACCOUNT_ID) instead of the CUSTOMER_IDENTIFIER filter.
     """
-    client = mod._client()
+    client = mod._entitlement_client(_authority(mod, "simulated"))
     stubber = Stubber(client)
     filt = (
         {"CUSTOMER_AWS_ACCOUNT_ID": [expected_account]}
@@ -109,10 +137,17 @@ def _stub(
     return stubber
 
 
-def test_none_when_no_product_code_marketplace_mode(
+def test_no_product_code_synthesises_one_for_a_simulator_authority(
     monkeypatch, load_lambda, installed_features_table
 ):
-    """Marketplace mode: a feature whose install row has no productCode → NONE."""
+    """A simulator authority with no productCode anywhere synthesises one.
+
+    Reaching the seller-side path at all means the authority is simulator-backed,
+    and `prod-<id>-sim` is the key the simulator's own subscribe flow uses. This
+    used to be gated on the stack-wide tag being literally "simulator", which the
+    main stack never emitted, so the branch was dead and every such check returned
+    NONE/source="none". The authority now says so directly.
+    """
     _seed_row(installed_features_table, "docs-by-status")  # no productCode
     mod = _preload(
         monkeypatch,
@@ -120,18 +155,15 @@ def test_none_when_no_product_code_marketplace_mode(
         table_name=installed_features_table,
         source_tag="marketplace",
     )
+    _stub(mod, entitlements=[], expected_product="prod-docs-by-status-sim")
     result = mod.handler(
         make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
         None,
     )
-    assert result == {
-        "featureId": "docs-by-status",
-        "state": "NONE",
-        "expiresAt": None,
-        "customerIdentifier": None,
-        "productCode": None,
-        "source": "none",
-    }
+    assert result["state"] == "NONE"
+    assert result["productCode"] == "prod-docs-by-status-sim"
+    assert result["source"] == "simulated"
+    assert result["licenseMode"] == "simulated"
 
 
 def test_synthesized_product_code_simulator_mode(
@@ -394,37 +426,39 @@ def test_auto_mode_returns_active_without_marketplace_call(monkeypatch, load_lam
     Marketplace credentials."""
     mod = _preload(monkeypatch, load_lambda, source_tag="auto")
     # Sanity: no client created yet at module load.
-    assert mod._entitlement_client is None
+    assert mod._clients == {}
     result = mod.handler(
         make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
         None,
     )
-    assert result == {
-        "featureId": "docs-by-status",
-        "state": "ACTIVE",
-        "expiresAt": None,
-        "customerIdentifier": None,
-        "productCode": None,
-        "source": "auto",
-    }
-    # Contract: no boto3 client is constructed in auto mode.
-    assert mod._entitlement_client is None
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "auto"
+    assert result["licenseMode"] == "none"
+    assert result["productCode"] is None
+    # Contract: no marketplace client is constructed when checks are off.
+    assert mod._clients == {}
 
 
-def test_no_table_falls_back_to_none_marketplace_mode(monkeypatch, load_lambda):
-    # No InstalledFeatures table configured → no productCode → marketplace NONE.
+def test_no_table_still_answers_from_the_resolved_authority(monkeypatch, load_lambda):
+    """No InstalledFeatures table and no catalog → the legacy stack setting.
+
+    The answer still comes from a named authority rather than the old
+    source="none", which said "no productCode registered" and so conflated a
+    missing identity with a missing subscription.
+    """
     mod = _preload(
         monkeypatch,
         load_lambda,
         table_name="",
         source_tag="marketplace",
     )
+    _stub(mod, entitlements=[], expected_product="prod-docs-by-status-sim")
     result = mod.handler(
         make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
         None,
     )
     assert result["state"] == "NONE"
-    assert result["source"] == "none"
+    assert result["source"] == "simulated"
 
 
 def test_oss_feature_short_circuits_to_active_marketplace_mode(
@@ -451,27 +485,29 @@ def test_oss_feature_short_circuits_to_active_marketplace_mode(
         make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
         None,
     )
-    assert result == {
-        "featureId": "docs-by-status",
-        "state": "ACTIVE",
-        "expiresAt": None,
-        "customerIdentifier": None,
-        "productCode": None,
-        "source": "oss",
-    }
-    # Contract: the OSS path never touches the marketplace-entitlement client.
-    assert mod._entitlement_client is None
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "oss"
+    assert result["licenseMode"] == "none"
+    # Contract: the OSS path never touches a marketplace client.
+    assert mod._clients == {}
 
 
 def test_marketplace_feature_still_gated_when_catalog_present(
     monkeypatch, mock_stack, load_lambda
 ):
     """A catalog entry with source=marketplace does NOT short-circuit — the
-    entitlement check still runs (here: no productCode on the row → NONE)."""
+    entitlement check still runs against the resolved authority."""
     bucket = mock_stack["bucket"]
     _put_catalog(
         bucket,
-        [{"featureId": "idp-monitor", "source": "marketplace", "latestVersion": "1.0"}],
+        [
+            {
+                "featureId": "idp-monitor",
+                "source": "marketplace",
+                "latestVersion": "1.0",
+                "licenseMode": "simulated",
+            }
+        ],
     )
     mod = _preload(
         monkeypatch,
@@ -480,12 +516,13 @@ def test_marketplace_feature_still_gated_when_catalog_present(
         source_tag="marketplace",
         configuration_bucket=bucket,
     )
+    _stub(mod, entitlements=[], expected_product="prod-idp-monitor-sim")
     result = mod.handler(
         make_appsync_event("checkFeatureEntitlement", {"featureId": "idp-monitor"}),
         None,
     )
     assert result["state"] == "NONE"
-    assert result["source"] == "none"
+    assert result["source"] == "simulated"
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +539,9 @@ def _mp_catalog_entry(**over) -> dict:
         "productCode": "q0k0s3zuuga46hle6fecx547",
         "productId": "prod-a5ee62vs2xa72",
         "marketplaceListingUrl": "https://aws.amazon.com/marketplace/pp/prodview-x",
+        # What publish.py bakes for a listed product. Tests that want the
+        # simulator dev loop override it with licenseMode="simulated".
+        "licenseMode": "marketplace-live",
     }
     entry.update(over)
     return entry
@@ -544,7 +584,9 @@ def test_installed_row_still_wins_over_catalog(monkeypatch, mock_stack, load_lam
     """The install row is baked from the manifest, so it stays authoritative."""
     bucket = mock_stack["bucket"]
     table = mock_stack["table_name"]
-    _put_catalog(bucket, [_mp_catalog_entry(productCode="from-catalog")])
+    _put_catalog(
+        bucket, [_mp_catalog_entry(productCode="from-catalog", licenseMode="simulated")]
+    )
     _seed_row(table, "idp-auto-optimizer", product_code="from-install-row")
     mod = _preload(
         monkeypatch,
@@ -577,7 +619,7 @@ def test_installed_row_still_wins_over_catalog(monkeypatch, mock_stack, load_lam
 def _stub_agreements(
     mod, summaries=None, *, error=None, expected_product="prod-a5ee62vs2xa72"
 ):
-    client = mod._agreement_client()
+    client = mod._agreement_client(_authority(mod, "marketplace-live"))
     stubber = Stubber(client)
     expected_params = {
         "catalog": "AWSMarketplace",
@@ -746,14 +788,9 @@ def test_auto_mode_unchanged_by_live_support(monkeypatch, mock_stack, load_lambd
         source_tag="auto",
     )
     result = mod.handler(_live_event(), None)
-    assert result == {
-        "featureId": "idp-auto-optimizer",
-        "state": "ACTIVE",
-        "expiresAt": None,
-        "customerIdentifier": None,
-        "productCode": None,
-        "source": "auto",
-    }
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "auto"
+    assert result["licenseMode"] == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +968,7 @@ def test_simulator_backed_active_emits_metric(monkeypatch, mock_stack, load_lamb
     clean "subscription active" with nothing recorded anywhere.
     """
     bucket = mock_stack["bucket"]
-    _put_catalog(bucket, [_mp_catalog_entry()])
+    _put_catalog(bucket, [_mp_catalog_entry(licenseMode="simulated")])
     mod = _preload(
         monkeypatch,
         load_lambda,
@@ -956,7 +993,7 @@ def test_simulator_backed_active_emits_metric(monkeypatch, mock_stack, load_lamb
 def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambda):
     """Only a GRANT is an unverified grant; a refusal needs no warning."""
     bucket = mock_stack["bucket"]
-    _put_catalog(bucket, [_mp_catalog_entry()])
+    _put_catalog(bucket, [_mp_catalog_entry(licenseMode="simulated")])
     mod = _preload(
         monkeypatch,
         load_lambda,
@@ -973,24 +1010,27 @@ def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambd
 
 
 # ---------------------------------------------------------------------------
-# Reported source is normalized, and is independent of deployment mode
+# Reported source is derived from the AUTHORITY, per extension
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mode", ["simulator", "marketplace"])
-def test_seller_side_modes_both_report_simulated(
+def test_legacy_seller_side_modes_both_report_simulated(
     monkeypatch, mock_stack, load_lambda, mode
 ):
-    """`simulator` and `marketplace` are one reported source, `simulated`.
+    """The two legacy seller-side stack modes are one reported source.
 
-    They are the same code path — the seller-side GetEntitlements API, which
-    returns 200-with-an-empty-list from a buyer account and so cannot verify
-    anything against real AWS. Reporting the deployment mode verbatim leaked a
-    distinction no consumer can act on, and made `marketplace` (the weakest
-    source) read as more authoritative than `marketplace-live`.
+    They are the same code path — GetEntitlements, which returns
+    200-with-an-empty-list from a buyer account and so cannot verify anything
+    against real AWS. Reporting the deployment mode verbatim leaked a distinction
+    no consumer can act on, and made `marketplace` (the weakest source) read as
+    more authoritative than `marketplace-live`. Reached here through the migration
+    chain: the catalog entry declares no licenseMode, so step 3 applies.
     """
     bucket = mock_stack["bucket"]
-    _put_catalog(bucket, [_mp_catalog_entry()])
+    entry = _mp_catalog_entry()
+    del entry["licenseMode"]  # a catalog published before licenseMode existed
+    _put_catalog(bucket, [entry])
     mod = _preload(
         monkeypatch,
         load_lambda,
@@ -1008,6 +1048,7 @@ def test_seller_side_modes_both_report_simulated(
     assert result["source"] == "simulated", (
         f"mode {mode!r} must report 'simulated', not the mode name"
     )
+    assert result["licenseMode"] == "simulated"
 
 
 @pytest.mark.parametrize(
@@ -1041,9 +1082,6 @@ def test_oss_reports_oss_in_every_mode(monkeypatch, mock_stack, load_lambda, mod
     assert result["source"] == "oss", f"mode {mode!r} relabelled an OSS extension"
 
 
-SIMULATOR_ENDPOINT = "https://simulator.example.invalid"
-
-
 def _filters(product, *, party_type=True):
     """The expected SearchAgreements filter list, mirroring the resolver."""
     filters = []
@@ -1059,15 +1097,20 @@ def _filters(product, *, party_type=True):
     return filters
 
 
-def _queue_agreements(mod, calls):
-    """Queue an ordered list of SearchAgreements outcomes on the module's client.
+def _queue_agreements(mod, calls, mode="marketplace-live"):
+    """Queue an ordered list of SearchAgreements outcomes on ONE authority's client.
 
     Each entry is ``(product, party_type, summaries_or_error_code)``. Stubber
     asserts the exact request for every call, so the queue pins BOTH the number
-    of calls and the filter set each one used — which is the point: the
-    production query must not change.
+    of calls and the filter set each one used — which is the point: the production
+    query must not change, and must not be relaxed by a sibling extension
+    resolving against the simulator.
+
+    `mode` selects WHICH authority's client is stubbed. Stubbing the live client
+    while the handler calls the simulator (or vice versa) shows up as an
+    unconsumed stub plus a failing real call, so the pairing is load-bearing.
     """
-    stubber = Stubber(mod._agreement_client())
+    stubber = Stubber(mod._agreement_client(_authority(mod, mode)))
     for product, party_type, outcome in calls:
         expected = {
             "catalog": "AWSMarketplace",
@@ -1102,195 +1145,463 @@ def _live_mod(monkeypatch, mock_stack, load_lambda, **kw):
 
 
 # ---------------------------------------------------------------------------
-# THE load-bearing invariant: an endpoint-overridden deployment cannot produce
-# a VERIFIED entitlement.
+# THE load-bearing invariant, re-anchored PER REQUEST.
 #
 # `marketplace-live` is the only source `isVerifiedEntitlement()` accepts and the
-# only one extension authors are told to trust (`entitlementVerified`). It used
-# to be copied straight from the SubscriptionMode parameter, so a stack whose
-# Marketplace endpoints were aimed at a simulator reported simulator answers as a
-# verified live Marketplace check — an extension following the documented advice
-# was silently fooled by a fake Marketplace. The source is now DERIVED from the
-# endpoint, which is what makes the claim unforgeable by configuration.
+# only one extension authors are told to trust (`entitlementVerified`). It used to
+# be copied from the SubscriptionMode parameter, so a stack whose Marketplace
+# endpoints pointed at a simulator reported simulator answers as a verified live
+# check. It is now derived from the endpoint THIS CALL used, so it survives a
+# stack that resolves different extensions against different authorities.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("var", _ENDPOINT_VARS)
-def test_endpoint_override_never_reports_marketplace_live(
-    monkeypatch, load_lambda, var
+@pytest.mark.parametrize("mode", ["none", "simulated", "marketplace-live"])
+def test_only_a_real_aws_call_can_report_marketplace_live(
+    monkeypatch, load_lambda, mode
 ):
-    """Each of the three override vars downgrades the reported source.
+    """Across every license mode, `marketplace-live` implies endpoint=None."""
+    mod = _preload(monkeypatch, load_lambda, source_tag="marketplace-live")
+    authority = _authority(mod, mode)
+    source = mod._reported_source(authority)
+    if source == "marketplace-live":
+        assert authority.endpoint is None, (
+            f"mode {mode!r} reported the verified source while aimed at "
+            f"{authority.endpoint!r}"
+        )
+    else:
+        assert source in ("simulated", "auto")
 
-    Covers `AWS_ENDPOINT_URL` too — the global botocore override redirects the
-    Agreement API just as effectively as the service-specific one, so reading
-    only the service-specific vars would leave a hole.
+
+def test_live_authority_ignores_the_stacks_simulator_endpoint(monkeypatch, load_lambda):
+    """A configured simulator must not capture an extension that declares live.
+
+    This is the whole point of the change: the stack says WHERE the simulator is,
+    the extension says WHETHER it uses it. Previously the endpoint was read from
+    per-function env vars, so a configured simulator captured every extension.
     """
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        source_tag="marketplace-live",
+        simulator_endpoint=SIMULATOR_ENDPOINT,
+    )
+    live = _authority(mod, "marketplace-live")
+    assert live.endpoint is None
+    assert mod._reported_source(live) == "marketplace-live"
+    # ...while a sibling extension in simulated mode still reaches the simulator.
+    assert _authority(mod, "simulated").endpoint == SIMULATOR_ENDPOINT
+
+
+@pytest.mark.parametrize("var", _ENDPOINT_VARS)
+def test_legacy_endpoint_env_vars_are_popped_not_obeyed(monkeypatch, load_lambda, var):
+    """The env-var mechanism is gone — it is what forced stack-wide behaviour.
+
+    Environment variables are per-function, so while boto3 read the endpoint from
+    the environment a single resolver could only ever be aimed at one authority.
+    They are now popped at import so "no explicit endpoint" genuinely means real
+    AWS, and survive only as a fallback for the simulator's location.
+    """
+    import os
+
     mod = _preload(
         monkeypatch,
         load_lambda,
         source_tag="marketplace-live",
         endpoint_override=SIMULATOR_ENDPOINT,
         endpoint_var=var,
+        simulator_endpoint="",  # force the legacy value to be the only source
     )
-    assert mod._ENDPOINT_OVERRIDE == SIMULATOR_ENDPOINT
-    assert mod._REPORTED_SOURCE == "simulated", (
-        f"{var} pointed boto3 at a simulator but the host still reported "
-        f"{mod._REPORTED_SOURCE!r}"
-    )
-
-
-@pytest.mark.parametrize(
-    "tag,override,expected",
-    [
-        ("marketplace-live", "", "marketplace-live"),
-        ("marketplace-live", SIMULATOR_ENDPOINT, "simulated"),
-        ("marketplace", "", "simulated"),
-        ("marketplace", SIMULATOR_ENDPOINT, "simulated"),
-        ("simulator", SIMULATOR_ENDPOINT, "simulated"),
-        ("auto", "", "auto"),
-        ("auto", SIMULATOR_ENDPOINT, "auto"),
-    ],
-)
-def test_reported_source_matrix(monkeypatch, load_lambda, tag, override, expected):
-    """The full (mode x endpoint) matrix, in one place.
-
-    `auto` keeps its own source even with an endpoint set: it makes no API call
-    at all, so "simulated" would be a lie in the other direction — and `auto` is
-    already an unverified source.
-    """
-    mod = _preload(monkeypatch, load_lambda, source_tag="marketplace-live")
-    assert mod._reported_source(tag, override) == expected
+    assert os.environ.get(var) is None, f"{var} was left in the environment"
+    assert mod._LEGACY_ENDPOINT_OVERRIDE == SIMULATOR_ENDPOINT
+    # Used only for WHERE the simulator is...
+    assert _authority(mod, "simulated").endpoint == SIMULATOR_ENDPOINT
+    # ...never to capture a live extension.
+    assert _authority(mod, "marketplace-live").endpoint is None
 
 
 def test_empty_endpoint_env_var_is_not_an_override(monkeypatch, load_lambda):
-    """The template ALWAYS sets these vars — to '' when no simulator is used.
+    """The template sets these vars to '' when no simulator is configured.
 
-    So presence must not count; only a non-empty value does. Reading presence
-    would report every production stack as `simulated` and make the verified
-    source unreachable.
+    Presence must not count; only a non-empty value does. Reading presence would
+    make every production stack look simulator-backed.
     """
     mod = _preload(
         monkeypatch,
         load_lambda,
         source_tag="marketplace-live",
-        endpoint_override="",  # exactly what CloudFormation emits by default
+        endpoint_override="",
+        simulator_endpoint="",
     )
-    assert mod._ENDPOINT_OVERRIDE == ""
-    assert mod._REPORTED_SOURCE == "marketplace-live"
+    assert mod._LEGACY_ENDPOINT_OVERRIDE == ""
+    assert mod._SIMULATOR_ENDPOINT == ""
 
 
-def test_simulator_backed_active_agreement_reports_simulated(
+# ---------------------------------------------------------------------------
+# MIXED-MODE STACK — the deliverable this whole change exists for.
+#
+# One stack, one warm Lambda process, two extensions: a listed one confirmed
+# against real AWS Marketplace and an in-development one checked against the
+# simulator. Each must report its own source, and neither may leak the other's
+# authority — which is a real risk now that clients are cached.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_mod(monkeypatch, mock_stack, load_lambda):
+    _put_catalog(
+        mock_stack["bucket"],
+        [
+            # Listed and published → real AWS Marketplace.
+            _mp_catalog_entry(),
+            # Still in development → the simulator.
+            _mp_catalog_entry(
+                featureId="idp-dev-extension",
+                displayName="Dev Extension",
+                productCode="dev-product-code",
+                productId="prod-dev-extension",
+                licenseMode="simulated",
+            ),
+            # No Marketplace contract at all.
+            {"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"},
+        ],
+    )
+    return _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=mock_stack["bucket"],
+        simulator_endpoint=SIMULATOR_ENDPOINT,
+    )
+
+
+def _event(feature_id):
+    return make_appsync_event("checkFeatureEntitlement", {"featureId": feature_id})
+
+
+def test_mixed_mode_stack_resolves_each_extension_against_its_own_authority(
     monkeypatch, mock_stack, load_lambda
 ):
-    """End-to-end: mode=marketplace-live + simulator endpoint + an ACTIVE
-    agreement → state ACTIVE but source `simulated`, so
-    `isVerifiedEntitlement()` is false and the UI raises the unverified banner."""
-    mod = _live_mod(
-        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
-    )
-    _queue_agreements(
+    mod = _mixed_mod(monkeypatch, mock_stack, load_lambda)
+
+    # The listed extension: buyer-side SearchAgreements against real AWS. Stubbing
+    # the LIVE authority's client is what proves the call went there — a stub on
+    # the simulator client would go unconsumed and the real call would fail.
+    live_stub = _queue_agreements(
         mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
     )
-    result = mod.handler(_live_event(), None)
-    assert result["state"] == "ACTIVE"
-    assert result["source"] == "simulated"
-    assert result["source"] != "marketplace-live"
+    live = mod.handler(_event("idp-auto-optimizer"), None)
+    live_stub.assert_no_pending_responses()
 
-
-def test_simulator_backed_none_reports_simulated(monkeypatch, mock_stack, load_lambda):
-    """The NONE branch reported the live tag from its own literal — fix both."""
-    mod = _live_mod(
-        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
-    )
-    # Neither identifier matches — the honest simulator "not subscribed" case.
-    _queue_agreements(
+    # The in-development extension: seller-side GetEntitlements against the
+    # simulator, in the SAME warm process.
+    _stub(
         mod,
-        [("prod-a5ee62vs2xa72", True, []), ("q0k0s3zuuga46hle6fecx547", True, [])],
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="dev-product-code",
     )
-    result = mod.handler(_live_event(), None)
-    assert result["state"] == "NONE"
-    assert result["source"] == "simulated"
+    dev = mod.handler(_event("idp-dev-extension"), None)
+
+    oss = mod.handler(_event("docs-by-status"), None)
+
+    assert live["state"] == "ACTIVE"
+    assert live["source"] == "marketplace-live", (
+        "the listed extension lost its authority"
+    )
+    assert live["licenseMode"] == "marketplace-live"
+
+    assert dev["state"] == "ACTIVE"
+    assert dev["source"] == "simulated", "the dev extension was answered by real AWS"
+    assert dev["licenseMode"] == "simulated"
+
+    assert oss["source"] == "oss"
+
+    # No leakage in either direction, and both authorities really were used.
+    endpoints = {endpoint for (_svc, endpoint, _region) in mod._clients}
+    assert endpoints == {None, SIMULATOR_ENDPOINT}
 
 
-def test_simulator_backed_grant_emits_unverified_metric(
+def test_mixed_mode_simulated_sibling_cannot_relax_the_live_query(
     monkeypatch, mock_stack, load_lambda
 ):
-    """A simulator-backed ACTIVE on the live path is an unverified grant, and the
-    operator-side metric must see it — it previously looked like a clean verified
-    subscription and recorded nothing."""
-    mod = _live_mod(
-        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
-    )
-    _queue_agreements(
-        mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
-    )
-    emitted = _capture_metrics(monkeypatch, mod)
-    result = mod.handler(_live_event(), None)
-    assert result["state"] == "ACTIVE"
-    assert emitted == [("idp-auto-optimizer", "simulated")]
+    """The simulator accommodations must not follow a live extension.
+
+    Resolving the simulated extension first sets up the state that used to be
+    process-wide. The live query must still be the canonical four-filter form —
+    `_queue_agreements` asserts the exact request, so a relaxed one fails here.
+    """
+    mod = _mixed_mod(monkeypatch, mock_stack, load_lambda)
+    _stub(mod, entitlements=[], expected_product="dev-product-code")
+    assert mod.handler(_event("idp-dev-extension"), None)["source"] == "simulated"
+
+    stub = _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
+    live = mod.handler(_event("idp-auto-optimizer"), None)
+    stub.assert_no_pending_responses()
+    assert live["state"] == "NONE"
+    assert live["source"] == "marketplace-live"
 
 
-def test_real_aws_active_still_verified_and_silent(
+# ---------------------------------------------------------------------------
+# Resolution chain: row → catalog → legacy stack setting → hard default.
+# ---------------------------------------------------------------------------
+
+
+def test_install_row_license_mode_wins_over_the_catalog(
     monkeypatch, mock_stack, load_lambda
 ):
-    """The production path is unchanged: no override → `marketplace-live`, no
-    metric, one call, canonical four-filter query."""
-    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
-    _queue_agreements(
-        mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
+    """Step 1. The extension's own declaration is what it actually enforces.
+
+    This is the reported bug, in the shape that matters: the catalog says
+    `simulated` but the installed extension honours real Marketplace. Aligning the
+    host with the extension is the only way the two gates can agree.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry(licenseMode="simulated")])
+    _seed_row(
+        mock_stack["table_name"],
+        "idp-auto-optimizer",
+        product_code="q0k0s3zuuga46hle6fecx547",
+        license_mode="marketplace-live",
     )
-    emitted = _capture_metrics(monkeypatch, mod)
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    stub = _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
     result = mod.handler(_live_event(), None)
-    assert result["state"] == "ACTIVE"
+    stub.assert_no_pending_responses()
+
+    assert result["licenseMode"] == "marketplace-live"
     assert result["source"] == "marketplace-live"
-    assert emitted == []
+    assert result["licenseModeMismatch"] is True
+    assert result["declaredLicenseMode"] == "marketplace-live"
+    assert result["catalogLicenseMode"] == "simulated"
+
+
+def test_agreeing_declarations_are_not_a_mismatch(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    _seed_row(
+        mock_stack["table_name"],
+        "idp-auto-optimizer",
+        product_code="q0k0s3zuuga46hle6fecx547",
+        license_mode="marketplace-live",
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
+    result = mod.handler(_live_event(), None)
+    assert result["licenseModeMismatch"] is False
+
+
+def test_catalog_license_mode_used_when_the_row_is_silent(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Step 2 — and the not-yet-installed path, where there is no row at all."""
+    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
+    _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
+    result = mod.handler(_live_event(), None)
+    assert result["licenseMode"] == "marketplace-live"
+    assert result["declaredLicenseMode"] is None
+    assert result["licenseModeMismatch"] is False
+
+
+@pytest.mark.parametrize(
+    "legacy_mode,expected_mode",
+    [("marketplace", "simulated"), ("simulator", "simulated"), ("auto", "none")],
+)
+def test_legacy_stack_setting_is_step_three(
+    monkeypatch, mock_stack, load_lambda, legacy_mode, expected_mode
+):
+    """Step 3 keeps a stack working whose catalog predates `licenseMode`."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_catalog_entry()
+    del entry["licenseMode"]
+    _put_catalog(bucket, [entry])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag=legacy_mode,
+        configuration_bucket=bucket,
+    )
+    authority, declared, from_catalog = mod._resolve_authority(
+        "idp-auto-optimizer", {}, entry
+    )
+    assert authority.mode == expected_mode
+    assert declared is None and from_catalog is None
+
+
+def test_legacy_live_plus_endpoint_override_keeps_its_old_behaviour(
+    monkeypatch, mock_stack, load_lambda
+):
+    """The one migration case that must be byte-identical to the last release.
+
+    `SubscriptionMode=marketplace-live` + a simulator endpoint + a catalog with no
+    `licenseMode` called the buyer-side Agreement API against the simulator and
+    reported `simulated`. Mapping it to the seller-side API instead would change
+    which API a live stack calls during an upgrade.
+    """
+    bucket = mock_stack["bucket"]
+    entry = _mp_catalog_entry()
+    del entry["licenseMode"]
+    _put_catalog(bucket, [entry])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+        endpoint_override=SIMULATOR_ENDPOINT,
+        simulator_endpoint="",
+    )
+    authority, _declared, _catalog = mod._resolve_authority(
+        "idp-auto-optimizer", {}, entry
+    )
+    assert authority.mode == "simulated"
+    assert authority.api == mod._API_AGREEMENT
+    assert authority.endpoint == SIMULATOR_ENDPOINT
+    assert mod._reported_source(authority) == "simulated"
+
+
+def test_hard_default_is_live_for_a_marketplace_entry(monkeypatch, load_lambda):
+    """Step 4. An unrecognised stack setting must not under-check a paid product.
+
+    Deliberately the OPPOSITE of the extension-side default (`none`): the host
+    must not over-claim verification, the extension must not lock a paying
+    customer out.
+    """
+    mod = _preload(monkeypatch, load_lambda, source_tag="nonsense-value")
+    marketplace, _d, _c = mod._resolve_authority("f", {}, {"source": "marketplace"})
+    assert marketplace.mode == "marketplace-live"
+    unknown, _d, _c = mod._resolve_authority("f", {}, {})
+    assert unknown.mode == "none"
+
+
+def test_kill_switch_outranks_every_declaration(monkeypatch, mock_stack, load_lambda):
+    """ "Check nothing on this stack" must not be overridable per extension."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["licenseMode"] == "none"
+    assert result["source"] == "auto"
+    assert mod._clients == {}, "the kill switch still built a marketplace client"
+
+
+def test_unrecognised_declared_mode_is_ignored_not_obeyed(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A typo on the install row must not silently pick an authority."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    authority, declared, _catalog = mod._resolve_authority(
+        "idp-auto-optimizer",
+        {"licenseMode": "marketplace_live"},  # underscore typo
+        _mp_catalog_entry(),
+    )
+    assert declared is None
+    assert authority.mode == "marketplace-live"  # fell through to the catalog
+
+
+def test_simulated_mode_without_a_simulator_is_advisory_not_a_verdict(
+    monkeypatch, mock_stack, load_lambda
+):
+    """`licenseMode: simulated` with no simulator on the stack is a misconfig.
+
+    Calling real AWS GetEntitlements instead would return an empty list and read
+    as "not subscribed", which is a wrong answer rather than no answer.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry(licenseMode="simulated")])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+        simulator_endpoint="",
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+    assert result["licenseMode"] == "simulated"
 
 
 # ---------------------------------------------------------------------------
 # Simulator compatibility for the buyer-side query.
 #
-# Root cause of the live incident: the simulator implements a SUBSET of the API
-# and rejects `PartyType` outright (`ValidationException: unknown filter name:
-# PartyType`), so every check on a simulator-backed stack degraded to `advisory`.
-# It also records agreements under the product CODE, not the product ENTITY id,
-# because its buyer console is keyed on productCode.
-#
-# Both accommodations are gated on an endpoint override being in effect, because
-# real AWS accepts PartyType and REJECTS the reduced filter set
-# (`ValidationException: Provided combination of filters is not supported`) —
-# verified against a live account. So the production query can't be weakened.
+# Root cause of the original incident: the simulator implements a SUBSET of the
+# API and rejects `PartyType` outright, and records agreements under the product
+# CODE rather than the entity id. Both accommodations are gated on THIS CALL'S
+# authority being simulator-backed, because real AWS accepts `PartyType` and
+# REJECTS the reduced filter set (verified against a live account).
 # ---------------------------------------------------------------------------
+
+
+def _sim_agreement_mod(monkeypatch, mock_stack, load_lambda):
+    """A stack on the legacy simulated-Agreement path (migration shape)."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_catalog_entry()
+    del entry["licenseMode"]
+    _put_catalog(bucket, [entry])
+    return _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+        endpoint_override=SIMULATOR_ENDPOINT,
+        simulator_endpoint="",
+    )
+
+
+def _queue_sim_agreements(mod, calls):
+    return _queue_agreements(mod, calls, mode="simulated")
 
 
 def test_simulator_partytype_rejection_retries_without_it(
     monkeypatch, mock_stack, load_lambda
 ):
-    mod = _live_mod(
-        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
-    )
-    _queue_agreements(
+    mod = _sim_agreement_mod(monkeypatch, mock_stack, load_lambda)
+    _queue_sim_agreements(
         mod,
         [
             ("prod-a5ee62vs2xa72", True, "ValidationException"),
-            (
-                "prod-a5ee62vs2xa72",
-                False,
-                [{"agreementId": "a", "status": "ACTIVE"}],
-            ),
+            ("prod-a5ee62vs2xa72", False, [{"agreementId": "a", "status": "ACTIVE"}]),
         ],
     )
     result = mod.handler(_live_event(), None)
     assert result["state"] == "ACTIVE"
-    # Still not a verified source — the retry doesn't launder the answer.
+    # The retry doesn't launder the answer.
     assert result["source"] == "simulated"
 
 
 def test_simulator_falls_back_to_product_code(monkeypatch, mock_stack, load_lambda):
     """productId matches nothing on the simulator; the productCode does."""
-    mod = _live_mod(
-        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
-    )
-    _queue_agreements(
+    mod = _sim_agreement_mod(monkeypatch, mock_stack, load_lambda)
+    _queue_sim_agreements(
         mod,
         [
             ("prod-a5ee62vs2xa72", True, []),
@@ -1309,11 +1620,10 @@ def test_simulator_falls_back_to_product_code(monkeypatch, mock_stack, load_lamb
 def test_real_aws_does_not_retry_on_validation_error(
     monkeypatch, mock_stack, load_lambda
 ):
-    """No override → no relaxed retry. A single canonical call, then advisory.
+    """No relaxed retry against real AWS. One canonical call, then advisory.
 
-    Retrying against real AWS would drop `PartyType` from the one filter
-    combination AWS accepts, and the reduced query is rejected there anyway —
-    so a retry could only ever hide the real error.
+    Retrying would drop `PartyType` from the one combination AWS accepts, and the
+    reduced query is rejected there anyway — so a retry could only hide the error.
     """
     mod = _live_mod(monkeypatch, mock_stack, load_lambda)
     stubber = _queue_agreements(
@@ -1322,16 +1632,13 @@ def test_real_aws_does_not_retry_on_validation_error(
     result = mod.handler(_live_event(), None)
     assert result["state"] == "ACTIVE"
     assert result["source"] == "advisory"
-    # Nothing left unconsumed → exactly one call was made.
     stubber.assert_no_pending_responses()
 
 
 def test_real_aws_does_not_fall_back_to_product_code(
     monkeypatch, mock_stack, load_lambda
 ):
-    """On real AWS, `ResourceIdentifier` is the product ENTITY id, full stop. An
-    authoritative empty result must stay NONE rather than being re-queried under
-    an id the API doesn't index."""
+    """On real AWS `ResourceIdentifier` is the product ENTITY id, full stop."""
     mod = _live_mod(monkeypatch, mock_stack, load_lambda)
     stubber = _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
     result = mod.handler(_live_event(), None)

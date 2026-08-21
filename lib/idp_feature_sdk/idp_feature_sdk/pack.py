@@ -78,6 +78,12 @@ def _bake_wrapper_tokens(
         .replace("<FEATURE_BUCKET_TOKEN>", artifact_bucket)
         .replace("<FEATURE_PRODUCT_CODE_TOKEN>", manifest.marketplace.productCode or "")
         .replace("<FEATURE_LISTING_URL_TOKEN>", manifest.marketplace.listingUrl or "")
+        # Absent → "none": an extension that says nothing about its licensing is
+        # not claiming to enforce anything, and the host must not infer that it
+        # does. The host's own catalog default is the strict one.
+        .replace(
+            "<FEATURE_LICENSE_MODE_TOKEN>", manifest.marketplace.licenseMode or "none"
+        )
     )
 
 

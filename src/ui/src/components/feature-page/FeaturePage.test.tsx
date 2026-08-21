@@ -721,3 +721,144 @@ describe('FeaturePage unverified-subscription warning', () => {
     expect(screen.queryByText(/Access allowed without a verified subscription/i)).not.toBeInTheDocument();
   });
 });
+
+describe('FeaturePage per-extension licenseMode', () => {
+  const paid = () => installed({ featureId: 'docs-by-status' });
+
+  it('does NOT offer the in-UI Subscribe button for a marketplace-live extension', () => {
+    // `subscribeFeature` drives the simulator's admin API, so on a
+    // simulator-configured stack that button would mint a subscription the
+    // extension ignores — it only honours real AWS Marketplace. The listing link
+    // is the only real path, and the only place a real subscription can be made.
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE', source: 'marketplace-live', licenseMode: 'marketplace-live' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription required/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Subscribe$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View on AWS Marketplace/i })).toBeInTheDocument();
+    expect(screen.getByText(/can only be created there/i)).toBeInTheDocument();
+  });
+
+  it('DOES offer the in-UI Subscribe button for a simulated extension', () => {
+    // The dev loop must keep working — this is the case the simulator exists for.
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE', source: 'simulated', licenseMode: 'simulated' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByRole('button', { name: /^Subscribe$/i })).toBeInTheDocument();
+  });
+
+  it('shows the mismatch note on the single unverified banner, not as a new banner', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paid()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paid(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({
+        state: 'ACTIVE',
+        source: 'advisory',
+        licenseMode: 'marketplace-live',
+        declaredLicenseMode: 'marketplace-live',
+        catalogLicenseMode: 'simulated',
+        licenseModeMismatch: true,
+      }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Access allowed without a verified subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/simulator development/i)).toBeInTheDocument();
+    // Still exactly one subscription banner — the note rides along, it doesn't add one.
+    const active = screen.queryAllByText(/Subscription active/i).length;
+    const unverified = screen.queryAllByText(/Access allowed without a verified subscription/i).length;
+    expect(active + unverified).toBe(1);
+  });
+
+  it('shows the mismatch note on a VERIFIED subscription too', () => {
+    // A stale catalog entry is worth saying even when the check succeeded —
+    // otherwise it only ever appears in the resolver's logs.
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paid()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paid(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({
+        state: 'ACTIVE',
+        source: 'marketplace-live',
+        licenseMode: 'marketplace-live',
+        declaredLicenseMode: 'marketplace-live',
+        catalogLicenseMode: 'simulated',
+        licenseModeMismatch: true,
+      }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
+    expect(screen.getByText(/simulator development/i)).toBeInTheDocument();
+  });
+
+  it('says nothing about licenseMode when the two agree', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paid()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paid(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({
+        state: 'ACTIVE',
+        source: 'marketplace-live',
+        licenseMode: 'marketplace-live',
+        declaredLicenseMode: 'marketplace-live',
+        catalogLicenseMode: 'marketplace-live',
+        licenseModeMismatch: false,
+      }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/licenseMode/i)).not.toBeInTheDocument();
+  });
+});

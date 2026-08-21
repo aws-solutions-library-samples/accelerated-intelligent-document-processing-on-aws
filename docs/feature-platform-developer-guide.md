@@ -176,6 +176,11 @@ Two extra fields let you tell the cases apart:
 | `entitlementSource` | How the host reached its verdict — see the table below |
 | `entitlementVerified` | `true` **only** when `entitlementSource` is `marketplace-live` and the state is ACTIVE. That is the only verified source |
 
+The host also returns `licenseMode`, `declaredLicenseMode`, `catalogLicenseMode`
+and `licenseModeMismatch` on `checkFeatureEntitlement`. Those are host-side
+diagnostics rendered by the host's own feature page; they are **not** added to
+`FeatureContext`, so the contract your extension consumes is unchanged.
+
 `entitlementSource` reports **what happened when the host checked**, which is a
 different axis from what kind of extension you are (that's the catalog's
 `oss` / `marketplace`). One extension yields different sources depending on the
@@ -195,13 +200,38 @@ listing is still a real listing and reports `marketplace-live`. `simulated` mean
 simulator, i.e. development.
 
 > **`marketplace-live` cannot be forged by configuration.** The reported source is
-> derived from whether an `AWS_ENDPOINT_URL_MARKETPLACE_*` endpoint override is in
-> effect, not from the `FeaturePlatformSubscriptionMode` parameter. Deploying with
-> `marketplace-live` while the endpoints point at a simulator is a supported
-> development setup, and it reports `simulated` — so `entitlementVerified` stays
+> derived from the endpoint the host's call actually used, not from any parameter.
+> A simulator-backed check reports `simulated`, so `entitlementVerified` stays
 > `false` and your warning still fires. If you match on the union literally, note
 > that this **narrows** what `marketplace-live` means; it adds no new value, so no
 > code change is required.
+
+### Declare which authority YOU enforce against
+
+Set `marketplace.licenseMode` in your `feature.yaml`:
+
+```yaml
+marketplace:
+  productCode: <your product code>
+  listingUrl: https://aws.amazon.com/marketplace/pp/prodview-XYZ
+  licenseMode: marketplace-live   # none | simulated | marketplace-live
+```
+
+It is baked into your template at publish time and forwarded to the host through
+`registerFeature` at install, where it lands on your `InstalledFeatures` row. The
+host **prefers your value over its own catalog entry**, so its check lands on the
+same authority you honour rather than on whatever the stack happens to be pointed
+at — and it surfaces a mismatch when its catalog disagrees, instead of showing a
+simulator-backed "Subscription active" you are going to ignore.
+
+Omitting it means `none`: an extension that says nothing is not claiming to
+enforce anything. That default is the opposite of the host catalog's
+(`marketplace-live`) on purpose — you must never lock a paying customer out, and
+the host must never over-claim verification.
+
+This does not change what you enforce or where. Your own runtime check against
+your seller-side service remains the authoritative gate; `licenseMode` only tells
+the host which authority to agree with.
 
 Use `entitlementVerified` to decide whether to **warn**; never to decide whether
 to **serve**.

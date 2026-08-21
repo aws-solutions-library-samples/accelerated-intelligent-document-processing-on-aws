@@ -2683,6 +2683,13 @@
         "name": "marketplaceListingUrl",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "licenseMode",
+        "non_null": false,
+        "type": "String"
       }
     ],
     "SectionInput": [

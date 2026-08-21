@@ -21,7 +21,7 @@ import { awsRegion } from '../../aws-exports';
 import FeatureLoader from './FeatureLoader';
 import FeatureCatalogBrowser from './FeatureCatalogBrowser';
 import { resolveFeatureDocsUrl } from './feature-docs-url';
-import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
+import { isUnverifiedGrant, isVerifiedEntitlement, licenseModeMismatchNote, unverifiedReason } from './entitlement-source';
 import {
   ActiveSubscriptionBanner,
   AwaitingAdminInstall,
@@ -219,6 +219,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
         docsUrl={docsUrl}
         marketplaceUrl={marketplaceUrl}
         canSubscribe={isAdmin}
+        licenseMode={entitlement?.licenseMode}
         onSubscribe={isAdmin ? handleSubscribe : undefined}
         subscribing={subscribing}
         subscribeError={subscribeError?.message ?? null}
@@ -351,6 +352,9 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
           featureDisplayName={featureDisplayName}
           source={entitlementSource}
           reason={unverifiedReason(entitlementSource)}
+          // Appended to the existing banner rather than added as another one —
+          // the contradictory-banner stack is what the previous change removed.
+          mismatchNote={licenseModeMismatchNote(entitlement)}
           marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
           canCancel={canCancelSubscription}
           onCancel={canCancelSubscription ? handleCancel : undefined}
@@ -363,6 +367,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
         entitlement.source !== 'auto' && (
           <ActiveSubscriptionBanner
             entitlement={entitlement}
+            mismatchNote={licenseModeMismatchNote(entitlement)}
             canCancel={canCancelSubscription}
             onCancel={canCancelSubscription ? handleCancel : undefined}
             cancelling={cancelling}

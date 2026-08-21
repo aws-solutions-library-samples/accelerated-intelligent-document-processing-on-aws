@@ -400,3 +400,103 @@ def test_oss_features_entry_without_path_is_fatal(publisher_in_tmp):
     _write_oss(tmp_path, "features:\n  - notpath: x\n")
     with pytest.raises(SystemExit):
         pub._bundled_feature_dirs()
+
+
+# ---------------------------------------------------------------------------
+# licenseMode — which authority the HOST checks, declared per extension.
+#
+# Defaulted HERE, at publish time, rather than in the resolver. The resolver's
+# fallback chain is install-row → catalog → legacy stack setting, so a runtime
+# default would shadow the legacy step and change behaviour for a stack running an
+# older catalog. Baking it means a current catalog always carries an explicit
+# value and the legacy step is reached only by a catalog that predates the field.
+# ---------------------------------------------------------------------------
+
+
+def test_license_mode_defaults_to_marketplace_live_when_absent(publisher_in_tmp):
+    """The host's default is the STRICT one.
+
+    Deliberately the opposite of the extension-side default (`none`). An
+    unrecognised or missing value must not over-claim verification for something
+    listed in the marketplace catalog, so the host degrades to the strictest
+    authority; the extension degrades to serving so it cannot lock a paying
+    customer out.
+    """
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+schemaVersion: "1.1"
+features:
+  - featureId: paid-thing
+    displayName: "Paid Thing"
+    productCode: "code"
+    productId: "prod-thing"
+""",
+    )
+    catalog = pub.write_catalog_file([])
+    (entry,) = catalog["features"]
+    assert entry["licenseMode"] == "marketplace-live"
+
+
+@pytest.mark.parametrize("mode", ["none", "simulated", "marketplace-live"])
+def test_license_mode_passthrough(publisher_in_tmp, mode):
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        f"""
+schemaVersion: "1.1"
+features:
+  - featureId: paid-thing
+    displayName: "Paid Thing"
+    licenseMode: {mode}
+""",
+    )
+    catalog = pub.write_catalog_file([])
+    (entry,) = catalog["features"]
+    assert entry["licenseMode"] == mode
+
+
+def test_unrecognised_license_mode_is_fatal(publisher_in_tmp):
+    """A typo decides which authority confirms a paid subscription.
+
+    Getting that wrong quietly is the failure the field exists to prevent, so this
+    fails the publish rather than silently downgrading.
+    """
+    pub, tmp_path = publisher_in_tmp
+    _write_marketplace(
+        tmp_path,
+        """
+schemaVersion: "1.1"
+features:
+  - featureId: paid-thing
+    displayName: "Paid Thing"
+    licenseMode: marketplace_live
+""",
+    )
+    with pytest.raises(SystemExit):
+        pub.write_catalog_file([])
+
+
+def test_oss_entries_carry_license_mode_none(publisher_in_tmp):
+    """extensions-oss.yaml needs no field, but the CATALOG states it explicitly.
+
+    One shape for every entry the host reads, rather than "absent means none here
+    and something else there".
+    """
+    pub, _tmp_path = publisher_in_tmp
+    catalog = pub.write_catalog_file(
+        [
+            {
+                "featureId": "docs-by-status",
+                "displayName": "Docs By Status",
+                "description": "",
+                "iconUrl": "",
+                "source": "oss",
+                "licenseMode": "none",
+                "latestVersion": "1.0.2",
+            }
+        ]
+    )
+    (entry,) = catalog["features"]
+    assert entry["licenseMode"] == "none"
