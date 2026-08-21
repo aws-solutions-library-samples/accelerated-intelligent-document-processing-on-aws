@@ -407,3 +407,137 @@ future dashboards):
   of HH:05" for hourly and "as of 00:15" for daily.
 - **Schema drift:** columns may be added; existing columns never
   removed or retyped without a version bump on the table name.
+
+---
+
+## Phase 2 — upcoming features planned for future work
+
+> **Status: proposed / planned, not committed.** This section lists
+> features and integrations that are **candidates for future PRs**, not
+> guarantees. Scope, timing, and priority will be decided per-item as
+> work is picked up. Nothing here is in flight today.
+
+Phase 1 (this doc's subject) delivered **infrastructure and correctness**:
+the five rollup tables, the scheduled Lambda that populates them, the
+migration custom resource, the tagging model, write-time partitioning
+on raw metering. Phase 2 is the follow-on that delivers **integration**
+(consumers reading the tables) and **the data types Phase 1 deliberately
+deferred**.
+
+Tracked as four parallel workstreams. Ordering within a track is
+dependency-sensitive; tracks are independent.
+
+### Track A — new tables (data Phase 1 had nowhere to put)
+
+- **`document_lifecycle`** — one row per document with `status`
+  (`SUCCESS` / `FAILED` / `ABORTED` / `REDACTED_SUPERSEDED`), pipeline
+  `stage`, `error_message`, `queued_at`, `completed_at`, `duration_ms`,
+  `config_version`. Written by `WorkflowTracker` on every state
+  transition (currently DynamoDB-only). Enables true success/failure
+  rates, latency percentiles, and stage-level failure attribution —
+  today's `get_volume_metrics` hardcodes `failed: 0, success_rate: 1.0`
+  because status data doesn't exist in Athena.
+- **`document_confidence`** — aggregate confidence-alert queries. Today
+  the confidence data is visible only in the per-doc UI; Phase 2 makes
+  "docs with confidence drops in the last week" a single query.
+- **`latency_hourly`** — pre-bucketed p50/p90/p99 histograms per
+  `(hour, service_api)`. Current dashboard latency comes from X-Ray +
+  a 500-doc tracking-DDB sample; Phase 2 lifts that to a single-row
+  scan at any range.
+- **`document_class` in the metering grain** — extends
+  `metering_hourly` / `metering_daily` grain from
+  `(hour, config_version, service_api, unit)` to
+  `(hour, document_class, config_version, service_api, unit)`. Blocked
+  on the classification service emitting `document_class` into
+  metering rows (write-side change).
+
+### Track B — consumer integration (make Phase 1's tables actually pay off)
+
+- **Analytics chat agent** — extend `schema_provider.py` to describe
+  all 5 rollup tables to the LLM. Add tier-picker guidance in the
+  prompt (`<2h → raw`, `2-24h → hourly`, `>24h → daily`). Add
+  cost-vs-docs split guidance: never `SELECT sum_pages FROM metering_hourly`;
+  always route volume/pages to `metering_docs_*`. Roughly half a day
+  of prompt work + testing.
+- **`analytics_cost_service.py`** — route wide-range queries through
+  the tier picker rather than always scanning raw metering.
+- **Marketplace `idp-monitor` dashboard** (external repo, the primary
+  intended consumer) — full tier picker in the dashboard resolver,
+  read volume/pages from `metering_docs_*`, read per-Lambda cost from
+  `control_plane_hourly`, fall back to raw metering for the current-hour
+  tail, set `ResultReuseConfiguration` explicitly on every
+  `StartQueryExecution`.
+
+### Track C — producers (metrics with no emitter today)
+
+- **Bedrock token emission** from control-plane Lambdas.
+  `emit_control_plane_cost_metric` supports `BedrockInputTokens` /
+  `BedrockOutputTokens` today, but no in-repo Lambda calls it with
+  Bedrock args. Rows in `control_plane_hourly` show
+  `bedrock_tokens_in/out = 0` and `est_bedrock_cost = $0` for every
+  control-plane invocation. Wire sites: analytics chat agent's
+  Bedrock calls (`converse` responses carry `usage.input_tokens` /
+  `usage.output_tokens`), agent-chat processors, marketplace
+  monitor-agent.
+- **`config_library/pricing.yaml` integration.** `BEDROCK_PRICING`
+  is currently hardcoded in `data_mart_rollup/index.py` and drifts on
+  every new Bedrock model — this is the class-of-bug that produced the
+  1000× overstate reviewer #2 caught. `pricing.yaml` is the canonical
+  unit-price source used by the data plane. Blocked on factoring out a
+  lightweight `read_bedrock_prices()` — the current reader is coupled
+  to `IDPConfig` init that the rollup Lambda doesn't hold. Once fixed,
+  kills the drift by construction.
+
+### Track D — operational hardening
+
+- **Backfill mode for the rollup Lambda.** If the Lambda misses a
+  period (like `idp-dev-qs` did after a redeploy dropped it),
+  partitions for those hours are just missing — the Lambda only ever
+  processes the immediately-previous hour. Phase 2 adds a
+  `{"mode":"backfill","start":"…","end":"…"}` payload that iterates
+  the range and calls the hourly logic per hour, using the same
+  idempotency guard so reruns are safe.
+- **Alarm on rollup absence.** The develop redeploy that dropped
+  `DataMartRollupFunction` from `idp-dev-qs` was invisible until an
+  operator noticed missing partitions. Phase 2 adds a CloudWatch alarm
+  on `AWS/Lambda/Invocations == 0 for 2 hours` → page the operator.
+- **Migration-Lambda pyarrow via layer** (currently bundled). Smaller
+  package, faster cold start.
+- **`GetResources` tag-filter chunking.** `TagFilters[].Values` caps at
+  25; the stack tree today is 6, but a deep future topology would
+  throw `ValidationException` rather than degrade. Trivial fix, low
+  urgency.
+- **Doc updates going forward.** Any Phase 2 table added must include
+  a doc-drift lint check that fails if the doc's grain description
+  doesn't match the actual `PartitionKeys` and `GROUP BY` in the SQL —
+  reviewer #2 caught two "doc says X, SQL says Y" mismatches.
+
+### Suggested sequencing (indicative)
+
+These groupings show a natural dependency order if the work is picked
+up; they aren't a commitment to ship in any particular window.
+
+- **2a — marketplace repo:** dashboard tier picker + result-reuse
+  configuration. Highest-value item because it turns the KB-vs-GB scan
+  win from theoretical to real for the primary consumer.
+- **2b — this repo:** analytics agent integration, Bedrock emission
+  wiring, `pricing.yaml` refactor.
+- **2c — this repo:** `document_lifecycle` + `document_confidence`
+  tables. Bigger scope, needs its own design doc before implementation.
+- **2d — cross-repo:** latency histograms + `document_class` in the
+  metering grain. Needs classification service change first.
+
+### What Phase 2 explicitly does NOT do
+
+- **Change any Phase 1 table shape.** Adding columns is allowed;
+  removing or renaming is not without a version bump on the table
+  name.
+- **Re-aggregate historical data.** Phase 2 tables written after
+  their deploy contain data from that point forward only. Backfilling
+  a lifecycle table for months of pre-Phase-2 tracking-DDB history is
+  out of scope.
+- **Bring feature-platform extensions into the stack-tree walk.**
+  Extensions deployed as separate top-level stacks stay invisible to
+  `_discover_control_plane_lambdas` by design — an extension author who
+  wants cost visibility must register with the reporting pipeline
+  explicitly.
