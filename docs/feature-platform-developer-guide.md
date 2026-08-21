@@ -183,9 +183,9 @@ deployment:
 
 | Source | Means | Verified |
 |---|---|---|
-| `marketplace-live` | Real buyer-side `SearchAgreements` answered | ✅ |
+| `marketplace-live` | Real buyer-side `SearchAgreements` answered — **against real AWS**. Reported only when no `AWS_ENDPOINT_URL_MARKETPLACE_*` override is in effect; the host derives this from the endpoint, not from `FeaturePlatformSubscriptionMode`, so no parameter combination can make a simulator answer claim this source | ✅ |
 | `oss` | Not a paid extension — reported in *every* deployment mode | n/a |
-| `simulated` | Seller-side `GetEntitlements` against the bundled simulator or an admin-supplied endpoint. That API returns an empty list from a buyer account, so it proves nothing against real AWS | ✗ |
+| `simulated` | The answer did not come from real AWS Marketplace: either seller-side `GetEntitlements` (which returns an empty list from a buyer account, so it proves nothing), or **any** check made while a Marketplace endpoint override points boto3 at a simulator — including `SubscriptionMode=marketplace-live` | ✗ |
 | `advisory` | The live check was **attempted and failed** (missing `aws-marketplace:SearchAgreements`, or the API is unavailable in the Region) and access was allowed rather than locking out a possibly-paying customer | ✗ |
 | `auto` | Subscription checks are switched **off** stack-wide | ✗ |
 | `none` | No `productCode` registered — state is `NONE`, access denied | ✗ |
@@ -193,6 +193,15 @@ deployment:
 There is no separate source for "pre-release": a `Limited`-visibility Marketplace
 listing is still a real listing and reports `marketplace-live`. `simulated` means a
 simulator, i.e. development.
+
+> **`marketplace-live` cannot be forged by configuration.** The reported source is
+> derived from whether an `AWS_ENDPOINT_URL_MARKETPLACE_*` endpoint override is in
+> effect, not from the `FeaturePlatformSubscriptionMode` parameter. Deploying with
+> `marketplace-live` while the endpoints point at a simulator is a supported
+> development setup, and it reports `simulated` — so `entitlementVerified` stays
+> `false` and your warning still fires. If you match on the union literally, note
+> that this **narrows** what `marketplace-live` means; it adds no new value, so no
+> code change is required.
 
 Use `entitlementVerified` to decide whether to **warn**; never to decide whether
 to **serve**.
@@ -228,10 +237,11 @@ What actually works, in descending order of strength:
    seller-side and handle it commercially.
 
 The host does its part by making unverified access **visible** rather than
-silent: the feature page shows a "Subscription not verified" warning, and the
-`UnverifiedEntitlementGrant` CloudWatch metric (namespace `GENAIDP`, dimensions
-`FeatureId` + `EntitlementSource`) fires whenever a paid extension is served from
-`auto` or `advisory`. Note this is **customer-side observability** — it lands in
+silent: the feature page shows a single "Access allowed without a verified
+subscription · source: `<source>`" warning — and *only* that one, never alongside
+a green "Subscription active" — and the `UnverifiedEntitlementGrant` CloudWatch
+metric (namespace `GENAIDP`, dimensions `FeatureId` + `EntitlementSource`) fires
+whenever a paid extension is served from `auto`, `advisory` or `simulated`. Note this is **customer-side observability** — it lands in
 the customer's CloudWatch, not the seller's — so it helps an admin notice a
 misconfigured or unsubscribed stack. It is not revenue protection.
 

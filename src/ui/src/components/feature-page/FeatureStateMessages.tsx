@@ -123,8 +123,10 @@ export const SubscriptionRequired: React.FC<{
 /** Installable (not yet installed) — admin sees this.
  *
  * For OSS features there is no subscription concept, so the wording is purely
- * about installing. For marketplace features (active subscription) the wording
- * notes the active subscription.
+ * about installing. For marketplace features the wording follows whether the
+ * subscription was actually verified — claiming "your subscription is active"
+ * off the back of an `auto` / `advisory` / `simulated` grant is the same lie the
+ * installed page used to tell, one screen earlier.
  */
 export const InstallPrompt: React.FC<{
   featureDisplayName: string;
@@ -133,10 +135,12 @@ export const InstallPrompt: React.FC<{
   docsUrl?: string | null;
   /** True for open-source features (no AWS Marketplace subscription). */
   isOss?: boolean;
+  /** True when access is being allowed without a confirmed subscription. */
+  unverified?: boolean;
   loading: boolean;
   onInstall: () => void;
   errorMessage: string | null;
-}> = ({ featureDisplayName, description, docsUrl, isOss, loading, onInstall, errorMessage }) => (
+}> = ({ featureDisplayName, description, docsUrl, isOss, unverified, loading, onInstall, errorMessage }) => (
   <Container
     header={
       <Header
@@ -145,7 +149,9 @@ export const InstallPrompt: React.FC<{
           description ||
           (isOss
             ? 'Install this extension to add it to your IDP stack.'
-            : 'Your subscription is active. Install the feature stack to unlock it.')
+            : unverified
+              ? 'Your subscription could not be confirmed. You can still install the feature stack.'
+              : 'Your subscription is active. Install the feature stack to unlock it.')
         }
       >
         {featureDisplayName}
@@ -153,10 +159,18 @@ export const InstallPrompt: React.FC<{
     }
   >
     <SpaceBetween size="l">
-      <Alert type={isOss ? 'info' : 'success'} header={isOss ? 'Ready to install' : 'Subscription active'}>
+      <Alert
+        type={isOss ? 'info' : unverified ? 'warning' : 'success'}
+        header={isOss ? 'Ready to install' : unverified ? 'Subscription not verified' : 'Subscription active'}
+      >
         {isOss ? (
           <>
             <b>{featureDisplayName}</b> is available to install. Install the feature stack into this account to start using it.
+          </>
+        ) : unverified ? (
+          <>
+            The host could not confirm an AWS Marketplace subscription for <b>{featureDisplayName}</b>, and is allowing installation anyway.
+            The extension performs its own subscription check at runtime, so it may still refuse to work until you subscribe.
           </>
         ) : (
           <>
@@ -185,11 +199,13 @@ export const InstallPrompt: React.FC<{
 );
 
 /** Installable but not yet installed — non-admin sees this. */
-export const AwaitingAdminInstall: React.FC<{ featureDisplayName: string; docsUrl?: string | null; isOss?: boolean }> = ({
-  featureDisplayName,
-  docsUrl,
-  isOss,
-}) => (
+export const AwaitingAdminInstall: React.FC<{
+  featureDisplayName: string;
+  docsUrl?: string | null;
+  isOss?: boolean;
+  /** True when access is being allowed without a confirmed subscription. */
+  unverified?: boolean;
+}> = ({ featureDisplayName, docsUrl, isOss, unverified }) => (
   <Container
     header={
       <Header variant="h1" description="This feature has not been installed yet.">
@@ -203,6 +219,11 @@ export const AwaitingAdminInstall: React.FC<{ featureDisplayName: string; docsUr
           <>
             <b>{featureDisplayName}</b> is available but has not been installed into this IDP stack yet. Ask an IDP administrator to install
             it.
+          </>
+        ) : unverified ? (
+          <>
+            <b>{featureDisplayName}</b> has not been installed into this IDP stack yet, and the host could not confirm an AWS Marketplace
+            subscription for it. Ask an IDP administrator to install it.
           </>
         ) : (
           <>
@@ -218,22 +239,17 @@ export const AwaitingAdminInstall: React.FC<{ featureDisplayName: string; docsUr
 
 /** Installed, version matches latest.
  *
- * For OSS / auto-subscribe features (source 'auto') there is no Marketplace
- * subscription, so we show a plain "up to date" with no source suffix. For
- * marketplace/simulator subscriptions we annotate the source.
+ * Deliberately says nothing about the subscription. It used to append the
+ * entitlement source — rendering "v0.5.1 — up to date (advisory)" as a third
+ * banner in a stack that already disagreed with itself about whether the
+ * subscription was active. The version and the subscription are separate facts;
+ * the subscription is stated exactly once, by the banner above this one.
  */
-export const UpToDateBanner: React.FC<{ version: string; source: FeatureEntitlement['source'] }> = ({ version, source }) => {
-  // Annotate only when there is a subscription source worth naming. `auto` means
-  // checks are off and `oss` means there is no subscription at all, so a suffix
-  // there is noise at best and misleading at worst. Typed to the union so an
-  // invalid source is a compile error rather than odd banner text.
-  const showSource = source !== 'auto' && source !== 'oss';
-  return (
-    <Alert type="success" statusIconAriaLabel="Active" dismissible={false}>
-      v{version} — up to date{showSource ? ` (${source})` : ''}
-    </Alert>
-  );
-};
+export const UpToDateBanner: React.FC<{ version: string }> = ({ version }) => (
+  <Alert type="success" statusIconAriaLabel="Active" dismissible={false}>
+    v{version} — up to date
+  </Alert>
+);
 
 /** ACTIVE + installed, newer version available. */
 export const UpdateAvailableBanner: React.FC<{
@@ -297,8 +313,8 @@ function formatDate(iso: string | null): string | null {
  */
 /**
  * Shown when the host is granting access to a PAID extension without having
- * verified a subscription — `auto` (checks off) or `advisory` (check
- * unreachable, allowed rather than locked out).
+ * verified a subscription — `auto` (checks off), `advisory` (check unreachable,
+ * allowed rather than locked out), or `simulated` (aimed at a simulator).
  *
  * This state is otherwise invisible: the page looks identical to a real
  * subscription. Making it visible is the point — it removes the plausible
@@ -306,28 +322,62 @@ function formatDate(iso: string | null): string | null {
  * an admin who *is* paying that their entitlement isn't being confirmed (usually
  * a missing `aws-marketplace:SearchAgreements` permission) so they can fix it.
  *
+ * This is the ONLY subscription banner an unverified state renders. It used to
+ * appear directly above a green `ActiveSubscriptionBanner` reading "Subscription
+ * active", so the page asserted both "not verified" and "active" at once — worse
+ * than either alone, and it made the extension's own honest "no subscription
+ * found" panel read as a third opinion rather than the answer. Hence the header
+ * states what actually happened and names the source, and
+ * `FeaturePage` renders the two banners mutually exclusively.
+ *
  * Deliberately a warning, not an error, and it blocks nothing: the host gate is
  * advisory by design, and blocking here would lock out a paying customer whenever
  * the Marketplace API had a bad day.
  */
 export const UnverifiedSubscriptionBanner: React.FC<{
   featureDisplayName: string;
+  /** The reported source, shown verbatim so the page agrees with `entitlementSource`. */
+  source: FeatureEntitlement['source'];
   /** Why it's unverified — from `unverifiedReason(source)`. */
   reason: string;
   /** The listing, so an admin can go and subscribe properly. */
   marketplaceUrl?: string;
-}> = ({ featureDisplayName, reason, marketplaceUrl }) => (
-  <Alert type="warning" header="Subscription not verified" statusIconAriaLabel="Warning">
+  /**
+   * Admin-only, simulator-backed subscriptions only. The Cancel action lives
+   * HERE rather than on a second banner: this is the only subscription banner an
+   * unverified state renders, so the action has to travel with it or the
+   * simulator dev loop loses its off switch.
+   */
+  canCancel?: boolean;
+  onCancel?: () => void;
+  cancelling?: boolean;
+  cancelError?: string | null;
+}> = ({ featureDisplayName, source, reason, marketplaceUrl, canCancel, onCancel, cancelling, cancelError }) => (
+  <Alert type="warning" header={`Access allowed without a verified subscription · source: ${source}`} statusIconAriaLabel="Warning">
     <SpaceBetween size="s">
       <Box variant="span">
         Access to <b>{featureDisplayName}</b> is being allowed without a confirmed AWS Marketplace subscription. {reason}
       </Box>
-      {marketplaceUrl && (
+      {(marketplaceUrl || (canCancel && onCancel)) && (
         <Box>
-          <Button iconName="external" href={marketplaceUrl} target="_blank">
-            View subscription on AWS Marketplace
-          </Button>
+          <SpaceBetween direction="horizontal" size="s">
+            {marketplaceUrl && (
+              <Button iconName="external" href={marketplaceUrl} target="_blank">
+                View subscription on AWS Marketplace
+              </Button>
+            )}
+            {canCancel && onCancel && (
+              <Button loading={cancelling} onClick={onCancel}>
+                Cancel Subscription
+              </Button>
+            )}
+          </SpaceBetween>
         </Box>
+      )}
+      {cancelError && (
+        <Alert type="error" header="Failed to cancel subscription">
+          {cancelError}
+        </Alert>
       )}
     </SpaceBetween>
   </Alert>

@@ -207,19 +207,41 @@ scripts/marketplace/verify_entitlement.sh <productCode> <productId> [listingId]
 It runs both APIs side by side with a positive control, so an empty result is
 distinguishable from a broken one.
 
-> **Simulator-backed modes count as UNVERIFIED.** The `simulator` and
-> `marketplace` deployment modes both mean boto3 was pointed at whatever
-> `FeaturePlatformSimulatorEndpoint` names, so neither is evidence of a real
-> subscription. Because a consumer cannot act on the difference, both report a
-> single `entitlementSource: simulated`. That reports
-> `entitlementVerified: false`, raises the "Subscription not verified" banner, and
-> fires the `UnverifiedEntitlementGrant` metric — the same treatment as `auto` and
-> `advisory`. Only `marketplace-live` counts as checked. Expect the banner in
-> development; if you see it in production, the stack is pointed at a simulator.
+> **Anything simulator-backed counts as UNVERIFIED — including
+> `marketplace-live`.** `FeaturePlatformSubscriptionMode` chooses *which API* the
+> host calls; `FeaturePlatformSimulatorEndpoint` chooses *where the call goes*.
+> They are independent, and only the second decides what the host may claim: if a
+> Marketplace endpoint override is in effect, the answer came from a server the
+> operator chose, so it is reported as `entitlementSource: simulated` whatever the
+> mode says. That reports `entitlementVerified: false`, raises the "Access allowed
+> without a verified subscription" banner, and fires the
+> `UnverifiedEntitlementGrant` metric — the same treatment as `auto` and
+> `advisory`. Only a `marketplace-live` check against **real AWS** counts as
+> checked. Expect the banner in development; if you see it in production, the
+> stack is pointed at a simulator.
 >
-> The two modes stay distinct as *deployment* settings because they behave
-> differently in the resolver (only `simulator` synthesises a productCode), but
-> the source reported to extensions is deliberately decoupled from the mode name.
+> Deriving this from the endpoint rather than from the mode parameter is
+> deliberate: previously the source was the parameter, so
+> `FeaturePlatformSubscriptionMode=marketplace-live` plus a simulator endpoint
+> reported simulator answers as a *verified live Marketplace check* — silently
+> fooling any extension following the documented advice to trust
+> `entitlementVerified`. The combination itself is legitimate (it is how the
+> buyer-side path is developed) and is **not** refused at deploy time; what was
+> wrong was the claim, not the configuration.
+>
+> `simulator` and `marketplace` stay distinct as *deployment* settings because
+> they behave differently in the resolver (only `simulator` synthesises a
+> productCode), but the source reported to extensions is deliberately decoupled
+> from the mode name.
+>
+> **Developing against the simulator.** The bundled marketplace-simulator
+> implements a subset of the Agreement API: it rejects the buyer-side `PartyType`
+> filter, and it records agreements under the product **code** rather than the
+> product entity id (its buyer console is keyed on `productCode`). The resolver
+> accommodates both — but only when an endpoint override is in effect, since real
+> AWS accepts `PartyType` and rejects the reduced filter set outright. The
+> production query is therefore never weakened, and nothing found via those
+> retries can be reported as verified.
 
 ### "Update available" badges
 

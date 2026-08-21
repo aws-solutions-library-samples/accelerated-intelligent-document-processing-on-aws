@@ -157,6 +157,16 @@ Parameters:
     # because they are one code path and indistinguishable to a consumer. The
     # modes stay separate because they differ here (only 'simulator' synthesises
     # a productCode).
+    #
+    # This parameter CANNOT make the host claim a verified subscription. The
+    # reported entitlementSource is derived in the resolver from whether an
+    # AWS_ENDPOINT_URL_MARKETPLACE_* override is in effect, not from this value:
+    # 'marketplace-live' + a simulator endpoint reports 'simulated', because the
+    # answer did not come from AWS. Setting the two inconsistently is legitimate
+    # (it is how the buyer-side path is developed against the simulator) and so
+    # is deliberately NOT refused at deploy time — what was wrong was the claim,
+    # not the configuration. See _reported_source in
+    # lambdas/check_feature_entitlement/index.py.
     AllowedValues: ['auto', 'simulator', 'marketplace', 'marketplace-live']
     Description: Sets the SIMULATOR_SOURCE_TAG env var on the entitlement
       Lambdas. 'auto' short-circuits checkFeatureEntitlement to ACTIVE for
@@ -177,9 +187,15 @@ Parameters:
     Type: String
     Default: 'us-east-1'
     Description: Region the AWS Marketplace Agreement API (SearchAgreements) is
-      called in when SubscriptionMode is 'marketplace-live'. AWS Marketplace
-      itself lives in us-east-1 and the API is not available in every region, so
-      change this only if AWS documents a closer endpoint for your partition.
+      called in when SubscriptionMode is 'marketplace-live'. In the 'aws'
+      partition the API exists ONLY in us-east-1 (verified against the SDK's
+      endpoint data) — setting this to the stack's own Region makes every
+      SearchAgreements call fail to connect and every entitlement degrade
+      permanently to 'advisory'. Leave it at the default unless AWS documents an
+      endpoint for your partition; the resolver logs a loud warning at cold
+      start if the value isn't a Region the Agreement API is published in.
+      Not constrained by AllowedValues so GovCloud/ISO partitions can still set
+      their own endpoint if one appears.
 
   DefaultCustomerIdentifier:
     Type: String
@@ -537,6 +553,12 @@ Resources:
           # A simulator that does NOT implement SearchAgreements simply errors,
           # which the resolver maps to UNKNOWN -> advisory ACTIVE with a loud
           # log. That is a safe degradation, not a hard failure.
+          #
+          # Setting this to a non-empty value ALSO forces the reported
+          # entitlementSource down to 'simulated' whatever SubscriptionMode says
+          # — the resolver derives the source from this variable, so a
+          # simulator-backed check can never be reported as 'marketplace-live'
+          # (the only source extensions are told to trust).
           AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT: !Ref SimulatorEntitlementEndpoint
           # AWS Marketplace lives in us-east-1; the Agreement API used by
           # SubscriptionMode=marketplace-live is not available in every region.

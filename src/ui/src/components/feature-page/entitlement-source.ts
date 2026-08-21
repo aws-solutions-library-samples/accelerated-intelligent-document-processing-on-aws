@@ -8,10 +8,14 @@ type Source = FeatureEntitlement['source'];
 /**
  * The only source that represents a **real** subscription check.
  *
- * `marketplace-live` calls the buyer-side AWS Marketplace Agreement API. By
- * default that is real AWS; it can be pointed at a simulator via
- * `AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT`, which the host cannot detect — so
- * this is "as verified as the host can know", not a guarantee.
+ * `marketplace-live` calls the buyer-side AWS Marketplace Agreement API against
+ * real AWS. It is reported ONLY when no `AWS_ENDPOINT_URL_MARKETPLACE_*`
+ * override is in effect: `check_feature_entitlement` derives the source from the
+ * endpoint rather than from the `SubscriptionMode` parameter, so a
+ * simulator-backed check reports `simulated` however the stack is configured.
+ * (It previously copied the parameter, which let a stack pointed at a simulator
+ * report simulator answers as a verified live Marketplace check — the exact
+ * bypass this module exists to surface.)
  *
  * Deliberately EXCLUDED, and each exclusion is load-bearing:
  *  - `simulated`  — the seller-side GetEntitlements path, whether aimed at the
@@ -64,7 +68,7 @@ export function unverifiedReason(source: Source | undefined): string {
     return 'Subscription checks are turned off for this deployment (FeaturePlatformSubscriptionMode=auto), so every extension is treated as subscribed.';
   }
   if (source === 'advisory') {
-    return "The AWS Marketplace subscription check could not be completed, so access was allowed rather than blocking a subscription you may hold. This usually means the host is missing the aws-marketplace:SearchAgreements permission, or the Agreement API isn't available in this Region.";
+    return "The AWS Marketplace subscription check could not be completed, so access was allowed rather than blocking a subscription you may hold. Either the host is missing the aws-marketplace:SearchAgreements permission, or it is calling the Agreement API in a Region that doesn't host it (MarketplaceAgreementRegion must be us-east-1). The resolver's CloudWatch logs name which.";
   }
   if (source === 'simulated') {
     return 'This deployment is pointed at a marketplace simulator or a custom entitlement endpoint (FeaturePlatformSimulatorEndpoint), not real AWS Marketplace, so the subscription shown here is simulated. Expected in development; not expected in production.';

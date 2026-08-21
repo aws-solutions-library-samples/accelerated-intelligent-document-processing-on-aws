@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 import pytest
 from _helpers import make_appsync_event
+from botocore.exceptions import ClientError, EndpointConnectionError
 from botocore.stub import Stubber
 
 _CATALOG_KEY = "config_library/catalog.json"
@@ -28,6 +29,13 @@ def _seed_row(table_name, feature_id, *, product_code=None):
     )
 
 
+_ENDPOINT_VARS = (
+    "AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT",
+    "AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE",
+    "AWS_ENDPOINT_URL",
+)
+
+
 def _preload(
     monkeypatch,
     load_lambda,
@@ -37,6 +45,9 @@ def _preload(
     buyer_account="111122223333",
     source_tag="simulator",
     configuration_bucket="",
+    endpoint_override=None,
+    endpoint_var="AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT",
+    agreement_region=None,
 ):
     monkeypatch.setenv("INSTALLED_FEATURES_TABLE", table_name)
     monkeypatch.setenv("DEFAULT_CUSTOMER_IDENTIFIER", default_customer)
@@ -48,6 +59,16 @@ def _preload(
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    # Endpoint overrides decide the REPORTED source, so every test must be
+    # explicit about them rather than inheriting the developer's shell.
+    for var in _ENDPOINT_VARS:
+        monkeypatch.delenv(var, raising=False)
+    if endpoint_override is not None:
+        monkeypatch.setenv(endpoint_var, endpoint_override)
+    if agreement_region is not None:
+        monkeypatch.setenv("MARKETPLACE_AGREEMENT_REGION", agreement_region)
+    else:
+        monkeypatch.delenv("MARKETPLACE_AGREEMENT_REGION", raising=False)
     return load_lambda("check_feature_entitlement")
 
 
@@ -1018,6 +1039,340 @@ def test_oss_reports_oss_in_every_mode(monkeypatch, mock_stack, load_lambda, mod
     )
     assert result["state"] == "ACTIVE"
     assert result["source"] == "oss", f"mode {mode!r} relabelled an OSS extension"
+
+
+SIMULATOR_ENDPOINT = "https://simulator.example.invalid"
+
+
+def _filters(product, *, party_type=True):
+    """The expected SearchAgreements filter list, mirroring the resolver."""
+    filters = []
+    if party_type:
+        filters.append({"name": "PartyType", "values": ["Acceptor"]})
+    filters.extend(
+        [
+            {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+            {"name": "ResourceIdentifier", "values": [product]},
+            {"name": "Status", "values": ["ACTIVE"]},
+        ]
+    )
+    return filters
+
+
+def _queue_agreements(mod, calls):
+    """Queue an ordered list of SearchAgreements outcomes on the module's client.
+
+    Each entry is ``(product, party_type, summaries_or_error_code)``. Stubber
+    asserts the exact request for every call, so the queue pins BOTH the number
+    of calls and the filter set each one used — which is the point: the
+    production query must not change.
+    """
+    stubber = Stubber(mod._agreement_client())
+    for product, party_type, outcome in calls:
+        expected = {
+            "catalog": "AWSMarketplace",
+            "filters": _filters(product, party_type=party_type),
+        }
+        if isinstance(outcome, str):
+            stubber.add_client_error(
+                "search_agreements",
+                service_error_code=outcome,
+                expected_params=expected,
+            )
+        else:
+            stubber.add_response(
+                "search_agreements",
+                {"agreementViewSummaries": outcome},
+                expected,
+            )
+    stubber.activate()
+    return stubber
+
+
+def _live_mod(monkeypatch, mock_stack, load_lambda, **kw):
+    _put_catalog(mock_stack["bucket"], [_mp_catalog_entry()])
+    return _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=mock_stack["bucket"],
+        **kw,
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE load-bearing invariant: an endpoint-overridden deployment cannot produce
+# a VERIFIED entitlement.
+#
+# `marketplace-live` is the only source `isVerifiedEntitlement()` accepts and the
+# only one extension authors are told to trust (`entitlementVerified`). It used
+# to be copied straight from the SubscriptionMode parameter, so a stack whose
+# Marketplace endpoints were aimed at a simulator reported simulator answers as a
+# verified live Marketplace check — an extension following the documented advice
+# was silently fooled by a fake Marketplace. The source is now DERIVED from the
+# endpoint, which is what makes the claim unforgeable by configuration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("var", _ENDPOINT_VARS)
+def test_endpoint_override_never_reports_marketplace_live(
+    monkeypatch, load_lambda, var
+):
+    """Each of the three override vars downgrades the reported source.
+
+    Covers `AWS_ENDPOINT_URL` too — the global botocore override redirects the
+    Agreement API just as effectively as the service-specific one, so reading
+    only the service-specific vars would leave a hole.
+    """
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        source_tag="marketplace-live",
+        endpoint_override=SIMULATOR_ENDPOINT,
+        endpoint_var=var,
+    )
+    assert mod._ENDPOINT_OVERRIDE == SIMULATOR_ENDPOINT
+    assert mod._REPORTED_SOURCE == "simulated", (
+        f"{var} pointed boto3 at a simulator but the host still reported "
+        f"{mod._REPORTED_SOURCE!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "tag,override,expected",
+    [
+        ("marketplace-live", "", "marketplace-live"),
+        ("marketplace-live", SIMULATOR_ENDPOINT, "simulated"),
+        ("marketplace", "", "simulated"),
+        ("marketplace", SIMULATOR_ENDPOINT, "simulated"),
+        ("simulator", SIMULATOR_ENDPOINT, "simulated"),
+        ("auto", "", "auto"),
+        ("auto", SIMULATOR_ENDPOINT, "auto"),
+    ],
+)
+def test_reported_source_matrix(monkeypatch, load_lambda, tag, override, expected):
+    """The full (mode x endpoint) matrix, in one place.
+
+    `auto` keeps its own source even with an endpoint set: it makes no API call
+    at all, so "simulated" would be a lie in the other direction — and `auto` is
+    already an unverified source.
+    """
+    mod = _preload(monkeypatch, load_lambda, source_tag="marketplace-live")
+    assert mod._reported_source(tag, override) == expected
+
+
+def test_empty_endpoint_env_var_is_not_an_override(monkeypatch, load_lambda):
+    """The template ALWAYS sets these vars — to '' when no simulator is used.
+
+    So presence must not count; only a non-empty value does. Reading presence
+    would report every production stack as `simulated` and make the verified
+    source unreachable.
+    """
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        source_tag="marketplace-live",
+        endpoint_override="",  # exactly what CloudFormation emits by default
+    )
+    assert mod._ENDPOINT_OVERRIDE == ""
+    assert mod._REPORTED_SOURCE == "marketplace-live"
+
+
+def test_simulator_backed_active_agreement_reports_simulated(
+    monkeypatch, mock_stack, load_lambda
+):
+    """End-to-end: mode=marketplace-live + simulator endpoint + an ACTIVE
+    agreement → state ACTIVE but source `simulated`, so
+    `isVerifiedEntitlement()` is false and the UI raises the unverified banner."""
+    mod = _live_mod(
+        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
+    )
+    _queue_agreements(
+        mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "simulated"
+    assert result["source"] != "marketplace-live"
+
+
+def test_simulator_backed_none_reports_simulated(monkeypatch, mock_stack, load_lambda):
+    """The NONE branch reported the live tag from its own literal — fix both."""
+    mod = _live_mod(
+        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
+    )
+    # Neither identifier matches — the honest simulator "not subscribed" case.
+    _queue_agreements(
+        mod,
+        [("prod-a5ee62vs2xa72", True, []), ("q0k0s3zuuga46hle6fecx547", True, [])],
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "NONE"
+    assert result["source"] == "simulated"
+
+
+def test_simulator_backed_grant_emits_unverified_metric(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A simulator-backed ACTIVE on the live path is an unverified grant, and the
+    operator-side metric must see it — it previously looked like a clean verified
+    subscription and recorded nothing."""
+    mod = _live_mod(
+        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
+    )
+    _queue_agreements(
+        mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert emitted == [("idp-auto-optimizer", "simulated")]
+
+
+def test_real_aws_active_still_verified_and_silent(
+    monkeypatch, mock_stack, load_lambda
+):
+    """The production path is unchanged: no override → `marketplace-live`, no
+    metric, one call, canonical four-filter query."""
+    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
+    _queue_agreements(
+        mod, [("prod-a5ee62vs2xa72", True, [{"agreementId": "a", "status": "ACTIVE"}])]
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "marketplace-live"
+    assert emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Simulator compatibility for the buyer-side query.
+#
+# Root cause of the live incident: the simulator implements a SUBSET of the API
+# and rejects `PartyType` outright (`ValidationException: unknown filter name:
+# PartyType`), so every check on a simulator-backed stack degraded to `advisory`.
+# It also records agreements under the product CODE, not the product ENTITY id,
+# because its buyer console is keyed on productCode.
+#
+# Both accommodations are gated on an endpoint override being in effect, because
+# real AWS accepts PartyType and REJECTS the reduced filter set
+# (`ValidationException: Provided combination of filters is not supported`) —
+# verified against a live account. So the production query can't be weakened.
+# ---------------------------------------------------------------------------
+
+
+def test_simulator_partytype_rejection_retries_without_it(
+    monkeypatch, mock_stack, load_lambda
+):
+    mod = _live_mod(
+        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
+    )
+    _queue_agreements(
+        mod,
+        [
+            ("prod-a5ee62vs2xa72", True, "ValidationException"),
+            (
+                "prod-a5ee62vs2xa72",
+                False,
+                [{"agreementId": "a", "status": "ACTIVE"}],
+            ),
+        ],
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    # Still not a verified source — the retry doesn't launder the answer.
+    assert result["source"] == "simulated"
+
+
+def test_simulator_falls_back_to_product_code(monkeypatch, mock_stack, load_lambda):
+    """productId matches nothing on the simulator; the productCode does."""
+    mod = _live_mod(
+        monkeypatch, mock_stack, load_lambda, endpoint_override=SIMULATOR_ENDPOINT
+    )
+    _queue_agreements(
+        mod,
+        [
+            ("prod-a5ee62vs2xa72", True, []),
+            (
+                "q0k0s3zuuga46hle6fecx547",
+                True,
+                [{"agreementId": "a", "status": "ACTIVE"}],
+            ),
+        ],
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "simulated"
+
+
+def test_real_aws_does_not_retry_on_validation_error(
+    monkeypatch, mock_stack, load_lambda
+):
+    """No override → no relaxed retry. A single canonical call, then advisory.
+
+    Retrying against real AWS would drop `PartyType` from the one filter
+    combination AWS accepts, and the reduced query is rejected there anyway —
+    so a retry could only ever hide the real error.
+    """
+    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
+    stubber = _queue_agreements(
+        mod, [("prod-a5ee62vs2xa72", True, "ValidationException")]
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+    # Nothing left unconsumed → exactly one call was made.
+    stubber.assert_no_pending_responses()
+
+
+def test_real_aws_does_not_fall_back_to_product_code(
+    monkeypatch, mock_stack, load_lambda
+):
+    """On real AWS, `ResourceIdentifier` is the product ENTITY id, full stop. An
+    authoritative empty result must stay NONE rather than being re-queried under
+    an id the API doesn't index."""
+    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
+    stubber = _queue_agreements(mod, [("prod-a5ee62vs2xa72", True, [])])
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "NONE"
+    assert result["source"] == "marketplace-live"
+    stubber.assert_no_pending_responses()
+
+
+def test_access_denied_and_unreachable_get_different_diagnostics(
+    monkeypatch, mock_stack, load_lambda
+):
+    """ "Missing permission" and "wrong Region" have different fixes.
+
+    Collapsing them sent an operator who had merely set
+    MARKETPLACE_AGREEMENT_REGION to their own Region hunting for an IAM grant
+    they already had.
+    """
+    mod = _live_mod(monkeypatch, mock_stack, load_lambda)
+    denied = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
+        "SearchAgreements",
+    )
+    assert "ACCESS DENIED" in mod._diagnose_agreement_failure(denied)
+    unreachable = EndpointConnectionError(endpoint_url="https://x.invalid")
+    assert "UNREACHABLE" in mod._diagnose_agreement_failure(unreachable)
+
+
+def test_bad_agreement_region_warns_at_cold_start(
+    monkeypatch, mock_stack, load_lambda, caplog
+):
+    """us-west-2 has no Agreement API endpoint — verified against the SDK's own
+    endpoint data. The parameter is operator-settable, so say so loudly instead
+    of leaving a permanent `advisory` that blames IAM."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING):
+        _live_mod(monkeypatch, mock_stack, load_lambda, agreement_region="us-west-2")
+    assert any(
+        "MARKETPLACE_AGREEMENT_REGION" in m and "us-west-2" in m
+        for m in caplog.messages
+    ), caplog.messages
 
 
 def test_unknown_catalog_entry_is_not_treated_as_oss(

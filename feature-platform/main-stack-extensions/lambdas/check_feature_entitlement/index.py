@@ -22,6 +22,21 @@ production-capable paths plus the dev simulator, selected by
                        endpoint is set — see docs/feature-platform.md
                        "Deployment modes".
 
+WHICH API we call and WHERE the call goes are two independent axes, and only one
+of them decides what we may CLAIM
+-----------------------------------------------------------------------------
+`SIMULATOR_SOURCE_TAG` picks the API. `AWS_ENDPOINT_URL_MARKETPLACE_*` picks the
+server. An operator can set them inconsistently — `marketplace-live` with the
+endpoint aimed at a simulator is in fact the supported way to develop the live
+path — so the mode alone cannot be trusted to describe what happened.
+
+The reported `source` is therefore DERIVED, not copied from the parameter: if an
+endpoint override is in effect the answer came from something that is not AWS, so
+it is reported as `simulated` however the mode is set. `marketplace-live` — the
+only source `isVerifiedEntitlement()` treats as real, and the only one extension
+authors are told to trust — is reachable only when boto3 is talking to real AWS
+Marketplace. See `_reported_source`.
+
 Why `marketplace-live` doesn't just call GetEntitlements
 -------------------------------------------------------
 `GetEntitlements` cannot work as a buyer-side gate, for two independent reasons
@@ -97,6 +112,10 @@ Environment:
                                (the deterministic key shared with subscribeFeature).
     SIMULATOR_SOURCE_TAG       "auto" | "simulator" | "marketplace" | "marketplace-live"
     MARKETPLACE_AGREEMENT_REGION  Region for the Agreement API (default us-east-1)
+    AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT           (optional) botocore endpoint
+    AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE  overrides. Non-empty means
+    AWS_ENDPOINT_URL                                  "not real AWS", which
+                               downgrades the reported source to `simulated`.
     CONFIGURATION_BUCKET       (optional) bucket holding catalog.json; used to
                                detect OSS features and to resolve productCode /
                                productId before install. Blank disables both.
@@ -135,23 +154,127 @@ _AGREEMENT_REGION = os.environ.get("MARKETPLACE_AGREEMENT_REGION", "us-east-1")
 # so `simulator` / `marketplace` (dev + CI) behave EXACTLY as before.
 _LIVE_TAG = "marketplace-live"
 
-# The DEPLOYMENT MODE and the SOURCE REPORTED TO EXTENSIONS are deliberately
-# separate concerns, and this is where they part company.
+
+def _agreement_api_regions() -> frozenset:
+    """Regions where the Agreement API exists, across every known partition.
+
+    Read from the bundled botocore endpoint data rather than hardcoded, so it
+    tracks the SDK. In the `aws` partition that is `{us-east-1}` only — the API
+    does not exist in us-west-2, and `MARKETPLACE_AGREEMENT_REGION` is an
+    operator-settable parameter, so pointing it at the stack's own Region is an
+    easy mistake that turns every check into a permanent `advisory` with a
+    misleading "missing permission" message. We warn instead of refusing: the
+    union across partitions keeps a GovCloud/ISO deployment from being told its
+    own correct Region is wrong.
+    """
+    try:
+        session = boto3.Session()
+        return frozenset(
+            region
+            for partition in session.get_available_partitions()
+            for region in session.get_available_regions(
+                "marketplace-agreement", partition_name=partition
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not break import
+        logger.debug("Could not enumerate Agreement API regions: %s", exc)
+        return frozenset()
+
+
+_AGREEMENT_API_REGIONS = _agreement_api_regions()
+
+# Endpoint overrides that point boto3 at something other than real AWS.
 #
-# `SIMULATOR_SOURCE_TAG` has four modes because they behave differently *here*
-# (notably `simulator` synthesises a productCode below). But `simulator` and
-# `marketplace` are indistinguishable to a CONSUMER: both call the seller-side
-# GetEntitlements API, which returns 200-with-an-empty-list from a buyer account
-# and therefore proves nothing against real AWS. Both were already reported as
-# unverified and already shared one explanation string in the UI.
-#
-# So both collapse to one reported source, `simulated`. Reporting the mode
-# verbatim also made `marketplace` — the WEAKEST source — read more
-# authoritative than `marketplace-live`, which is exactly backwards.
-_REPORTED_SOURCE = {
-    "simulator": "simulated",
-    "marketplace": "simulated",
-}.get(_SOURCE_TAG, _SOURCE_TAG)
+# botocore derives the two service-specific names from the service models
+# ("Marketplace Agreement" / "Marketplace Entitlement Service"); `AWS_ENDPOINT_URL`
+# is the global override that applies to every service. The CloudFormation
+# template ALWAYS sets the two service-specific vars — to the empty string when
+# no simulator is configured — so presence is meaningless here and only a
+# non-empty value counts.
+_ENDPOINT_OVERRIDE_VARS = (
+    "AWS_ENDPOINT_URL_MARKETPLACE_AGREEMENT",
+    "AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE",
+    "AWS_ENDPOINT_URL",
+)
+
+
+def _endpoint_override() -> str:
+    """Return the first non-empty Marketplace endpoint override, else ""."""
+    for var in _ENDPOINT_OVERRIDE_VARS:
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+_ENDPOINT_OVERRIDE = _endpoint_override()
+
+
+def _reported_source(source_tag: str, endpoint_override: str) -> str:
+    """Map the deployment MODE to the source we may honestly REPORT.
+
+    The DEPLOYMENT MODE and the SOURCE REPORTED TO EXTENSIONS are deliberately
+    separate concerns, and this is where they part company.
+
+    `SIMULATOR_SOURCE_TAG` has four modes because they behave differently *here*
+    (notably `simulator` synthesises a productCode below). But `simulator` and
+    `marketplace` are indistinguishable to a CONSUMER: both call the seller-side
+    GetEntitlements API, which returns 200-with-an-empty-list from a buyer
+    account and therefore proves nothing against real AWS. Both were already
+    reported as unverified and already shared one explanation string in the UI.
+
+    So both collapse to one reported source, `simulated`. Reporting the mode
+    verbatim also made `marketplace` — the WEAKEST source — read more
+    authoritative than `marketplace-live`, which is exactly backwards.
+
+    `marketplace-live` collapses to `simulated` too WHENEVER AN ENDPOINT
+    OVERRIDE IS IN EFFECT. That combination is legitimate and supported — it is
+    how the buyer-side path is developed against the marketplace-simulator — but
+    the answer still came from a server the operator chose, so claiming the one
+    source documented as "a real check happened" would be a lie that extension
+    authors are explicitly told to rely on (`entitlementVerified`,
+    `isVerifiedEntitlement`). Deriving this from the endpoint rather than from
+    the mode parameter is what makes the claim unforgeable by configuration:
+    there is no combination of parameters that reports `marketplace-live` while
+    boto3 is aimed somewhere else.
+    """
+    if source_tag in ("simulator", "marketplace"):
+        return "simulated"
+    if source_tag == _LIVE_TAG and endpoint_override:
+        return "simulated"
+    return source_tag
+
+
+_REPORTED_SOURCE = _reported_source(_SOURCE_TAG, _ENDPOINT_OVERRIDE)
+
+if _SOURCE_TAG == _LIVE_TAG and _ENDPOINT_OVERRIDE:
+    logger.warning(
+        "SIMULATOR_SOURCE_TAG=%s but a Marketplace endpoint override is in "
+        "effect (%s), so SearchAgreements will NOT reach real AWS Marketplace. "
+        "Reporting entitlementSource=%r instead of %r; extensions will see "
+        "entitlementVerified=false. This is expected in development and is NOT "
+        "expected in production.",
+        _SOURCE_TAG,
+        _ENDPOINT_OVERRIDE,
+        _REPORTED_SOURCE,
+        _LIVE_TAG,
+    )
+
+if (
+    _SOURCE_TAG == _LIVE_TAG
+    and not _ENDPOINT_OVERRIDE
+    and _AGREEMENT_API_REGIONS
+    and _AGREEMENT_REGION not in _AGREEMENT_API_REGIONS
+):
+    logger.warning(
+        "MARKETPLACE_AGREEMENT_REGION=%r is not a Region where the AWS "
+        "Marketplace Agreement API exists (known: %s). Every SearchAgreements "
+        "call will fail to connect and every entitlement will degrade to "
+        "advisory with a misleading 'missing permission' hint. Set it to "
+        "us-east-1 (the default).",
+        _AGREEMENT_REGION,
+        ", ".join(sorted(_AGREEMENT_API_REGIONS)),
+    )
 
 _METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "GENAIDP")
 
@@ -352,7 +475,88 @@ def _agreement_client():
     return _agreement_client_obj
 
 
-def _search_active_agreements(product_id: str) -> Tuple[str, Optional[datetime]]:
+def _agreement_filters(
+    product_identifier: str, *, include_party_type: bool = True
+) -> List[Dict[str, Any]]:
+    """Build the SearchAgreements filter list.
+
+    `PartyType=Acceptor` is what makes this the BUYER-side query, and on real AWS
+    the four-filter set is the only combination accepted — verified: dropping
+    PartyType returns `ValidationException: Provided combination of filters is not
+    supported`, and passing two `ResourceIdentifier` values returns `Provided
+    filter values is invalid`. So it is not negotiable against AWS, and
+    `include_party_type=False` exists solely for the simulator (see
+    `_search_active_agreements`).
+    """
+    filters: List[Dict[str, Any]] = []
+    if include_party_type:
+        filters.append({"name": "PartyType", "values": ["Acceptor"]})
+    filters.extend(
+        [
+            {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+            {"name": "ResourceIdentifier", "values": [product_identifier]},
+            {"name": "Status", "values": ["ACTIVE"]},
+        ]
+    )
+    return filters
+
+
+def _diagnose_agreement_failure(exc: Exception) -> str:
+    """Classify a SearchAgreements failure into an actionable one-liner.
+
+    "Unreachable" and "denied" have completely different fixes and used to be
+    collapsed into one message that always blamed IAM — which sent an operator
+    who had merely set the wrong Region hunting for a permission they already
+    had.
+    """
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "") or ""
+        if code.startswith("AccessDenied") or code in (
+            "UnauthorizedException",
+            "UnrecognizedClientException",
+        ):
+            return "ACCESS DENIED — grant this role aws-marketplace:SearchAgreements"
+        if code == "ValidationException":
+            return (
+                "REQUEST REJECTED — the endpoint did not accept the buyer-side "
+                "filter set; if this is a simulator it does not implement the "
+                "real API surface"
+            )
+        if "Throttl" in code or code == "TooManyRequestsException":
+            return "THROTTLED — transient, retry"
+        return f"API ERROR ({code})"
+    return (
+        f"UNREACHABLE — could not reach the Agreement API in region "
+        f"{_AGREEMENT_REGION!r}"
+        + (
+            f" (the API exists only in: {', '.join(sorted(_AGREEMENT_API_REGIONS))})"
+            if _AGREEMENT_API_REGIONS
+            and _AGREEMENT_REGION not in _AGREEMENT_API_REGIONS
+            else ""
+        )
+    )
+
+
+def _summarize_agreements(resp: Dict[str, Any]) -> Tuple[str, Optional[datetime]]:
+    """Map a SearchAgreements response to (outcome, latest_end_time)."""
+    summaries = resp.get("agreementViewSummaries") or []
+    if not summaries:
+        return "NONE", None
+
+    end_times: List[datetime] = []
+    for summary in summaries:
+        end = summary.get("endTime")
+        if isinstance(end, datetime):
+            end_times.append(end if end.tzinfo else end.replace(tzinfo=timezone.utc))
+        elif isinstance(end, (int, float)):
+            end_times.append(datetime.fromtimestamp(end, tz=timezone.utc))
+    # An open-ended agreement has no endTime — ACTIVE with no expiry.
+    return "ACTIVE", max(end_times) if end_times else None
+
+
+def _search_active_agreements(
+    product_id: str, product_code: Optional[str] = None
+) -> Tuple[str, Optional[datetime]]:
     """Buyer-side subscription check via the AWS Marketplace Agreement API.
 
     Returns (outcome, latest_end_time) where outcome is:
@@ -368,6 +572,27 @@ def _search_active_agreements(product_id: str) -> Tuple[str, Optional[datetime]]
     Status) is the documented buyer form and was verified against a live account.
     `ResourceIdentifier` matches the SaaS product ENTITY id (`prod-…`), which is
     why the catalog carries `productId` alongside `productCode`.
+
+    Simulator compatibility
+    -----------------------
+    The marketplace-simulator implements a SUBSET of the API, and against it the
+    canonical query fails outright: `ValidationException: unknown filter name:
+    PartyType` (observed in production logs on a simulator-backed stack, which is
+    why every check there degraded to `advisory`). It also records agreements
+    against the product CODE rather than the product ENTITY id, because its buyer
+    console is keyed on productCode (`/marketplace/pp/<productCode>` — see
+    subscribe_feature), so even a PartyType-less query finds nothing under
+    `productId`.
+
+    Both accommodations are therefore made, and BOTH are gated on an endpoint
+    override actually being in effect:
+      1. retry without `PartyType` when the endpoint rejects it, and
+      2. retry under `productCode` when `productId` matches nothing.
+    Real AWS never takes either path — it accepts PartyType, and the reduced
+    filter set is rejected there anyway — so the production query is unchanged
+    and cannot be silently weakened. And because an endpoint override also forces
+    the reported source to `simulated`, nothing found this way can ever be
+    reported as a verified subscription.
     """
     if not product_id:
         logger.warning(
@@ -375,41 +600,80 @@ def _search_active_agreements(product_id: str) -> Tuple[str, Optional[datetime]]
             "Add `productId` to the feature's catalog entry."
         )
         return "UNKNOWN", None
-    try:
-        resp = _agreement_client().search_agreements(
-            catalog="AWSMarketplace",
-            filters=[
-                {"name": "PartyType", "values": ["Acceptor"]},
-                {"name": "AgreementType", "values": ["PurchaseAgreement"]},
-                {"name": "ResourceIdentifier", "values": [product_id]},
-                {"name": "Status", "values": ["ACTIVE"]},
-            ],
-        )
-    except (ClientError, BotoCoreError) as exc:
-        # AccessDenied (IAM not granted / not propagated), an unsupported
-        # partition, throttling — all indistinguishable from "not subscribed".
-        logger.warning(
-            "SearchAgreements failed for product %s: %s. Treating entitlement as "
-            "UNKNOWN (advisory allow) rather than denying a possibly-paying "
-            "customer.",
-            product_id,
-            exc,
-        )
-        return "UNKNOWN", None
 
-    summaries = resp.get("agreementViewSummaries") or []
-    if not summaries:
-        return "NONE", None
+    identifiers = [product_id]
+    if _ENDPOINT_OVERRIDE and product_code and product_code != product_id:
+        identifiers.append(product_code)
 
-    end_times: List[datetime] = []
-    for summary in summaries:
-        end = summary.get("endTime")
-        if isinstance(end, datetime):
-            end_times.append(end if end.tzinfo else end.replace(tzinfo=timezone.utc))
-        elif isinstance(end, (int, float)):
-            end_times.append(datetime.fromtimestamp(end, tz=timezone.utc))
-    # An open-ended agreement has no endTime — ACTIVE with no expiry.
-    return "ACTIVE", max(end_times) if end_times else None
+    include_party_type = True
+    for identifier in identifiers:
+        for attempt in range(2):
+            try:
+                resp = _agreement_client().search_agreements(
+                    catalog="AWSMarketplace",
+                    filters=_agreement_filters(
+                        identifier, include_party_type=include_party_type
+                    ),
+                )
+            except ClientError as exc:
+                is_unknown_filter = (
+                    exc.response.get("Error", {}).get("Code") == "ValidationException"
+                )
+                # One retry, simulator-only: drop PartyType and try again. Then
+                # remember it for the remaining identifiers.
+                if (
+                    attempt == 0
+                    and include_party_type
+                    and is_unknown_filter
+                    and _ENDPOINT_OVERRIDE
+                ):
+                    logger.warning(
+                        "The Marketplace endpoint override (%s) rejected the "
+                        "buyer-side PartyType filter (%s). Retrying without it — "
+                        "this is a simulator that implements a subset of the "
+                        "real API; the result is reported as an UNVERIFIED "
+                        "source.",
+                        _ENDPOINT_OVERRIDE,
+                        exc,
+                    )
+                    include_party_type = False
+                    continue
+                logger.warning(
+                    "SearchAgreements failed for product %s: %s [%s]. Treating "
+                    "entitlement as UNKNOWN (advisory allow) rather than denying "
+                    "a possibly-paying customer.",
+                    identifier,
+                    exc,
+                    _diagnose_agreement_failure(exc),
+                )
+                return "UNKNOWN", None
+            except BotoCoreError as exc:
+                # Endpoint unreachable, connect/read timeout, no credentials —
+                # all indistinguishable from "not subscribed".
+                logger.warning(
+                    "SearchAgreements failed for product %s: %s [%s]. Treating "
+                    "entitlement as UNKNOWN (advisory allow) rather than denying "
+                    "a possibly-paying customer.",
+                    identifier,
+                    exc,
+                    _diagnose_agreement_failure(exc),
+                )
+                return "UNKNOWN", None
+
+            outcome, end_time = _summarize_agreements(resp)
+            if outcome == "ACTIVE":
+                if identifier != product_id:
+                    logger.info(
+                        "Matched an agreement under productCode %r rather than "
+                        "productId %r — expected against the simulator, whose "
+                        "buyer console is keyed on productCode.",
+                        identifier,
+                        product_id,
+                    )
+                return outcome, end_time
+            break  # NONE for this identifier — fall through to the next, if any
+
+    return "NONE", None
 
 
 def _parse_expiration(raw: Any) -> Optional[datetime]:
@@ -550,8 +814,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # productId (the SaaS product ENTITY id) — productCode is only useful to the
     # seller-side GetEntitlements API, which cannot answer this question at all.
     if _SOURCE_TAG == _LIVE_TAG:
-        outcome, end_time = _search_active_agreements(product_id)
+        outcome, end_time = _search_active_agreements(product_id, product_code)
         if outcome == "ACTIVE":
+            # `_REPORTED_SOURCE`, never `_LIVE_TAG` literal: on an
+            # endpoint-overridden stack this answer came from a simulator, and
+            # reporting the one source documented as verified would let a fake
+            # Marketplace mint `entitlementVerified: true`.
+            if _REPORTED_SOURCE != _LIVE_TAG and is_marketplace_feature:
+                _emit_unverified_grant_metric(feature_id, _REPORTED_SOURCE)
             return {
                 "featureId": feature_id,
                 "state": "ACTIVE",
@@ -560,7 +830,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 else None,
                 "customerIdentifier": None,
                 "productCode": product_code,
-                "source": _LIVE_TAG,
+                "source": _REPORTED_SOURCE,
             }
         if outcome == "NONE":
             # Authoritative for this account: SearchAgreements is scoped to the
@@ -572,7 +842,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "expiresAt": None,
                 "customerIdentifier": None,
                 "productCode": product_code,
-                "source": _LIVE_TAG,
+                "source": _REPORTED_SOURCE,
             }
         # UNKNOWN — the call failed, so we genuinely cannot tell "not
         # subscribed" from "host misconfigured". Degrade to advisory ACTIVE
