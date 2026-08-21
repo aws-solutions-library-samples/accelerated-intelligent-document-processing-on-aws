@@ -15,8 +15,7 @@ describe('isVerifiedEntitlement', () => {
     // pointed at a fake Marketplace. Counting them as verified let a production
     // host aimed at a simulator render a clean "subscription active" with no
     // warning and no metric.
-    expect(isVerifiedEntitlement('ACTIVE', 'simulator')).toBe(false);
-    expect(isVerifiedEntitlement('ACTIVE', 'marketplace')).toBe(false);
+    expect(isVerifiedEntitlement('ACTIVE', 'simulated')).toBe(false);
   });
 
   it('is FALSE for auto and advisory — the whole point of the flag', () => {
@@ -55,8 +54,7 @@ describe('isUnverifiedGrant', () => {
   });
 
   it('is true for simulator-backed grants', () => {
-    expect(isUnverifiedGrant('ACTIVE', 'simulator')).toBe(true);
-    expect(isUnverifiedGrant('ACTIVE', 'marketplace')).toBe(true);
+    expect(isUnverifiedGrant('ACTIVE', 'simulated')).toBe(true);
   });
 
   it('is false when nothing was granted', () => {
@@ -66,7 +64,7 @@ describe('isUnverifiedGrant', () => {
   });
 
   it('never overlaps with isVerifiedEntitlement', () => {
-    const sources = ['marketplace', 'marketplace-live', 'simulator', 'auto', 'advisory', 'oss', 'none'] as const;
+    const sources = ['marketplace-live', 'simulated', 'auto', 'advisory', 'oss', 'none'] as const;
     for (const source of sources) {
       expect(isVerifiedEntitlement('ACTIVE', source) && isUnverifiedGrant('ACTIVE', source)).toBe(false);
     }
@@ -85,7 +83,7 @@ describe('unverifiedReason', () => {
   });
 
   it('names the simulator for simulator-backed modes', () => {
-    for (const source of ['simulator', 'marketplace'] as const) {
+    for (const source of ['simulated'] as const) {
       expect(unverifiedReason(source)).toContain('simulator');
     }
   });

@@ -65,7 +65,7 @@ const ent = (overrides: Partial<FeatureEntitlement> = {}): FeatureEntitlement =>
   expiresAt: null,
   customerIdentifier: 'CUST',
   productCode: 'prod123',
-  source: 'simulator',
+  source: 'simulated',
   ...overrides,
 });
 
@@ -455,7 +455,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -463,8 +463,8 @@ describe('FeaturePage 7-state renderer', () => {
     renderPage(['Admin']);
     expect(screen.getByRole('button', { name: /Cancel Subscription/i })).toBeInTheDocument();
     expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
-    // "simulator" appears both in the ActiveSubscriptionBanner (Source: simulator)
-    // and the UpToDateBanner (up to date (simulator)). Just confirm the banner text.
+    // "simulated" appears both in the ActiveSubscriptionBanner (Source: simulated)
+    // and the UpToDateBanner (up to date (simulated)). Just confirm the banner text.
     expect(screen.getByText(/^Source:$/)).toBeInTheDocument();
   });
 
@@ -478,7 +478,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -487,6 +487,35 @@ describe('FeaturePage 7-state renderer', () => {
     expect(screen.queryByRole('button', { name: /Cancel Subscription/i })).not.toBeInTheDocument();
     // The active subscription banner itself still renders.
     expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
+  });
+
+  it('shows NO subscription banner or Cancel button for an OSS extension', () => {
+    // An OSS extension has no subscription: check_feature_entitlement
+    // short-circuits source="oss" straight to ACTIVE. Rendering "Subscription
+    // active / Source: oss" with an admin-only Cancel Subscription button offered
+    // an action that cannot work — unsubscribeFeature targets a Marketplace or
+    // simulator entitlement, and there is neither here.
+    mockCatalog({ source: 'oss' });
+    const inst = installed({ installedVersion: '1.0.0', latestVersion: '1.0.0' });
+    mockedUseInstalled.mockReturnValue({
+      features: [inst],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: (id) => (id === inst.featureId ? inst : undefined),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'oss' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription active/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Cancel Subscription/i })).not.toBeInTheDocument();
+    // The feature itself must still render — this is a banner fix, not a gate.
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
   });
 
   it('clicks Cancel Subscription → calls unsubscribeFeature + refreshes caches', async () => {
@@ -504,7 +533,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: refreshEntitlement,

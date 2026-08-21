@@ -222,8 +222,12 @@ export const AwaitingAdminInstall: React.FC<{ featureDisplayName: string; docsUr
  * subscription, so we show a plain "up to date" with no source suffix. For
  * marketplace/simulator subscriptions we annotate the source.
  */
-export const UpToDateBanner: React.FC<{ version: string; source: string }> = ({ version, source }) => {
-  const showSource = source !== 'auto';
+export const UpToDateBanner: React.FC<{ version: string; source: FeatureEntitlement['source'] }> = ({ version, source }) => {
+  // Annotate only when there is a subscription source worth naming. `auto` means
+  // checks are off and `oss` means there is no subscription at all, so a suffix
+  // there is noise at best and misleading at worst. Typed to the union so an
+  // invalid source is a compile error rather than odd banner text.
+  const showSource = source !== 'auto' && source !== 'oss';
   return (
     <Alert type="success" statusIconAriaLabel="Active" dismissible={false}>
       v{version} — up to date{showSource ? ` (${source})` : ''}
