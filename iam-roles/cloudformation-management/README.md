@@ -196,6 +196,9 @@ cloudformation:*
 iam:CreateRole
 iam:DeleteRole
 iam:UpdateRole
+iam:UpdateAssumeRolePolicy
+iam:PutRolePermissionsBoundary
+iam:DeleteRolePermissionsBoundary
 iam:GetRole
 iam:GetRolePolicy
 iam:ListRoles
@@ -227,6 +230,16 @@ iam:SetDefaultPolicyVersion
 iam:TagPolicy
 iam:UntagPolicy
 ```
+
+> **If you use your own service role or a permissions boundary**, include
+> `iam:UpdateAssumeRolePolicy`, `iam:PutRolePermissionsBoundary` and
+> `iam:DeleteRolePermissionsBoundary` alongside the role-lifecycle actions.
+> CloudFormation sets a role's trust policy and permissions boundary during
+> `iam:CreateRole`, so a fresh deploy succeeds without them — but modifying
+> either on an existing role is a separate API call. Without these, a release
+> that changes a role's trust policy fails mid-update and wedges the stack in
+> `UPDATE_ROLLBACK_FAILED` (the rollback needs the same permission). See
+> [issue #632](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/632).
 
 </details>
 
