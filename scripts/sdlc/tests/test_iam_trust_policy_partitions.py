@@ -33,6 +33,7 @@ possible parameter combination rather than one sampled deployment.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -41,16 +42,25 @@ import yaml
 # scripts/sdlc/tests/<this file> -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Every template that declares roles into a customer's account. Globbed rather
-# than listed so a new nested stack is covered the day it lands.
+# Every template that creates IAM roles in an AWS account — the product stacks,
+# the service role operators deploy by hand, and our own SDLC infrastructure.
+# Globbed rather than listed so a new nested stack is covered the day it lands;
+# test_every_role_declaring_template_is_scanned proves the globs stay complete.
 TEMPLATE_GLOBS = (
     "template.yaml",
     "patterns/*/template.yaml",
     "nested/**/template.yaml",
     "options/*/template.yaml",
-    "feature-platform/*/template.yaml",
-    "feature-platform/*/*/template.yaml",
+    "feature-platform/**/template.yaml",
+    "iam-roles/**/*.yaml",
+    "scripts/sdlc/cfn/*.yml",
 )
+
+# `sam build` copies each template into <stack>/.aws-sam/build/. Those copies are
+# gitignored build output: scanning them would make this suite depend on whether
+# someone had built locally, and could fail CI on a stale artifact. Pruned for
+# the same reason scripts/run_all_tests.py prunes them from test discovery.
+PRUNE_PATH_MARKERS = ("/.aws-sam/", "/node_modules/", "/.venv/")
 
 # A trust policy containing any of these literals only works on one partition.
 # (Fn::Sub'd principals built from ${AWS::URLSuffix} are partition-neutral by
@@ -113,59 +123,87 @@ def load_template(path: Path) -> dict:
 
 # --- Three-valued condition evaluation ----------------------------------------
 # True / False / None(=undecidable, because it depends on a stack parameter).
-def _literal(node, partition: str):
+def _find_in_map(node, mappings: dict, partition: str):
+    """Resolve an Fn::FindInMap keyed off AWS::Partition, else None.
+
+    This repo already maps values per partition (see the console-domain Mapping
+    in template.yaml), so a partition-specific principal could reach a trust
+    policy through a Mapping rather than a literal. Resolving it here means the
+    commercial-render check sees the real string instead of an opaque dict — i.e.
+    a FindInMap cannot be used to smuggle a GovCloud principal past this suite.
+    """
+    if not (isinstance(node, dict) and set(node) == {"Fn::FindInMap"}):
+        return None
+    args = node["Fn::FindInMap"]
+    if not (isinstance(args, list) and len(args) == 3):
+        return None
+    name, top, second = (_literal(arg, mappings, partition) for arg in args)
+    if None in (name, top, second):
+        return None
+    value = mappings.get(name, {}).get(top, {})
+    return value.get(second) if isinstance(value, dict) else None
+
+
+def _literal(node, mappings: dict, partition: str):
     """Resolve a node to a literal string if possible, else None."""
     if isinstance(node, str):
         return node
-    if (
-        isinstance(node, dict)
-        and set(node) == {"Ref"}
-        and node["Ref"] == "AWS::Partition"
-    ):
-        return partition
-    return None
+    if isinstance(node, dict) and set(node) == {"Ref"}:
+        return partition if node["Ref"] == "AWS::Partition" else None
+    return _find_in_map(node, mappings, partition)
 
 
-def _eval_condition(expr, conditions: dict, partition: str):
+def _eval_condition(expr, conditions: dict, mappings: dict, partition: str):
     if isinstance(expr, str):  # bare condition name (from Fn::If)
-        return _eval_condition(conditions.get(expr), conditions, partition)
+        return _eval_condition(conditions.get(expr), conditions, mappings, partition)
     if not isinstance(expr, dict):
         return None
 
     if "Condition" in expr:
-        return _eval_condition(conditions.get(expr["Condition"]), conditions, partition)
+        return _eval_condition(
+            conditions.get(expr["Condition"]), conditions, mappings, partition
+        )
     if "Fn::Equals" in expr:
         left, right = expr["Fn::Equals"]
-        left, right = _literal(left, partition), _literal(right, partition)
+        left = _literal(left, mappings, partition)
+        right = _literal(right, mappings, partition)
         if left is None or right is None:
             return None  # depends on a parameter
         return left == right
     if "Fn::Not" in expr:
-        inner = _eval_condition(expr["Fn::Not"][0], conditions, partition)
+        inner = _eval_condition(expr["Fn::Not"][0], conditions, mappings, partition)
         return None if inner is None else not inner
     if "Fn::And" in expr:
-        parts = [_eval_condition(p, conditions, partition) for p in expr["Fn::And"]]
+        parts = [
+            _eval_condition(p, conditions, mappings, partition) for p in expr["Fn::And"]
+        ]
         if False in parts:
             return False
         return None if None in parts else True
     if "Fn::Or" in expr:
-        parts = [_eval_condition(p, conditions, partition) for p in expr["Fn::Or"]]
+        parts = [
+            _eval_condition(p, conditions, mappings, partition) for p in expr["Fn::Or"]
+        ]
         if True in parts:
             return True
         return None if None in parts else False
     return None
 
 
-def render_branches(node, conditions: dict, partition: str) -> list:
+def render_branches(
+    node, conditions: dict, partition: str, mappings: dict | None = None
+) -> list:
     """Every value ``node`` can take when AWS::Partition == ``partition``.
 
     Fn::If on a decidable condition collapses to the taken branch; on an
     undecidable (parameter-driven) one it yields both. Returns a list of
     renderings so callers can assert over all of them.
     """
+    mappings = mappings or {}
+
     if isinstance(node, dict) and set(node) == {"Fn::If"}:
         name, then_branch, else_branch = node["Fn::If"]
-        verdict = _eval_condition(name, conditions, partition)
+        verdict = _eval_condition(name, conditions, mappings, partition)
         if verdict is True:
             candidates = [then_branch]
         elif verdict is False:
@@ -175,15 +213,21 @@ def render_branches(node, conditions: dict, partition: str) -> list:
         return [
             rendering
             for candidate in candidates
-            for rendering in render_branches(candidate, conditions, partition)
+            for rendering in render_branches(candidate, conditions, partition, mappings)
         ]
+
+    # Partition-keyed Mapping lookups collapse to the value for this partition,
+    # so a mapped principal is checked as the string it will actually render to.
+    resolved = _find_in_map(node, mappings, partition)
+    if resolved is not None:
+        return [resolved]
 
     if isinstance(node, list):
         renderings = [[]]
         for item in node:
             expanded = []
             for prefix in renderings:
-                for value in render_branches(item, conditions, partition):
+                for value in render_branches(item, conditions, partition, mappings):
                     if value == _NO_VALUE:  # AWS::NoValue drops the element
                         expanded.append(prefix)
                     else:
@@ -196,7 +240,7 @@ def render_branches(node, conditions: dict, partition: str) -> list:
         for key, raw in node.items():
             expanded = []
             for prefix in renderings:
-                for value in render_branches(raw, conditions, partition):
+                for value in render_branches(raw, conditions, partition, mappings):
                     if value == _NO_VALUE:
                         expanded.append(prefix)
                     else:
@@ -230,7 +274,10 @@ def iter_roles(template: dict):
 def _template_paths() -> list[Path]:
     paths = set()
     for pattern in TEMPLATE_GLOBS:
-        paths.update(REPO_ROOT.glob(pattern))
+        for path in REPO_ROOT.glob(pattern):
+            as_posix = f"/{path.relative_to(REPO_ROOT).as_posix()}"
+            if not any(marker in as_posix for marker in PRUNE_PATH_MARKERS):
+                paths.add(path)
     return sorted(paths)
 
 
@@ -242,11 +289,12 @@ def _role_trust_renderings(partition: str):
     for path in TEMPLATE_PATHS:
         template = load_template(path)
         conditions = template.get("Conditions") or {}
+        mappings = template.get("Mappings") or {}
         for logical_id, properties in iter_roles(template):
             document = properties.get("AssumeRolePolicyDocument")
             if document is None:
                 continue
-            for rendering in render_branches(document, conditions, partition):
+            for rendering in render_branches(document, conditions, partition, mappings):
                 yield path, logical_id, rendering
 
 
@@ -261,6 +309,34 @@ def test_template_glob_is_not_vacuous():
     roles = list(_role_trust_renderings(COMMERCIAL))
     assert len(roles) >= 20, (
         f"Only found {len(roles)} IAM role trust policies to check."
+    )
+
+
+def test_every_role_declaring_template_is_scanned():
+    """Coverage guard: no tracked template may declare a role we never look at.
+
+    Asserting a floor on the count (above) does not prove *which* templates are
+    covered — a new nested stack outside the globs would slip through while the
+    count still looked healthy. This asks git for the ground truth instead.
+    """
+    tracked = subprocess.run(
+        ["git", "grep", "-l", "AWS::IAM::Role", "--", "*.yaml", "*.yml"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+
+    scanned = {str(path.relative_to(REPO_ROOT)) for path in TEMPLATE_PATHS}
+    unscanned = {
+        path
+        for path in tracked
+        if path not in scanned
+        and not any(marker in f"/{path}" for marker in PRUNE_PATH_MARKERS)
+    }
+    assert not unscanned, (
+        "These tracked templates declare AWS::IAM::Role but no glob in "
+        f"TEMPLATE_GLOBS reaches them: {sorted(unscanned)}"
     )
 
 
