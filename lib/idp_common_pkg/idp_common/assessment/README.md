@@ -340,7 +340,13 @@ The assessment service supports the following placeholders in prompt templates:
 - `{OCR_TEXT_CONFIDENCE}` - **NEW** - Optimized text confidence data with 80-90% token reduction
 
 ### Image Positioning
-- `{DOCUMENT_IMAGE}` - Placeholder for precise image positioning in multimodal prompts
+- `{DOCUMENT_IMAGE}` - Placeholder for precise image positioning in multimodal prompts.
+  Presence of this placeholder is the **only** switch for image attachment: the
+  section's page images are attached when it is present and omitted when it is not,
+  independent of `extraction.geometry.mode`. Visually-evidenced fields (signature /
+  checkbox / stamp booleans, handwriting) can only be judged from the image, so the
+  page images are sent even when the model is not asked for bounding boxes. Drop the
+  placeholder from the prompt for a cheaper text-only confidence pass.
 
 ## Text Confidence Data Integration
 
