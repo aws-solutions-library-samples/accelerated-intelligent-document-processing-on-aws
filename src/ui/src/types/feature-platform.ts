@@ -91,7 +91,7 @@ export interface FeatureEntitlement {
    * - `auto` — entitlement checks disabled; everything treated as subscribed
    * - `oss` / `none` — open-source feature, or no product code registered
    */
-  source: 'marketplace' | 'marketplace-live' | 'advisory' | 'simulator' | 'auto' | 'oss' | 'none';
+  source: 'marketplace-live' | 'simulated' | 'advisory' | 'auto' | 'oss' | 'none';
   /**
    * URL the UI must redirect the admin to (new tab) in order to accept
    * pricing, EULA, and the AWS Customer Agreement. Populated only by the

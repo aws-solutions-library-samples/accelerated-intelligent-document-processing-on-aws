@@ -302,7 +302,10 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
   // buyer's Marketplace console, so don't offer a button that would fail — and
   // never offer it for an `advisory` state, where we never confirmed a
   // subscription in the first place.
-  const canCancelSubscription = isAdmin && (entitlement?.source === 'simulator' || entitlement?.source === 'marketplace');
+  // `simulated` covers both seller-side modes (bundled simulator and
+  // admin-supplied endpoint) — they were separate source values, and both are
+  // cancellable through the simulator's admin API.
+  const canCancelSubscription = isAdmin && entitlement?.source === 'simulated';
 
   // --- ACTIVE + installed --------------------------------------------------
   // Trust the server's `updateAvailable`, which compares SemVer properly and
@@ -327,9 +330,15 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
           marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
         />
       )}
-      {/* In auto-subscribe mode there is no Marketplace contract to cancel,
-          so hide the subscription banner (and its admin-only Cancel button). */}
-      {entitlement && entitlement.source !== 'auto' && (
+      {/* Only a real (or simulated) Marketplace subscription gets a subscription
+          banner. Excluded:
+            - `oss` — an open-source extension has no subscription at all;
+              check_feature_entitlement short-circuits it to ACTIVE. Showing
+              "Subscription active / Source: oss" with a Cancel button offered
+              admins an action that cannot work.
+            - `auto` — checks are switched off, so there is no contract to cancel.
+          Mirrors the !isOss guard on the unverified warning above. */}
+      {entitlement && !isOss && entitlement.source !== 'auto' && (
         <ActiveSubscriptionBanner
           entitlement={entitlement}
           canCancel={canCancelSubscription}
@@ -347,9 +356,11 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
           loading={launchLoading}
         />
       ) : (
-        // OSS features (and auto-subscribe mode) have no Marketplace
-        // subscription, so suppress the source suffix for them.
-        <UpToDateBanner version={installed.installedVersion} source={isOss ? 'auto' : (entitlement?.source ?? 'marketplace')} />
+        // Pass the real source and let UpToDateBanner decide which ones are worth
+        // naming (it suppresses `oss` and `auto`). This used to pass 'auto' for OSS
+        // as a "don't annotate" sentinel and fall back to 'marketplace' — a value
+        // that is no longer a valid entitlement source at all.
+        <UpToDateBanner version={installed.installedVersion} source={entitlement?.source ?? 'oss'} />
       )}
       <LearnMore docsUrl={docsUrl} />
       {featureContent}

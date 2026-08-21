@@ -138,7 +138,7 @@ def test_synthesized_product_code_simulator_mode(
     assert result["state"] == "NONE"
     assert result["productCode"] == "prod-docs-by-status-sim"
     assert result["customerIdentifier"] == "CUST-default"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
 
 
 def test_marketplace_mode_no_customer_identifier_filters_by_buyer_account(
@@ -172,7 +172,7 @@ def test_marketplace_mode_no_customer_identifier_filters_by_buyer_account(
     assert result["state"] == "NONE"
     assert result["customerIdentifier"] is None
     assert result["productCode"] == "prod123"
-    assert result["source"] == "marketplace"
+    assert result["source"] == "simulated"
 
 
 def test_missing_customer_identifier_filters_by_buyer_account_simulator_mode(
@@ -212,7 +212,7 @@ def test_missing_customer_identifier_filters_by_buyer_account_simulator_mode(
     # Customer id is echoed from the matched entitlement (looked up by account).
     assert result["customerIdentifier"] == "cust-62c036d80d5c"
     assert result["productCode"] == "prod123"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
 
 
 def test_active_when_active_entitlement(
@@ -777,7 +777,13 @@ def test_auto_mode_emits_metric_for_paid_feature(monkeypatch, mock_stack, load_l
 
 
 def test_auto_mode_does_not_emit_for_oss_feature(monkeypatch, mock_stack, load_lambda):
-    """OSS extensions have no subscription to verify — warning would be noise."""
+    """OSS extensions have no subscription to verify — warning would be noise.
+
+    Also pins the ordering invariant: an OSS extension reports `oss` even in `auto`
+    mode. Being open-source is a property of the extension, so the deployment mode
+    must not be able to relabel it — otherwise `oss` is not a dependable signal for
+    "this is not a paid extension".
+    """
     bucket = mock_stack["bucket"]
     _put_catalog(
         bucket,
@@ -795,7 +801,7 @@ def test_auto_mode_does_not_emit_for_oss_feature(monkeypatch, mock_stack, load_l
         make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
         None,
     )
-    assert result["source"] == "auto"
+    assert result["source"] == "oss"
     assert emitted == []
 
 
@@ -921,7 +927,9 @@ def test_simulator_backed_active_emits_metric(monkeypatch, mock_stack, load_lamb
     result = mod.handler(_live_event(), None)
 
     assert result["state"] == "ACTIVE"
-    assert emitted == [("idp-auto-optimizer", "marketplace")]
+    # The metric records the REPORTED source, so dashboards agree with what the
+    # UI and extensions see. `marketplace` mode reports `simulated`.
+    assert emitted == [("idp-auto-optimizer", "simulated")]
 
 
 def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambda):
@@ -941,3 +949,103 @@ def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambd
 
     assert result["state"] == "NONE"
     assert emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Reported source is normalized, and is independent of deployment mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["simulator", "marketplace"])
+def test_seller_side_modes_both_report_simulated(
+    monkeypatch, mock_stack, load_lambda, mode
+):
+    """`simulator` and `marketplace` are one reported source, `simulated`.
+
+    They are the same code path — the seller-side GetEntitlements API, which
+    returns 200-with-an-empty-list from a buyer account and so cannot verify
+    anything against real AWS. Reporting the deployment mode verbatim leaked a
+    distinction no consumer can act on, and made `marketplace` (the weakest
+    source) read as more authoritative than `marketplace-live`.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag=mode,
+        configuration_bucket=bucket,
+    )
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "simulated", (
+        f"mode {mode!r} must report 'simulated', not the mode name"
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["auto", "simulator", "marketplace", "marketplace-live"]
+)
+def test_oss_reports_oss_in_every_mode(monkeypatch, mock_stack, load_lambda, mode):
+    """Being open-source is a property of the extension, not the deployment.
+
+    `auto` mode used to be evaluated first and relabelled OSS extensions as
+    `auto`, so an extension could not rely on `oss` meaning "not a paid
+    extension". No Marketplace call is made in any mode, so no stub is needed —
+    if one were attempted the test would error rather than pass.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag=mode,
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "oss", f"mode {mode!r} relabelled an OSS extension"
+
+
+def test_unknown_catalog_entry_is_not_treated_as_oss(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A catalog entry that is absent or unreadable must NOT short-circuit as OSS.
+
+    `is_marketplace_feature` is falsy both for a confirmed OSS extension and for
+    an unknown one, so keying the short-circuit off it would grant access to a
+    paid extension whose catalog entry merely failed to load — skipping the
+    entitlement check entirely. Unknown must fall through to the check.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [])  # feature is NOT in the catalog
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["source"] != "oss", (
+        "an unknown catalog entry was treated as OSS — that grants a paid "
+        "extension access without any entitlement check"
+    )

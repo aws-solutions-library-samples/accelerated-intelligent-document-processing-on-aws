@@ -173,8 +173,26 @@ Two extra fields let you tell the cases apart:
 
 | Field | Meaning |
 |---|---|
-| `entitlementSource` | `marketplace-live` / `marketplace` / `simulator` / `auto` / `advisory` / `oss` / `none` |
-| `entitlementVerified` | `true` only when the host confirmed ACTIVE against a Marketplace API — never `true` for `auto` or `advisory` |
+| `entitlementSource` | How the host reached its verdict — see the table below |
+| `entitlementVerified` | `true` **only** when `entitlementSource` is `marketplace-live` and the state is ACTIVE. That is the only verified source |
+
+`entitlementSource` reports **what happened when the host checked**, which is a
+different axis from what kind of extension you are (that's the catalog's
+`oss` / `marketplace`). One extension yields different sources depending on the
+deployment:
+
+| Source | Means | Verified |
+|---|---|---|
+| `marketplace-live` | Real buyer-side `SearchAgreements` answered | ✅ |
+| `oss` | Not a paid extension — reported in *every* deployment mode | n/a |
+| `simulated` | Seller-side `GetEntitlements` against the bundled simulator or an admin-supplied endpoint. That API returns an empty list from a buyer account, so it proves nothing against real AWS | ✗ |
+| `advisory` | The live check was **attempted and failed** (missing `aws-marketplace:SearchAgreements`, or the API is unavailable in the Region) and access was allowed rather than locking out a possibly-paying customer | ✗ |
+| `auto` | Subscription checks are switched **off** stack-wide | ✗ |
+| `none` | No `productCode` registered — state is `NONE`, access denied | ✗ |
+
+There is no separate source for "pre-release": a `Limited`-visibility Marketplace
+listing is still a real listing and reports `marketplace-live`. `simulated` means a
+simulator, i.e. development.
 
 Use `entitlementVerified` to decide whether to **warn**; never to decide whether
 to **serve**.

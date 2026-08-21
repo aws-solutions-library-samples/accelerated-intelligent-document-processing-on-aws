@@ -145,7 +145,18 @@ Parameters:
 
   SubscriptionMode:
     Type: String
-    Default: 'marketplace'
+    # Matches the main stack's FeaturePlatformSubscriptionMode default. These
+    # deliberately agree: the main stack always passes a value down, so this
+    # default only applies to a standalone nested deploy — and there the safe
+    # landing place is the real check. It previously defaulted to 'marketplace',
+    # which silently lands on the seller-side API that cannot verify anything
+    # from a buyer account.
+    Default: 'marketplace-live'
+    # These four are DEPLOYMENT MODES, not the values reported to extensions.
+    # 'simulator' and 'marketplace' both report entitlementSource='simulated',
+    # because they are one code path and indistinguishable to a consumer. The
+    # modes stay separate because they differ here (only 'simulator' synthesises
+    # a productCode).
     AllowedValues: ['auto', 'simulator', 'marketplace', 'marketplace-live']
     Description: Sets the SIMULATOR_SOURCE_TAG env var on the entitlement
       Lambdas. 'auto' short-circuits checkFeatureEntitlement to ACTIVE for

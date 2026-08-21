@@ -25,7 +25,7 @@ export interface FeatureContext {
    */
   uiAccessAllowed: boolean;
   /** How the host arrived at that state. `auto` / `advisory` mean nothing was verified. */
-  entitlementSource?: 'marketplace' | 'marketplace-live' | 'advisory' | 'simulator' | 'auto' | 'oss' | 'none';
+  entitlementSource?: 'marketplace-live' | 'simulated' | 'advisory' | 'auto' | 'oss' | 'none';
   /**
    * True only when the host actually confirmed an entitlement against a
    * Marketplace API. Unlike `uiAccessAllowed` it does not read `true` when

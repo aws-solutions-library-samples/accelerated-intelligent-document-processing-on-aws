@@ -119,7 +119,12 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 _DEFAULT_CUSTOMER_IDENTIFIER = os.environ.get("DEFAULT_CUSTOMER_IDENTIFIER", "")
 _DEFAULT_BUYER_ACCOUNT_ID = os.environ.get("DEFAULT_BUYER_ACCOUNT_ID", "111122223333")
-_SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "marketplace")
+# Default to the LIVE path. The template always sets this, so the default only
+# applies to a misconfigured deployment — and there the safe landing place is a
+# real check, not an unverifiable one. (The three entitlement Lambdas previously
+# disagreed here: this one defaulted to "marketplace", subscribe/unsubscribe to
+# "simulator", from the same env var.)
+_SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "marketplace-live")
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
 _CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
@@ -129,6 +134,24 @@ _AGREEMENT_REGION = os.environ.get("MARKETPLACE_AGREEMENT_REGION", "us-east-1")
 # The live, buyer-side path. Kept as a distinct tag rather than an ad-hoc branch
 # so `simulator` / `marketplace` (dev + CI) behave EXACTLY as before.
 _LIVE_TAG = "marketplace-live"
+
+# The DEPLOYMENT MODE and the SOURCE REPORTED TO EXTENSIONS are deliberately
+# separate concerns, and this is where they part company.
+#
+# `SIMULATOR_SOURCE_TAG` has four modes because they behave differently *here*
+# (notably `simulator` synthesises a productCode below). But `simulator` and
+# `marketplace` are indistinguishable to a CONSUMER: both call the seller-side
+# GetEntitlements API, which returns 200-with-an-empty-list from a buyer account
+# and therefore proves nothing against real AWS. Both were already reported as
+# unverified and already shared one explanation string in the UI.
+#
+# So both collapse to one reported source, `simulated`. Reporting the mode
+# verbatim also made `marketplace` — the WEAKEST source — read more
+# authoritative than `marketplace-live`, which is exactly backwards.
+_REPORTED_SOURCE = {
+    "simulator": "simulated",
+    "marketplace": "simulated",
+}.get(_SOURCE_TAG, _SOURCE_TAG)
 
 _METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "GENAIDP")
 
@@ -464,10 +487,40 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     catalog_entry = _read_catalog_entry(feature_id) or {}
     is_marketplace_feature = (catalog_entry.get("source") or "oss") == "marketplace"
 
+    # OSS features have no AWS Marketplace contract — they install directly
+    # regardless of whether a simulator/Marketplace endpoint is configured.
+    # Short-circuit to ACTIVE so the UI shows the Install prompt instead of
+    # "Subscription required". This mirrors get_feature_launch_url, which skips
+    # the entitlement check for source=="oss" catalog entries. Only consult the
+    # entitlement endpoint for marketplace features below.
+    #
+    # Checked BEFORE the `auto` branch, deliberately. Being open-source is a
+    # property of the EXTENSION; the deployment mode cannot change it. With the
+    # order reversed, an OSS extension reported `auto` on an auto-mode stack and
+    # `oss` everywhere else, so `oss` was not a dependable signal for "this is not
+    # a paid extension" — the one thing it exists to say.
+    #
+    # Must be an EXPLICIT source=="oss" test, not `not is_marketplace_feature`:
+    # an absent or unreadable catalog entry also yields a falsy
+    # is_marketplace_feature, and treating that as OSS would grant access to a
+    # paid extension whose catalog entry merely failed to load. Unknown falls
+    # through to the entitlement check below, which is the safe direction.
+    if catalog_entry.get("source") == "oss":
+        return {
+            "featureId": feature_id,
+            "state": "ACTIVE",
+            "expiresAt": None,
+            "customerIdentifier": None,
+            "productCode": None,
+            "source": "oss",
+        }
+
     # Auto-subscribe mode: subscription checks are switched off for this stack.
     # Every catalog feature is treated as subscribed so the UI goes straight to
     # the Install prompt; no Marketplace call is made (the boto3 client is never
-    # instantiated).
+    # instantiated). Confirmed-OSS features returned above, but an UNKNOWN catalog
+    # entry still reaches here — hence the guard: only emit the bypass metric when
+    # we know this is a paid extension.
     if _SOURCE_TAG == "auto":
         if is_marketplace_feature:
             _emit_unverified_grant_metric(feature_id, "auto")
@@ -478,22 +531,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "customerIdentifier": None,
             "productCode": None,
             "source": "auto",
-        }
-
-    # OSS features have no AWS Marketplace contract — they install directly
-    # regardless of whether a simulator/Marketplace endpoint is configured.
-    # Short-circuit to ACTIVE so the UI shows the Install prompt instead of
-    # "Subscription required". This mirrors get_feature_launch_url, which skips
-    # the entitlement check for source=="oss" catalog entries. Only consult the
-    # entitlement endpoint for marketplace features below.
-    if catalog_entry.get("source") == "oss":
-        return {
-            "featureId": feature_id,
-            "state": "ACTIVE",
-            "expiresAt": None,
-            "customerIdentifier": None,
-            "productCode": None,
-            "source": "oss",
         }
 
     # Resolve product code from the feature's InstalledFeatures row (baked from
@@ -619,7 +656,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "expiresAt": None,
                 "customerIdentifier": None,
                 "productCode": product_code,
-                "source": _SOURCE_TAG,
+                "source": _REPORTED_SOURCE,
             }
 
     entitlements = _get_entitlements(
@@ -640,7 +677,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # names. Record it for a paid feature so a production host aimed at a
     # simulator is visible rather than rendering as a clean "subscription active".
     if evaluated["state"] == "ACTIVE" and is_marketplace_feature:
-        _emit_unverified_grant_metric(feature_id, _SOURCE_TAG)
+        _emit_unverified_grant_metric(feature_id, _REPORTED_SOURCE)
 
     return {
         "featureId": feature_id,
@@ -648,5 +685,5 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "expiresAt": evaluated["expiresAt"],
         "customerIdentifier": resolved_cid,
         "productCode": product_code,
-        "source": _SOURCE_TAG,
+        "source": _REPORTED_SOURCE,
     }

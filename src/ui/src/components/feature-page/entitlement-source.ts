@@ -14,13 +14,14 @@ type Source = FeatureEntitlement['source'];
  * this is "as verified as the host can know", not a guarantee.
  *
  * Deliberately EXCLUDED, and each exclusion is load-bearing:
- *  - `simulator`  — a simulator is by definition not a real verification.
- *  - `marketplace` — the endpoint-override mode. It exists to target a
- *                    simulator, so treating it as verified let a production host
- *                    be pointed at a fake Marketplace and report a *verified*
- *                    subscription with no warning and no metric. That was a
- *                    silent bypass of exactly the kind this module exists to
- *                    surface.
+ *  - `simulated`  — the seller-side GetEntitlements path, whether aimed at the
+ *                   bundled simulator or an admin-supplied endpoint. That API
+ *                   returns 200-with-an-empty-list from a buyer account, so it
+ *                   cannot verify anything against real AWS. Treating it as
+ *                   verified let a production host be pointed at a fake
+ *                   Marketplace and report a *verified* subscription with no
+ *                   warning and no metric — a silent bypass of exactly the kind
+ *                   this module exists to surface.
  *  - `auto`       — entitlement checks are switched off for the whole stack.
  *  - `advisory`   — the live check was unreachable, so the host allowed rather
  *                   than locking out a possibly-paying customer. An
@@ -40,10 +41,9 @@ export function isVerifiedEntitlement(state: FeatureEntitlementState | undefined
 
 /** Sources that grant access without a real subscription check behind it. */
 const UNVERIFIED_SOURCES: ReadonlySet<Source> = new Set<Source>([
-  'auto', // checks switched off
+  'auto', // checks switched off stack-wide
   'advisory', // live check unreachable, allowed rather than locked out
-  'simulator', // fake Marketplace
-  'marketplace', // endpoint-override mode, i.e. also a fake Marketplace
+  'simulated', // seller-side API against a simulator or custom endpoint
 ]);
 
 /**
@@ -66,7 +66,7 @@ export function unverifiedReason(source: Source | undefined): string {
   if (source === 'advisory') {
     return "The AWS Marketplace subscription check could not be completed, so access was allowed rather than blocking a subscription you may hold. This usually means the host is missing the aws-marketplace:SearchAgreements permission, or the Agreement API isn't available in this Region.";
   }
-  if (source === 'simulator' || source === 'marketplace') {
+  if (source === 'simulated') {
     return 'This deployment is pointed at a marketplace simulator or a custom entitlement endpoint (FeaturePlatformSimulatorEndpoint), not real AWS Marketplace, so the subscription shown here is simulated. Expected in development; not expected in production.';
   }
   return 'The subscription state for this extension was not verified.';
