@@ -47,9 +47,9 @@ export interface FeaturePageProps {
   /** Name of the main IDP stack (passed to features via FeatureContext). */
   mainStackName: string;
   /**
-   * Optional map of featureId -> marketplace listing URL, used in the NONE /
-   * EXPIRED states. If not provided for a given featureId, the Marketplace
-   * button is hidden.
+   * Optional map of featureId -> marketplace listing URL. An OVERRIDE only —
+   * the catalog entry's `marketplaceListingUrl` is the real source, so leaving
+   * this unset is the normal case (no route passes it).
    */
   marketplaceUrls?: Record<string, string>;
 }
@@ -91,7 +91,14 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
 
   const installed = useMemo(() => byId(featureId), [byId, featureId]);
   const catalogEntry = useMemo(() => catalogById(featureId), [catalogById, featureId]);
-  const marketplaceUrl = marketplaceUrls?.[featureId];
+  // Resolve ONCE, with the catalog as the fallback. The prop-only form was
+  // always undefined in production — no route passes `marketplaceUrls` — and
+  // only two of the five call sites below had a `?? catalogEntry` fallback, so
+  // the "View on AWS Marketplace" button never rendered in the NONE, EXPIRED or
+  // not-installed states. On a `marketplace-live` extension, where the in-UI
+  // Subscribe button is deliberately suppressed because it drives the simulator,
+  // that left an admin who genuinely needed to subscribe with no button at all.
+  const marketplaceUrl = marketplaceUrls?.[featureId] ?? catalogEntry?.marketplaceListingUrl ?? undefined;
 
   const handleInstall = useCallback(async () => {
     try {
@@ -205,7 +212,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
         docsUrl={docsUrl}
         availableRegions={catalogEntry.availableRegions ?? []}
         currentRegion={awsRegion}
-        marketplaceUrl={marketplaceUrl ?? catalogEntry.marketplaceListingUrl ?? undefined}
+        marketplaceUrl={marketplaceUrl}
       />
     );
   }
@@ -355,7 +362,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
           // Appended to the existing banner rather than added as another one —
           // the contradictory-banner stack is what the previous change removed.
           mismatchNote={licenseModeMismatchNote(entitlement)}
-          marketplaceUrl={marketplaceUrl ?? catalogEntry?.marketplaceListingUrl ?? undefined}
+          marketplaceUrl={marketplaceUrl}
           canCancel={canCancelSubscription}
           onCancel={canCancelSubscription ? handleCancel : undefined}
           cancelling={cancelling}

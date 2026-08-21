@@ -119,10 +119,19 @@ export const SubscriptionRequired: React.FC<{
               Click <b>Subscribe</b> to open the AWS Marketplace listing in a new tab, where you accept pricing, the seller EULA, and the
               AWS Customer Agreement.
             </>
-          ) : (
+          ) : marketplaceUrl ? (
             <>
-              Open the AWS Marketplace listing to accept pricing, the seller EULA, and the AWS Customer Agreement. A real AWS Marketplace
-              subscription can only be created there.
+              Click <b>View on AWS Marketplace</b> to accept pricing, the seller EULA, and the AWS Customer Agreement. A real AWS
+              Marketplace subscription can only be created there.
+            </>
+          ) : (
+            // No in-UI Subscribe and no listing URL means there is no way forward
+            // from this screen. Say so rather than rendering a bare alert with no
+            // buttons and leaving the admin to guess — which is exactly what
+            // happened while the listing URL wasn't being read from the catalog.
+            <>
+              This stack has no AWS Marketplace listing URL registered for <b>{featureDisplayName}</b>, so there is no link to offer here.
+              Add <b>marketplaceListingUrl</b> to its entry in <b>config_library/extensions-marketplace.yaml</b> and republish.
             </>
           )}{' '}
           Once the subscription is active, an admin can install the extension into this IDP stack.

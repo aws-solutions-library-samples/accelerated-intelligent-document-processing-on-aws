@@ -69,7 +69,13 @@ const ent = (overrides: Partial<FeatureEntitlement> = {}): FeatureEntitlement =>
   ...overrides,
 });
 
-function renderPage(groups: string[]) {
+/**
+ * `withMarketplaceUrlsProp` defaults to true for historical reasons, but NOTE:
+ * no route passes that prop in production. Tests that care about the marketplace
+ * link must set it false, or they assert against an override real users never
+ * have — which is precisely how the missing catalog fallback shipped.
+ */
+function renderPage(groups: string[], { withMarketplaceUrlsProp = true } = {}) {
   return render(
     <MemoryRouter initialEntries={['/features/docs-by-status']}>
       <Routes>
@@ -79,7 +85,7 @@ function renderPage(groups: string[]) {
             <FeaturePage
               groups={groups}
               mainStackName="idp-main"
-              marketplaceUrls={{ 'docs-by-status': 'https://aws.amazon.com/marketplace/...' }}
+              marketplaceUrls={withMarketplaceUrlsProp ? { 'docs-by-status': 'https://aws.amazon.com/marketplace/...' } : undefined}
             />
           }
         />
@@ -860,5 +866,95 @@ describe('FeaturePage per-extension licenseMode', () => {
     renderPage(['Admin']);
 
     expect(screen.queryByText(/licenseMode/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('FeaturePage marketplace listing link', () => {
+  /**
+   * Regression: an admin who genuinely needed to subscribe was shown
+   * "Subscription required" with NO buttons at all.
+   *
+   * Two causes compounded. `marketplaceUrls` is a prop no route passes, so it was
+   * always undefined in production, and only two of the five call sites had a
+   * `?? catalogEntry.marketplaceListingUrl` fallback — NONE was not one of them.
+   * The in-UI Subscribe button had been masking it, and suppressing that button
+   * for `marketplace-live` extensions (correctly, since it drives the simulator)
+   * removed the mask. Every test passed throughout, because the shared
+   * `renderPage` helper supplies the prop that production never does.
+   */
+  function noneStateWithCatalog(entry: Partial<CatalogFeature>) {
+    mockCatalog({ source: 'marketplace', ...entry });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE', source: 'marketplace-live', licenseMode: 'marketplace-live' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+  }
+
+  it('renders the listing button from the CATALOG when no prop is supplied', () => {
+    noneStateWithCatalog({ marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/prodview-real' });
+    renderPage(['Admin'], { withMarketplaceUrlsProp: false });
+
+    const link = screen.getByRole('link', { name: /View on AWS Marketplace/i });
+    expect(link).toHaveAttribute('href', 'https://aws.amazon.com/marketplace/pp/prodview-real');
+  });
+
+  it('gives a non-admin the listing link too', () => {
+    // Subscribing is a Marketplace-side action in the buyer's own account; the
+    // host has no reason to hide the listing from a viewer.
+    noneStateWithCatalog({ marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/prodview-real' });
+    renderPage(['Viewer'], { withMarketplaceUrlsProp: false });
+
+    expect(screen.getByRole('link', { name: /View on AWS Marketplace/i })).toBeInTheDocument();
+  });
+
+  it('the prop still overrides the catalog when it IS supplied', () => {
+    noneStateWithCatalog({ marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/from-catalog' });
+    renderPage(['Admin']);
+
+    expect(screen.getByRole('link', { name: /View on AWS Marketplace/i })).toHaveAttribute(
+      'href',
+      'https://aws.amazon.com/marketplace/...',
+    );
+  });
+
+  it('says what to fix when there is no listing URL anywhere', () => {
+    // A marketplace-live extension has no in-UI Subscribe button, so with no
+    // listing URL the screen has no way forward. It must not be a silent dead end.
+    noneStateWithCatalog({ marketplaceListingUrl: null });
+    renderPage(['Admin'], { withMarketplaceUrlsProp: false });
+
+    expect(screen.queryByRole('link', { name: /View on AWS Marketplace/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Subscribe$/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/extensions-marketplace\.yaml/)).toBeInTheDocument();
+  });
+
+  it('still offers the in-UI Subscribe button for a simulated extension', () => {
+    // The dev loop is unaffected by any of this.
+    mockCatalog({ source: 'marketplace', marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/x' });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE', source: 'simulated', licenseMode: 'simulated' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin'], { withMarketplaceUrlsProp: false });
+
+    expect(screen.getByRole('button', { name: /^Subscribe$/i })).toBeInTheDocument();
   });
 });
