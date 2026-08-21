@@ -1003,27 +1003,19 @@ class AssessmentService:
                 "Assessment task_prompt is required in configuration but not found"
             )
 
-        # B1 — Gate images on geometry mode. In ``ocr_only`` (default) / ``off`` the
-        # model is NEVER asked for bounding boxes (geometry is derived by matching
-        # values to OCR lines afterward), so the page images add nothing to the
-        # confidence judgement — they only bloat the request (~1.7K input tokens
-        # EACH; 5 shard pages ≈ 8.7K tokens) and, on a small multimodal model like
-        # Nova Lite, materially increase over-generation/latency and the odds of a
-        # max-output-token truncation on large tables. Drop them here so the
-        # confidence call is text-only in those modes. LLM-box modes
-        # (``llm``/``llm_grounded``) still need the image to estimate boxes, so keep
-        # it there.
-        geometry_mode = (self.config.extraction.geometry.mode or "").lower()
-        effective_page_images: List[Any] = page_images
-        if geometry_mode in ("ocr_only", "off") and page_images:
-            logger.info(
-                "Confidence: geometry.mode=%s → omitting %d page image(s) from the "
-                "assessment prompt (text-only; geometry comes from OCR grounding)",
-                geometry_mode or "ocr_only",
-                len(page_images),
-            )
-            effective_page_images = []
-
+        # The prompt decides whether images are sent: they are attached whenever
+        # the active confidence template contains {DOCUMENT_IMAGE} (see
+        # ``_build_content_with_or_without_image_placeholder``), and omitted when it
+        # does not. Images were previously dropped whenever geometry.mode was
+        # ``ocr_only``/``off`` on the theory that a confidence pass not asked for
+        # bounding boxes has no use for the page image. That is wrong for any field
+        # whose evidence is visual rather than textual — a signature/checkbox/stamp
+        # boolean, a struck-through or handwritten value — where the image IS the
+        # only way to check the extraction. It also silently contradicted the
+        # configured prompt: the shipped template asks for {DOCUMENT_IMAGE}, so the
+        # request went out with an empty <document-image> block. Callers that want
+        # a cheaper text-only confidence pass remove the placeholder from the
+        # template instead.
         try:
             content = self._build_content_with_or_without_image_placeholder(
                 prompt_template,
@@ -1032,7 +1024,7 @@ class AssessmentService:
                 property_descriptions,
                 extraction_results_str,
                 ocr_text_confidence,
-                effective_page_images,
+                page_images,
             )
         except ValueError as e:
             logger.error(f"Error formatting prompt template: {str(e)}")
