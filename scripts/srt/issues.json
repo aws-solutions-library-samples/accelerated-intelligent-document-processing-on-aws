@@ -1752,5 +1752,50 @@
     "assessmentCount": 1,
     "suppressionReason": "Accepted: CloudTrail DynamoDB data-plane logging is an account-level control (trail + log bucket) owned by the deploying customer; the solution template cannot assume or create account-wide trails. Same rationale as every other table in the solution (TrackingTable, InstalledFeaturesTable, ClaimsStatusTable, ...). The mapping table is SSE-encrypted, PITR-enabled, and reachable only via the RBAC-gated feature API.",
     "suppressedAt": "2026-07-24T16:30:00.000Z"
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/seller-entitlement-service/template.yaml",
+    "resourceType": "AWS::KMS::Key",
+    "resourceName": "TokenSigningKey",
+    "issue": "KMS key deployed without monitoring infrastructure for events and compliance",
+    "fix": "Add EventBridge rule with EventPattern source \"aws.kms\" and Lambda function target for KMS event monitoring. The Lambda function should have X-Ray tracing enabled. The Lambda function should have CloudWatch Alarms for the following Lambda metrics: Errors, Throttles, Duration, Invocations, ConcurrentExecutions, and DeadLetterErrors.",
+    "priority": "HIGH",
+    "check_id": "KMS-007",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "firstDetectedAt": "2026-08-20T00:00:00.000Z",
+    "assessmentCount": 1,
+    "suppressionReason": "Accepted: KMS key event monitoring (EventBridge rule + monitoring Lambda + alarms) is account-level infrastructure owned by the account operator, out of scope for this template. Same rationale as the other KMS-007 records in this baseline. This service is deployed by an extension SELLER into their own Marketplace seller account, so KMS-event monitoring is theirs to configure against their existing CloudTrail. The service's own security-relevant events are already recorded independently: the API access log records every caller account, the activation roster records every attempt, and a CloudWatch metric filter alarms on refusals."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/seller-entitlement-service/template.yaml",
+    "resourceType": "AWS::KMS::Key",
+    "resourceName": "LogEncryptionKey",
+    "issue": "KMS key deployed without monitoring infrastructure for events and compliance",
+    "fix": "Add EventBridge rule with EventPattern source \"aws.kms\" and Lambda function target for KMS event monitoring. The Lambda function should have X-Ray tracing enabled. The Lambda function should have CloudWatch Alarms for the following Lambda metrics: Errors, Throttles, Duration, Invocations, ConcurrentExecutions, and DeadLetterErrors.",
+    "priority": "HIGH",
+    "check_id": "KMS-007",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "firstDetectedAt": "2026-08-20T00:00:00.000Z",
+    "assessmentCount": 1,
+    "suppressionReason": "Accepted: KMS key event monitoring (EventBridge rule + monitoring Lambda + alarms) is account-level infrastructure owned by the account operator, out of scope for this template. Same rationale as the other KMS-007 records in this baseline. This service is deployed by an extension SELLER into their own Marketplace seller account, so KMS-event monitoring is theirs to configure against their existing CloudTrail. The service's own security-relevant events are already recorded independently: the API access log records every caller account, the activation roster records every attempt, and a CloudWatch metric filter alarms on refusals."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/seller-entitlement-service/template.yaml",
+    "resourceType": "AWS::DynamoDB::Table",
+    "resourceName": "ActivationsTable",
+    "issue": "DynamoDB data plane events are not captured by CloudTrail logging",
+    "fix": "Enable CloudTrail logging for DynamoDB data plane events for this table. Create a CloudTrail Trail if none exists. Add this table's ARN to an EventSelector with DataResources type 'AWS::DynamoDB::Table' \u2014 append to existing values array if one exists, otherwise create a new EventSelector. For CDK: use the L1 escape hatch (trail.node.defaultChild as CfnTrail).eventSelectors as DataResourceType.DYNAMODB_TABLE does not exist.\n\nIMPORTANT - S3 Bucket Logging Requirements:\nIf creating a new S3 bucket for CloudTrail logs:\n1. First check if the template already has an S3 bucket configured as a logging destination (look for buckets referenced in other buckets' LoggingConfiguration.DestinationBucketName)\n2. If a logging bucket exists, configure the new CloudTrail bucket's LoggingConfiguration to use it with LoggingPrefix 'cloudtrail-logs/'\n3. If no logging bucket exists, create a dedicated server access logging bucket first, then configure the CloudTrail bucket to log to it with LoggingPrefix 'cloudtrail-logs/'",
+    "priority": "HIGH",
+    "check_id": "DDB-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "firstDetectedAt": "2026-08-20T00:00:00.000Z",
+    "assessmentCount": 1,
+    "suppressionReason": "Accepted: capturing DynamoDB data-plane events requires a CloudTrail trail with data-event selectors (and a log bucket), which is account-global infrastructure owned by the account operator, not something a single feature stack should create. Same rationale as the other DDB-002 records in this baseline. Compensating controls on this specific table are unusually strong: the activation Lambda's IAM grants dynamodb:UpdateItem ONLY (no GetItem, Query, Scan or Delete - asserted by tests/test_template_security.py), so the function can neither read nor destroy the roster; reads require the operator's own credentials; the table has SSE + point-in-time recovery and is Retain-on-delete; and every write is independently mirrored by the API Gateway access log and an EMF activation metric."
   }
 ]

@@ -16,6 +16,56 @@ export const LearnMore: React.FC<{ docsUrl?: string | null }> = ({ docsUrl }) =>
     </Box>
   ) : null;
 
+/**
+ * Region-unavailable state — the extension isn't published for this Region.
+ *
+ * Takes priority over `SubscriptionRequired`: offering Subscribe here would
+ * dead-end, because even a valid subscription can't be installed. Marketplace
+ * extensions are Region-scoped because `sam package` bakes an absolute,
+ * Region-specific s3:// CodeUri into the published template, and a Lambda's code
+ * bucket must live in the function's own Region.
+ */
+export const NotAvailableInRegion: React.FC<{
+  featureDisplayName: string;
+  description?: string | null;
+  docsUrl?: string | null;
+  /** Regions the extension IS published to. Empty when unknown. */
+  availableRegions?: string[];
+  /** Region this stack runs in, when the UI knows it. */
+  currentRegion?: string | null;
+  /** Public listing page, so the admin can still read about it. */
+  marketplaceUrl?: string;
+}> = ({ featureDisplayName, description, docsUrl, availableRegions, currentRegion, marketplaceUrl }) => (
+  <Container
+    header={
+      <Header variant="h1" description={description || undefined}>
+        {featureDisplayName}
+      </Header>
+    }
+  >
+    <SpaceBetween size="l">
+      <Alert type="warning" header="Not available in this Region" statusIconAriaLabel="Warning">
+        <b>{featureDisplayName}</b> isn&apos;t available {currentRegion ? <>in {currentRegion}</> : 'in this Region'}.{' '}
+        {availableRegions && availableRegions.length > 0 ? (
+          <>
+            It can be installed in <b>{availableRegions.join(', ')}</b>. To use it, deploy the IDP Accelerator in one of those Regions.
+          </>
+        ) : (
+          <>No Regions are currently published for this extension.</>
+        )}
+      </Alert>
+      {marketplaceUrl && (
+        <Box>
+          <Button iconName="external" href={marketplaceUrl} target="_blank">
+            View on AWS Marketplace
+          </Button>
+        </Box>
+      )}
+      <LearnMore docsUrl={docsUrl} />
+    </SpaceBetween>
+  </Container>
+);
+
 /** NONE state — no entitlement (marketplace features only). Admin sees an in-UI Subscribe button. */
 export const SubscriptionRequired: React.FC<{
   featureDisplayName: string;
@@ -42,10 +92,9 @@ export const SubscriptionRequired: React.FC<{
   >
     <SpaceBetween size="l">
       <Alert type="info" header="Subscription required" statusIconAriaLabel="Info">
-        AWS Marketplace–delivered extensions are a <b>future capability</b> — no paid extensions are available yet. When they are, you
-        won&apos;t have an active subscription for <b>{featureDisplayName}</b> until you click <b>Subscribe</b>, which opens the AWS
-        Marketplace listing in a new tab to accept pricing, the seller EULA, and the AWS Customer Agreement. Once active, an admin can
-        install the feature into this IDP stack.
+        You don&apos;t have an active subscription for <b>{featureDisplayName}</b> yet. Click <b>Subscribe</b> to open the AWS Marketplace
+        listing in a new tab, where you accept pricing, the seller EULA, and the AWS Customer Agreement. Once the subscription is active, an
+        admin can install the extension into this IDP stack.
       </Alert>
       {subscribeError && (
         <Alert type="error" header="Failed to subscribe">
@@ -173,8 +222,12 @@ export const AwaitingAdminInstall: React.FC<{ featureDisplayName: string; docsUr
  * subscription, so we show a plain "up to date" with no source suffix. For
  * marketplace/simulator subscriptions we annotate the source.
  */
-export const UpToDateBanner: React.FC<{ version: string; source: string }> = ({ version, source }) => {
-  const showSource = source !== 'auto';
+export const UpToDateBanner: React.FC<{ version: string; source: FeatureEntitlement['source'] }> = ({ version, source }) => {
+  // Annotate only when there is a subscription source worth naming. `auto` means
+  // checks are off and `oss` means there is no subscription at all, so a suffix
+  // there is noise at best and misleading at worst. Typed to the union so an
+  // invalid source is a compile error rather than odd banner text.
+  const showSource = source !== 'auto' && source !== 'oss';
   return (
     <Alert type="success" statusIconAriaLabel="Active" dismissible={false}>
       v{version} — up to date{showSource ? ` (${source})` : ''}
@@ -242,6 +295,44 @@ function formatDate(iso: string | null): string | null {
  * admin-only "Cancel Subscription" button that invokes `unsubscribeFeature`
  * server-side (flips entitlement to EXPIRED).
  */
+/**
+ * Shown when the host is granting access to a PAID extension without having
+ * verified a subscription — `auto` (checks off) or `advisory` (check
+ * unreachable, allowed rather than locked out).
+ *
+ * This state is otherwise invisible: the page looks identical to a real
+ * subscription. Making it visible is the point — it removes the plausible
+ * deniability of running a paid extension unsubscribed by accident, and it tells
+ * an admin who *is* paying that their entitlement isn't being confirmed (usually
+ * a missing `aws-marketplace:SearchAgreements` permission) so they can fix it.
+ *
+ * Deliberately a warning, not an error, and it blocks nothing: the host gate is
+ * advisory by design, and blocking here would lock out a paying customer whenever
+ * the Marketplace API had a bad day.
+ */
+export const UnverifiedSubscriptionBanner: React.FC<{
+  featureDisplayName: string;
+  /** Why it's unverified — from `unverifiedReason(source)`. */
+  reason: string;
+  /** The listing, so an admin can go and subscribe properly. */
+  marketplaceUrl?: string;
+}> = ({ featureDisplayName, reason, marketplaceUrl }) => (
+  <Alert type="warning" header="Subscription not verified" statusIconAriaLabel="Warning">
+    <SpaceBetween size="s">
+      <Box variant="span">
+        Access to <b>{featureDisplayName}</b> is being allowed without a confirmed AWS Marketplace subscription. {reason}
+      </Box>
+      {marketplaceUrl && (
+        <Box>
+          <Button iconName="external" href={marketplaceUrl} target="_blank">
+            View subscription on AWS Marketplace
+          </Button>
+        </Box>
+      )}
+    </SpaceBetween>
+  </Alert>
+);
+
 export const ActiveSubscriptionBanner: React.FC<{
   entitlement: FeatureEntitlement;
   /** Admin-only: if true, render the Cancel Subscription button. */

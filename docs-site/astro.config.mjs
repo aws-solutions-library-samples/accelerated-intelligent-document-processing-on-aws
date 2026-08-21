@@ -282,6 +282,14 @@ export default defineConfig({
             },
           ],
         },
+        // AUTO-SIDEBAR-START
+        {
+          label: "New & Uncategorized",
+          items: [
+            { label: "Rule Validation Z3", slug: "rule-validation-z3" },
+          ],
+        },
+        // AUTO-SIDEBAR-END
       ],
     }),
   ],

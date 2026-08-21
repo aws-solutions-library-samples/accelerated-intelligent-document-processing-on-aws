@@ -1,0 +1,553 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >-
+  IDP Accelerator Feature Platform — Seller Entitlement Service. Deploy this in YOUR AWS
+  Marketplace SELLER account (not a customer account) to issue short-lived,
+  account-bound activation tokens to paid extensions running in buyers' accounts.
+  Generic: any seller of any Feature Platform extension can deploy it as-is.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Products this endpoint serves"
+        Parameters:
+          - ProductRegistryJson
+          - AllowedAccounts
+      - Label:
+          default: "Token policy"
+        Parameters:
+          - TokenTtlSeconds
+      - Label:
+          default: "Advanced"
+        Parameters:
+          - AgreementRegion
+          - LogLevel
+          - LogRetentionInDays
+    ParameterLabels:
+      ProductRegistryJson:
+        default: "Product registry (JSON)"
+      AllowedAccounts:
+        default: "Allow-listed buyer accounts (bypass subscription check)"
+      TokenTtlSeconds:
+        default: "Activation token TTL (seconds)"
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+
+Mappings:
+  # Stamped by `make version` (one sed target). This template is deployed
+  # directly by a seller via `sam deploy` / `idp-feature-cli seller-service
+  # deploy`, NOT through `idp-cli publish` — so it cannot use the `<VERSION>`
+  # placeholder that the published host template relies on, because nothing
+  # would ever substitute it. Hence a literal.
+  ServiceMeta:
+    ServiceVersion:
+      Value: '0.6.5.dev1'
+
+Parameters:
+  ProductRegistryJson:
+    Type: String
+    Default: '{}'
+    Description: >-
+      JSON map of AWS Marketplace productId -> settings for the products this
+      endpoint activates. Example:
+      {"prod-a5ee62vs2xa72":{"productCode":"q0k0s3zuuga46hle6fecx547","allowFreeTier":true}}
+      productId is the SaaS product ENTITY id (prod-...), which is what
+      SearchAgreements matches on — not the product code. Set allowFreeTier true
+      for a listing with a free dimension, so unsubscribed accounts receive a
+      reduced-capability token instead of being refused.
+
+  AllowedAccounts:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Comma-separated buyer AWS account ids that receive a token
+      WITHOUT a subscription check. For your own internal/test deployments only.
+      Leave blank in production — every entry here is an account getting your
+      paid product for free.
+
+  TokenTtlSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 300
+    MaxValue: 86400
+    Description: >-
+      Activation token lifetime. Shorter means a cancelled subscription stops
+      working sooner; longer means more tolerance of an outage in this service.
+      The buyer-side grace period should exceed this (see the README).
+
+  AgreementRegion:
+    Type: String
+    Default: 'us-east-1'
+    Description: >-
+      Region for the AWS Marketplace Agreement API. AWS Marketplace lives in
+      us-east-1 and the API is not available in every Region.
+
+  ReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: >-
+      Reserved Lambda concurrency for the activation function. This is a security
+      control, not just a cost one: the endpoint is reachable by ANY AWS account,
+      so without a reservation a flood would consume the seller account's whole
+      Lambda concurrency pool and take down other seller-side functions with it.
+      It also bounds the rate at which the shared Marketplace SearchAgreements
+      quota can be consumed. Activation is a once-per-token-TTL call per install,
+      so 10 is generous; raise it only if you have many thousands of installs.
+
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional IAM permissions boundary ARN applied to created roles. Required by
+      organisations whose SCP mandates a boundary on every role — without it, stack
+      creation fails there. Matches the pattern used by the other feature-platform
+      templates (this exact omission previously broke FeaturePlatformStack, see
+      lib/idp_sdk/tests/unit/test_permissions_boundary_coverage.py).
+
+  LogLevel:
+    Type: String
+    Default: 'INFO'
+    AllowedValues: ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 90
+    Description: >-
+      Activation logs are the seller's record of which accounts activated which
+      product and when — useful for reconciling against subscriptions. Keep them
+      long enough to be useful.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 256
+    Architectures: [arm64]
+
+Resources:
+  ##########################################################################
+  # Token signing key
+  #
+  # ASYMMETRIC on purpose: the extension needs to VERIFY tokens, and with an
+  # asymmetric key it can do that with the public key alone. A symmetric key
+  # would mean anything able to verify is also able to mint — i.e. shipping the
+  # minting capability inside the product running in the customer's account.
+  ##########################################################################
+  TokenSigningKey:
+    Type: AWS::KMS::Key
+    # Retain: destroying this key invalidates every issued token AND makes
+    # previously-issued tokens unverifiable. Deleting the stack should not
+    # silently break deployed extensions.
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      Description: !Sub 'Feature Platform activation token signing key (${AWS::StackName})'
+      KeyUsage: SIGN_VERIFY
+      KeySpec: RSA_2048
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  TokenSigningKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-activation-signing'
+      TargetKeyId: !Ref TokenSigningKey
+
+  ##########################################################################
+  # Log encryption key
+  #
+  # The repo standard is CMK-encrypted log groups (115 of 135 across the other
+  # templates). These logs carry buyer AWS account ids and caller role ARNs —
+  # customer-identifying data for a seller — so they get the same treatment.
+  #
+  # Separate from TokenSigningKey because that one is SIGN_VERIFY and cannot
+  # encrypt. NOT retained on delete: unlike the signing key, losing this only
+  # makes already-expiring log data unreadable, and retaining it would leave an
+  # orphan behind every test deployment.
+  ##########################################################################
+  LogEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'CloudWatch Logs encryption for ${AWS::StackName}'
+      KeyUsage: ENCRYPT_DECRYPT
+      KeySpec: SYMMETRIC_DEFAULT
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.${AWS::URLSuffix}'
+            # The exact actions CloudWatch Logs needs for a CMK-encrypted log
+            # group — NOT kms:Encrypt* / kms:Decrypt* / kms:Describe*. Those
+            # trailing wildcards read as equivalent but are strictly broader
+            # (kms:DescribeCustomKeyStores, future Decrypt* verbs, …), and this
+            # narrow list is the form used by the main stack's
+            # CustomerManagedEncryptionKey. Only GenerateDataKey* and ReEncrypt*
+            # are genuinely needed as wildcards.
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+            # Scoped to log groups in THIS account/region, so the grant to the
+            # Logs service principal cannot be used from elsewhere.
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  LogEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-logs'
+      TargetKeyId: !Ref LogEncryptionKey
+
+  ##########################################################################
+  # Activation roster
+  #
+  # The durable answer to "who has connected, and what did they activate?".
+  # The Lambda + API access logs hold the forensic detail, but they are
+  # printf/JSON lines that age out with LogRetentionInDays — no good as a
+  # commercial record, and awkward to query. This table is one item per
+  # (buyer account, product) with first/last seen, counts, and the last
+  # outcome, so the roster survives log expiry and reads in one query.
+  #
+  # Retained on stack delete: it is a record of who your customers are.
+  ##########################################################################
+  ActivationsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: buyerAccountId
+          AttributeType: S
+        - AttributeName: productId
+          AttributeType: S
+        - AttributeName: lastAttemptAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: buyerAccountId
+          KeyType: HASH
+        - AttributeName: productId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # "Who activated product X, most recent first" — the question a seller
+        # actually asks. Without this it would be a full table scan.
+        - IndexName: ProductIndex
+          KeySchema:
+            - AttributeName: productId
+              KeyType: HASH
+            - AttributeName: lastAttemptAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ##########################################################################
+  # Activation Lambda
+  ##########################################################################
+  ActivateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'lambda.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: MarketplaceSellerEntitlementRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Seller-side entitlement reads. These are the operations that only
+              # work when signed by the seller account — which is the whole
+              # reason this service exists. None support resource-level
+              # permissions.
+              #
+              # GetEntitlements / ResolveCustomer are included for SaaS *Contract*
+              # listings and the SaaS registration flow; a usage-based listing has
+              # no entitlement records, so SearchAgreements is the one that
+              # answers for those.
+              - Effect: Allow
+                Action:
+                  - aws-marketplace:SearchAgreements
+                  - aws-marketplace:DescribeAgreement
+                  - aws-marketplace:GetAgreementTerms
+                  - aws-marketplace:GetEntitlements
+                  - aws-marketplace:ResolveCustomer
+                Resource: '*'
+        - PolicyName: RecordActivations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # UpdateItem only — the Lambda upserts the roster and never reads
+              # or deletes it. The CLI reads with the operator's own credentials.
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt ActivationsTable.Arn
+        - PolicyName: SignActivationTokens
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Sign ONLY. The function must not be able to change the key or
+              # its policy, so a compromise cannot re-point trust. GetPublicKey
+              # is deliberately absent: the function never needs it (the operator
+              # fetches the public key with their own credentials via the
+              # TokenPublicKeyCommand output), and an unused grant is one more
+              # thing a compromised function could use.
+              - Effect: Allow
+                Action: kms:Sign
+                Resource: !GetAtt TokenSigningKey.Arn
+
+  ActivateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./lambdas/activate/
+      Handler: index.handler
+      Role: !GetAtt ActivateFunctionRole.Arn
+      # Bounds the blast radius of abuse from an arbitrary AWS account, and
+      # isolates the rest of the seller account's Lambda concurrency from it.
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      Environment:
+        Variables:
+          PRODUCT_REGISTRY_JSON: !Ref ProductRegistryJson
+          ALLOWED_ACCOUNTS: !Ref AllowedAccounts
+          TOKEN_TTL_SECONDS: !Ref TokenTtlSeconds
+          SIGNING_KEY_ARN: !GetAtt TokenSigningKey.Arn
+          AGREEMENT_REGION: !Ref AgreementRegion
+          # Recorded on every activation log line, so a seller debugging a
+          # customer's token knows which build issued it.
+          SERVICE_VERSION: !FindInMap [ServiceMeta, ServiceVersion, Value]
+          ACTIVATIONS_TABLE: !Ref ActivationsTable
+          LOG_LEVEL: !Ref LogLevel
+      Events:
+        Activate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ActivationApi
+            Path: /activate
+            Method: POST
+
+  ActivateFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ActivateFunction}'
+      RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
+
+  ##########################################################################
+  # Public REST API with AWS_IAM authorization
+  #
+  # The resource policy admits ANY AWS principal, and the method requires
+  # AWS_IAM. That combination is the point: API Gateway verifies the caller's
+  # SigV4 signature before invoking the Lambda and reports the verified account
+  # in requestContext.identity.accountId, so the Lambda learns who the caller
+  # really is without the seller needing to know buyer account ids in advance.
+  #
+  # "Principal: *" here means "any *authenticated* AWS caller may attempt
+  # activation", NOT "anonymous access" — an unsigned request is rejected by API
+  # Gateway with 403 before it reaches the function. Authorization (is this
+  # account subscribed?) happens in the Lambda.
+  ##########################################################################
+  ActivationApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      EndpointConfiguration:
+        Type: REGIONAL
+      # Reject unsigned/unauthorized calls at the edge.
+      Auth:
+        DefaultAuthorizer: AWS_IAM
+        # MUST be NONE, for two independent reasons.
+        #
+        # SAM defaults InvokeRole to CALLER_CREDENTIALS whenever the authorizer is
+        # AWS_IAM, which sets the integration's Credentials to the "pass the
+        # caller's identity through and invoke the backend as them" sentinel (an
+        # iam::*:user/* wildcard ARN). That is wrong here twice over:
+        #
+        #  1. It is incompatible with a resource policy. API Gateway rejects the
+        #     deployment outright: CreateDeployment returns 400 "Caller provided
+        #     credentials not allowed when resource policy is set", so the stack
+        #     fails on AWS::ApiGateway::Deployment and rolls back. See
+        #     aws/serverless-application-model#1708 (open).
+        #  2. Even if it deployed, it could never work. Invoking as the caller
+        #     would require every BUYER account to hold lambda:InvokeFunction on
+        #     the seller's function — which no buyer has, and which we must never
+        #     grant. Activation is inherently cross-account.
+        #
+        # NONE leaves Credentials null, which means "use resource-based
+        # permissions": the AWS::Lambda::Permission that SAM generates for this
+        # method, scoped by SourceArn to this API/stage/POST /activate.
+        #
+        # This does NOT weaken authentication. DefaultAuthorizer stays AWS_IAM, so
+        # callers must still SigV4-sign and requestContext.identity.accountId is
+        # still a verified account. InvokeRole governs only how API Gateway calls
+        # the Lambda, not who may call API Gateway.
+        InvokeRole: NONE
+        ResourcePolicy:
+          CustomStatements:
+            - Effect: Allow
+              Principal: '*'
+              Action: 'execute-api:Invoke'
+              Resource: !Sub 'execute-api:/*/POST/activate'
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          # Throttle: this endpoint is reachable by any AWS account, so it needs a
+          # ceiling. Activation is a once-per-hour-per-install call, so these are
+          # generous for legitimate traffic and a meaningful brake on abuse.
+          ThrottlingBurstLimit: 50
+          ThrottlingRateLimit: 25
+          LoggingLevel: ERROR
+      AccessLogSetting:
+        DestinationArn: !GetAtt ActivationApiAccessLogGroup.Arn
+        # Log the verified caller account: the seller's record of activation
+        # attempts, including refusals.
+        Format: '{"requestId":"$context.requestId","callerAccount":"$context.identity.accountId","status":"$context.status","path":"$context.path","time":"$context.requestTime"}'
+
+  # REST API stages (unlike HTTP APIs) reject AccessLogSetting unless the
+  # account-level API Gateway CloudWatch role is set ("CloudWatch Logs role ARN
+  # must be set in account settings to enable logging"). A fresh seller account
+  # has never had it set, so without these two resources this template fails on
+  # first deploy into exactly the account it is meant for. Same fix, and same
+  # reasoning, as nested/api-resolvers/template.yaml.
+  #
+  # AWS::ApiGateway::Account is a PER-ACCOUNT PER-REGION singleton: multiple
+  # stacks that declare it overwrite each other (last writer wins), which is
+  # harmless because every writer grants the same managed policy. Retain on
+  # delete so tearing down this stack does not clear the account setting out from
+  # under other APIs in the seller's account (the role is retained for the same
+  # reason) — note this means a teardown leaves the role behind by design.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PermissionsBoundary:
+        !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'apigateway.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # DependsOn is what orders the account setting before the stage: the stage
+  # reaches this log group by !GetAtt, so account -> log group -> stage.
+  ActivationApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: ApiGatewayAccount
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}-activation'
+      RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
+
+  # Execution logs (MethodSettings LoggingLevel above) go to a log group whose
+  # name API Gateway hardcodes: API-Gateway-Execution-Logs_<restApiId>/<stageName>.
+  # Pre-declaring it is the only way to get retention + CMK encryption on it —
+  # otherwise API Gateway auto-creates it with no retention and no KMS key, which
+  # would leave buyer account ids sitting in a plaintext log group forever, and
+  # contradict this service's own CMK-everywhere posture.
+  ActivationApiExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: ApiGatewayAccount
+    Properties:
+      LogGroupName: !Sub 'API-Gateway-Execution-Logs_${ActivationApi}/prod'
+      RetentionInDays: !Ref LogRetentionInDays
+      KmsKeyId: !GetAtt LogEncryptionKey.Arn
+
+  ##########################################################################
+  # Observability — a seller almost always wants to know about refusals.
+  ##########################################################################
+  NotEntitledAlarmMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ActivationApiAccessLogGroup
+      FilterPattern: '{ $.status = 403 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${AWS::StackName}/Activation'
+          MetricName: NotEntitledActivations
+          MetricValue: '1'
+          DefaultValue: 0
+
+Outputs:
+  ServiceVersion:
+    Description: >-
+      IDP Accelerator version this seller service was deployed from. Compare with
+      the host/extension versions when diagnosing an activation problem.
+    Value: !FindInMap [ServiceMeta, ServiceVersion, Value]
+
+  ActivationsTableName:
+    Description: >-
+      Roster of buyer accounts that have attempted activation, by product. Read it
+      with `idp-feature-cli seller-service activations`.
+    Value: !Ref ActivationsTable
+
+  ActivationEndpoint:
+    Description: >-
+      POST here from a buyer's extension with {"productId":"prod-..."} signed
+      with SigV4. Bake this URL into your published extension template.
+    Value: !Sub 'https://${ActivationApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/prod/activate'
+
+  TokenPublicKeyCommand:
+    Description: >-
+      Raw fetch of the PUBLIC key your extension uses to verify activation tokens.
+      Safe to embed in the published (public-read) extension artifacts — it can
+      verify tokens but not mint them. Prefer
+      `idp-feature-cli seller-service export-trust-bundle`, which returns this key
+      as PEM alongside the endpoint and the matching `kid`; this output is the
+      no-CLI fallback and returns base64 DER.
+    Value: !Sub 'aws kms get-public-key --key-id ${TokenSigningKey.Arn} --region ${AWS::Region} --query PublicKey --output text'
+
+  TokenSigningKeyArn:
+    Description: KMS asymmetric key used to sign activation tokens.
+    Value: !GetAtt TokenSigningKey.Arn
+
+  RequiredBuyerPermission:
+    Description: >-
+      The extension's Lambda role in the BUYER account needs this to call the
+      activation endpoint. Include it in your published extension template.
+    Value: !Sub 'execute-api:Invoke on arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ActivationApi}/prod/POST/activate'

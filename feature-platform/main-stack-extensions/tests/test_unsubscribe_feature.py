@@ -89,7 +89,7 @@ def test_happy_path(monkeypatch, load_lambda, installed_features_table):
 
     assert result["featureId"] == "docs-by-status"
     assert result["state"] == "EXPIRED"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
     assert result["expiresAt"].endswith("Z")
 
 

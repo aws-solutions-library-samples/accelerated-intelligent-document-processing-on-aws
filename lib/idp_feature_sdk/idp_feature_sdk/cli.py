@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -16,6 +17,24 @@ from rich.console import Console
 from .manifest import ManifestError, load_manifest
 from .publisher import FeaturePublisher
 from .scaffold import ScaffoldError, ScaffoldOptions, scaffold_feature
+from .seller_service import (
+    DEFAULT_MARKETPLACE_REGION,
+    SellerServiceError,
+    build_activation_pointer,
+    build_sam_deploy_command,
+    build_trust_bundle,
+    fetch_activations,
+    fetch_signing_public_key,
+    find_seller_service_dir,
+    parse_product_registry,
+    preflight,
+    publish_activation_pointer,
+    read_service_version,
+    resolve_stack_output,
+    run_command,
+    utc_now_iso,
+    verify_deployed_registry,
+)
 
 console = Console()
 
@@ -1072,6 +1091,564 @@ def init_cmd(
     console.print("    idp-feature-cli validate .")
     console.print("    idp-feature-cli build .")
     console.print("    idp-feature-cli publish . --bucket-basename <bucket>")
+
+
+# ---------------------------------------------------------------------------
+# Seller Entitlement Service — deployed by an extension SELLER into their own
+# AWS Marketplace seller account. See
+# feature-platform/seller-entitlement-service/README.md.
+#
+# This lives in `idp-feature-cli` rather than a Makefile target because the
+# audience is extension authors/sellers (the same people who run `publish` and
+# `deploy`), and because the preflight is a safety guard whose silent failure
+# mode is "every customer locked out" — that deserves unit tests, which a shell
+# snippet in a Makefile does not get.
+# ---------------------------------------------------------------------------
+
+
+@main.group("seller-service")
+def seller_service_group() -> None:
+    """Manage the seller-side entitlement service for paid extensions."""
+
+
+def _seller_clients(region: str):
+    """boto3 STS + Marketplace Catalog clients. Imported lazily so the rest of
+    the CLI works without botocore installed."""
+    try:
+        import boto3
+    except ImportError as exc:  # pragma: no cover - dependency always present
+        raise SellerServiceError(
+            "boto3 is required for seller-service commands."
+        ) from exc
+    return boto3.client("sts"), boto3.client("marketplace-catalog", region_name=region)
+
+
+def _run_preflight(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+):
+    product_ids = parse_product_registry(product_registry)
+    sts_client, catalog_client = _seller_clients(region)
+    result = preflight(
+        product_ids=product_ids,
+        sts_client=sts_client,
+        catalog_client=catalog_client,
+        expected_account_id=seller_account_id,
+        skip_ownership_check=skip_ownership_check,
+    )
+    console.print(
+        f"[green]✓[/green] Credentials resolve to account [bold]{result.account_id}[/bold]"
+    )
+    console.print(f"  {result.caller_arn}")
+    if result.ownership_verified:
+        owned = {p.entity_id: p for p in result.owned}
+        for pid in result.product_ids:
+            p = owned[pid]
+            console.print(
+                f"[green]✓[/green] {pid} owned by this account — "
+                f"'{p.name}' ({p.visibility})"
+            )
+    else:
+        console.print(
+            "[yellow]![/yellow] Ownership check skipped. If this account does not "
+            "own the products, every activation will be refused and every customer "
+            "locked out — silently. You are asserting the account is correct."
+        )
+    return result
+
+
+_registry_option = click.option(
+    "--product-registry",
+    required=True,
+    help=(
+        'JSON map of productId -> settings, e.g. \'{"prod-abc":{"productCode":"xyz",'
+        '"allowFreeTier":true}}\'. productId is the SaaS product ENTITY id '
+        "(prod-...), not the product code."
+    ),
+)
+_seller_account_option = click.option(
+    "--seller-account-id",
+    default=None,
+    help="Assert the caller is exactly this AWS account before proceeding.",
+)
+_skip_ownership_option = click.option(
+    "--skip-ownership-check",
+    is_flag=True,
+    help=(
+        "Skip the product-ownership check (use only when the deploying role "
+        "lacks aws-marketplace:ListEntities and you are certain the account is "
+        "correct)."
+    ),
+)
+_mp_region_option = click.option(
+    "--region",
+    default=DEFAULT_MARKETPLACE_REGION,
+    show_default=True,
+    help="Region for AWS Marketplace APIs and the deployed stack.",
+)
+
+
+@seller_service_group.command("preflight")
+@_registry_option
+@_seller_account_option
+@_skip_ownership_option
+@_mp_region_option
+def seller_service_preflight_cmd(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+) -> None:
+    """Check that the current credentials are the SELLER for these products.
+
+    Read-only. Run this before `deploy` (which runs it automatically) or any time
+    you want to confirm which account you are pointed at.
+    """
+    try:
+        _run_preflight(
+            product_registry, seller_account_id, skip_ownership_check, region
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+    console.print("[green]✓ Preflight passed.[/green]")
+
+
+@seller_service_group.command("deploy")
+@_registry_option
+@_seller_account_option
+@_skip_ownership_option
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="CloudFormation stack name in the seller account.",
+)
+@click.option(
+    "--allowed-accounts",
+    default="",
+    help=(
+        "Comma-separated buyer accounts that receive a token WITHOUT a "
+        "subscription check. For your own test deployments only — every entry is "
+        "an account getting your paid product for free."
+    ),
+)
+@click.option(
+    "--token-ttl-seconds",
+    type=int,
+    default=None,
+    help="Activation token lifetime (template default: 3600).",
+)
+@click.option("--guided", is_flag=True, help="Pass --guided to `sam deploy`.")
+@click.option(
+    "--yes", is_flag=True, help="Skip the confirmation prompt after preflight."
+)
+def seller_service_deploy_cmd(
+    product_registry: str,
+    seller_account_id: Optional[str],
+    skip_ownership_check: bool,
+    region: str,
+    stack_name: str,
+    allowed_accounts: str,
+    token_ttl_seconds: Optional[int],
+    guided: bool,
+    yes: bool,
+) -> None:
+    """Preflight, then deploy the Seller Entitlement Service to this account.
+
+    Deploys into the account the current credentials resolve to — so the
+    preflight runs first and refuses if that account does not own the products
+    being registered.
+    """
+    try:
+        service_dir = find_seller_service_dir()
+        if service_dir is None:
+            raise SellerServiceError(
+                "Could not find feature-platform/seller-entitlement-service/. "
+                "Run this from a checkout of the IDP Accelerator repository "
+                "(the template and Lambda source live there, as with "
+                "`idp-feature-cli init`)."
+            )
+
+        result = _run_preflight(
+            product_registry, seller_account_id, skip_ownership_check, region
+        )
+
+        version = read_service_version(service_dir)
+        console.print()
+        console.print("  About to deploy the Seller Entitlement Service:")
+        console.print(f"    account    {result.account_id}")
+        console.print(f"    region     {region}")
+        console.print(f"    stack      {stack_name}")
+        if version:
+            console.print(f"    version    {version}")
+        if allowed_accounts:
+            console.print(
+                f"    [yellow]allow-list {allowed_accounts} "
+                f"(these accounts skip the subscription check)[/yellow]"
+            )
+        console.print()
+
+        if not yes and not click.confirm("Proceed?", default=False):
+            console.print("Aborted.")
+            sys.exit(1)
+
+        run_command(["sam", "build"], cwd=service_dir)
+        run_command(
+            build_sam_deploy_command(
+                service_dir=service_dir,
+                stack_name=stack_name,
+                region=region,
+                product_registry_json=product_registry,
+                allowed_accounts=allowed_accounts,
+                token_ttl_seconds=token_ttl_seconds,
+                guided=guided,
+            ),
+            cwd=service_dir,
+        )
+
+        # Verify the registry actually reached the function. A mangled registry
+        # produces an endpoint that looks healthy and refuses every customer.
+        import boto3
+
+        deployed = verify_deployed_registry(
+            cfn_client=boto3.client("cloudformation", region_name=region),
+            lambda_client=boto3.client("lambda", region_name=region),
+            stack_name=stack_name,
+            expected_product_ids=result.product_ids,
+        )
+        console.print(
+            f"[green]✓[/green] Deployed registry serves "
+            f"{len(deployed)} product(s): {', '.join(sorted(deployed))}"
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    console.print()
+    console.print("[green]✓ Seller Entitlement Service deployed.[/green]")
+    console.print("  Next steps:")
+    console.print(
+        f"    aws cloudformation describe-stacks --stack-name {stack_name} "
+        f"--region {region} --query 'Stacks[0].Outputs' --output table"
+    )
+    console.print(
+        "    # bake ActivationEndpoint + the public key into your extension; see"
+    )
+    console.print(
+        "    # feature-platform/seller-entitlement-service/README.md "
+        "'Buyer-side integration contract'"
+    )
+
+
+@seller_service_group.command("export-trust-bundle")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to export from.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Write activation-trust.json + activation-public-key.pem here. Omit to "
+    "print the JSON to stdout.",
+)
+def seller_service_export_trust_bundle_cmd(
+    region: str,
+    stack_name: str,
+    output_dir: Optional[Path],
+) -> None:
+    """Export the material an extension bakes in at build time.
+
+    Emits the activation endpoint, the `kid` (the signing key ARN — byte-identical
+    to the token's `kid` claim), the signing algorithm, and the **public**
+    verification key as PEM.
+
+    Run this once per extension release and embed the result. The public key is
+    safe to ship in public artifacts: it verifies tokens, it cannot mint them. It
+    belongs embedded rather than fetched at runtime — a key fetched from the
+    artifact bucket would make that bucket a forgery trust root, which is exactly
+    why `activation.json` carries the endpoint and nothing else.
+    """
+    try:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name=region)
+        endpoint = resolve_stack_output(cfn, stack_name, "ActivationEndpoint")
+        key_arn = resolve_stack_output(cfn, stack_name, "TokenSigningKeyArn")
+        try:
+            service_version = resolve_stack_output(cfn, stack_name, "ServiceVersion")
+        except SellerServiceError:
+            service_version = ""
+
+        der = fetch_signing_public_key(boto3.client("kms", region_name=region), key_arn)
+        bundle = build_trust_bundle(
+            activation_endpoint=endpoint,
+            kid=key_arn,
+            public_key_der=der,
+            service_version=service_version,
+            exported_at=utc_now_iso(),
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    if output_dir is None:
+        # Plain print, not console.print: this is machine-readable output that a
+        # release script will pipe, so it must not pick up Rich markup or wrapping.
+        print(json.dumps(bundle, indent=2, sort_keys=True))
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = output_dir / "activation-trust.json"
+    pem_path = output_dir / "activation-public-key.pem"
+    bundle_path.write_text(
+        json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    pem_path.write_text(bundle["publicKeyPem"], encoding="utf-8")
+    console.print(f"[green]✓[/green] {bundle_path}")
+    console.print(f"[green]✓[/green] {pem_path}")
+    console.print(f"  endpoint {bundle['activationEndpoint']}")
+    console.print(f"  kid      {bundle['kid']}")
+    console.print(f"  alg      {bundle['signingAlgorithm']}")
+
+
+@seller_service_group.command("publish-endpoint")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to read the ActivationEndpoint from.",
+)
+@click.option(
+    "--feature-id",
+    "feature_ids",
+    multiple=True,
+    required=True,
+    help="Extension featureId to publish the pointer for. Repeatable — pass every "
+    "extension served by this endpoint.",
+)
+@click.option(
+    "--bucket-basename",
+    required=True,
+    help="Artifact bucket basename; the region is appended, matching "
+    "`idp-feature-cli publish` (e.g. 'aws-ml-blog' -> 'aws-ml-blog-us-east-1').",
+)
+@click.option(
+    "--artifact-regions",
+    required=True,
+    help="Comma-separated regions to publish into — EVERY region the extension is "
+    "offered in, since an extension reads the pointer from its own regional bucket.",
+)
+@click.option(
+    "--prefix",
+    "s3_prefix",
+    default="",
+    help="S3 key prefix under the bucket, matching the catalog's templateKey "
+    "(e.g. 'artifacts/genai-idp-mp').",
+)
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Do NOT set public-read. The pointer is read by extensions in arbitrary "
+    "buyer accounts, so it normally must be public — like the template beside it.",
+)
+def seller_service_publish_endpoint_cmd(
+    region: str,
+    stack_name: str,
+    feature_ids: tuple,
+    bucket_basename: str,
+    artifact_regions: str,
+    s3_prefix: str,
+    private: bool,
+) -> None:
+    """Publish the activation endpoint as a pointer file next to latest.json.
+
+    This is the indirection layer for the endpoint URL. The URL embeds an
+    API-Gateway-assigned API id, so replacing the API would otherwise
+    permanently break every already-installed extension — those run in customer
+    accounts the seller cannot reach. Extensions read this pointer instead.
+
+    Carries no key material by design: the public verification key stays embedded
+    in the extension, so a tampered pointer can only cause a fail-closed
+    activation, never a forged entitlement.
+    """
+    try:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name=region)
+        endpoint = resolve_stack_output(cfn, stack_name, "ActivationEndpoint")
+        try:
+            key_id = resolve_stack_output(cfn, stack_name, "TokenSigningKeyArn")
+        except SellerServiceError:
+            key_id = ""
+        try:
+            service_version = resolve_stack_output(cfn, stack_name, "ServiceVersion")
+        except SellerServiceError:
+            service_version = ""
+
+        document = build_activation_pointer(
+            activation_endpoint=endpoint,
+            signing_key_id=key_id,
+            service_version=service_version,
+            published_at=utc_now_iso(),
+        )
+
+        targets = [r.strip() for r in artifact_regions.split(",") if r.strip()]
+        if not targets:
+            raise SellerServiceError("--artifact-regions listed no regions")
+
+        console.print(f"  endpoint: {endpoint}")
+        console.print(f"  features: {', '.join(feature_ids)}")
+        console.print()
+        for artifact_region in targets:
+            bucket = f"{bucket_basename}-{artifact_region}"
+            written = publish_activation_pointer(
+                s3_client=boto3.client("s3", region_name=artifact_region),
+                bucket=bucket,
+                feature_ids=list(feature_ids),
+                document=document,
+                s3_prefix=s3_prefix,
+                make_public=not private,
+            )
+            for key in written:
+                console.print(f"[green]✓[/green] s3://{bucket}/{key}")
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    console.print()
+    console.print(
+        "[green]✓ Activation pointer published.[/green] Extensions should read it "
+        "at activation time and fall back to their embedded default if unreachable."
+    )
+
+
+@seller_service_group.command("activations")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to read the roster from.",
+)
+@click.option("--product-id", default=None, help="Only this product (uses the GSI).")
+@click.option("--buyer-account-id", default=None, help="Only this buyer account.")
+@click.option(
+    "--outcome",
+    type=click.Choice(["granted", "refused"]),
+    default=None,
+    help="Only attempts whose LAST outcome was this.",
+)
+@click.option(
+    "--since",
+    default=None,
+    help="Only attempts on/after this ISO timestamp, e.g. 2026-08-01.",
+)
+@click.option(
+    "--table-name",
+    default=None,
+    help="Read this table directly, skipping stack lookup.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+def seller_service_activations_cmd(
+    region: str,
+    stack_name: str,
+    product_id: Optional[str],
+    buyer_account_id: Optional[str],
+    outcome: Optional[str],
+    since: Optional[str],
+    table_name: Optional[str],
+    as_json: bool,
+) -> None:
+    """Show which buyer accounts have activated (or been refused) which products.
+
+    Reads the seller service's activation roster — one row per (buyer account,
+    product) with first/last seen, attempt counts, and the last outcome. Run this
+    with credentials for your SELLER account.
+
+    The roster is the durable record: the Lambda and API access logs hold the
+    per-request forensic detail but age out with LogRetentionInDays.
+    """
+    try:
+        import boto3
+
+        if not table_name:
+            table_name = resolve_stack_output(
+                boto3.client("cloudformation", region_name=region),
+                stack_name,
+                "ActivationsTableName",
+            )
+        records = fetch_activations(
+            dynamodb_resource=boto3.resource("dynamodb", region_name=region),
+            table_name=table_name,
+            product_id=product_id,
+            buyer_account_id=buyer_account_id,
+            outcome=outcome,
+            since=since,
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        import dataclasses
+        import json as _json
+
+        click.echo(_json.dumps([dataclasses.asdict(r) for r in records], indent=2))
+        return
+
+    if not records:
+        console.print(
+            "No activation attempts recorded yet"
+            + (f" for {product_id}" if product_id else "")
+            + "."
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Activation roster ({len(records)} account/product pairs)")
+    table.add_column("Buyer account")
+    table.add_column("Product")
+    table.add_column("Last outcome")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Granted", justify="right")
+    table.add_column("Tier")
+    table.add_column("First seen")
+    table.add_column("Last seen")
+    for r in records:
+        colour = "green" if r.last_outcome == "granted" else "red"
+        table.add_row(
+            r.buyer_account_id,
+            r.product_id,
+            f"[{colour}]{r.last_outcome}[/{colour}]",
+            str(r.attempt_count),
+            str(r.granted_count),
+            "free" if r.free_tier else "paid",
+            r.first_attempt_at[:19],
+            r.last_attempt_at[:19],
+        )
+    console.print(table)
+
+    refused = [r for r in records if r.last_outcome == "refused"]
+    if refused:
+        console.print()
+        console.print(
+            f"[yellow]{len(refused)} account/product pair(s) last refused.[/yellow] "
+            "Most recent reasons:"
+        )
+        for r in refused[:5]:
+            console.print(
+                f"  {r.buyer_account_id} / {r.product_id}: {r.detail or '(no detail)'}"
+            )
 
 
 if __name__ == "__main__":

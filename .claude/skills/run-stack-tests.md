@@ -21,6 +21,7 @@ limit) and caused flaky failures unrelated to the code under test.
 | `make stacktest-waf` | WAF IP-allow-list WebACL association | stack or self-deploy |
 | `make stacktest-hosting-private` | PRIVATE (VPC) API hosting | **VPC** + stack/self-deploy |
 | `make stacktest-jobsapi` | Jobs REST API (`EnableJobsApi`) | **VPC** + stack/self-deploy |
+| `make stacktest-seller` | Seller Entitlement Service e2e (deploys + tears down its own stack) | seller-account creds; **no** listing needed |
 | `make stacktest-benchmark` | Release-vs-release benchmark audit (alias) | see run-benchmarks |
 | `make stacktest-upgrade` | In-place upgrade test pointer | see test-upgrade |
 

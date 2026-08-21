@@ -3,35 +3,111 @@
 #
 # Closed-source extensions delivered via AWS Marketplace subscriptions.
 #
-# FUTURE CAPABILITY: the framework supports this, but no Marketplace extensions
-# exist yet — this file is empty by design. When paid extensions ship, this
-# becomes their single source of truth: `idp-cli publish` merges it into the
-# generated catalog.json (append an entry, re-publish, then run a stack update
-# so the catalog refreshes).
+# This file is the single source of truth for paid extensions: `idp-cli publish`
+# merges it into the generated catalog.json, which is copied into each stack's
+# ConfigurationBucket at deploy time. The host resolvers read that one object —
+# they never list buckets.
 #
-# The template lives in a private seller bucket; the host presigns a GetObject
-# URL for it only after GetEntitlements(productCode) confirms an active
-# subscription. See docs/feature-platform-developer-guide.md. Counterpart for
-# bundled OSS extensions: extensions-oss.yaml.
+# Counterpart for bundled OSS extensions: extensions-oss.yaml.
+#
+# ---------------------------------------------------------------------------
+# Schema 1.1 — per-region artifact mapping
+# ---------------------------------------------------------------------------
+#
+# `regions` maps each supported AWS region to an EXPLICIT bucket + template key.
+# The host looks the caller's region up in this map and fails closed when it is
+# absent. It never derives a bucket name by concatenating a basename with the
+# region, because S3 bucket names are global and guessable: a derived name in a
+# region we don't publish to could resolve to a bucket somebody else owns, and
+# the customer would be handed a CloudFormation template we did not write. That
+# is a security property, not tidiness.
+#
+# Three regions rather than one because `sam package` bakes an absolute
+# `s3://bucket/key` CodeUri into the published template, and a Lambda's code
+# bucket must live in the function's own region. There is deliberately no
+# region-agnostic template: a nested-stack launcher would have to hand-mirror
+# the feature template's parameters, and CloudFormation refuses to update or
+# delete a nested stack directly, which would break the host's
+# `stacks/update/template` flow.
+#
+# `templateKey` is VERSION-FREE and must stay that way. The newest publish
+# overwrites `template.yaml`; versioned artifacts (ui-bundle.js, manifest.json,
+# sam-objects/, config preset) live under `<base>/<version>/`, and the feature
+# stack self-locates them from the `FEATURE_VERSION` baked into its template at
+# publish time. A version-bearing key would go stale the moment a customer ran a
+# stack Update.
+#
+# `latestVersion` here is only a SEED / FALLBACK. The host reads
+# `<base>/latest.json` at runtime for the "Update available" badge, so a new
+# extension version reaches customers without re-releasing the accelerator.
+# Keeping this field roughly current is still useful: it is what a stack sees
+# when latest.json is unreachable.
+#
+# Legacy schema 1.0 fields (`sellerBucket` + `sellerBucketRegion` +
+# top-level `templateKey`) are still accepted for one region and still honored
+# by the host as a deprecated fallback. Prefer `regions`.
 
-schemaVersion: "1.0"
+schemaVersion: "1.1"
 
-features: []
-  # Example shape (placeholders only — no Marketplace extensions are published yet):
+features:
+  - featureId: idp-auto-optimizer
+    displayName: "Auto Optimizer"
+    description: "Autonomous configuration optimization: a Bedrock AgentCore agent
+      iteratively tunes extraction/classification/OCR settings within a per-page
+      cost budget."
+    iconUrl: ""
+    showInNav: true
+    # AWS Marketplace SaaS product identity, from the seller Management Portal.
+    #   productCode — used by the seller-side marketplace-entitlement
+    #     GetEntitlements API. NOTE: that API is seller-side; called from a
+    #     buyer account it returns HTTP 200 with an EMPTY Entitlements list
+    #     rather than an error, so the host cannot fail closed on it. See
+    #     productId below and docs/feature-platform.md.
+    #   productId — the SaaS product entity id. This is what the buyer-side
+    #     AWS Marketplace Agreement API (SearchAgreements) matches on via its
+    #     `ResourceIdentifier` filter, which is how the host actually confirms
+    #     a subscription from the customer's own account.
+    productCode: "q0k0s3zuuga46hle6fecx547"
+    productId: "prod-a5ee62vs2xa72"
+    marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y"
+    # Seed/fallback only — the live value comes from latest.json at runtime.
+    # TO BE SUPPLIED: set to the first published Auto Optimizer version.
+    latestVersion: "v0.3.0"
+    # Published by the closed-source release tooling to the same public buckets
+    # and regions as the host's own templates (scripts/aws-release.sh), but under
+    # a separate `artifacts/genai-idp-mp/` prefix so neither release process can
+    # overwrite the other's keys.
+    #
+    # These objects are public-read by necessity, not by preference: the
+    # registered Quick Launch template URL is fetched by AWS Seller Ops during
+    # listing review and by CloudFormation in an arbitrary buyer account, and the
+    # Lambda code zips are fetched from the buyer's account at deploy time.
+    # Presigning only ever covered the template, so it protected nothing. The
+    # commercial gate is the Marketplace subscription plus the extension's own
+    # runtime entitlement check — never artifact secrecy.
+    regions:
+      us-west-2:
+        sellerBucket: aws-ml-blog-us-west-2
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+      us-east-1:
+        sellerBucket: aws-ml-blog-us-east-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+      eu-central-1:
+        sellerBucket: aws-ml-blog-eu-central-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+
+  # Example shape for an additional paid extension:
   # - featureId: my-paid-extension
   #   displayName: "My Paid Extension"
   #   description: "One-line description shown in the nav and on the feature page."
   #   iconUrl: ""                                  # optional https URL
-  #   showInNav: true                              # optional (default true): own nav entry
-  #                                                # before install; false = Browse catalog only
+  #   docsUrl: ""                                  # optional; falls back to the listing URL
+  #   showInNav: true                              # false = Browse catalog only
   #   productCode: "REPLACE_WITH_MARKETPLACE_PRODUCT_CODE"
+  #   productId: "prod-REPLACE"
   #   marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/REPLACE"
-  #   sellerBucket: "REPLACE_WITH_SELLER_BUCKET"   # private; GetObject-only
-  #   sellerBucketRegion: "us-east-1"
   #   latestVersion: "1.0.0"
-  #   # VERSION-FREE template path (same convention as OSS extensions): the
-  #   # newest publish overwrites template.yaml; versioned artifacts (ui-bundle.js,
-  #   # config preset) live under <base>/<version>/. The feature stack derives the
-  #   # <version> subfolder from its baked FEATURE_VERSION, so no version-bearing
-  #   # value is stored as a (stale-able) CloudFormation parameter.
-  #   templateKey: "extensions/my-paid-extension/template.yaml"
+  #   regions:
+  #     us-east-1:
+  #       sellerBucket: my-seller-bucket-us-east-1
+  #       templateKey: extensions/my-paid-extension/template.yaml

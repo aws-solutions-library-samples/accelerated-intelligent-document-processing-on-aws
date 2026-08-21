@@ -27,6 +27,8 @@ export const LIST_CATALOG_FEATURES = /* GraphQL */ `
       source
       productCode
       marketplaceListingUrl
+      availableInRegion
+      availableRegions
     }
   }
 `;

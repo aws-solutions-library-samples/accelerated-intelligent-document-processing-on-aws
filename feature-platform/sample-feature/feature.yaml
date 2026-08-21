@@ -4,7 +4,7 @@
 # docs/feature-platform-developer-guide.md.)
 featureId: docs-by-status
 displayName: "Sample: Document Status (feature add-on)"
-version: 0.1.0
+version: 0.2.1
 description: |
   Demonstrates the Feature Platform host contract end-to-end. Adds a "Docs By
   Status" page with a simple pie chart of how many documents are in each status (NEW,

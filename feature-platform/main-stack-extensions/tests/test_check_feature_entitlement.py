@@ -138,7 +138,7 @@ def test_synthesized_product_code_simulator_mode(
     assert result["state"] == "NONE"
     assert result["productCode"] == "prod-docs-by-status-sim"
     assert result["customerIdentifier"] == "CUST-default"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
 
 
 def test_marketplace_mode_no_customer_identifier_filters_by_buyer_account(
@@ -172,7 +172,7 @@ def test_marketplace_mode_no_customer_identifier_filters_by_buyer_account(
     assert result["state"] == "NONE"
     assert result["customerIdentifier"] is None
     assert result["productCode"] == "prod123"
-    assert result["source"] == "marketplace"
+    assert result["source"] == "simulated"
 
 
 def test_missing_customer_identifier_filters_by_buyer_account_simulator_mode(
@@ -212,7 +212,7 @@ def test_missing_customer_identifier_filters_by_buyer_account_simulator_mode(
     # Customer id is echoed from the matched entitlement (looked up by account).
     assert result["customerIdentifier"] == "cust-62c036d80d5c"
     assert result["productCode"] == "prod123"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
 
 
 def test_active_when_active_entitlement(
@@ -465,3 +465,587 @@ def test_marketplace_feature_still_gated_when_catalog_present(
     )
     assert result["state"] == "NONE"
     assert result["source"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Catalog fallback for productCode — makes the NOT-YET-INSTALLED path work.
+# ---------------------------------------------------------------------------
+
+
+def _mp_catalog_entry(**over) -> dict:
+    entry = {
+        "featureId": "idp-auto-optimizer",
+        "displayName": "Auto Optimizer",
+        "source": "marketplace",
+        "latestVersion": "0.1.0",
+        "productCode": "q0k0s3zuuga46hle6fecx547",
+        "productId": "prod-a5ee62vs2xa72",
+        "marketplaceListingUrl": "https://aws.amazon.com/marketplace/pp/prodview-x",
+    }
+    entry.update(over)
+    return entry
+
+
+def test_product_code_falls_back_to_catalog_when_not_installed(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Before install there is no InstalledFeatures row — the catalog must serve.
+
+    Previously this returned state=NONE / source="none" even for a subscribed
+    customer, so the UI said "no entitlement" with no way forward.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],  # table exists, but NO row seeded
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    # No ExpirationDate → an entitlement with no expiry, i.e. ACTIVE.
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["productCode"] == "q0k0s3zuuga46hle6fecx547"
+    assert result["state"] == "ACTIVE"
+
+
+def test_installed_row_still_wins_over_catalog(monkeypatch, mock_stack, load_lambda):
+    """The install row is baked from the manifest, so it stays authoritative."""
+    bucket = mock_stack["bucket"]
+    table = mock_stack["table_name"]
+    _put_catalog(bucket, [_mp_catalog_entry(productCode="from-catalog")])
+    _seed_row(table, "idp-auto-optimizer", product_code="from-install-row")
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=table,
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(mod, entitlements=[], expected_product="from-install-row")
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["productCode"] == "from-install-row"
+
+
+# ---------------------------------------------------------------------------
+# marketplace-live: buyer-side AWS Marketplace Agreement API (SearchAgreements).
+#
+# GetEntitlements cannot serve as the gate — it is seller-side, and a usage-based
+# SaaS listing has no entitlement records at all, so from a buyer account it
+# returns HTTP 200 with an EMPTY list rather than an error. A fail-closed gate
+# built on that silently denies every real customer. Hence SearchAgreements, and
+# hence the three-way ACTIVE / NONE / UNKNOWN distinction below.
+# ---------------------------------------------------------------------------
+
+
+def _stub_agreements(
+    mod, summaries=None, *, error=None, expected_product="prod-a5ee62vs2xa72"
+):
+    client = mod._agreement_client()
+    stubber = Stubber(client)
+    expected_params = {
+        "catalog": "AWSMarketplace",
+        "filters": [
+            {"name": "PartyType", "values": ["Acceptor"]},
+            {"name": "AgreementType", "values": ["PurchaseAgreement"]},
+            {"name": "ResourceIdentifier", "values": [expected_product]},
+            {"name": "Status", "values": ["ACTIVE"]},
+        ],
+    }
+    if error:
+        stubber.add_client_error(
+            "search_agreements",
+            service_error_code=error,
+            expected_params=expected_params,
+        )
+    else:
+        stubber.add_response(
+            "search_agreements",
+            {"agreementViewSummaries": summaries or []},
+            expected_params,
+        )
+    stubber.activate()
+    return stubber
+
+
+def _live_event():
+    return make_appsync_event(
+        "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+    )
+
+
+def test_live_active_agreement_is_active(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    end = datetime.now(timezone.utc) + timedelta(days=30)
+    _stub_agreements(
+        mod,
+        [{"agreementId": "agmt-1", "status": "ACTIVE", "endTime": end}],
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "marketplace-live"
+    assert result["expiresAt"].startswith(end.isoformat()[:10])
+
+
+def test_live_open_ended_agreement_has_no_expiry(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [{"agreementId": "agmt-1", "status": "ACTIVE"}])
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["expiresAt"] is None
+
+
+def test_live_empty_result_is_an_authoritative_none(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A SUCCESSFUL empty response really means "not subscribed in this account".
+
+    Unlike GetEntitlements, SearchAgreements is scoped to the caller, so this is
+    a real negative and the UI should show Subscribe.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [])
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "NONE"
+    assert result["source"] == "marketplace-live"
+
+
+def test_live_api_error_degrades_to_advisory_active(
+    monkeypatch, mock_stack, load_lambda
+):
+    """An ERRORED call is indistinguishable from "not subscribed" — so allow.
+
+    Failing closed on a missing IAM grant or an unsupported partition would lock
+    a paying customer out of an extension they bought. The extension's own
+    runtime entitlement check remains the authoritative gate, so a permissive
+    host gate costs nothing.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, error="AccessDeniedException")
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+
+
+def test_live_missing_product_id_is_advisory_not_denial(
+    monkeypatch, mock_stack, load_lambda
+):
+    """No productId in the catalog → we cannot check, so don't pretend we did."""
+    bucket = mock_stack["bucket"]
+    entry = _mp_catalog_entry()
+    del entry["productId"]
+    _put_catalog(bucket, [entry])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "advisory"
+
+
+def test_live_mode_still_short_circuits_oss(monkeypatch, mock_stack, load_lambda):
+    """The OSS path must not be affected by any of this."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "oss"
+
+
+def test_auto_mode_unchanged_by_live_support(monkeypatch, mock_stack, load_lambda):
+    """`auto` must remain a zero-API-call short circuit."""
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+    result = mod.handler(_live_event(), None)
+    assert result == {
+        "featureId": "idp-auto-optimizer",
+        "state": "ACTIVE",
+        "expiresAt": None,
+        "customerIdentifier": None,
+        "productCode": None,
+        "source": "auto",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unverified-grant telemetry. `auto` and `advisory` both hand out access to a
+# PAID extension without confirming a subscription, and both are invisible in
+# the product — the page looks exactly like a real subscription. The metric is
+# the operator-side signal that it is happening.
+#
+# NB this is CUSTOMER-side observability (it lands in the customer's own
+# CloudWatch), not seller-side revenue protection. It exists so an admin can
+# see that their stack isn't verifying subscriptions — typically a missing
+# aws-marketplace:SearchAgreements permission.
+# ---------------------------------------------------------------------------
+
+
+def _capture_metrics(monkeypatch, mod) -> list:
+    emitted: list = []
+    monkeypatch.setattr(
+        mod,
+        "_emit_unverified_grant_metric",
+        lambda feature_id, source: emitted.append((feature_id, source)),
+    )
+    return emitted
+
+
+def test_auto_mode_emits_metric_for_paid_feature(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+        configuration_bucket=bucket,
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["source"] == "auto"
+    assert result["state"] == "ACTIVE"
+    assert emitted == [("idp-auto-optimizer", "auto")]
+
+
+def test_auto_mode_does_not_emit_for_oss_feature(monkeypatch, mock_stack, load_lambda):
+    """OSS extensions have no subscription to verify — warning would be noise.
+
+    Also pins the ordering invariant: an OSS extension reports `oss` even in `auto`
+    mode. Being open-source is a property of the extension, so the deployment mode
+    must not be able to relabel it — otherwise `oss` is not a dependable signal for
+    "this is not a paid extension".
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+        configuration_bucket=bucket,
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["source"] == "oss"
+    assert emitted == []
+
+
+def test_advisory_emits_metric(monkeypatch, mock_stack, load_lambda):
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, error="AccessDeniedException")
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["source"] == "advisory"
+    assert emitted == [("idp-auto-optimizer", "advisory")]
+
+
+def test_verified_active_emits_no_metric(monkeypatch, mock_stack, load_lambda):
+    """A genuinely confirmed subscription is not an unverified grant."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    _stub_agreements(mod, [{"agreementId": "agmt-1", "status": "ACTIVE"}])
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "marketplace-live"
+    assert emitted == []
+
+
+def test_metric_payload_is_valid_emf(monkeypatch, mock_stack, load_lambda, caplog):
+    """EMF needs `_aws.Timestamp` + CloudWatchMetrics, and the dimension values
+    must be present as top-level members. A record missing any of these is
+    ingested as a plain log line and silently produces NO metric — the worst
+    outcome for a signal whose whole purpose is to be noticed."""
+    import logging as _logging
+
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+    with caplog.at_level(_logging.INFO):
+        mod._emit_unverified_grant_metric("idp-auto-optimizer", "advisory")
+
+    emf_records = []
+    for rec in caplog.messages:
+        try:
+            parsed = json.loads(rec)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and "_aws" in parsed:
+            emf_records.append(parsed)
+
+    assert len(emf_records) == 1, "expected exactly one EMF record"
+    payload = emf_records[0]
+    aws_meta = payload["_aws"]
+    assert isinstance(aws_meta["Timestamp"], int) and aws_meta["Timestamp"] > 0
+    (metric_directive,) = aws_meta["CloudWatchMetrics"]
+    assert metric_directive["Namespace"] == "GENAIDP"
+    assert metric_directive["Metrics"] == [
+        {"Name": "UnverifiedEntitlementGrant", "Unit": "Count"}
+    ]
+    # Every declared dimension must exist as a top-level member.
+    for dimension_set in metric_directive["Dimensions"]:
+        for dim in dimension_set:
+            assert dim in payload, f"dimension {dim} missing from EMF payload"
+    assert payload["UnverifiedEntitlementGrant"] == 1
+    assert payload["EntitlementSource"] == "advisory"
+
+
+def test_metric_emission_never_raises(monkeypatch, mock_stack, load_lambda):
+    """Telemetry must not be able to break the query it instruments."""
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="auto",
+    )
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("logging backend exploded")
+
+    monkeypatch.setattr(mod.logger, "info", _boom)
+    # Must swallow, not propagate.
+    mod._emit_unverified_grant_metric("f", "auto")
+
+
+def test_simulator_backed_active_emits_metric(monkeypatch, mock_stack, load_lambda):
+    """A simulator/endpoint-override ACTIVE is not a real subscription check.
+
+    boto3 was pointed at whatever AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE
+    names, so a production host aimed at a simulator would otherwise render a
+    clean "subscription active" with nothing recorded anywhere.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "ACTIVE"
+    # The metric records the REPORTED source, so dashboards agree with what the
+    # UI and extensions see. `marketplace` mode reports `simulated`.
+    assert emitted == [("idp-auto-optimizer", "simulated")]
+
+
+def test_simulator_backed_none_emits_nothing(monkeypatch, mock_stack, load_lambda):
+    """Only a GRANT is an unverified grant; a refusal needs no warning."""
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace",
+        configuration_bucket=bucket,
+    )
+    _stub(mod, entitlements=[], expected_product="q0k0s3zuuga46hle6fecx547")
+    emitted = _capture_metrics(monkeypatch, mod)
+    result = mod.handler(_live_event(), None)
+
+    assert result["state"] == "NONE"
+    assert emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Reported source is normalized, and is independent of deployment mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["simulator", "marketplace"])
+def test_seller_side_modes_both_report_simulated(
+    monkeypatch, mock_stack, load_lambda, mode
+):
+    """`simulator` and `marketplace` are one reported source, `simulated`.
+
+    They are the same code path — the seller-side GetEntitlements API, which
+    returns 200-with-an-empty-list from a buyer account and so cannot verify
+    anything against real AWS. Reporting the deployment mode verbatim leaked a
+    distinction no consumer can act on, and made `marketplace` (the weakest
+    source) read as more authoritative than `marketplace-live`.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_mp_catalog_entry()])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag=mode,
+        configuration_bucket=bucket,
+    )
+    _stub(
+        mod,
+        entitlements=[{"CustomerIdentifier": "CUST-default"}],
+        expected_product="q0k0s3zuuga46hle6fecx547",
+    )
+    result = mod.handler(_live_event(), None)
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "simulated", (
+        f"mode {mode!r} must report 'simulated', not the mode name"
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["auto", "simulator", "marketplace", "marketplace-live"]
+)
+def test_oss_reports_oss_in_every_mode(monkeypatch, mock_stack, load_lambda, mode):
+    """Being open-source is a property of the extension, not the deployment.
+
+    `auto` mode used to be evaluated first and relabelled OSS extensions as
+    `auto`, so an extension could not rely on `oss` meaning "not a paid
+    extension". No Marketplace call is made in any mode, so no stub is needed —
+    if one were attempted the test would error rather than pass.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(
+        bucket,
+        [{"featureId": "docs-by-status", "source": "oss", "latestVersion": "1.0.0"}],
+    )
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag=mode,
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event("checkFeatureEntitlement", {"featureId": "docs-by-status"}),
+        None,
+    )
+    assert result["state"] == "ACTIVE"
+    assert result["source"] == "oss", f"mode {mode!r} relabelled an OSS extension"
+
+
+def test_unknown_catalog_entry_is_not_treated_as_oss(
+    monkeypatch, mock_stack, load_lambda
+):
+    """A catalog entry that is absent or unreadable must NOT short-circuit as OSS.
+
+    `is_marketplace_feature` is falsy both for a confirmed OSS extension and for
+    an unknown one, so keying the short-circuit off it would grant access to a
+    paid extension whose catalog entry merely failed to load — skipping the
+    entitlement check entirely. Unknown must fall through to the check.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [])  # feature is NOT in the catalog
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    result = mod.handler(
+        make_appsync_event(
+            "checkFeatureEntitlement", {"featureId": "idp-auto-optimizer"}
+        ),
+        None,
+    )
+    assert result["source"] != "oss", (
+        "an unknown catalog entry was treated as OSS — that grants a paid "
+        "extension access without any entitlement check"
+    )

@@ -14,9 +14,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import FeaturePage from './FeaturePage';
-import type { FeatureEntitlement, InstalledFeature } from '../../types/feature-platform';
+import type { CatalogFeature, FeatureEntitlement, InstalledFeature } from '../../types/feature-platform';
 
 vi.mock('../../hooks/use-installed-features');
+vi.mock('../../hooks/use-catalog-features');
 vi.mock('../../hooks/use-feature-entitlement');
 vi.mock('../../hooks/use-feature-launch-url');
 vi.mock('../../hooks/use-subscribe-feature');
@@ -28,12 +29,14 @@ vi.mock('./FeatureLoader', () => ({
 }));
 
 import useInstalledFeatures from '../../hooks/use-installed-features';
+import useCatalogFeatures from '../../hooks/use-catalog-features';
 import useFeatureEntitlement from '../../hooks/use-feature-entitlement';
 import useFeatureLaunchUrl from '../../hooks/use-feature-launch-url';
 import useSubscribeFeature from '../../hooks/use-subscribe-feature';
 import useUnsubscribeFeature from '../../hooks/use-unsubscribe-feature';
 
 const mockedUseInstalled = vi.mocked(useInstalledFeatures);
+const mockedUseCatalog = vi.mocked(useCatalogFeatures);
 const mockedUseEntitlement = vi.mocked(useFeatureEntitlement);
 const mockedUseLaunchUrl = vi.mocked(useFeatureLaunchUrl);
 const mockedUseSubscribe = vi.mocked(useSubscribeFeature);
@@ -62,7 +65,7 @@ const ent = (overrides: Partial<FeatureEntitlement> = {}): FeatureEntitlement =>
   expiresAt: null,
   customerIdentifier: 'CUST',
   productCode: 'prod123',
-  source: 'simulator',
+  source: 'simulated',
   ...overrides,
 });
 
@@ -85,8 +88,37 @@ function renderPage(groups: string[]) {
   );
 }
 
+/** Default: no catalog entry, matching the pre-mock behavior of these tests. */
+function mockCatalog(entry?: Partial<CatalogFeature>) {
+  mockedUseCatalog.mockReturnValue({
+    features: [],
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+    byId: () =>
+      entry
+        ? ({
+            featureId: 'docs-by-status',
+            displayName: 'DemoFeature - Docs By Status',
+            latestVersion: '1.0.0',
+            iconUrl: null,
+            description: null,
+            docsUrl: null,
+            showInNav: true,
+            source: 'marketplace',
+            productCode: 'prod123',
+            marketplaceListingUrl: 'https://aws.amazon.com/marketplace/pp/x',
+            availableInRegion: true,
+            availableRegions: [],
+            ...entry,
+          } as CatalogFeature)
+        : undefined,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockCatalog();
   mockedUseLaunchUrl.mockReturnValue({
     fetch: vi.fn(),
     loading: false,
@@ -101,6 +133,75 @@ beforeEach(() => {
     unsubscribe: vi.fn(),
     loading: false,
     error: null,
+  });
+});
+
+describe('FeaturePage region availability', () => {
+  it('shows "Not available in this Region" instead of a dead-end Subscribe CTA', () => {
+    // The whole point: a Subscribe button here would take the admin's money (or
+    // at least their time) for something they cannot install in this Region.
+    mockCatalog({ availableInRegion: false, availableRegions: ['us-west-2', 'eu-central-1'] });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Not available in this Region/i)).toBeInTheDocument();
+    expect(screen.getByText(/us-west-2, eu-central-1/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Subscribe$/i })).not.toBeInTheDocument();
+  });
+
+  it('does not flag an ALREADY-INSTALLED feature as region-unavailable', () => {
+    // It demonstrably works here, whatever the catalog now claims.
+    mockCatalog({ availableInRegion: false, availableRegions: ['us-west-2'] });
+    mockedUseInstalled.mockReturnValue({
+      features: [installed()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => installed(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Not available in this Region/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
+  });
+
+  it('treats an absent availableInRegion (older host) as available', () => {
+    mockCatalog({ availableInRegion: null, availableRegions: null });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'NONE' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Not available in this Region/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Subscription required/i)).toBeInTheDocument();
   });
 });
 
@@ -354,7 +455,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -362,8 +463,8 @@ describe('FeaturePage 7-state renderer', () => {
     renderPage(['Admin']);
     expect(screen.getByRole('button', { name: /Cancel Subscription/i })).toBeInTheDocument();
     expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
-    // "simulator" appears both in the ActiveSubscriptionBanner (Source: simulator)
-    // and the UpToDateBanner (up to date (simulator)). Just confirm the banner text.
+    // "simulated" appears both in the ActiveSubscriptionBanner (Source: simulated)
+    // and the UpToDateBanner (up to date (simulated)). Just confirm the banner text.
     expect(screen.getByText(/^Source:$/)).toBeInTheDocument();
   });
 
@@ -377,7 +478,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -386,6 +487,35 @@ describe('FeaturePage 7-state renderer', () => {
     expect(screen.queryByRole('button', { name: /Cancel Subscription/i })).not.toBeInTheDocument();
     // The active subscription banner itself still renders.
     expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
+  });
+
+  it('shows NO subscription banner or Cancel button for an OSS extension', () => {
+    // An OSS extension has no subscription: check_feature_entitlement
+    // short-circuits source="oss" straight to ACTIVE. Rendering "Subscription
+    // active / Source: oss" with an admin-only Cancel Subscription button offered
+    // an action that cannot work — unsubscribeFeature targets a Marketplace or
+    // simulator entitlement, and there is neither here.
+    mockCatalog({ source: 'oss' });
+    const inst = installed({ installedVersion: '1.0.0', latestVersion: '1.0.0' });
+    mockedUseInstalled.mockReturnValue({
+      features: [inst],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: (id) => (id === inst.featureId ? inst : undefined),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'oss' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription active/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Cancel Subscription/i })).not.toBeInTheDocument();
+    // The feature itself must still render — this is a banner fix, not a gate.
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
   });
 
   it('clicks Cancel Subscription → calls unsubscribeFeature + refreshes caches', async () => {
@@ -403,7 +533,7 @@ describe('FeaturePage 7-state renderer', () => {
       byId: (id) => (id === inst.featureId ? inst : undefined),
     });
     mockedUseEntitlement.mockReturnValue({
-      entitlement: ent({ state: 'ACTIVE', source: 'simulator' }),
+      entitlement: ent({ state: 'ACTIVE', source: 'simulated' }),
       loading: false,
       error: null,
       refresh: refreshEntitlement,
@@ -415,5 +545,98 @@ describe('FeaturePage 7-state renderer', () => {
     await waitFor(() => expect(unsubscribe).toHaveBeenCalledWith('docs-by-status'));
     await waitFor(() => expect(refreshEntitlement).toHaveBeenCalled());
     await waitFor(() => expect(refreshInstalled).toHaveBeenCalled());
+  });
+});
+
+describe('FeaturePage unverified-subscription warning', () => {
+  const paidInstalled = () => installed({ featureId: 'docs-by-status' });
+
+  it('warns when a PAID extension is served from auto mode', () => {
+    // auto = subscription checks switched off. The page is otherwise
+    // indistinguishable from a real subscription, which is exactly why this
+    // must not be silent.
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'auto' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription not verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/FeaturePlatformSubscriptionMode=auto/)).toBeInTheDocument();
+    // Still renders the feature — the host gate is advisory, not a block.
+    expect(screen.getByTestId('feature-loader')).toBeInTheDocument();
+  });
+
+  it('warns when the live check was unreachable (advisory) and names the cause', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'advisory' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.getByText(/Subscription not verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/SearchAgreements/)).toBeInTheDocument();
+  });
+
+  it('does NOT warn for an OSS extension in auto mode', () => {
+    // OSS has no subscription to verify; warning would be pure noise on the
+    // default deployment.
+    mockCatalog({ source: 'oss' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'auto' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription not verified/i)).not.toBeInTheDocument();
+  });
+
+  it('does NOT warn when the subscription was actually verified', () => {
+    mockCatalog({ source: 'marketplace' });
+    mockedUseInstalled.mockReturnValue({
+      features: [paidInstalled()],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => paidInstalled(),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'marketplace-live' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+
+    expect(screen.queryByText(/Subscription not verified/i)).not.toBeInTheDocument();
   });
 });

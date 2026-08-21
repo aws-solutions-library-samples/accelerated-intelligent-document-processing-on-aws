@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-08-20 |
+| **Applies to release** | v0.6.5.dev1 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 83 |
+| **Total Threat IDs** | 93 |
 
 ## 1. Threat ID Naming Convention
 
@@ -30,6 +30,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | **FEAT** | Feature Platform | Installable extension / feature-platform threats | [feature-threats/feature-platform.md](feature-threats/feature-platform.md) |
 | **JOB** | Jobs API | Machine-to-machine Jobs REST API threats | [feature-threats/jobs-api.md](feature-threats/jobs-api.md) |
 | **PII** | PII Anonymization | Preprocessing hook + PII redaction extension threats | [feature-threats/pii-anonymization.md](feature-threats/pii-anonymization.md) |
+| **SELL** | Seller Entitlement Service | Seller-account activation endpoint for paid extensions (only doc whose assets belong to the SELLER, not the customer) | [feature-threats/seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
 
 ## 2. Complete Threat ID Reference
 
@@ -185,6 +186,24 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | PII.T03 | Redaction bypass — un-redacted document processed on hook failure | ID, Tampering | 6 (High) |
 | PII.T04 | Redaction mapping table as a re-identification oracle | ID, EoP | 6 (High) |
 | PII.T05 | Companion config-version pairing misconfiguration | ID | 3 (Medium) |
+
+### SELL — Seller Entitlement Service (10 threats)
+
+> The only threat set whose protected assets belong to the **seller** (signing
+> key, customer roster, revenue) rather than the deploying customer.
+
+| ID | Short Name | STRIDE | Risk |
+|----|-----------|--------|------|
+| SELL.T01 | Service deployed into an account that does not own the product | DoS | 6 (High) |
+| SELL.T02 | Spoofed buyer identity in the request body | S, EoP | 9 (Very High) |
+| SELL.T03 | Resource-policy over-exposure (`Principal: '*'`) | EoP | 6 (High) |
+| SELL.T04 | Cost/quota exhaustion by an arbitrary AWS account | DoS | 4 (Medium) |
+| SELL.T05 | Signing-key compromise or trust re-pointing | S, Tampering | 8 (Critical) |
+| SELL.T06 | Token misuse — replay, sharing, weak verifier | S, Tampering | 4 (Medium) |
+| SELL.T07 | Product-existence oracle | ID | 2 (Low) |
+| SELL.T08 | Activation-service outage locks out paying customers | DoS | 6 (High) |
+| SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
+| SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
 
 ## 3. STRIDE Abbreviations
 

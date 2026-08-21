@@ -40,7 +40,16 @@ _SIMULATOR_ADMIN_ENDPOINT = os.environ.get("SIMULATOR_ADMIN_ENDPOINT", "").rstri
 _DEFAULT_CUSTOMER_IDENTIFIER = os.environ.get("DEFAULT_CUSTOMER_IDENTIFIER", "")
 _DEFAULT_BUYER_ACCOUNT_ID = os.environ.get("DEFAULT_BUYER_ACCOUNT_ID", "111122223333")
 _ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
-_SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "simulator")
+# Same default as check_feature_entitlement — see the note there.
+_SOURCE_TAG = os.environ.get("SIMULATOR_SOURCE_TAG", "marketplace-live")
+# `simulator` and `marketplace` are indistinguishable to a consumer (both are the
+# seller-side GetEntitlements API, meaningful only against a simulator), so they
+# collapse to one reported source. Must match check_feature_entitlement exactly.
+_REPORTED_SOURCE = {
+    "simulator": "simulated",
+    "marketplace": "simulated",
+}.get(_SOURCE_TAG, _SOURCE_TAG)
+
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
 
 _dynamodb = boto3.resource("dynamodb")
@@ -266,5 +275,5 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "expiresAt": expires_at,
         "customerIdentifier": customer_identifier,
         "productCode": product_code,
-        "source": _SOURCE_TAG,
+        "source": _REPORTED_SOURCE,
     }

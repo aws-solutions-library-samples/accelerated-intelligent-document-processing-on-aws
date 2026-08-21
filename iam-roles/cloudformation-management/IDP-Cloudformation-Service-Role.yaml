@@ -58,9 +58,23 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  # NOTE: role *lifecycle* actions are not enough. CloudFormation
+                  # sets a new role's trust policy and permissions boundary as
+                  # part of iam:CreateRole, but changing either on an ALREADY
+                  # EXISTING role is a separate API call. Omitting these three
+                  # makes any release that edits a role's trust policy (e.g.
+                  # adding a federated principal) or any change to the
+                  # PermissionsBoundaryArn parameter fail mid-update with
+                  # AccessDenied — and the rollback needs the same actions, so
+                  # the stack wedges in UPDATE_ROLLBACK_FAILED and can only be
+                  # recovered with `continue-update-rollback --resources-to-skip`.
+                  # See issue #632.
                   - iam:CreateRole
                   - iam:DeleteRole
                   - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePermissionsBoundary
+                  - iam:DeleteRolePermissionsBoundary
                   - iam:GetRole
                   - iam:GetRolePolicy
                   - iam:ListRoles

@@ -53,7 +53,10 @@ type FeatureEntitlement {
   expiresAt: AWSDateTime
   customerIdentifier: String
   productCode: String
-  source: String!      # "marketplace" | "simulator" | "none"
+  # How the host arrived at the verdict — NOT the catalog's oss|marketplace.
+  # "marketplace-live" | "simulated" | "advisory" | "auto" | "oss" | "none".
+  # Only "marketplace-live" represents a real subscription check.
+  source: String!
   # Populated by subscribeFeature — the AWS Marketplace (or simulator) URL the
   # UI must redirect the admin to in order to accept terms and complete the
   # subscription. Null on all other resolvers.
