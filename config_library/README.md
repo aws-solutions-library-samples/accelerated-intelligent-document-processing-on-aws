@@ -158,9 +158,9 @@ To add few-shot examples to your configuration:
 
 1. **Create example images**: Collect clear, representative document images for each class
 2. **Define examples**: Add `x-aws-idp-examples` to each class with:
-   - `classPrompt`: Text describing the document class
-   - `attributesPrompt`: Expected attribute extraction in JSON format  
-   - `imagePath`: Path to the example document image
+   - `x-aws-idp-class-prompt`: Text describing the document class
+   - `x-aws-idp-attributes-prompt`: Expected attribute extraction in JSON format  
+   - `x-aws-idp-image-path`: Path to the example document image
    - `name`: Descriptive name for the example
 3. **Update prompts**: Ensure task prompts include `{FEW_SHOT_EXAMPLES}` placeholder
 4. **Test thoroughly**: Validate that examples improve accuracy
@@ -203,7 +203,7 @@ To associate a new sample with a config, either name the sample to match its con
 
 - **Quality Examples**: Use clear, representative examples of each document type
 - **Diverse Examples**: Include examples that cover edge cases and variations
-- **Accurate Labels**: Ensure `attributesPrompt` values are correct and consistent
+- **Accurate Labels**: Ensure `x-aws-idp-attributes-prompt` values are correct and consistent
 - **Image Quality**: Use high-resolution, clear images for examples
 - **Balanced Coverage**: Provide examples for your most important document classes
 

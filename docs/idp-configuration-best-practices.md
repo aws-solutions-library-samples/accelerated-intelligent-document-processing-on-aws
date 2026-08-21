@@ -879,7 +879,7 @@ extraction:
 2. **Provide Complete Attribute Sets**
    ```yaml
    # Good - shows all attributes with realistic values
-   attributesPrompt: |
+   x-aws-idp-attributes-prompt: |
      For the sample document above, expected attributes are:
          "sender_name": "John Smith",
          "sender_address": "123 Main St, City, State 12345",
@@ -892,7 +892,7 @@ extraction:
 
 3. **Handle Null Values Explicitly**
    ```yaml
-   attributesPrompt: |
+   x-aws-idp-attributes-prompt: |
      expected attributes are:
          "invoice_number": "INV-2024-001",
          "po_number": null,  # Explicitly show when fields are not present

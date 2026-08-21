@@ -76,6 +76,16 @@ def config_with():
     return _make
 
 
+def _assert_placeholder_is_cacheable(prompt: str, label: str) -> None:
+    """The placeholder must appear exactly once, ahead of the cache point."""
+    assert "{FEW_SHOT_EXAMPLES}" in prompt, label
+    # Exactly one occurrence — the builders split on it and silently ignore the
+    # placeholder entirely when there are two or more.
+    assert prompt.count("{FEW_SHOT_EXAMPLES}") == 1, label
+    # Examples are static per class/config, so they belong in the cacheable prefix.
+    assert prompt.index("{FEW_SHOT_EXAMPLES}") < prompt.index("<<CACHEPOINT>>"), label
+
+
 @pytest.mark.unit
 class TestShippedPromptsCarryPlaceholder:
     """Every shipped extraction prompt variant offers the placeholder."""
@@ -92,13 +102,14 @@ class TestShippedPromptsCarryPlaceholder:
         defaults = load_system_defaults("pattern-2")
         prompt = defaults["extraction"][prompt_key]
 
-        assert "{FEW_SHOT_EXAMPLES}" in prompt, prompt_key
-        # Exactly one occurrence — the builder splits on it and silently ignores
-        # the placeholder entirely when there are two or more.
-        assert prompt.count("{FEW_SHOT_EXAMPLES}") == 1, prompt_key
-        # Examples are static per class, so they belong in the cacheable prefix.
-        assert prompt.index("{FEW_SHOT_EXAMPLES}") < prompt.index("<<CACHEPOINT>>"), (
-            prompt_key
+        _assert_placeholder_is_cacheable(prompt, prompt_key)
+
+    def test_default_classification_prompt_includes_few_shot_placeholder(self):
+        """Classification carries it too — same silent-drop failure otherwise."""
+        defaults = load_system_defaults("pattern-2")
+
+        _assert_placeholder_is_cacheable(
+            defaults["classification"]["task_prompt"], "classification.task_prompt"
         )
 
 
@@ -203,3 +214,123 @@ class TestUnreadableExampleImageDegrades:
 
         assert content == [{"text": "expected attributes are: {}"}]
         assert "Failed to load image" in caplog.text
+
+
+@pytest.mark.unit
+class TestCanonicalAndLegacyKeys:
+    """Both example-field spellings must work, everywhere they are read.
+
+    The examples *container* has always been ``x-aws-idp-examples``, but entry
+    fields shipped as legacy camelCase (``classPrompt`` / ``attributesPrompt`` /
+    ``imagePath``) while the docs — and the ``X_AWS_IDP_*`` constants in both the
+    Python and TypeScript schema-constant modules — described the canonical
+    ``x-aws-idp-*`` names. Canonical is now what gets written; legacy stays
+    readable so no existing config has to change.
+    """
+
+    @staticmethod
+    def _class_with(example):
+        return {**CLASS_WITHOUT_EXAMPLES, "x-aws-idp-examples": [example]}
+
+    @pytest.mark.parametrize("key", ["x-aws-idp-attributes-prompt", "attributesPrompt"])
+    def test_extraction_reads_either_spelling(self, key):
+        content = build_few_shot_extraction_examples_content(
+            self._class_with({"name": "e", key: "body"})
+        )
+        assert content == [{"text": "body"}]
+
+    @pytest.mark.parametrize("key", ["x-aws-idp-class-prompt", "classPrompt"])
+    def test_classification_reads_either_spelling(self, key):
+        from idp_common.config.models import IDPConfig
+        from idp_common.utils.few_shot_example_builder import (
+            build_few_shot_examples_content,
+        )
+
+        config = IDPConfig.model_validate(
+            {"classes": [self._class_with({"name": "e", key: "body"})]}
+        )
+        assert build_few_shot_examples_content(config) == [{"text": "body"}]
+
+    def test_canonical_wins_when_both_present(self):
+        content = build_few_shot_extraction_examples_content(
+            self._class_with(
+                {
+                    "name": "e",
+                    "x-aws-idp-attributes-prompt": "canonical",
+                    "attributesPrompt": "legacy",
+                }
+            )
+        )
+        assert content == [{"text": "canonical"}]
+
+    def test_migration_normalizes_example_field_keys(self):
+        """Legacy entry fields are converted when a config is migrated."""
+        from idp_common.config.migration import migrate_legacy_to_schema
+
+        migrated = migrate_legacy_to_schema(
+            [
+                {
+                    "name": "letter",
+                    "description": "A letter",
+                    "attributes": [{"name": "sender", "description": "Sender"}],
+                    "examples": [
+                        {
+                            "name": "letter1",
+                            "classPrompt": "class body",
+                            "attributesPrompt": "attrs body",
+                            "imagePath": "examples/letter1.jpg",
+                        }
+                    ],
+                }
+            ]
+        )
+
+        example = migrated[0]["x-aws-idp-examples"][0]
+        assert example == {
+            "name": "letter1",
+            "x-aws-idp-class-prompt": "class body",
+            "x-aws-idp-attributes-prompt": "attrs body",
+            "x-aws-idp-image-path": "examples/letter1.jpg",
+        }
+
+    def test_migration_leaves_canonical_examples_alone(self):
+        from idp_common.config.migration import _migrate_examples
+
+        canonical = [{"name": "e", "x-aws-idp-class-prompt": "body"}]
+        assert _migrate_examples(canonical) == canonical
+        # Malformed input must not break migration.
+        assert _migrate_examples("not-a-list") == "not-a-list"
+        assert _migrate_examples([None, 7]) == [None, 7]
+
+
+@pytest.mark.unit
+class TestShippedConfigsUseCanonicalKeys:
+    """Shipped configs must not reintroduce the legacy spelling."""
+
+    def test_config_library_examples_use_canonical_keys(self):
+        import pathlib
+
+        import yaml
+
+        repo_root = pathlib.Path(__file__).resolve().parents[4]
+        legacy_keys = {"classPrompt", "attributesPrompt", "imagePath"}
+        offenders = []
+
+        for path in sorted(repo_root.glob("config_library/**/config*.yaml")):
+            try:
+                config = yaml.safe_load(path.read_text()) or {}
+            except yaml.YAMLError:
+                continue
+            for doc_class in config.get("classes") or []:
+                if not isinstance(doc_class, dict):
+                    continue
+                for example in doc_class.get("x-aws-idp-examples") or []:
+                    if isinstance(example, dict) and legacy_keys & set(example):
+                        offenders.append(
+                            f"{path.relative_to(repo_root)}: {sorted(legacy_keys & set(example))}"
+                        )
+
+        assert not offenders, (
+            "shipped configs should use the canonical x-aws-idp-* example keys: "
+            + "; ".join(offenders)
+        )
