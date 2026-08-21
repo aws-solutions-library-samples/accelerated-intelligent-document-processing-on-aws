@@ -132,7 +132,7 @@ def _strip_to_generator(node: Any) -> Any:
     return node
 
 
-def _allow_null_on_optional_leaves(node: Any, required: Any = ()) -> None:
+def _allow_null_on_optional_leaves(node: Any) -> None:
     """Let optional scalar fields hold ``null`` in the GENERATOR schema.
 
     IDP config classes are written for extraction, where the convention for a field
@@ -157,7 +157,7 @@ def _allow_null_on_optional_leaves(node: Any, required: Any = ()) -> None:
             required_here = node.get("required") or ()
             for name, sub in props.items():
                 if isinstance(sub, dict):
-                    _allow_null_on_optional_leaves(sub, required_here)
+                    _allow_null_on_optional_leaves(sub)
                     if name in required_here:
                         continue
                     sub_type = sub.get("type")
@@ -169,9 +169,15 @@ def _allow_null_on_optional_leaves(node: Any, required: Any = ()) -> None:
                         "null",
                     ):
                         sub["type"] = [sub_type, "null"]
+                        # An enum constrains the value independently of type, so
+                        # widening type alone leaves null invalid and the field back in
+                        # the critic-retry loop this exists to break.
+                        choices = sub.get("enum")
+                        if isinstance(choices, list) and None not in choices:
+                            sub["enum"] = [*choices, None]
         items = node.get("items")
         if isinstance(items, dict):
-            _allow_null_on_optional_leaves(items, required)
+            _allow_null_on_optional_leaves(items)
 
 
 def config_class_to_generator_schema(

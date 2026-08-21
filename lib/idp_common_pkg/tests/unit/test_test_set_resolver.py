@@ -4092,6 +4092,29 @@ class TestReapAbandonedTestSets:
             test_set_index._reap_abandoned_test_sets(items)
             assert items[0]["status"] == status
 
+    def test_the_response_is_not_marked_failed_when_the_write_is_refused(self, env):
+        """The in-memory record must not contradict the row.
+
+        Mutating before the conditional write reported FAILED to the caller in exactly
+        the case the condition exists to catch, so the UI showed a failure for a run
+        that had just completed.
+        """
+        table = env
+        items = self._seed(table, "GENERATING", stamp_hours=20)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET #s = :c",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":c": "COMPLETED"},
+        )
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "GENERATING", (
+            "the response claimed FAILED for a set the write refused to change"
+        )
+        assert "error" not in items[0]
+
     def test_a_status_that_moved_since_the_read_wins(self, env):
         """The write is conditional, so a job reporting in mid-flight is not clobbered."""
         table = env
@@ -4112,3 +4135,39 @@ class TestReapAbandonedTestSets:
             ]
             == "COMPLETED"
         )
+
+
+@pytest.mark.unit
+class TestStatusUpdatedAtIsWritten:
+    """The reap windows are only reachable if something stamps the status time.
+
+    STALE_STATUS_HOURS declares a window for UPDATING, but for a while nothing wrote
+    statusUpdatedAt outside the generator extension — so an abandoned file copy spun
+    forever while the code and CHANGELOG both claimed otherwise.
+    """
+
+    def test_add_documents_stamps_the_status_time(self):
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../nested/api-resolvers/src/lambda/test_set_resolver/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        # Both UPDATING writes in this resolver must stamp it, or the UPDATING window
+        # in STALE_STATUS_HOURS is unreachable.
+        updating_writes = source.count('":status": "UPDATING"')
+        stamped = source.count("statusUpdatedAt = :now")
+        assert updating_writes == stamped == 2, (
+            f"{updating_writes} UPDATING writes but {stamped} stamped"
+        )
+
+    def test_the_copier_stamps_the_status_time(self):
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../src/lambda/test_set_file_copier/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        assert "statusUpdatedAt = :now" in source

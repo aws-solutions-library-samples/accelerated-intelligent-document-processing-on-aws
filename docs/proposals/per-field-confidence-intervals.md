@@ -17,12 +17,14 @@ Concretely, at a measured 90% accuracy:
 
 | Observations for the field | 95% margin of error |
 |---|---|
-| 20 | ±13.1 pts |
+| 20 | ±13.6 pts |
 | 100 | ±5.9 pts |
 | 300 | ±3.4 pts |
 | 500 | ±2.6 pts |
 
-A field at "90%" on 20 observations is somewhere between 77% and 100%. Customers are
+A field at "90%" on 20 observations lies between 69.9% and 97.2% — the Wilson
+bounds. (Subtracting the margin would say 77%, which is the normal-approximation
+figure this proposal argues against; the interval is asymmetric near the ends.) Customers are
 currently computing this in spreadsheets alongside our reports, which means we hand them
 a number and they do the statistics we already have the data for.
 

@@ -361,14 +361,21 @@ def add_documents_to_test_set(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING
+    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
+    # it a set whose copier dies sits in UPDATING forever, because
+    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET #status = :status REMOVE lastAddResult",
+        UpdateExpression=(
+            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
+        ),
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": "UPDATING"},
+        ExpressionAttributeValues={
+            ":status": "UPDATING",
+            ":now": datetime.utcnow().isoformat() + "Z",
+        },
     )
 
     # Send file copying job to SQS queue
@@ -424,14 +431,21 @@ def add_documents_to_test_set_from_upload(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING
+    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
+    # it a set whose copier dies sits in UPDATING forever, because
+    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET #status = :status REMOVE lastAddResult",
+        UpdateExpression=(
+            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
+        ),
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": "UPDATING"},
+        ExpressionAttributeValues={
+            ":status": "UPDATING",
+            ":now": datetime.utcnow().isoformat() + "Z",
+        },
     )
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
@@ -2200,13 +2214,9 @@ def clear_draft_labels(args):
     kept = len(candidates) - len(to_delete)
     # Without dropping the label-job pointer the set keeps reporting a job whose
     # output no longer exists.
-    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
-    # returns before the work finishes, so the outcome has nowhere to live but the
-    # record, and the test-set list renders it. This operation is synchronous — the
-    # caller gets the count in the response and shows it there — so persisting a
-    # second copy only produced an immortal alert on the list page, which no amount
-    # of dismissing could remove because dismissal is client-side. Clearing it also
-    # discards any stale notice from an earlier add, which this operation invalidates.
+    # Cleared, never written: a synchronous operation returns its count in the
+    # response, so persisting a second copy only created an alert nothing could
+    # retract. See clear_draft_labels for the full reasoning.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
@@ -2271,13 +2281,9 @@ def reset_test_set_labels(args):
     _clear_review_state_for_label_jobs(test_set_id)
 
     now = f"Reset {len(keys)} label object(s)"
-    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
-    # returns before the work finishes, so the outcome has nowhere to live but the
-    # record, and the test-set list renders it. This operation is synchronous — the
-    # caller gets the count in the response and shows it there — so persisting a
-    # second copy only produced an immortal alert on the list page, which no amount
-    # of dismissing could remove because dismissal is client-side. Clearing it also
-    # discards any stale notice from an earlier add, which this operation invalidates.
+    # Cleared, never written: a synchronous operation returns its count in the
+    # response, so persisting a second copy only created an alert nothing could
+    # retract. See clear_draft_labels for the full reasoning.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=(
@@ -2619,7 +2625,6 @@ def get_test_sets():
                 "error": item.get(
                     "error"
                 ),  # Include error message for failed test sets
-                "lastAddResult": item.get("lastAddResult"),
                 "documentClassType": item.get("documentClassType"),
                 # Optional preselected config version. Absent for the stack-managed
                 # benchmark sets, which rely on the id==version-name convention.
@@ -3017,6 +3022,13 @@ def _is_valid_test_set_structure(s3_client, bucket, prefix):
 # the next call rather than the cap re-rolling over an arbitrary subset.
 MAX_LABEL_STATE_PROBES = 25
 
+# And a wall-clock bound, because the count cap does not limit latency: each probe
+# paginates a set's input/ and baseline/ prefixes, so 25 probes over 500-document sets is
+# unbounded time on the query TestSets.tsx polls every 3 seconds. Same idiom as
+# HARVEST_TIME_BUDGET_SECONDS. Sets not reached are picked up by the next call, which is
+# true rather than aspirational because each probe records its result.
+LABEL_STATE_PROBE_BUDGET_SECONDS = 5
+
 
 # How long a test set may sit in a non-terminal status before the host gives up on it.
 # Per status, because the plausible durations differ by orders of magnitude: a synthetic
@@ -3068,8 +3080,6 @@ def _reap_abandoned_test_sets(items):
             f"{status} for {int(idle_hours)}h with no progress; the job that owns this "
             "status is gone. The documents already written are unaffected."
         )
-        item["status"] = "FAILED"
-        item["error"] = error
         try:
             # boto3 directly rather than db_client: this needs a ConditionExpression,
             # so that a job which reported in between the read and this write wins.
@@ -3084,6 +3094,11 @@ def _reap_abandoned_test_sets(items):
                     ":e": error,
                 },
             )
+            # Only after the write lands. Mutating first would report FAILED to the
+            # caller in exactly the case the condition exists to catch — a job that
+            # reported COMPLETED between the read and the write.
+            item["status"] = "FAILED"
+            item["error"] = error
             logger.warning(f"Reaped abandoned test set {test_set_id}: {error}")
         except Exception as e:  # noqa: BLE001 — reaping must not fail the list
             logger.info(f"Did not reap test set {test_set_id}: {e}")
@@ -3134,8 +3149,9 @@ def _reconcile_label_state(items):
     if not bucket:
         return
     probes = 0
+    deadline = time.monotonic() + LABEL_STATE_PROBE_BUDGET_SECONDS
     for item in items:
-        if probes >= MAX_LABEL_STATE_PROBES:
+        if probes >= MAX_LABEL_STATE_PROBES or time.monotonic() > deadline:
             logger.info(
                 "labelState reconciliation stopped after %d probe(s); the rest are "
                 "picked up by the next list",
@@ -3148,14 +3164,15 @@ def _reconcile_label_state(items):
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
         if not test_set_id:
             continue
+        # -1 stands for "no file count recorded", so a set without one still converges
+        # instead of being re-probed on every list and consuming the budget forever. A
+        # real count appearing later differs from -1, which re-probes as it should.
         file_count = _as_int(item.get("fileCount"))
+        probe_key = file_count if file_count is not None else -1
         # Keyed on membership rather than on the current state, so the same probe
         # promotes an under-stated set and demotes an over-stated one. A set whose
         # membership has not changed since it was last validated costs nothing.
-        if (
-            file_count is not None
-            and _as_int(item.get("labelProbedFileCount")) == file_count
-        ):
+        if _as_int(item.get("labelProbedFileCount")) == probe_key:
             continue
 
         probes += 1
@@ -3180,7 +3197,7 @@ def _reconcile_label_state(items):
             reason = "not every document carries a baseline"
 
         current = item.get("labelState")
-        _remember_label_probe(test_set_id, file_count)
+        _remember_label_probe(test_set_id, probe_key)
         if current == state:
             continue
 
@@ -3223,7 +3240,8 @@ def _remember_label_probe(test_set_id, file_count):
     """Record that a set was probed and had no complete ground truth.
 
     Without this the probe never converges: a genuinely unlabelled set writes no
-    marker, so every listTestSets re-probes it forever.
+    marker, so every listTestSets re-probes it forever. Callers pass -1 for a set with
+    no recorded file count, so that case converges too.
     """
     if file_count is None:
         return

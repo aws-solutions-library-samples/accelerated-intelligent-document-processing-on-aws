@@ -274,6 +274,7 @@ def _start_heartbeat(payload, job_id, stop_event, interval_s=None):
     started = time.monotonic()
 
     def _pulse():
+        failures = 0
         table_name = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
         if not (table_name and job_id):
             return
@@ -298,8 +299,26 @@ def _start_heartbeat(payload, job_id, stop_event, interval_s=None):
                         ":running": "IN_PROGRESS",
                     },
                 )
+                failures = 0
             except Exception:  # noqa: BLE001 — a heartbeat must never fail a run
-                logger.debug("heartbeat write failed for %s", job_id, exc_info=True)
+                failures += 1
+                # Escalate rather than staying at debug. Sustained heartbeat failures
+                # are not cosmetic: past the reaper's window the job is failed, and
+                # then the real COMPLETED is refused by the "not already FAILED"
+                # condition on the status write — so a healthy run with generated
+                # documents reports that its runtime died. Silent at debug, that is
+                # undiagnosable.
+                if failures in (3, 10) or failures % 30 == 0:
+                    logger.warning(
+                        "heartbeat write has failed %d consecutive time(s) for %s; "
+                        "if this continues the job will be reaped as dead despite "
+                        "the run being healthy",
+                        failures,
+                        job_id,
+                        exc_info=True,
+                    )
+                else:
+                    logger.debug("heartbeat write failed for %s", job_id, exc_info=True)
 
     thread = threading.Thread(target=_pulse, name="heartbeat", daemon=True)
     thread.start()

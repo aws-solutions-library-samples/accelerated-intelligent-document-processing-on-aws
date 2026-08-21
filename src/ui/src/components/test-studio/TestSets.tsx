@@ -85,7 +85,6 @@ interface TestSetItem {
   status?: string | null;
   createdAt: string;
   error?: string | null;
-  lastAddResult?: string | null;
   documentClassType?: string | null;
 }
 

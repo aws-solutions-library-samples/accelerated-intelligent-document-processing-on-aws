@@ -564,8 +564,11 @@ const ComprehensiveBreakdown = ({
                       </SpaceBetween>
                     }
                   >
+                    {/* Not colour alone: a subdued margin is a real statement about
+                        evidence, so it carries text too. */}
                     <Box variant="span" color={item.lowEvidence ? 'text-status-inactive' : undefined}>
                       {item.accuracyMargin}
+                      {item.lowEvidence ? ' (low n)' : ''}
                     </Box>
                   </Popover>
                 ) : (

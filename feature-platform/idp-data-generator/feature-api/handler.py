@@ -52,7 +52,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -311,6 +311,31 @@ def _parse_suggestions(text: str) -> list:
 STALE_HEARTBEAT_MINUTES = int(os.environ.get("STALE_HEARTBEAT_MINUTES", "15"))
 
 
+def _release_host_test_set(test_set_id: Optional[str], error: str) -> None:
+    """Move a host test-set record off GENERATING after its job was reaped.
+
+    Conditional on GENERATING, so a set that finished — or one the host reaper already
+    handled — is never touched. Best-effort: this is cleanup, not the reap itself.
+    """
+    if not (_HOST_TRACKING_TABLE and test_set_id):
+        return
+    try:
+        _dynamodb.Table(_HOST_TRACKING_TABLE).update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression="SET #s = :failed, #e = :error",
+            ConditionExpression="#s = :generating",
+            ExpressionAttributeNames={"#s": "status", "#e": "error"},
+            ExpressionAttributeValues={
+                ":failed": "FAILED",
+                ":generating": "GENERATING",
+                ":error": error,
+            },
+        )
+        logger.warning("Released host test set %s after reaping its job", test_set_id)
+    except Exception as e:  # noqa: BLE001 — cleanup must not fail the list
+        logger.info("Did not release host test set %s: %s", test_set_id, e)
+
+
 def _reap_dead_jobs(table, jobs):
     """Fail jobs whose runtime stopped heartbeating.
 
@@ -342,9 +367,6 @@ def _reap_dead_jobs(table, jobs):
             f"Generation runtime stopped responding {int(idle_min)} minutes ago "
             "(no heartbeat); the container was most likely terminated mid-run"
         )
-        job["status"] = "FAILED"
-        job["statusMessage"] = message
-        job["errorMessage"] = message
         try:
             table.update_item(
                 Key={"jobId": job["jobId"]},
@@ -361,7 +383,19 @@ def _reap_dead_jobs(table, jobs):
                     ":m": message,
                 },
             )
+            # Only after the write lands, so a job that reported in between the read
+            # and the write is not described to the caller as failed.
+            job["status"] = "FAILED"
+            job["statusMessage"] = message
+            job["errorMessage"] = message
             logger.warning("Reaped dead job %s: %s", job["jobId"], message)
+            # The job list is not what the user sees spinning: Test Studio renders the
+            # host test-set record's GENERATING. The host has its own reaper, but its
+            # window has to sit above the runtime's ~8h ceiling, so on its own the
+            # spinner outlives the failed job by hours. Clearing it here — where a
+            # heartbeat has already proven the runtime dead — is the difference between
+            # 15 minutes and half a day.
+            _release_host_test_set(job.get("testSetId"), message)
         except Exception:  # noqa: BLE001 — reaping must not fail the list
             logger.warning("Could not reap job %s", job.get("jobId"), exc_info=True)
 

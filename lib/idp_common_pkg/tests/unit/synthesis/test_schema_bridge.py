@@ -283,3 +283,34 @@ class TestOptionalLeavesAcceptNull:
             self._schema(Note={"type": ["string", "null"]})
         )
         assert out["properties"]["Note"]["type"] == ["string", "null"]
+
+    def test_an_optional_enum_also_accepts_null(self):
+        """Widening type alone leaves an enum-constrained field still rejecting null.
+
+        enum constrains the value independently of type, so a field with both stayed in
+        the critic-retry loop this widening exists to break.
+        """
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(
+                Mode={
+                    "type": "string",
+                    "enum": ["air", "sea"],
+                    "description": "Output null if not shown.",
+                }
+            )
+        )
+        assert out["properties"]["Mode"]["type"] == ["string", "null"]
+        assert out["properties"]["Mode"]["enum"] == ["air", "sea", None]
+
+    def test_a_required_enum_is_left_strict(self):
+        schema = self._schema(Mode={"type": "string", "enum": ["air", "sea"]})
+        schema["required"] = ["Mode"]
+        out = schema_bridge.config_class_to_generator_schema(schema)
+        assert out["properties"]["Mode"]["type"] == "string"
+        assert out["properties"]["Mode"]["enum"] == ["air", "sea"]
+
+    def test_an_enum_already_allowing_null_is_untouched(self):
+        out = schema_bridge.config_class_to_generator_schema(
+            self._schema(Mode={"type": "string", "enum": ["air", None]})
+        )
+        assert out["properties"]["Mode"]["enum"] == ["air", None]
