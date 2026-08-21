@@ -974,7 +974,7 @@ classes:
 
 ### Example Image Path Support
 
-The `imagePath` field supports multiple formats:
+The `x-aws-idp-image-path` field supports multiple formats:
 
 - **Single Image File**: `"config_library/unified/examples/letter1.jpg"`
 - **Local Directory with Multiple Images**: `"config_library/unified/examples/letters/"`

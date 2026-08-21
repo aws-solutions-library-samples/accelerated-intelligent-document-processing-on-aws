@@ -12,14 +12,43 @@ import {
   Container,
   ColumnLayout,
 } from '@cloudscape-design/components';
+import { X_AWS_IDP_ATTRIBUTES_PROMPT, X_AWS_IDP_CLASS_PROMPT, X_AWS_IDP_IMAGE_PATH } from '../../../constants/schemaConstants';
 
-interface Example {
-  id?: string;
-  name: string;
-  classPrompt: string;
-  attributesPrompt: string;
-  imagePath: string;
-}
+/**
+ * A few-shot example entry inside a class's `x-aws-idp-examples` array.
+ *
+ * Fields are keyed by their canonical `x-aws-idp-*` names. The legacy camelCase
+ * names (`classPrompt` / `attributesPrompt` / `imagePath`) are still read, since
+ * older configs — and every config written by earlier versions of this editor —
+ * use them.
+ */
+type Example = Record<string, unknown>;
+
+/** Canonical key for each editable field, with its legacy alias. */
+const FIELD_KEYS = {
+  classPrompt: { canonical: X_AWS_IDP_CLASS_PROMPT, legacy: 'classPrompt' },
+  attributesPrompt: { canonical: X_AWS_IDP_ATTRIBUTES_PROMPT, legacy: 'attributesPrompt' },
+  imagePath: { canonical: X_AWS_IDP_IMAGE_PATH, legacy: 'imagePath' },
+} as const;
+
+type FieldName = keyof typeof FIELD_KEYS;
+
+/** Read a field, preferring the canonical key and falling back to the legacy one. */
+const readField = (example: Example, field: FieldName): string => {
+  const { canonical, legacy } = FIELD_KEYS[field];
+  return (example[canonical] ?? example[legacy] ?? '') as string;
+};
+
+/**
+ * Set a field using the canonical key, dropping the legacy alias so an edited
+ * example does not end up carrying both spellings.
+ */
+const writeField = (example: Example, field: FieldName, value: string): Example => {
+  const { canonical, legacy } = FIELD_KEYS[field];
+  const updated: Example = { ...example, [canonical]: value };
+  delete updated[legacy];
+  return updated;
+};
 
 interface ExamplesEditorProps {
   examples?: Example[];
@@ -32,9 +61,12 @@ interface ExamplesEditorProps {
  * Manages few-shot examples for classification and extraction.
  * Examples are stored in the x-aws-idp-examples array with:
  * - name: Example identifier
- * - classPrompt: Classification prompt (used by classification service)
- * - attributesPrompt: Extraction prompt (used by extraction service)
- * - imagePath: S3 path or local path to example image(s)
+ * - x-aws-idp-class-prompt: Classification prompt (used by classification service)
+ * - x-aws-idp-attributes-prompt: Extraction prompt (used by extraction service)
+ * - x-aws-idp-image-path: S3 path or local path to example image(s)
+ *
+ * Legacy camelCase keys are read for backward compatibility; edits are written
+ * back using the canonical `x-aws-idp-*` keys.
  */
 const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React.JSX.Element => {
   const [expandedSections, setExpandedSections] = useState<Record<number, boolean>>({});
@@ -43,9 +75,9 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
     const newExample: Example = {
       id: crypto.randomUUID(),
       name: `Example ${examples.length + 1}`,
-      classPrompt: '',
-      attributesPrompt: '',
-      imagePath: '',
+      [X_AWS_IDP_CLASS_PROMPT]: '',
+      [X_AWS_IDP_ATTRIBUTES_PROMPT]: '',
+      [X_AWS_IDP_IMAGE_PATH]: '',
     };
     onChange([...examples, newExample]);
     // Auto-expand the new example
@@ -55,12 +87,15 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
     });
   };
 
-  const handleUpdateExample = (index: number, field: keyof Example, value: string): void => {
+  const handleUpdateName = (index: number, value: string): void => {
     const updated = [...examples];
-    updated[index] = {
-      ...updated[index],
-      [field]: value,
-    };
+    updated[index] = { ...updated[index], name: value };
+    onChange(updated);
+  };
+
+  const handleUpdateExample = (index: number, field: FieldName, value: string): void => {
+    const updated = [...examples];
+    updated[index] = writeField(updated[index], field, value);
     onChange(updated);
   };
 
@@ -107,11 +142,11 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
 
       {examples.map((example, index) => {
         // Use stable ID as key to prevent focus loss on content changes
-        const stableKey = example.id || `example-${index}`;
+        const stableKey = (example.id as string) || `example-${index}`;
         return (
           <ExpandableSection
             key={stableKey}
-            headerText={example.name || `Example ${index + 1}`}
+            headerText={(example.name as string) || `Example ${index + 1}`}
             expanded={expandedSections[index] || false}
             onChange={() => toggleSection(index)}
             headerActions={
@@ -129,19 +164,19 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
               <SpaceBetween size="m">
                 <FormField label="Example Name" description="Unique identifier for this example">
                   <Input
-                    value={example.name || ''}
-                    onChange={({ detail }) => handleUpdateExample(index, 'name', detail.value)}
+                    value={(example.name as string) || ''}
+                    onChange={({ detail }) => handleUpdateName(index, detail.value)}
                     placeholder="e.g., Invoice Example 1"
                   />
                 </FormField>
 
                 <FormField
-                  label="Classification Prompt (classPrompt)"
-                  description="Used by classification service to identify document type. Describe what makes this example match this class."
+                  label="Classification Prompt (x-aws-idp-class-prompt)"
+                  description="Used by classification service to identify document type. Describe what makes this example match this class. Left empty, this example is skipped for classification."
                   stretch
                 >
                   <Textarea
-                    value={example.classPrompt || ''}
+                    value={readField(example, 'classPrompt')}
                     onChange={({ detail }) => handleUpdateExample(index, 'classPrompt', detail.value)}
                     placeholder="This is an example of the class 'Invoice'. Key characteristics: Has invoice number, date, line items, and total amount."
                     rows={4}
@@ -149,12 +184,12 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
                 </FormField>
 
                 <FormField
-                  label="Extraction Prompt (attributesPrompt)"
-                  description="Used by extraction service to extract field values. Show expected output format and values."
+                  label="Extraction Prompt (x-aws-idp-attributes-prompt)"
+                  description="Used by extraction service to extract field values. Show expected output format and values. Left empty, this example is skipped for extraction."
                   stretch
                 >
                   <Textarea
-                    value={example.attributesPrompt || ''}
+                    value={readField(example, 'attributesPrompt')}
                     onChange={({ detail }) => handleUpdateExample(index, 'attributesPrompt', detail.value)}
                     placeholder={`Expected attributes are:\n{\n  "invoiceNumber": "INV-2024-001",\n  "date": "2024-01-15",\n  "total": 1250.00\n}`}
                     rows={8}
@@ -162,12 +197,12 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
                 </FormField>
 
                 <FormField
-                  label="Image Path (imagePath)"
-                  description="S3 URI (s3://bucket/path) or local path to example image. Supports directories for multiple images."
+                  label="Image Path (x-aws-idp-image-path)"
+                  description="S3 URI (s3://bucket/path) or local path to example image. Supports directories for multiple images. If the path cannot be read, the example is still sent as text."
                   stretch
                 >
                   <Input
-                    value={example.imagePath || ''}
+                    value={readField(example, 'imagePath')}
                     onChange={({ detail }) => handleUpdateExample(index, 'imagePath', detail.value)}
                     placeholder="s3://my-bucket/examples/invoice-1.png or config_library/examples/"
                   />
@@ -178,16 +213,20 @@ const ExamplesEditor = ({ examples = [], onChange }: ExamplesEditorProps): React
                     <div>
                       <Box variant="strong">Classification Service</Box>
                       <Box variant="p">
-                        Uses <code>classPrompt</code> and <code>imagePath</code>
+                        Uses <code>x-aws-idp-class-prompt</code> and <code>x-aws-idp-image-path</code>
                       </Box>
                     </div>
                     <div>
                       <Box variant="strong">Extraction Service</Box>
                       <Box variant="p">
-                        Uses <code>attributesPrompt</code> and <code>imagePath</code>
+                        Uses <code>x-aws-idp-attributes-prompt</code> and <code>x-aws-idp-image-path</code>
                       </Box>
                     </div>
                   </ColumnLayout>
+                  <Box variant="p" margin={{ top: 'xs' }}>
+                    Each service only sends examples that have its own prompt filled in, and only when the corresponding task prompt
+                    contains the <code>{'{FEW_SHOT_EXAMPLES}'}</code> placeholder (present in the shipped prompts).
+                  </Box>
                 </Alert>
               </SpaceBetween>
             </Container>
