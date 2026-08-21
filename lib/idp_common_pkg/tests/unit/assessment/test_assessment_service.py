@@ -413,6 +413,110 @@ class TestAssessmentService:
         assert "  - balance" in formatted
         assert "Account balance after transaction" in formatted
 
+    def test_format_property_descriptions_resolves_refs(self, service):
+        """$ref-based groups and lists must render their real descriptions.
+
+        Schemas authored in the UI put groups/list items in ``$defs`` and
+        reference them, which previously collapsed every such property to
+        ``Name  \t[  ]`` — the confidence model saw no field descriptions at all.
+        """
+        schema = {
+            "$id": "tax_form",
+            "type": "object",
+            "properties": {
+                "Signatures": {"$ref": "#/$defs/Signatures"},
+                "Payments": {"$ref": "#/$defs/Payments"},
+            },
+            "$defs": {
+                "Signatures": {
+                    "type": "object",
+                    "description": "Signatures of the examiner and taxpayer",
+                    "properties": {
+                        "SignatureOfTaxpayer1": {
+                            "type": "boolean",
+                            "description": "Does taxpayer 1's signature exist?",
+                        },
+                        "DateOfSignature1": {"$ref": "#/$defs/SignatureDate"},
+                    },
+                },
+                "SignatureDate": {
+                    "type": "string",
+                    "description": "Date next to the signature",
+                },
+                "Payments": {
+                    "type": "array",
+                    "description": "Payments applied to the balance",
+                    "x-aws-idp-list-item-description": "One payment",
+                    "items": {"$ref": "#/$defs/Payment"},
+                },
+                "Payment": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "string", "description": "Amount paid"},
+                    },
+                },
+            },
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        # Group behind a $ref: own description plus nested members.
+        assert "Signatures  \t[ Signatures of the examiner and taxpayer ]" in formatted
+        assert "  - SignatureOfTaxpayer1  \t[ Does taxpayer 1's signature exist? ]" in (
+            formatted
+        )
+        # A nested member that is itself a $ref resolves too.
+        assert "  - DateOfSignature1  \t[ Date next to the signature ]" in formatted
+        # List behind a $ref, with $ref'd item shape.
+        assert "Payments  \t[ Payments applied to the balance ]" in formatted
+        assert "Each item: One payment" in formatted
+        assert "  - amount  \t[ Amount paid ]" in formatted
+
+    def test_format_property_descriptions_tolerates_bad_refs(self, service):
+        """Unresolvable refs degrade gracefully instead of raising."""
+        schema = {
+            "$id": "odd",
+            "type": "object",
+            "properties": {
+                "dangling": {"$ref": "#/$defs/Nope"},
+                "remote": {"$ref": "https://example.com/schema.json"},
+                "cyclic": {"$ref": "#/$defs/Loop"},
+                "plain": {"type": "string", "description": "A normal field"},
+            },
+            "$defs": {"Loop": {"$ref": "#/$defs/Loop"}},
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        for name in ("dangling", "remote", "cyclic", "plain"):
+            assert name in formatted
+        assert "A normal field" in formatted
+
+    def test_format_property_descriptions_ref_sibling_description_wins(self, service):
+        """A description alongside a $ref overrides the definition's."""
+        schema = {
+            "$id": "override",
+            "type": "object",
+            "properties": {
+                "Group": {
+                    "$ref": "#/$defs/Group",
+                    "description": "Local override description",
+                }
+            },
+            "$defs": {
+                "Group": {
+                    "type": "object",
+                    "description": "Shared description",
+                    "properties": {},
+                }
+            },
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        assert "Group  \t[ Local override description ]" in formatted
+        assert "Shared description" not in formatted
+
     def test_confidence_thresholds_in_schema(self, service):
         """Test that confidence thresholds are present in JSON Schema."""
         # Get invoice schema
