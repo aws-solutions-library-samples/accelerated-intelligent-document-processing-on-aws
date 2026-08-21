@@ -34,16 +34,17 @@ ocr:
   # (so the Web UI page viewer can draw them) — see OcrService and
   # idp_common/ocr/README.md. Enabled by default because signature presence is a
   # common extraction target (loan packages, tax forms, claims, consents) and it
-  # adds NO Textract charge in this combination: AWS bills features as separate
-  # usage types and emits none for a feature that is free in combination — which
-  # is exactly what our own bill shows (months of `SyncTablesPagesProcessed` with
-  # no `SyncLayoutPagesProcessed` and no `SyncSignaturesPagesProcessed`).
-  #   CAVEAT: AWS documents the free combination for LAYOUT ("Layout is available
-  #   for free when used with the Tables feature") but NOT for SIGNATURES, so this
-  #   rests on observed billing, not published terms. _feature_combo() likewise
-  #   omits Signatures from the metering key whenever Tables/Forms/Layout is
-  #   present, so if AWS ever charged for it our cost reports would under-report
-  #   rather than surface it.
+  # adds NO Textract charge in this combination. Per the Amazon Textract pricing
+  # page (https://aws.amazon.com/textract/pricing/): "Signatures feature is
+  # included free of cost with any combination of Forms, Tables, Queries, and
+  # Layout" (the same page states the equivalent rule for Layout). Corroborated by
+  # our own bills: months of `SyncTablesPagesProcessed` with no
+  # `SyncLayoutPagesProcessed` and no `SyncSignaturesPagesProcessed`, because AWS
+  # emits no usage type for a feature that is free in combination.
+  #   Standalone SIGNATURES (with none of Forms/Tables/Queries/Layout) IS billed,
+  #   at ~$0.0035/page — so keep at least one of those features alongside it.
+  #   _feature_combo() encodes this by omitting Signatures from the metering key
+  #   whenever Tables/Forms/Layout is present.
   #   NOISE: a detection is NOT proof of a signature — Textract also flags stray
   #   pen marks and scan artifacts, typically at low confidence. That adds a few
   #   prompt tokens on affected pages, and a model can over-read the signal. If

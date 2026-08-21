@@ -1522,11 +1522,13 @@ class TestSignatureDetections:
 class TestShippedOcrFeatureDefaults:
     """Guard the shipped ocr.features default.
 
-    SIGNATURES is in the default set because it is free alongside TABLES (AWS
-    emits no usage type for a feature that is free in combination) and signature
-    presence is a common extraction target. If TABLES were ever dropped from the
-    defaults while SIGNATURES stayed, SIGNATURES would start being billed at
-    ~$0.0035/page — hence the paired assertion.
+    SIGNATURES is in the default set because signature presence is a common
+    extraction target and the feature is free in this combination — per the Textract
+    pricing page, "Signatures feature is included free of cost with any combination
+    of Forms, Tables, Queries, and Layout" (AWS emits no usage type at all for a
+    feature that is free in combination). If TABLES/FORMS/LAYOUT were ever dropped
+    from the defaults while SIGNATURES stayed, SIGNATURES would start being billed
+    at ~$0.0035/page — hence the paired assertion.
     """
 
     def test_default_features_include_tables_layout_signatures(self):

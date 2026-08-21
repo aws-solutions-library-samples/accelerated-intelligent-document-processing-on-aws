@@ -605,15 +605,19 @@ class OcrService:
         - Signatures feature is included free with Forms, Tables, and Layout
 
         Both "free in combination" rules mean the returned key omits the free
-        feature, so it contributes nothing to metered cost. AWS bills Textract
-        features as separate usage types and emits none for a feature that is free
-        in combination, which is what our own bills show (long stretches of
-        ``SyncTablesPagesProcessed`` with no ``SyncLayoutPagesProcessed`` and no
-        ``SyncSignaturesPagesProcessed`` despite both features being enabled).
-        Caveat: AWS *documents* this only for Layout-with-Tables, not for
-        Signatures — so if that ever changed, signature pages would be billed while
-        this method kept reporting them as free. Revisit alongside
-        ``config_library/pricing.yaml`` if Textract's usage types change.
+        feature, so it contributes nothing to metered cost. Per the Amazon Textract
+        pricing page (https://aws.amazon.com/textract/pricing/): "Signatures feature
+        is included free of cost with any combination of Forms, Tables, Queries, and
+        Layout", and correspondingly for Layout with Forms/Tables/Queries. AWS emits
+        no usage type at all for a feature that is free in combination, which is
+        what our bills show (long stretches of ``SyncTablesPagesProcessed`` with no
+        ``SyncLayoutPagesProcessed`` and no ``SyncSignaturesPagesProcessed`` despite
+        both features being enabled).
+
+        Signatures used ALONE is billed (~$0.0035/page), which is why the
+        ``-Signatures`` key exists. Revisit alongside
+        ``config_library/pricing.yaml`` if Textract's usage types or footnotes
+        change.
         """
         # TODO: Uncomment this when needed
         # Define valid Textract feature types

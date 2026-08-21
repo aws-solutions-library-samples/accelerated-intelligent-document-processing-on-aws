@@ -751,9 +751,12 @@ Set `ocr.features` per configuration to match the documents each stack processes
 
 `SIGNATURES` is **on by default**, because signature presence is a common
 extraction target (loan packages, tax forms, claims, consents) and it adds **no
-Textract charge** in the default combination — AWS bills features as separate usage
-types and emits none for a feature that is free alongside `TABLES`/`FORMS`/`LAYOUT`.
-(On its own, without any of those, `SIGNATURES` is billed at ~$0.0035/page.)
+Textract charge** in the default combination. The
+[Textract pricing page](https://aws.amazon.com/textract/pricing/) states it
+directly: *"Signatures feature is included free of cost with any combination of
+Forms, Tables, Queries, and Layout"* — AWS emits no usage type at all for a feature
+that is free in combination. Used **alone**, without any of those features,
+`SIGNATURES` is billed at ~$0.0035/page.
 
 With `SIGNATURES` enabled, Textract reports each region it believes contains a
 signature, as a **detection confidence plus a bounding box** — not text. Those
