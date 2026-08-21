@@ -93,6 +93,11 @@
           "format": "uri",
           "description": "Public Marketplace listing URL shown in the NONE/EXPIRED UI states. Flows to the InstalledFeatures row alongside productCode."
         },
+        "licenseMode": {
+          "type": "string",
+          "enum": ["none", "simulated", "marketplace-live"],
+          "description": "Which authority THIS EXTENSION enforces its subscription against. Baked into the feature template at publish time and forwarded to the host's registerFeature at install, so the host checks the same authority the extension honours instead of whatever the stack happens to be pointed at, and can flag a mismatch when its own catalog disagrees. Omitted means 'none' (enforce nothing): an extension that says nothing is not claiming to enforce anything, and an unrecognised value must never lock a paying customer out of something they bought. The host catalog's default is deliberately the opposite ('marketplace-live') so the host never over-claims verification. Extensions that already declare the mode elsewhere - e.g. a CloudFormation Mappings constant read by both their functions and their ui-deployer - should OMIT this and send licenseMode in the registerFeature payload directly rather than declaring the same fact twice; the host does not care where the value came from, only that it is in the payload."
+        },
         "pricingModel": {
           "type": "string",
           "enum": ["contract", "contract-with-payg", "subscription", "free"],
