@@ -330,7 +330,10 @@ The assessment service supports the following placeholders in prompt templates:
 ### Standard Placeholders
 - `{DOCUMENT_TEXT}` - Parsed document text (markdown format)
 - `{DOCUMENT_CLASS}` - Document classification (e.g., "invoice", "contract")
-- `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` - Formatted list of attributes to extract
+- `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` - Formatted list of attributes to extract,
+  including nested group members and list-item columns. Subschemas declared as a
+  local `$ref` into the class's `$defs` (what the UI's schema editor emits) are
+  dereferenced first, so `$ref`-based groups/lists render their real descriptions.
 - `{EXTRACTION_RESULTS}` - JSON of extraction results to assess
 
 ### OCR Confidence Data
