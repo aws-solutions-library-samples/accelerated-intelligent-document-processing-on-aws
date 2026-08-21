@@ -30,6 +30,12 @@ from idp_common.evaluation.confidence_curve import (
     estimate_for_target,
 )
 from idp_common.evaluation.curve_store import CurveStore
+from idp_common.evaluation.intervals import (
+    AccuracyInterval,
+    accuracy_interval,
+    accuracy_interval_from_confusion_matrix,
+    wilson_interval,
+)
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     DocumentEvaluationResult,
@@ -85,4 +91,9 @@ __all__ = [
     "ReviewEstimate",
     "estimate_for_target",
     "CurveStore",
+    # Sampling uncertainty on a measured accuracy
+    "AccuracyInterval",
+    "accuracy_interval",
+    "accuracy_interval_from_confusion_matrix",
+    "wilson_interval",
 ]

@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
@@ -361,14 +361,21 @@ def add_documents_to_test_set(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING
+    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
+    # it a set whose copier dies sits in UPDATING forever, because
+    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET #status = :status REMOVE lastAddResult",
+        UpdateExpression=(
+            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
+        ),
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": "UPDATING"},
+        ExpressionAttributeValues={
+            ":status": "UPDATING",
+            ":now": datetime.utcnow().isoformat() + "Z",
+        },
     )
 
     # Send file copying job to SQS queue
@@ -424,14 +431,21 @@ def add_documents_to_test_set_from_upload(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING
+    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
+    # it a set whose copier dies sits in UPDATING forever, because
+    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET #status = :status REMOVE lastAddResult",
+        UpdateExpression=(
+            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
+        ),
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": "UPDATING"},
+        ExpressionAttributeValues={
+            ":status": "UPDATING",
+            ":now": datetime.utcnow().isoformat() + "Z",
+        },
     )
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
@@ -716,7 +730,9 @@ def _harvest_active_label_job(test_set_id, meta):
     # orphan a full run still in flight — its remaining documents would never
     # reach the baseline.
     jobs = [
-        j for j in _label_jobs(test_set_id) if j.get("status") not in ("COMPLETED", "FAILED")
+        j
+        for j in _label_jobs(test_set_id)
+        if j.get("status") not in ("COMPLETED", "FAILED")
     ]
     if not jobs:
         pointer = meta.get("labelJobId")
@@ -1043,9 +1059,7 @@ def get_draft_label_job(args):
         return _label_job_to_result(job)
 
     return _label_job_to_result(
-        _harvest_label_job(
-            job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
-        )
+        _harvest_label_job(job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS)
     )
 
 
@@ -2125,13 +2139,17 @@ def remove_documents_from_test_set(args):
     )
     new_count = validation.get("input_count", 0)
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
+    # returns before the work finishes, so the outcome has nowhere to live but the
+    # record, and the test-set list renders it. This operation is synchronous — the
+    # caller gets the count in the response and shows it there — so persisting a
+    # second copy only produced an immortal alert on the list page, which no amount
+    # of dismissing could remove because dismissal is client-side. Clearing it also
+    # discards any stale notice from an earlier add, which this operation invalidates.
     tracking_table.update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET fileCount = :c, lastAddResult = :r",
-        ExpressionAttributeValues={
-            ":c": new_count,
-            ":r": f"Removed {removed} document(s)",
-        },
+        UpdateExpression="SET fileCount = :c REMOVE lastAddResult",
+        ExpressionAttributeValues={":c": new_count},
     )
 
     logger.info(
@@ -2196,12 +2214,12 @@ def clear_draft_labels(args):
     kept = len(candidates) - len(to_delete)
     # Without dropping the label-job pointer the set keeps reporting a job whose
     # output no longer exists.
+    # Cleared, never written: a synchronous operation returns its count in the
+    # response, so persisting a second copy only created an alert nothing could
+    # retract. See clear_draft_labels for the full reasoning.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET lastAddResult = :r REMOVE labelJobId, labelJobStatus",
-        expression_attribute_values={
-            ":r": f"Cleared {len(to_delete)} draft label section(s)"
-        },
+        update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
     )
 
     logger.info(
@@ -2263,12 +2281,15 @@ def reset_test_set_labels(args):
     _clear_review_state_for_label_jobs(test_set_id)
 
     now = f"Reset {len(keys)} label object(s)"
+    # Cleared, never written: a synchronous operation returns its count in the
+    # response, so persisting a second copy only created an alert nothing could
+    # retract. See clear_draft_labels for the full reasoning.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=(
-            "SET labelState = :u, lastAddResult = :r REMOVE labelJobId, labelJobStatus"
+            "SET labelState = :u REMOVE lastAddResult, labelJobId, labelJobStatus"
         ),
-        expression_attribute_values={":u": "unlabeled", ":r": now},
+        expression_attribute_values={":u": "unlabeled"},
     )
 
     logger.info(f"Reset {test_set_id}: deleted {len(keys)} baseline object(s)")
@@ -2564,6 +2585,14 @@ def get_test_sets():
     existing_test_sets = {}
     result = []
 
+    # Sets that gained ground truth after registration still say "unlabeled"; see
+    # _reconcile_label_state. Done before building the response so the repair is
+    # visible on the same call that discovers it.
+    _reconcile_label_state(items)
+    # A non-terminal status whose owning job has disappeared would otherwise show as a
+    # permanent spinner; see _reap_abandoned_test_sets.
+    _reap_abandoned_test_sets(items)
+
     for item in items:
         # GSI projection may not include 'id' - derive from PK if needed
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
@@ -2596,7 +2625,6 @@ def get_test_sets():
                 "error": item.get(
                     "error"
                 ),  # Include error message for failed test sets
-                "lastAddResult": item.get("lastAddResult"),
                 "documentClassType": item.get("documentClassType"),
                 # Optional preselected config version. Absent for the stack-managed
                 # benchmark sets, which rely on the id==version-name convention.
@@ -2986,6 +3014,263 @@ def _is_valid_test_set_structure(s3_client, bucket, prefix):
     except Exception as e:
         logger.error(f"Error checking test set structure for {prefix}: {str(e)}")
         return False
+
+
+# Bound on how many labelState probes one listTestSets call performs. The list path
+# is otherwise pure DynamoDB and is the most frequently hit query in Test Studio.
+# Probed sets record the result, so the sets skipped here are genuinely picked up by
+# the next call rather than the cap re-rolling over an arbitrary subset.
+MAX_LABEL_STATE_PROBES = 25
+
+# And a wall-clock bound, because the count cap does not limit latency: each probe
+# paginates a set's input/ and baseline/ prefixes, so 25 probes over 500-document sets is
+# far more time than belongs on the query TestSets.tsx polls every 3 seconds. Same idiom
+# as HARVEST_TIME_BUDGET_SECONDS. Sets not reached are picked up by the next call, which
+# is true rather than aspirational because each probe records its result.
+#
+# Checked between probes, not inside one, so this bounds how many probes are *started*
+# rather than capping total duration: a single enormous set can overrun it by however
+# long its own pagination takes. The function timeout is the real backstop there. Worth
+# knowing before treating 5 seconds as a latency guarantee.
+LABEL_STATE_PROBE_BUDGET_SECONDS = 5
+
+# Statuses in which a set's S3 contents are still being written, so coverage read from
+# S3 is not evidence about the set's real label state. Used to skip reconciliation
+# rather than act on a half-copied prefix.
+IN_FLUX_TEST_SET_STATUSES = frozenset({"UPDATING", "COPYING", "GENERATING", "QUEUED"})
+
+
+# How long a test set may sit in a non-terminal status before the host gives up on it.
+# Per status, because the plausible durations differ by orders of magnitude: a synthetic
+# generation legitimately runs for hours (its own runtime ceiling is ~8h), whereas a file
+# copy does not. Generous on purpose — declaring a live run dead is worse than a spinner
+# that lasts a little longer than it should.
+STALE_STATUS_HOURS = {"GENERATING": 12, "UPDATING": 2, "QUEUED": 2}
+
+
+def _reap_abandoned_test_sets(items):
+    """Fail test sets whose non-terminal status has no owner left to clear it.
+
+    GENERATING is written by the synthetic-generator extension and cleared by its
+    runtime. If that runtime dies mid-run — or the extension is uninstalled — nothing
+    remaining can clear it, and Test Studio renders the status as an in-progress
+    spinner, so the set shows "Generating…" indefinitely, across reloads and redeploys,
+    because the state is a database record rather than client state. Observed on a dev
+    stack: a set stuck for over an hour, then permanently once the extension was
+    removed. The same applies to UPDATING if the file copier dies.
+
+    Deliberately lives in the host resolver rather than the extension: the whole point
+    is to survive the extension being absent.
+
+    A set with no ``statusUpdatedAt`` is left alone unless its status is QUEUED, where
+    ``createdAt`` marks the same moment. Records written before that field existed
+    cannot be aged, and presuming them dead would fail live work.
+    """
+    now = datetime.now(timezone.utc)
+    for item in items:
+        status = item.get("status")
+        max_hours = STALE_STATUS_HOURS.get(status)
+        if max_hours is None:
+            continue
+        stamp = item.get("statusUpdatedAt") or (
+            item.get("createdAt") if status == "QUEUED" else None
+        )
+        if not stamp:
+            continue
+        try:
+            since = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        idle_hours = (now - since).total_seconds() / 3600
+        if idle_hours < max_hours:
+            continue
+
+        test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
+        error = (
+            f"{status} for {int(idle_hours)}h with no progress; the job that owns this "
+            "status is gone. The documents already written are unaffected."
+        )
+        try:
+            # boto3 directly rather than db_client: this needs a ConditionExpression,
+            # so that a job which reported in between the read and this write wins.
+            boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"]).update_item(
+                Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+                UpdateExpression="SET #st = :failed, #er = :e",
+                ConditionExpression="#st = :seen",
+                ExpressionAttributeNames={"#st": "status", "#er": "error"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":seen": status,
+                    ":e": error,
+                },
+            )
+            # Only after the write lands. Mutating first would report FAILED to the
+            # caller in exactly the case the condition exists to catch — a job that
+            # reported COMPLETED between the read and the write.
+            item["status"] = "FAILED"
+            item["error"] = error
+            logger.warning(f"Reaped abandoned test set {test_set_id}: {error}")
+        except Exception as e:  # noqa: BLE001 — reaping must not fail the list
+            logger.info(f"Did not reap test set {test_set_id}: {e}")
+
+
+def _reconcile_label_state(items):
+    """Repair ``labelState`` on sets that gained ground truth after registration.
+
+    labelState is derived once, when a set is first registered, and afterwards only
+    moved by draft-label harvest and reset. Nothing re-derives it when *already
+    labelled* documents are added to an existing set — which is exactly what the
+    synthetic generator does, writing documents and their baselines straight to S3.
+    A set can therefore hold 47 documents of ground truth and still report
+    "Unlabeled" with no estimated accuracy, which understates it where the number
+    matters most.
+
+    It corrects in both directions. A set can also become *less* labelled than its
+    record claims — add documents without baselines to a labelled set and "labeled" is
+    simply wrong — and a state that only ever ratchets upward would keep asserting
+    ground truth that is no longer complete. (A set promoted in error by an earlier,
+    laxer version of this function self-heals for the same reason.)
+
+    Overstating is worse than understating, so the decision is deliberately strict:
+
+    * **Sets owned by a labeling job are never touched.** The harvest writes
+      ``draft-machine`` labels under the same ``baseline/`` prefix and only sets
+      labelState once it reaches COMPLETED, so a running — or failed — harvest is a
+      set with baseline objects that are *not* ground truth. Flipping those to
+      "labeled" would put a green badge on unreviewed machine output, start the
+      effort estimator on it, and suppress the "Labeling failed" warning.
+    * **Coverage must be complete.** Decided by ``_validate_test_set_files``, the
+      same helper registration uses, so repair and registration cannot disagree
+      about what "labeled" means. One labelled document out of 47 is not a labelled
+      set.
+    * **Drafts are recorded as drafts.** If the baselines are machine drafts the
+      state becomes "draft", never "labeled".
+
+    Converging, too: the fileCount a probe ran against is recorded, so a set is probed
+    once per membership change rather than on every read — which is also what makes
+    re-checking already-labelled sets affordable, since membership rarely changes.
+    Known limitation: baselines added for documents that were *already* in the set (a
+    hand-upload straight to S3, rather than a generation that adds documents) leave
+    fileCount unchanged and are not re-probed until it changes.
+    """
+    # An optional repair must never be the reason a list fails. A deployment without
+    # the bucket configured simply does not get reconciliation.
+    bucket = os.environ.get("TEST_SET_BUCKET")
+    if not bucket:
+        return
+    probes = 0
+    deadline = time.monotonic() + LABEL_STATE_PROBE_BUDGET_SECONDS
+    for item in items:
+        if probes >= MAX_LABEL_STATE_PROBES or time.monotonic() > deadline:
+            logger.info(
+                "labelState reconciliation stopped after %d probe(s); the rest are "
+                "picked up by the next list",
+                probes,
+            )
+            break
+        # A labeling job owns this set's labelState; see the docstring.
+        if item.get("labelJobId") or item.get("labelJobStatus"):
+            continue
+        # A set whose contents are still being written is not evidence of anything. The
+        # copier lands input/ keys before the matching baseline/ folders, so probing
+        # mid-copy sees real-but-temporary incomplete coverage and demotes a labelled
+        # set. It self-heals — fileCount changes at COMPLETED, which invalidates the
+        # marker and forces a re-probe — but the user watching the list sees the badge
+        # flip and flip back, and the probes spent to get there are wasted.
+        if item.get("status") in IN_FLUX_TEST_SET_STATUSES:
+            continue
+        test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
+        if not test_set_id:
+            continue
+        # -1 stands for "no file count recorded", so a set without one still converges
+        # instead of being re-probed on every list and consuming the budget forever. A
+        # real count appearing later differs from -1, which re-probes as it should.
+        file_count = _as_int(item.get("fileCount"))
+        probe_key = file_count if file_count is not None else -1
+        # Keyed on membership rather than on the current state, so the same probe
+        # promotes an under-stated set and demotes an over-stated one. A set whose
+        # membership has not changed since it was last validated costs nothing.
+        if _as_int(item.get("labelProbedFileCount")) == probe_key:
+            continue
+
+        probes += 1
+        try:
+            validation = _validate_test_set_files(
+                s3_client, bucket, test_set_id, allow_unlabeled=True
+            )
+        except Exception as e:  # noqa: BLE001 — probing must not fail the list call
+            logger.warning(f"Could not probe labels for {test_set_id}: {e}")
+            continue
+
+        if validation.get("labeled"):
+            state = (
+                "draft" if _probed_labels_are_drafts(bucket, test_set_id) else "labeled"
+            )
+            reason = "every document carries a baseline"
+        else:
+            # Coverage is incomplete, so "labeled" is an overstatement whatever the
+            # record says. Reached by adding documents without baselines to a labelled
+            # set, and by a set promoted in error before this check was strict.
+            state = "unlabeled"
+            reason = "not every document carries a baseline"
+
+        current = item.get("labelState")
+        _remember_label_probe(test_set_id, probe_key)
+        if current == state:
+            continue
+
+        item["labelState"] = state
+        try:
+            db_client.update_item(
+                key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+                update_expression="SET labelState = :ls",
+                expression_attribute_values={":ls": state},
+            )
+            logger.info(
+                f"Corrected labelState for {test_set_id}: '{current}' -> '{state}' "
+                f"({reason})"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not persist labelState for {test_set_id}: {e}")
+
+
+def _probed_labels_are_drafts(bucket, test_set_id):
+    """True when this set's baselines are machine drafts rather than ground truth.
+
+    Reads one section result. The harvest writes drafts for a whole run at once, so a
+    single key is representative; being wrong here can only mis-label a mixed set as
+    "draft", which understates rather than overstates.
+    """
+    try:
+        page = s3_client.list_objects_v2(
+            Bucket=bucket, Prefix=f"{test_set_id}/baseline/", MaxKeys=10
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not list baselines for {test_set_id}: {e}")
+        return False
+    for obj in page.get("Contents") or []:
+        if obj["Key"].endswith("/result.json"):
+            return _existing_label_is_draft(bucket, obj["Key"])
+    return False
+
+
+def _remember_label_probe(test_set_id, file_count):
+    """Record that a set was probed and had no complete ground truth.
+
+    Without this the probe never converges: a genuinely unlabelled set writes no
+    marker, so every listTestSets re-probes it forever. Callers pass -1 for a set with
+    no recorded file count, so that case converges too.
+    """
+    if file_count is None:
+        return
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET labelProbedFileCount = :n",
+            expression_attribute_values={":n": file_count},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not record label probe for {test_set_id}: {e}")
 
 
 def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):

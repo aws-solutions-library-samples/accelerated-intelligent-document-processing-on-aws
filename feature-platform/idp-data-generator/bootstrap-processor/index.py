@@ -75,6 +75,16 @@ def _status(
     if not (BOOTSTRAP_TRACKING_TABLE and job_id):
         return
     attrs = {"status": status}
+    # Seed the heartbeat here, not only from the runtime. The processor writes
+    # IN_PROGRESS and then invokes the runtime, so everything between those two
+    # points — an image pull that fails, an OOM during import — leaves a job that the
+    # reaper skips, because "no heartbeat" is deliberately treated as "predates this
+    # release" rather than "dead". Seeding it means a job that never gets a container
+    # is still reapable, and keeps the absent case meaning only what it says.
+    if status == "IN_PROGRESS":
+        import datetime as _dt
+
+        attrs["heartbeatAt"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     if message is not None:
         attrs["statusMessage"] = message
     if error is not None:
@@ -125,6 +135,11 @@ def _register_test_set(
     )
     names = {
         "#status": "status",
+        # When the status was last written, so the host can tell a long-running
+        # generation from an abandoned one. GENERATING is cleared by the runtime; if
+        # the runtime dies — or the extension is uninstalled — nothing else ever
+        # would, and the set shows a spinner in Test Studio permanently.
+        "#statusUpdatedAt": "statusUpdatedAt",
         "#itemType": "ItemType",
         "#id": "id",
         "#name": "name",
@@ -142,6 +157,7 @@ def _register_test_set(
     }
     set_clauses = [
         "#status = :status",
+        "#statusUpdatedAt = :createdAt",
         "#itemType = :itemType",
         "#id = :id",
         "#name = if_not_exists(#name, :name)",

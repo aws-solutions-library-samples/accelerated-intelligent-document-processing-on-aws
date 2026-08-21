@@ -355,6 +355,13 @@ operations:
     args: { testRunIds: ["__x__"] }
   getTestSets:
     groups: [Admin, Author]
+    # kind stays `read` — it takes no arguments and returns a list, which is what the
+    # driver needs to know. But it is not side-effect free: it repairs a stale
+    # labelState and fails test sets whose owning job has disappeared, both of which
+    # write to the tracking table. Running `make api-test` against a live stack can
+    # therefore reap a genuinely abandoned test set. That is the intended behaviour, not
+    # a test artefact, but it is worth knowing before pointing the harness at a stack
+    # someone is using.
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}

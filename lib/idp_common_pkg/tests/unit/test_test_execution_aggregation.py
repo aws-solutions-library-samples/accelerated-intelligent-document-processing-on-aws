@@ -1319,3 +1319,48 @@ class TestConfidenceCurveRecording:
                 {"confidence_metrics": {"overall": {"ece": {"bins": self.BINS}}}},
             )
         assert recorded == [("ts1", "v1")]
+
+
+class TestPerFieldAccuracyIntervals:
+    """Per-field accuracy carries its sample size and margin.
+
+    The point estimate alone cannot distinguish 100% on 3 observations from 100% on
+    300, which is how a broken field hides inside a healthy overall score.
+    """
+
+    def test_interval_is_attached_from_the_existing_counts(self, mock_env):
+        index = import_test_module()
+        fields = {
+            "invoice.total": {"tp": 90, "tn": 0, "fp": 5, "fn": 5, "cm_accuracy": 0.90},
+        }
+        out = index._with_accuracy_intervals(fields)
+        m = out["invoice.total"]
+        assert m["accuracy_observations"] == 100
+        # Same denominator accuracy itself uses, so the interval qualifies the
+        # number displayed beside it.
+        assert m["accuracy_low"] < 0.90 < m["accuracy_high"]
+        assert 0.05 < m["accuracy_margin"] < 0.07
+
+    def test_a_small_sample_gets_a_visibly_wider_margin(self, mock_env):
+        """The whole point: 9/10 and 900/1000 are both "90%"."""
+        index = import_test_module()
+        out = index._with_accuracy_intervals(
+            {
+                "few": {"tp": 9, "tn": 0, "fp": 0, "fn": 1},
+                "many": {"tp": 900, "tn": 0, "fp": 0, "fn": 100},
+            }
+        )
+        assert out["few"]["accuracy_margin"] > 5 * out["many"]["accuracy_margin"]
+        assert out["few"]["accuracy_high"] <= 1.0
+
+    def test_a_field_with_no_observations_gets_no_interval(self, mock_env):
+        """Absent, not 0% — which would read as "always wrong"."""
+        index = import_test_module()
+        out = index._with_accuracy_intervals({"never_seen": {"tp": 0, "fn": 0}})
+        assert "accuracy_observations" not in out["never_seen"]
+
+    def test_non_dict_entries_and_payloads_are_left_alone(self, mock_env):
+        index = import_test_module()
+        assert index._with_accuracy_intervals(None) == {}
+        out = index._with_accuracy_intervals({"weird": "not a dict"})
+        assert out["weird"] == "not a dict"

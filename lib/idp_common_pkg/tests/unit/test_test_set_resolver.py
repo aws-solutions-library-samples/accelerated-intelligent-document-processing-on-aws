@@ -2958,6 +2958,8 @@ class TestTestSetResolver:
         meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
         assert "labelJobId" not in meta
         assert "labelJobStatus" not in meta
+        # Confirmation is returned, not stored — see the reset test for why.
+        assert "lastAddResult" not in meta
 
     def test_reset_discards_reviewed_labels_and_review_state(self, labeling_env):
         """The destructive counterpart to clearDraftLabels.
@@ -3023,7 +3025,28 @@ class TestTestSetResolver:
         meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
         assert meta["labelState"] == "unlabeled"
         assert "labelJobId" not in meta
+        # Returned to the caller, which shows it as a transient confirmation...
         assert "Reset" in result["lastAddResult"]
+        # ...but NOT persisted. Storing a confirmation on the record made it
+        # immortal: the test-set list rendered it, dismissing only cleared client
+        # state, the next poll re-read it, and nothing ever deleted it. No operation
+        # persists one now — completions are announced transiently instead.
+        assert "lastAddResult" not in meta
+
+    def test_reset_discards_a_stale_notice_from_an_earlier_add(self, labeling_env):
+        """Resetting invalidates whatever the last add reported."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET lastAddResult = :r",
+            ExpressionAttributeValues={":r": "Added 40 document(s)"},
+        )
+
+        test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "lastAddResult" not in meta
 
     def test_reset_is_admin_only(self, labeling_env):
         """An Author manages test sets but must not be able to discard the team's
@@ -3672,3 +3695,527 @@ class TestTestSetResolver:
 
         doc = table.get_item(Key={"PK": "doc#ts1-run/a.pdf", "SK": "none"})["Item"]
         assert doc["TestSetId"] == "original-set"
+
+
+@pytest.mark.unit
+class TestLabelStateReconciliation:
+    """labelState must not understate a set holding ground truth — nor overstate one.
+
+    It is derived once at registration and afterwards moved only by harvest and reset,
+    so the synthetic generator writing documents and baselines straight to S3 leaves a
+    fully-labelled set reporting "Unlabeled". Repairing that is the point. Promoting a
+    set that is NOT ground truth is worse: a green badge on unreviewed machine drafts,
+    the effort estimator running on them, and the "Labeling failed" warning suppressed.
+    """
+
+    @pytest.fixture
+    def env(self):
+        with mock_aws():
+            s3 = boto3.client("s3", region_name="us-east-1")
+            s3.create_bucket(Bucket="test-set-bucket")
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            table = ddb.create_table(
+                TableName="test-table",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            writes = []
+
+            def record(key, update_expression, **kwargs):
+                writes.append((key["PK"], update_expression, kwargs))
+
+            with patch.dict(
+                os.environ,
+                {
+                    "TEST_SET_BUCKET": "test-set-bucket",
+                    "TRACKING_TABLE": "test-table",
+                    # Same region pin as above; the probe uses s3_client directly but
+                    # the repair write goes through the ambient-region resource.
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "AWS_REGION": "us-east-1",
+                },
+            ):
+                with (
+                    patch.object(test_set_index, "s3_client", s3),
+                    patch.object(test_set_index.db_client, "update_item", record),
+                ):
+                    yield s3, table, writes
+
+    @staticmethod
+    def _seed_doc(s3, test_set_id, name, label_source=None):
+        s3.put_object(
+            Bucket="test-set-bucket", Key=f"{test_set_id}/input/{name}", Body=b"pdf"
+        )
+        body = {"inference_result": {"x": 1}}
+        if label_source:
+            body["labelSource"] = label_source
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key=f"{test_set_id}/baseline/{name}/sections/1/result.json",
+            Body=json.dumps(body).encode(),
+        )
+
+    def test_a_fully_labelled_set_is_repaired(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+        assert any("labelState" in w[1] for w in writes), "the repair must persist"
+
+    def test_a_set_mid_harvest_is_never_promoted(self, env):
+        """The blocking case: drafts are on S3 before labelState moves to 'draft'.
+
+        The harvest writes draft-machine labels under the same baseline/ prefix and
+        only sets labelState when it reaches COMPLETED. Promoting here puts a
+        "Labeled" badge on unreviewed machine output — and if the harvest then fails,
+        permanently, while also suppressing the "Labeling failed" warning.
+        """
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelJobId": "run-1",
+                "labelJobStatus": "RUNNING",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert writes == []
+
+    def test_a_failed_harvest_is_never_promoted(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelJobStatus": "FAILED",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+
+    def test_drafts_with_no_job_pointer_are_recorded_as_draft(self, env):
+        """Belt and braces: machine drafts are never ground truth, job record or not."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf", label_source="draft-machine")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "draft"
+
+    def test_partial_coverage_is_not_a_labelled_set(self, env):
+        """One labelled document out of two is not ground truth for the set."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 2}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+
+    def test_a_set_with_no_baselines_is_left_alone(self, env):
+        s3, _table, writes = env
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert all("labelState" not in w[1] for w in writes)
+
+    def test_an_unlabelled_set_is_not_reprobed_at_the_same_membership(self, env):
+        """Without a marker the probe never converges on genuinely unlabelled sets."""
+        s3, _table, writes = env
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+        assert any("labelProbedFileCount" in w[1] for w in writes)
+
+        calls = []
+        with patch.object(
+            test_set_index, "_validate_test_set_files", lambda *a, **k: calls.append(1)
+        ):
+            test_set_index._reconcile_label_state(
+                [
+                    {
+                        "id": "ts1",
+                        "labelState": "unlabeled",
+                        "fileCount": 1,
+                        "labelProbedFileCount": 1,
+                    }
+                ]
+            )
+        assert calls == [], "a set already probed at this membership must be skipped"
+
+    def test_adding_documents_invalidates_the_marker(self, env):
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "unlabeled",
+                "fileCount": 1,
+                "labelProbedFileCount": 0,  # probed when the set was empty
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+
+    def test_an_overstated_set_is_demoted(self, env):
+        """The same probe must correct in both directions.
+
+        Adding documents without baselines to a labelled set makes "labeled" wrong, and
+        a state that only ratchets upward would keep asserting complete ground truth. A
+        set promoted in error by a laxer earlier version self-heals by the same path.
+        """
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [{"id": "ts1", "labelState": "labeled", "fileCount": 2}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert any("labelState" in w[1] for w in writes)
+
+    def test_a_set_still_being_written_is_not_demoted(self, env):
+        """Mid-copy incomplete coverage is temporary, so acting on it makes a flicker.
+
+        The copier lands input/ keys before the matching baseline/ folders, so a probe
+        during UPDATING sees coverage that is genuinely incomplete *right now* and would
+        demote the set. It self-heals at COMPLETED, which is the problem: the user
+        watching the list sees "Labeled" flip to "Unlabeled" and back for no reason they
+        can act on.
+        """
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "labeled",
+                "fileCount": 2,
+                "status": "UPDATING",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+        assert all("labelState" not in w[1] for w in writes)
+        # And no marker, so the set is genuinely re-probed once the copy settles rather
+        # than being recorded as validated at this fileCount.
+        assert "labelProbedFileCount" not in items[0]
+
+    def test_a_completed_set_is_still_reconciled(self, env):
+        """The in-flux guard must key on status, not disable reconciliation."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf", Body=b"pdf")
+        items = [
+            {
+                "id": "ts1",
+                "labelState": "labeled",
+                "fileCount": 2,
+                "status": "COMPLETED",
+            }
+        ]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "unlabeled"
+        assert any("labelState" in w[1] for w in writes)
+
+    def test_a_correct_state_is_not_rewritten(self, env):
+        """Probing is not licence to write: an agreeing state costs no update."""
+        s3, _table, writes = env
+        self._seed_doc(s3, "ts1", "a.pdf")
+        items = [{"id": "ts1", "labelState": "labeled", "fileCount": 1}]
+
+        test_set_index._reconcile_label_state(items)
+
+        assert items[0]["labelState"] == "labeled"
+        assert all("labelState" not in w[1] for w in writes)
+
+    def test_sets_at_unchanged_membership_are_never_probed(self, env):
+        """Steady state must cost nothing, which is what makes re-checking affordable."""
+        s3, _table, writes = env
+        calls = []
+        with patch.object(
+            test_set_index, "_validate_test_set_files", lambda *a, **k: calls.append(1)
+        ):
+            test_set_index._reconcile_label_state(
+                [
+                    {
+                        "id": "a",
+                        "labelState": "labeled",
+                        "fileCount": 5,
+                        "labelProbedFileCount": 5,
+                    },
+                    {
+                        "id": "b",
+                        "labelState": "unlabeled",
+                        "fileCount": 2,
+                        "labelProbedFileCount": 2,
+                    },
+                ]
+            )
+        assert calls == []
+
+    def test_sets_owned_by_a_labeling_job_are_never_probed(self, env):
+        s3, _table, writes = env
+        calls = []
+        with patch.object(
+            test_set_index, "_validate_test_set_files", lambda *a, **k: calls.append(1)
+        ):
+            test_set_index._reconcile_label_state(
+                [{"id": "a", "labelState": "draft", "labelJobId": "run-1"}]
+            )
+        assert calls == []
+
+    def test_probing_is_bounded(self, env):
+        """The list path is otherwise pure DynamoDB and is the hottest query."""
+        s3, _table, writes = env
+        calls = []
+        many = [
+            {"id": f"ts{i}", "labelState": "unlabeled", "fileCount": 1}
+            for i in range(60)
+        ]
+        with patch.object(
+            test_set_index,
+            "_validate_test_set_files",
+            lambda *a, **k: (calls.append(1), {"labeled": False})[1],
+        ):
+            test_set_index._reconcile_label_state(many)
+        assert len(calls) == test_set_index.MAX_LABEL_STATE_PROBES
+
+    def test_a_probe_failure_never_breaks_the_list(self, env):
+        s3, _table, writes = env
+        with patch.object(
+            test_set_index,
+            "_validate_test_set_files",
+            side_effect=RuntimeError("s3 down"),
+        ):
+            test_set_index._reconcile_label_state(
+                [{"id": "ts1", "labelState": "unlabeled", "fileCount": 1}]
+            )  # must not raise
+
+
+@pytest.mark.unit
+class TestReapAbandonedTestSets:
+    """A non-terminal status with no owner left must not show as a permanent spinner.
+
+    GENERATING is written by the generator extension and cleared by its runtime. If the
+    runtime dies — or the extension is uninstalled — nothing remaining can clear it, and
+    Test Studio renders it as in-progress indefinitely, across reloads, because the
+    state is a database record. Observed live, then made permanent by removing the
+    extension.
+    """
+
+    @pytest.fixture
+    def env(self):
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            table = ddb.create_table(
+                TableName="test-table",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            # Pin the region: the resolver builds its own boto3 resource with no
+            # explicit region and other tests mutate the ambient one, which makes the
+            # moto table invisible to it.
+            with patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "test-table",
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "AWS_REGION": "us-east-1",
+                },
+            ):
+                yield table
+
+    @staticmethod
+    def _hours_ago(hours):
+        return (
+            (datetime.now(timezone.utc) - timedelta(hours=hours))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    def _seed(self, table, status, stamp_hours=None, created_hours=None):
+        item = {"PK": "testset#ts1", "SK": "metadata", "id": "ts1", "status": status}
+        if stamp_hours is not None:
+            item["statusUpdatedAt"] = self._hours_ago(stamp_hours)
+        if created_hours is not None:
+            item["createdAt"] = self._hours_ago(created_hours)
+        table.put_item(Item=item)
+        return [dict(item)]
+
+    def test_a_long_abandoned_generation_is_failed(self, env):
+        table = env
+        items = self._seed(table, "GENERATING", stamp_hours=20)
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "FAILED"
+        assert "no progress" in items[0]["error"]
+        assert (
+            table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"][
+                "status"
+            ]
+            == "FAILED"
+        )
+
+    def test_a_generation_still_within_its_window_is_left_running(self, env):
+        """Generation legitimately runs for hours; declaring it dead is worse."""
+        table = env
+        items = self._seed(table, "GENERATING", stamp_hours=3)
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "GENERATING"
+
+    def test_updating_has_a_much_shorter_window(self, env):
+        """A file copy is not a multi-hour job."""
+        table = env
+        items = self._seed(table, "UPDATING", stamp_hours=4)
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "FAILED"
+
+    def test_queued_falls_back_to_created_at(self, env):
+        """For QUEUED the two timestamps mark the same moment."""
+        table = env
+        items = self._seed(table, "QUEUED", created_hours=6)
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "FAILED"
+
+    def test_a_record_with_no_timestamp_is_left_alone(self, env):
+        """Records predating the field cannot be aged; failing them kills live work."""
+        table = env
+        items = self._seed(table, "GENERATING")
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "GENERATING"
+
+    def test_terminal_statuses_are_never_touched(self, env):
+        table = env
+        for status in ("COMPLETED", "FAILED"):
+            items = self._seed(table, status, stamp_hours=500)
+            test_set_index._reap_abandoned_test_sets(items)
+            assert items[0]["status"] == status
+
+    def test_the_response_is_not_marked_failed_when_the_write_is_refused(self, env):
+        """The in-memory record must not contradict the row.
+
+        Mutating before the conditional write reported FAILED to the caller in exactly
+        the case the condition exists to catch, so the UI showed a failure for a run
+        that had just completed.
+        """
+        table = env
+        items = self._seed(table, "GENERATING", stamp_hours=20)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET #s = :c",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":c": "COMPLETED"},
+        )
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "GENERATING", (
+            "the response claimed FAILED for a set the write refused to change"
+        )
+        assert "error" not in items[0]
+
+    def test_a_status_that_moved_since_the_read_wins(self, env):
+        """The write is conditional, so a job reporting in mid-flight is not clobbered."""
+        table = env
+        items = self._seed(table, "GENERATING", stamp_hours=20)
+        # The owning job completed between the list read and the reap.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET #s = :c",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":c": "COMPLETED"},
+        )
+
+        test_set_index._reap_abandoned_test_sets(items)
+
+        assert (
+            table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"][
+                "status"
+            ]
+            == "COMPLETED"
+        )
+
+
+@pytest.mark.unit
+class TestStatusUpdatedAtIsWritten:
+    """The reap windows are only reachable if something stamps the status time.
+
+    STALE_STATUS_HOURS declares a window for UPDATING, but for a while nothing wrote
+    statusUpdatedAt outside the generator extension — so an abandoned file copy spun
+    forever while the code and CHANGELOG both claimed otherwise.
+    """
+
+    def test_add_documents_stamps_the_status_time(self):
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../nested/api-resolvers/src/lambda/test_set_resolver/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        # Both UPDATING writes in this resolver must stamp it, or the UPDATING window
+        # in STALE_STATUS_HOURS is unreachable.
+        updating_writes = source.count('":status": "UPDATING"')
+        stamped = source.count("statusUpdatedAt = :now")
+        assert updating_writes == stamped == 2, (
+            f"{updating_writes} UPDATING writes but {stamped} stamped"
+        )
+
+    def test_the_copier_stamps_the_status_time(self):
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../src/lambda/test_set_file_copier/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        assert "statusUpdatedAt = :now" in source
