@@ -13,9 +13,11 @@ properties load-bearing:
    instead of failing the document.
 """
 
+import pathlib
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from idp_common.config.merge_utils import load_system_defaults
 from idp_common.extraction.service import ExtractionService
@@ -307,28 +309,45 @@ class TestCanonicalAndLegacyKeys:
 class TestShippedConfigsUseCanonicalKeys:
     """Shipped configs must not reintroduce the legacy spelling."""
 
-    def test_config_library_examples_use_canonical_keys(self):
-        import pathlib
+    # lib/idp_common_pkg/tests/unit/extraction/<this file> -> repo root
+    REPO_ROOT = pathlib.Path(__file__).resolve().parents[5]
 
-        import yaml
-
-        repo_root = pathlib.Path(__file__).resolve().parents[4]
-        legacy_keys = {"classPrompt", "attributesPrompt", "imagePath"}
-        offenders = []
-
-        for path in sorted(repo_root.glob("config_library/**/config*.yaml")):
+    @classmethod
+    def _shipped_examples(cls):
+        """Yield ``(relative_path, example_dict)`` for every shipped example."""
+        for path in sorted(cls.REPO_ROOT.glob("config_library/**/config*.yaml")):
             try:
                 config = yaml.safe_load(path.read_text()) or {}
             except yaml.YAMLError:
+                continue
+            if not isinstance(config, dict):
                 continue
             for doc_class in config.get("classes") or []:
                 if not isinstance(doc_class, dict):
                     continue
                 for example in doc_class.get("x-aws-idp-examples") or []:
-                    if isinstance(example, dict) and legacy_keys & set(example):
-                        offenders.append(
-                            f"{path.relative_to(repo_root)}: {sorted(legacy_keys & set(example))}"
-                        )
+                    if isinstance(example, dict):
+                        yield path.relative_to(cls.REPO_ROOT), example
+
+    def test_scan_actually_finds_shipped_examples(self):
+        """Guard the guard: a mis-resolved repo root would pass vacuously.
+
+        This assertion exists because the first version of the test below used
+        ``parents[4]`` (= ``lib/``), so its glob matched nothing and it reported
+        success without inspecting a single config.
+        """
+        assert list(self._shipped_examples()), (
+            f"no shipped few-shot examples found under {self.REPO_ROOT}/config_library "
+            "— the repo-root resolution is probably wrong"
+        )
+
+    def test_config_library_examples_use_canonical_keys(self):
+        legacy_keys = {"classPrompt", "attributesPrompt", "imagePath"}
+        offenders = [
+            f"{rel}: {sorted(legacy_keys & set(example))}"
+            for rel, example in self._shipped_examples()
+            if legacy_keys & set(example)
+        ]
 
         assert not offenders, (
             "shipped configs should use the canonical x-aws-idp-* example keys: "
