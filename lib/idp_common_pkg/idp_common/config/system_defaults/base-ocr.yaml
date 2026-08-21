@@ -17,29 +17,57 @@ ocr:
   # Textract features to enable
   # Options: LAYOUT, TABLES, FORMS, SIGNATURES, QUERIES
   #
-  # DEFAULT: TABLES + LAYOUT. TABLES makes Textract emit structured Table/Cell
-  # blocks (with per-cell text, confidence, and geometry) that linearize into
-  # clean markdown pipe-tables for the agentic table parser and, in turn, produce
-  # more complete extraction AND more accurate confidence/geometry on table-heavy
-  # documents. Enabled by default because tables are common and the accuracy gain
-  # is large: on a validated 24-page brokerage statement, TABLES extracted all
-  # 1,440 rows (every page) while LAYOUT-only silently dropped ~5 pages (~300
-  # rows) where the plain-text linearization mis-segmented the table.
+  # DEFAULT: TABLES + LAYOUT + SIGNATURES.
+  #
+  # TABLES makes Textract emit structured Table/Cell blocks (with per-cell text,
+  # confidence, and geometry) that linearize into clean markdown pipe-tables for
+  # the agentic table parser and, in turn, produce more complete extraction AND
+  # more accurate confidence/geometry on table-heavy documents. Enabled by default
+  # because tables are common and the accuracy gain is large: on a validated
+  # 24-page brokerage statement, TABLES extracted all 1,440 rows (every page)
+  # while LAYOUT-only silently dropped ~5 pages (~300 rows) where the plain-text
+  # linearization mis-segmented the table.
+  #
+  # SIGNATURES reports each region Textract believes holds a signature, as a
+  # detection confidence + bounding box. Those surface in the page text, in
+  # textConfidence.json (so the confidence pass sees them), and in pageData.json
+  # (so the Web UI page viewer can draw them) — see OcrService and
+  # idp_common/ocr/README.md. Enabled by default because signature presence is a
+  # common extraction target (loan packages, tax forms, claims, consents) and it
+  # adds NO Textract charge in this combination. Per the Amazon Textract pricing
+  # page (https://aws.amazon.com/textract/pricing/): "Signatures feature is
+  # included free of cost with any combination of Forms, Tables, Queries, and
+  # Layout" (the same page states the equivalent rule for Layout). Corroborated by
+  # our own bills: months of `SyncTablesPagesProcessed` with no
+  # `SyncLayoutPagesProcessed` and no `SyncSignaturesPagesProcessed`, because AWS
+  # emits no usage type for a feature that is free in combination.
+  #   Standalone SIGNATURES (with none of Forms/Tables/Queries/Layout) IS billed,
+  #   at ~$0.0035/page — so keep at least one of those features alongside it.
+  #   _feature_combo() encodes this by omitting Signatures from the metering key
+  #   whenever Tables/Forms/Layout is present.
+  #   NOISE: a detection is NOT proof of a signature — Textract also flags stray
+  #   pen marks and scan artifacts, typically at low confidence. That adds a few
+  #   prompt tokens on affected pages, and a model can over-read the signal. If
+  #   your corpus has no signature fields, REMOVE the SIGNATURES entry below.
   #
   # COST TRADE-OFF — tune per deployment:
-  #   - Documents WITH tables: the extra Textract cost (TABLES+LAYOUT ~$0.065/page
-  #     vs LAYOUT-only ~$0.004/page, ~16x on the OCR line item) buys markedly
-  #     better table extraction + assessment, and is typically MORE cost-effective
-  #     and scalable end-to-end — cleaner cell structure means fewer LLM extraction
-  #     retries, fewer confidence truncations/re-batches, and less downstream
-  #     correction than fighting a mis-linearized plain-text table.
+  #   - Documents WITH tables: the extra Textract cost (TABLES ~$0.015/page — with
+  #     LAYOUT and SIGNATURES free alongside it — vs LAYOUT-only ~$0.004/page,
+  #     ~3.75x on the OCR line item) buys markedly better table extraction +
+  #     assessment, and is typically MORE cost-effective and scalable end-to-end —
+  #     cleaner cell structure means fewer LLM extraction retries, fewer
+  #     confidence truncations/re-batches, and less downstream correction than
+  #     fighting a mis-linearized plain-text table.
   #   - Documents WITHOUT tables: TABLES adds cost with no benefit. If your corpus
   #     is table-free (e.g. forms, prose, single-value docs), REMOVE the TABLES
-  #     entry below to fall back to cheaper LAYOUT-only OCR.
+  #     entry below to fall back to cheaper LAYOUT-only OCR. Note that SIGNATURES
+  #     is only free alongside TABLES/FORMS/LAYOUT — on its own it is billed at
+  #     ~$0.0035/page.
   # Set this per-config to match the documents each stack actually processes.
   features:
     - name: TABLES
     - name: LAYOUT
+    - name: SIGNATURES
   
   # Concurrent API call workers
   max_workers: 20

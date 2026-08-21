@@ -690,10 +690,11 @@ Patterns 2 and 3 support multiple OCR backend engines for flexible document proc
 ocr:
   backend: textract  # or "bda", "bedrock", "none"
 
-  # Textract features. DEFAULT: TABLES + LAYOUT (see trade-off below).
+  # Textract features. DEFAULT: TABLES + LAYOUT + SIGNATURES (see trade-off below).
   features:
     - name: TABLES
     - name: LAYOUT
+    - name: SIGNATURES
 
   # For BDA backend (optional): use a specific standard-output SYNC project
   # instead of the per-stack <stackname>_OCR_StdOutput project the stack
@@ -712,15 +713,18 @@ ocr:
   single flat per-page price and no feature tuning. One call returns markdown
   tables, layout, word confidence, and bounding boxes; per-page processing scales
   past BDA's ~10-page synchronous limit automatically.
-- **Textract** — you need only raw text (cheapest), or you already tune specific
-  Textract features. For table-heavy docs, `TABLES`+`LAYOUT` on Textract (~$0.065/page)
-  is often comparable in total cost to BDA ($0.01/page) once you weigh the extra
-  Textract feature cost against BDA's flat rate; benchmark on your corpus.
+- **Textract** — you need only raw text (much cheaper: ~$0.0015/page), or you
+  already tune specific Textract features. For table-heavy docs, `TABLES` on
+  Textract (~$0.015/page, with `LAYOUT` and `SIGNATURES` free alongside it) costs
+  somewhat more per page than BDA ($0.01/page) up to 1M pages/month and the same
+  above it (Textract's `TABLES` tier drops to $0.010); benchmark accuracy on your
+  corpus rather than choosing on price alone.
 
 ### Textract features & the TABLES cost/accuracy trade-off
 
 `ocr.features` selects which Amazon Textract analysis features run. The default is
-**`TABLES` + `LAYOUT`**.
+**`TABLES` + `LAYOUT` + `SIGNATURES`** — of which only `TABLES` is billed (see
+below).
 
 - **`TABLES` is on by default because tables are common and the accuracy gain is
   large.** It makes Textract emit structured Table/Cell blocks (with per-cell text,
@@ -730,8 +734,9 @@ ocr:
   brokerage statement, `TABLES` extracted **all 1,440 rows (every page)** while
   `LAYOUT`-only silently dropped ~5 pages (~300 rows) where the plain-text
   linearization mis-segmented the table.
-- **Cost trade-off** (`TABLES`+`LAYOUT` ≈ **$0.065/page** vs `LAYOUT`-only ≈
-  **$0.004/page**, ~16× on the Textract line item):
+- **Cost trade-off** (`TABLES` ≈ **$0.015/page**, with `LAYOUT` and `SIGNATURES`
+  free alongside it, vs `LAYOUT`-only ≈ **$0.004/page** — ~3.75× on the Textract
+  line item):
   - **Documents *with* tables:** the extra OCR cost is typically *more*
     cost-effective and scalable end-to-end — cleaner cell structure means fewer LLM
     extraction retries, fewer confidence truncations/re-batches, and less downstream
@@ -743,6 +748,15 @@ ocr:
 Set `ocr.features` per configuration to match the documents each stack processes.
 
 ### The `SIGNATURES` feature
+
+`SIGNATURES` is **on by default**, because signature presence is a common
+extraction target (loan packages, tax forms, claims, consents) and it adds **no
+Textract charge** in the default combination. The
+[Textract pricing page](https://aws.amazon.com/textract/pricing/) states it
+directly: *"Signatures feature is included free of cost with any combination of
+Forms, Tables, Queries, and Layout"* — AWS emits no usage type at all for a feature
+that is free in combination. Used **alone**, without any of those features,
+`SIGNATURES` is billed at ~$0.0035/page.
 
 With `SIGNATURES` enabled, Textract reports each region it believes contains a
 signature, as a **detection confidence plus a bounding box** — not text. Those
@@ -766,6 +780,11 @@ extract a boolean "is this signed?" field, say so in the field description — t
 a signature means handwritten name or initials, that a nearby date is not
 evidence of one, and that a low-confidence detection or a stray mark does not
 count — and consider a few-shot example showing the unsigned case.
+
+**If your corpus has no signature fields, remove the `SIGNATURES` entry.** Pages
+with a detection (including false positives on stray ink) add a few prompt tokens
+and an extra signal the model may over-read, for no benefit when nothing asks about
+signatures. Removing it costs nothing, since the feature was free to begin with.
 
 ### Bedrock OCR Benefits
 
