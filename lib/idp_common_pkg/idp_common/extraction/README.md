@@ -232,6 +232,21 @@ The system uses these environment variables for resolving relative paths:
 
 ### Task Prompt Integration
 
+All three shipped extraction prompt variants in
+`config/system_defaults/base-extraction.yaml` (`task_prompt`,
+`task_prompt_extraction_with_confidence`,
+`task_prompt_extraction_with_confidence_topk`) already include
+`{FEW_SHOT_EXAMPLES}` ahead of `<<CACHEPOINT>>`, so a class that defines
+`x-aws-idp-examples` gets them with no prompt edit; classes without examples
+render the section empty (no content items added). A config that supplies its
+**own** extraction `task_prompt` must include the placeholder itself — exactly
+once, since `_build_prompt_content` splits on it and ignores it otherwise.
+
+Example fields are read under either the `x-aws-idp-*` names or the legacy
+camelCase names (`classPrompt` / `attributesPrompt` / `imagePath`). Unreadable
+example images log a warning and the example is sent as text-only rather than
+failing the section.
+
 To use few-shot examples, your task prompt must include the `{FEW_SHOT_EXAMPLES}` placeholder:
 
 ```yaml

@@ -84,6 +84,19 @@ Each example includes four key components:
 - **`x-aws-idp-attributes-prompt`**: The expected attribute extraction results in exact JSON format (used for extraction). Can include sample OCR text output to demonstrate the text from which attributes should be extracted.
 - **`x-aws-idp-image-path`**: Path to example document image(s) - supports single files, local directories, or S3 prefixes (optional but recommended for better visual understanding)
 
+> **Both key spellings are accepted.** These three fields may also appear under
+> their legacy camelCase names — `classPrompt`, `attributesPrompt`, `imagePath` —
+> which is what the UI's schema editor writes and what the `config_library`
+> presets contain. The `x-aws-idp-*` and camelCase forms behave identically; the
+> `x-aws-idp-*` prefixed form shown above is preferred for hand-authored configs.
+
+> **Unreadable example images degrade to text-only.** If `x-aws-idp-image-path`
+> cannot be read (bucket in another account/partition, object deleted, missing
+> `s3:GetObject`), a warning is logged and the example is used **without** its
+> image rather than failing the document. Check the Extraction/Classification
+> function logs for `using example '<name>' without images` if examples look like
+> they are having less effect than expected.
+
 ### Example Processing Rules
 
 **Important**: Examples are only processed if they contain the required prompt field for the specific task:
@@ -350,6 +363,16 @@ classes:
 ```
 
 ### Step 4: Update Task Prompts with Cache Points
+
+> **The shipped extraction prompts already include `{FEW_SHOT_EXAMPLES}`.** All
+> three default extraction prompt variants (`task_prompt`,
+> `task_prompt_extraction_with_confidence`,
+> `task_prompt_extraction_with_confidence_topk`) carry the placeholder ahead of
+> `<<CACHEPOINT>>`, so defining examples on a class is enough for extraction to
+> use them — no prompt edit required. It is a no-op for classes with no examples.
+> **Classification prompts still require you to add it** (see below), and so does
+> any config that replaces the extraction `task_prompt` with its own copy: a
+> custom prompt without the placeholder silently ignores every example.
 
 Ensure your classification and extraction task prompts include the `{FEW_SHOT_EXAMPLES}` placeholder and use `<<CACHEPOINT>>` for optimal performance. You can also use the `{DOCUMENT_IMAGE}` placeholder for precise image positioning:
 
@@ -676,10 +699,17 @@ Monitor these metrics to ensure optimal cache usage:
 ### Common Issues
 
 **Examples Not Loading**
-- Verify `{FEW_SHOT_EXAMPLES}` placeholder exists in task prompts
+- Verify `{FEW_SHOT_EXAMPLES}` placeholder exists in task prompts. The shipped
+  extraction prompts include it; a **custom** extraction `task_prompt` and every
+  classification prompt must add it explicitly, and exactly once (the placeholder
+  is ignored if it appears more than once).
 - Check that examples are defined for the document classes being processed
-- Ensure examples have the required prompt fields (`classPrompt` for classification, `attributesPrompt` for extraction)
-- For image examples: Ensure image paths are correct and files exist
+- Ensure examples have the required prompt fields (`x-aws-idp-class-prompt` /
+  `classPrompt` for classification, `x-aws-idp-attributes-prompt` /
+  `attributesPrompt` for extraction)
+- For image examples: Ensure image paths are correct and files exist. An
+  unreadable path logs `using example '<name>' without images` and the example is
+  still sent as text.
 
 **Examples Being Skipped**
 - Verify that examples have non-empty `classPrompt` field for classification tasks
