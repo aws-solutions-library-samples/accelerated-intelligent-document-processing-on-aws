@@ -509,6 +509,27 @@ class TestOcrService:
             combo = service._feature_combo()
             assert combo == "-Signatures"
 
+    def test_feature_combo_shipped_default_meters_as_tables_only(self):
+        """The shipped default (TABLES+LAYOUT+SIGNATURES) meters as Tables alone.
+
+        LAYOUT and SIGNATURES are free alongside TABLES, so neither may add a
+        priced component — this is what makes SIGNATURES-by-default cost-neutral.
+        """
+        with patch("boto3.client"):
+            service = OcrService(enhanced_features=["TABLES", "LAYOUT", "SIGNATURES"])
+            assert service._feature_combo() == "-Tables"
+
+    def test_feature_combo_signatures_free_with_forms_or_layout(self):
+        """SIGNATURES adds no priced component to any other feature either."""
+        with patch("boto3.client"):
+            for features, expected in (
+                (["FORMS", "SIGNATURES"], "-Forms"),
+                (["LAYOUT", "SIGNATURES"], "-Layout"),
+                (["TABLES", "FORMS", "SIGNATURES"], "-Tables+Forms"),
+            ):
+                service = OcrService(enhanced_features=features)
+                assert service._feature_combo() == expected, features
+
     @patch("boto3.client")
     @patch("idp_common.s3.write_content")
     def test_process_single_page_textract(
@@ -1495,3 +1516,37 @@ class TestSignatureDetections:
             )
 
         assert result["text"] == "Signature of taxpayer"
+
+
+@pytest.mark.unit
+class TestShippedOcrFeatureDefaults:
+    """Guard the shipped ocr.features default.
+
+    SIGNATURES is in the default set because it is free alongside TABLES (AWS
+    emits no usage type for a feature that is free in combination) and signature
+    presence is a common extraction target. If TABLES were ever dropped from the
+    defaults while SIGNATURES stayed, SIGNATURES would start being billed at
+    ~$0.0035/page — hence the paired assertion.
+    """
+
+    def test_default_features_include_tables_layout_signatures(self):
+        from idp_common.config.merge_utils import load_system_defaults
+
+        defaults = load_system_defaults("pattern-2")
+        names = [f["name"] for f in defaults["ocr"]["features"]]
+
+        assert names == ["TABLES", "LAYOUT", "SIGNATURES"], names
+
+    def test_signatures_default_is_never_billed_alone(self):
+        """SIGNATURES in the defaults must be accompanied by a paying feature."""
+        from idp_common.config.merge_utils import load_system_defaults
+
+        names = {
+            f["name"] for f in load_system_defaults("pattern-2")["ocr"]["features"]
+        }
+
+        if "SIGNATURES" in names:
+            assert names & {"TABLES", "FORMS", "LAYOUT"}, (
+                "SIGNATURES is only free in combination; on its own it is billed "
+                "at ~$0.0035/page"
+            )
