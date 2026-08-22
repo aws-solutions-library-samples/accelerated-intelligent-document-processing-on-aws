@@ -72,8 +72,11 @@ Two feature kinds are supported, distinguished by the catalog manifest's
        so it protected nothing while adding a failure mode (expiry mid-way
        through the CFN "Update stack" wizard → an opaque 403).
 
-    Consequently the entitlement check below is an **advisory UX gate** on the
-    Launch button, not a confidentiality boundary. The commercial gate is the
+    Consequently this resolver performs **no entitlement check of its own**. There
+    is nothing here to protect by re-checking, and `checkFeatureEntitlement` is
+    the single host-side authority — it already decides whether the UI offers
+    Launch at all. A second gate here denied every genuinely subscribed customer
+    (see the comment at the marketplace branch below). The commercial gate is the
     Marketplace subscription plus the extension's own runtime entitlement check.
 
 Environment:
@@ -94,7 +97,6 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger()
@@ -120,26 +122,6 @@ _dynamodb = boto3.resource("dynamodb")
 # stack lives — feature stacks live alongside it). DescribeStacks is used to
 # resolve an existing stack's full ARN for the update URL form.
 _cfn = boto3.client("cloudformation")
-# Marketplace entitlement client. boto3 picks up the simulator endpoint from
-# AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE when set (mirrors
-# check_feature_entitlement). Short timeouts so a stalled cold start fails fast.
-_entitlement_client = None
-_ENTITLEMENT_CONFIG = Config(
-    connect_timeout=5, read_timeout=5, retries={"max_attempts": 3, "mode": "standard"}
-)
-
-
-def _entitlement():
-    global _entitlement_client
-    if _entitlement_client is None:
-        _entitlement_client = boto3.client(
-            "marketplace-entitlement", config=_ENTITLEMENT_CONFIG
-        )
-    return _entitlement_client
-
-
-class NotEntitledError(Exception):
-    """Raised when a marketplace feature is requested without an ACTIVE entitlement."""
 
 
 def _read_catalog_entry(feature_id: str) -> Optional[Dict[str, Any]]:
@@ -176,30 +158,6 @@ def _customer_identifier(event: Dict[str, Any]) -> Optional[str]:
         if headers.get(key):
             return headers[key]
     return _DEFAULT_CUSTOMER_IDENTIFIER or None
-
-
-def _has_active_entitlement(product_code: str, customer_identifier: str) -> bool:
-    """Return True iff GetEntitlements reports an active (or no-expiry) entitlement."""
-    from datetime import datetime, timezone
-
-    try:
-        resp = _entitlement().get_entitlements(
-            ProductCode=product_code,
-            Filter={"CUSTOMER_IDENTIFIER": [customer_identifier]},
-        )
-    except (ClientError, BotoCoreError) as exc:
-        logger.warning("GetEntitlements failed for %s: %s", product_code, exc)
-        return False
-    now = datetime.now(timezone.utc)
-    for ent in resp.get("Entitlements", []) or []:
-        exp = ent.get("ExpirationDate")
-        if exp is None:
-            return True
-        if isinstance(exp, datetime):
-            exp_dt = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
-            if exp_dt > now:
-                return True
-    return False
 
 
 class FeatureNotAvailableInRegionError(Exception):
@@ -544,20 +502,35 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # coupling is exactly what the runtime latest.json lookup removes.
         version = args.get("version") or catalog_entry.get("latestVersion") or ""
 
-        # Advisory entitlement gate on the Launch button. This is NOT a
-        # confidentiality boundary — the template and code zips are public-read
-        # by necessity (see the module docstring). Its job is to route an
-        # unsubscribed admin to Subscribe instead of into a stack that will
-        # refuse to run. The authoritative gate is the extension's own runtime
-        # entitlement check.
-        customer_identifier = _customer_identifier(event)
-        if not customer_identifier or not _has_active_entitlement(
-            product_code, customer_identifier
-        ):
-            raise NotEntitledError(
-                f"No active AWS Marketplace entitlement for {feature_id!r}; "
-                f"subscribe via the Marketplace listing first."
-            )
+        # NO entitlement gate here — deliberately, and this is a removal.
+        #
+        # There used to be an "advisory" one, and it denied EVERY genuinely
+        # subscribed customer on the production path. Two independent reasons,
+        # either sufficient:
+        #
+        #   1. It required a CustomerIdentifier from a request header or
+        #      DEFAULT_CUSTOMER_IDENTIFIER, neither of which exists on a
+        #      real-Marketplace stack — so it raised before making any API call.
+        #   2. It asked seller-side `GetEntitlements`, which from a buyer account
+        #      returns HTTP 200 with an empty list forever for a usage-based SaaS
+        #      listing. That is the finding this platform's live path was rebuilt
+        #      around; a fail-closed gate on it denies every real customer while
+        #      looking healthy against the simulator.
+        #
+        # `checkFeatureEntitlement` is the single host-side authority. It resolves
+        # the feature's own `licenseMode` and, for `marketplace-live`, asks the
+        # buyer-side Agreement API against real AWS — and the UI only offers
+        # Launch/Update when it answered ACTIVE. A second gate here, implemented
+        # differently, could only ever agree with it by coincidence; when it
+        # disagreed the customer saw "Subscription active" on the page and
+        # "no entitlement" on the button, which is precisely the contradiction
+        # this platform has been unpicking.
+        #
+        # Nothing is protected by re-checking: the template and code zips are
+        # public-read by necessity (see the module docstring), so this was never a
+        # confidentiality boundary. The commercial gate is the Marketplace
+        # subscription plus the extension's own runtime entitlement check, in the
+        # seller's account, which is the only place it can be enforced.
         manifest = None
         # Bare public S3 URL — no presign. A presigned URL could never have
         # covered the objects CloudFormation fetches from the buyer's account
