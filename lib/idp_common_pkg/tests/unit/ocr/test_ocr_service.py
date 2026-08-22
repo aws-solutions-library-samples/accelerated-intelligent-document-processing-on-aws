@@ -1425,12 +1425,144 @@ class TestSignatureDetections:
             OcrService._extract_signature_detections([self.SIGNATURE_BLOCK])
         )
 
-        assert "confidence=11.0" in summary
-        assert "left=0.572" in summary
-        assert "top=0.878" in summary
+        assert "confidence=11.0 (very low)" in summary
+        # Position is stated in the left/right, upper/lower terms field
+        # descriptions use — raw normalized coordinates were measurably unusable:
+        # both models read left=0.572 as "the first (left) signature box".
+        assert "right half, lower area" in summary
+        assert "x=59%" in summary
+        # An explicit total, so a consumer weighing two signature fields can tell
+        # that only one region was detected.
+        assert "flagged 1 region on this page" in summary
+        # The inline token's placement must be flagged as non-evidential.
+        assert "placed by reading order" in summary
         # Must NOT be a markdown table: page text is scanned by the agentic
         # table parser, which would otherwise treat this as a document table.
         assert "|" not in summary
+
+    def test_summary_names_the_text_around_the_detection(self):
+        """The label the mark sits on is the decisive context.
+
+        Measured on the issue-#634 form: with coordinates alone, both the
+        extraction and the confidence model attributed a detection at x=59% to
+        "the first (left) signature box". Naming the overlapping label plus the
+        left/right half is what makes the cell unambiguous.
+        """
+        right_label = {
+            "BlockType": "LINE",
+            "Id": "label-right",
+            "Text": "Signature of taxpayer",
+            "Confidence": 99.9,
+            "Geometry": {
+                "BoundingBox": {
+                    "Left": 0.498,
+                    "Top": 0.872,
+                    "Width": 0.121,
+                    "Height": 0.011,
+                }
+            },
+        }
+        date_right = {
+            "BlockType": "LINE",
+            "Id": "date-right",
+            "Text": "Date",
+            "Confidence": 100.0,
+            "Geometry": {
+                "BoundingBox": {
+                    "Left": 0.754,
+                    "Top": 0.868,
+                    "Width": 0.033,
+                    "Height": 0.011,
+                }
+            },
+        }
+        # A stray tick OCR'd as a single character, closer than the real label.
+        noise = {
+            "BlockType": "LINE",
+            "Id": "noise",
+            "Text": "I",
+            "Confidence": 74.8,
+            "Geometry": {
+                "BoundingBox": {
+                    "Left": 0.525,
+                    "Top": 0.921,
+                    "Width": 0.003,
+                    "Height": 0.004,
+                }
+            },
+        }
+        blocks = [right_label, date_right, noise, self.SIGNATURE_BLOCK]
+
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections(blocks), blocks
+        )
+
+        # The label the detection sits on, even though it neither ends before the
+        # mark nor sits fully above it.
+        assert 'at: "Signature of taxpayer"' in summary
+        assert 'right: "Date"' in summary
+        # Single-character OCR noise must not crowd out the real label.
+        assert '"I"' not in summary
+
+    def test_neighbor_text_is_clipped(self):
+        long_line = {
+            "BlockType": "LINE",
+            "Id": "long",
+            "Text": "Note: If a joint return was filed, BOTH taxpayers must sign this form today",
+            "Confidence": 99.9,
+            "Geometry": {
+                "BoundingBox": {
+                    "Left": 0.276,
+                    "Top": 0.851,
+                    "Width": 0.434,
+                    "Height": 0.011,
+                }
+            },
+        }
+        blocks = [long_line, self.SIGNATURE_BLOCK]
+
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections(blocks), blocks
+        )
+
+        assert "..." in summary
+        assert "taxpayers must sign this form today" not in summary
+
+    def test_summary_without_blocks_still_reports_position(self):
+        """Context is optional — a caller without blocks still gets position."""
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK]), None
+        )
+
+        assert "right half, lower area" in summary
+        assert "nearest text" not in summary
+
+    @pytest.mark.parametrize(
+        "left,top,expected",
+        [
+            (0.05, 0.05, "left half, upper area"),
+            (0.10, 0.50, "left half, middle area"),
+            (0.10, 0.90, "left half, lower area"),
+            (0.80, 0.90, "right half, lower area"),
+        ],
+    )
+    def test_position_wording(self, left, top, expected):
+        box = {"left": left, "top": top, "width": 0.02, "height": 0.02}
+
+        assert expected in OcrService._describe_signature_position(box)
+
+    @pytest.mark.parametrize(
+        "confidence,band",
+        [(11.0, "very low"), (40.0, "low"), (60.0, "moderate"), (99.0, "high")],
+    )
+    def test_confidence_bands(self, confidence, band):
+        block = {**self.SIGNATURE_BLOCK, "Confidence": confidence}
+
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([block])
+        )
+
+        assert f"({band})" in summary
 
     def test_summary_is_empty_without_detections(self):
         assert OcrService._format_signature_summary([]) == ""
@@ -1505,8 +1637,8 @@ class TestSignatureDetections:
         text = result["text"]
         assert text.startswith("Signature of taxpayer\n[SIGNATURE]")
         assert "OCR signature detections" in text
-        assert "confidence=11.0" in text
-        assert "left=0.572" in text
+        assert "confidence=11.0 (very low)" in text
+        assert "right half, lower area" in text
 
     def test_parsed_page_text_unchanged_without_signatures(self, service):
         with patch("textractor.parsers.response_parser.parse") as mock_parse:

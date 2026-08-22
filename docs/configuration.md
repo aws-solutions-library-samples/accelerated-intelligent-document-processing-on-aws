@@ -774,12 +774,40 @@ detections reach the rest of the pipeline in three places:
 
 **Read the confidence.** A detection is not proof of a signature: Textract will
 flag a stray pen mark, smudge or scanning artifact, typically at *low*
-confidence (single- or low-double-digit). The inline `[SIGNATURE]` token alone
-cannot tell you this, which is why the position + confidence block exists. If you
-extract a boolean "is this signed?" field, say so in the field description — that
-a signature means handwritten name or initials, that a nearby date is not
-evidence of one, and that a low-confidence detection or a stray mark does not
-count — and consider a few-shot example showing the unsigned case.
+confidence (single- or low-double-digit). The appended block reports each
+detection's confidence band, its page position in left/right + upper/lower terms,
+and the OCR text it sits on or next to — because a bare `left=0.572` is not usable
+evidence in practice: on the form in
+[#634](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/634)
+both the extraction and the confidence model read that as *"the first (left)
+signature box"* when the detection was in the right-hand cell.
+
+#### Extracting a reliable signed/unsigned boolean
+
+Measured on that form — an unsigned Form 4549 whose left signature cell holds only
+a faint smudge, with a date filled in beside it — **no single measure was enough**.
+Each of these, on its own, still returned `true` for the unsigned field
+(Claude Sonnet 4.5, temperature 0, page images attached, repeated runs):
+
+- the OCR detections block alone;
+- strict field descriptions alone;
+- few-shot examples alone.
+
+What worked, reproducibly, was **all three together**:
+
+1. **Say what counts, in the field description.** A signature is a handwritten name
+   or initials; a date in the adjacent column is *not* evidence of one; stray marks,
+   smudges and scan artifacts are *not* signatures; if no signature region is
+   detected in that cell, answer false.
+2. **Give a few-shot example of the negative case** — the unsigned document *with* a
+   date present, and a note that small marks are not signatures. This is the single
+   biggest contributor, and it needs `{FEW_SHOT_EXAMPLES}` in your extraction
+   `task_prompt` (present in the shipped prompts; a custom prompt must add it).
+   See [few-shot-examples.md](few-shot-examples.md).
+3. **Keep `SIGNATURES` enabled** so the detections block is there. With steps 1-2
+   but *without* it, the false positive did not disappear — it **moved to the other
+   taxpayer's field**, because the model could tell a mark existed somewhere but not
+   which cell it was in.
 
 **If your corpus has no signature fields, remove the `SIGNATURES` entry.** Pages
 with a detection (including false positives on stray ink) add a few prompt tokens
