@@ -22,6 +22,29 @@ import { sourceDisplayLabel } from './entitlement-source';
  */
 export const MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL = 'https://console.aws.amazon.com/marketplace/home#/subscriptions';
 
+/**
+ * Link out to the buyer's AWS Marketplace subscriptions console.
+ *
+ * Rendered on every state that has established the extension is PAID and the
+ * customer has (or may have) a subscription — active-and-installed,
+ * active-but-not-installed, and awaiting-admin-install alike. A customer who has
+ * paid needs the same one thing from all of them: somewhere to go and look at,
+ * change, or cancel what they are paying for.
+ *
+ * Deliberately not gated on the IDP `Admin` group. Viewing and cancelling a
+ * Marketplace subscription happens in the AWS console under the caller's own IAM
+ * permissions — an IDP viewer may well be the account's billing owner, and the
+ * link grants nothing by existing.
+ *
+ * NOT shown on the NONE state, which needs the *listing* (where a subscription
+ * is created) rather than the management console.
+ */
+export const ManageSubscriptionButton: React.FC = () => (
+  <Button iconName="external" href={MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL} target="_blank">
+    Manage subscription
+  </Button>
+);
+
 /** "Learn more" external doc link, rendered when a docsUrl is available. */
 export const LearnMore: React.FC<{ docsUrl?: string | null }> = ({ docsUrl }) =>
   docsUrl ? (
@@ -219,6 +242,11 @@ export const InstallPrompt: React.FC<{
       <Alert
         type={isOss ? 'info' : unverified ? 'warning' : 'success'}
         header={isOss ? 'Ready to install' : unverified ? 'Subscription not verified' : 'Subscription active'}
+        // Same action as the installed-and-active banner. This screen states the
+        // subscription is active, so it owes the customer the same route to
+        // managing it — not installing the stack yet doesn't make the
+        // subscription any less real, or any less billable. OSS has none.
+        action={isOss ? undefined : <ManageSubscriptionButton />}
       >
         {isOss ? (
           <>
@@ -271,7 +299,14 @@ export const AwaitingAdminInstall: React.FC<{
     }
   >
     <SpaceBetween size="l">
-      <Alert type="warning" header="Awaiting installation">
+      <Alert
+        type="warning"
+        header="Awaiting installation"
+        // Offered to non-admins too: the subscription is an account-level thing,
+        // billed whether or not an IDP admin has got round to installing the
+        // stack, and the AWS console enforces its own permissions.
+        action={isOss ? undefined : <ManageSubscriptionButton />}
+      >
         {isOss ? (
           <>
             <b>{featureDisplayName}</b> is available but has not been installed into this IDP stack yet. Ask an IDP administrator to install
@@ -484,9 +519,7 @@ export const ActiveSubscriptionBanner: React.FC<{
         // against the simulator, so it is still offered for simulated grants
         // only (see `canCancelSubscription` in FeaturePage).
         <SpaceBetween direction="horizontal" size="xs">
-          <Button iconName="external" href={MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL} target="_blank">
-            Manage subscription
-          </Button>
+          <ManageSubscriptionButton />
           {canCancel && onCancel && (
             <Button loading={cancelling} onClick={onCancel}>
               Cancel Subscription

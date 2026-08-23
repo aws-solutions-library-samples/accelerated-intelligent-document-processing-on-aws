@@ -247,6 +247,35 @@ describe('FeaturePage 7-state renderer', () => {
     });
     renderPage(['Admin']);
     expect(screen.getByRole('button', { name: /Launch stack/i })).toBeInTheDocument();
+    // This screen asserts the subscription is ACTIVE, so it owes the customer the
+    // same route to managing it as the installed page — not having launched the
+    // stack yet doesn't make the subscription any less billable.
+    expect(screen.getByRole('link', { name: /Manage subscription/i })).toHaveAttribute(
+      'href',
+      'https://console.aws.amazon.com/marketplace/home#/subscriptions',
+    );
+  });
+
+  it('does not offer "Manage subscription" for an OSS extension', () => {
+    // No Marketplace contract exists, so there is nothing to manage — a link into
+    // the subscriptions console would be a dead end.
+    mockCatalog({ source: 'oss' });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'oss' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+    expect(screen.getByRole('button', { name: /Launch stack/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Manage subscription/i })).not.toBeInTheDocument();
   });
 
   it('shows "Awaiting installation" when ACTIVE + not installed + non-admin', () => {
@@ -266,6 +295,10 @@ describe('FeaturePage 7-state renderer', () => {
     renderPage(['Viewer']);
     expect(screen.getByText(/Awaiting installation/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Launch stack/i })).not.toBeInTheDocument();
+    // Managing the subscription is an AWS-account action guarded by the caller's
+    // own IAM permissions, not by the IDP Admin group — a viewer may be the
+    // account's billing owner, and they are the one being charged.
+    expect(screen.getByRole('link', { name: /Manage subscription/i })).toBeInTheDocument();
   });
 
   it('renders feature UI + up-to-date banner when ACTIVE + installed at latest', () => {

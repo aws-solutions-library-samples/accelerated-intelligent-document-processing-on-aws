@@ -32,17 +32,32 @@ const FeaturesToolsPanel = (): React.JSX.Element => {
     const description = catalog?.description ?? null;
     const docsUrl = resolveFeatureDocsUrl(catalog ?? null);
 
-    // Lifecycle status, mirroring the nav badges. The panel can't see
-    // entitlement — that comes from checkFeatureEntitlement on the feature page —
-    // so an uninstalled marketplace feature reads "Subscribe to install"
-    // regardless of whether the customer already holds a subscription.
-    let status: { label: string; type: 'success' | 'info' | 'pending' };
+    // Lifecycle status, mirroring the nav badges — and, like the nav, saying only
+    // what this panel actually knows.
+    //
+    // It used to read "Subscribe to install" for any uninstalled marketplace
+    // extension. That inference is wrong for exactly the customer it matters to:
+    // someone who has already paid, and only needs to launch the stack, was told
+    // to go and subscribe. The panel cannot know — it is built from
+    // listCatalogFeatures + listInstalledFeatures, and neither carries an
+    // entitlement verdict. That verdict comes from `checkFeatureEntitlement`,
+    // which for a `marketplace-live` extension calls the AWS Marketplace
+    // Agreement API; the feature page next to this panel has already made that
+    // call and shows the answer. Mounting `useFeatureEntitlement` here as well
+    // would duplicate a real Marketplace API call just to word one status line.
+    //
+    // So the status states installed-or-not, and the subscription requirement is
+    // stated separately below as the property of the *extension* that it is —
+    // same split, and same wording, as the nav's hover text.
+    let status: { label: string; type: 'success' | 'info' | 'pending' | 'warning' };
     if (installed) {
       status = installed.updateAvailable ? { label: 'Update available', type: 'info' } : { label: 'Ready', type: 'success' };
-    } else if (isMarketplace) {
-      status = { label: 'Subscribe to install', type: 'pending' };
+    } else if (catalog?.availableInRegion === false) {
+      // Not published for this Region: it cannot be installed here at all, which
+      // outranks anything else the panel might say about installing it.
+      status = { label: 'Not available in this Region', type: 'warning' };
     } else {
-      status = { label: 'Available to install', type: 'pending' };
+      status = { label: 'Not installed', type: 'pending' };
     }
 
     selected = (
@@ -57,6 +72,10 @@ const FeaturesToolsPanel = (): React.JSX.Element => {
           </Box>
           <StatusIndicator type={status.type}>{status.label}</StatusIndicator>
           {installed && <Box color="text-body-secondary">Installed v{installed.installedVersion}</Box>}
+          {/* A property of the extension, straight from the catalog — NOT a claim
+              about whether this customer has a subscription, which the panel
+              can't see. Dropped once installed: by then it's noise. */}
+          {isMarketplace && !installed && <Box color="text-body-secondary">Requires an AWS Marketplace subscription.</Box>}
           {description && <Box>{description}</Box>}
           {docsUrl && (
             <Box>
