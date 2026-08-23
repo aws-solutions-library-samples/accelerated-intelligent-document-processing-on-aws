@@ -81,7 +81,14 @@ schemaVersion: "1.1"
 
 features:
   - featureId: idp-auto-optimizer
-    displayName: "Auto Optimizer"
+    # "(Beta)" is deliberate and load-bearing: the AWS Marketplace listing ships a
+    # beta EULA, so the name in the UI has to match what the customer agreed to.
+    # NOTE: this value only wins for a NOT-YET-INSTALLED extension. Once
+    # installed, the UI prefers the displayName the feature's own RegisterFeature
+    # custom resource wrote — i.e. the `FeatureDisplayName` parameter default in
+    # the closed-source repo's template.yaml. Both have to say "(Beta)" or the
+    # label changes the moment the customer installs it.
+    displayName: "Auto Optimizer (Beta)"
     description: "Autonomous configuration optimization: a Bedrock AgentCore agent
       iteratively tunes extraction/classification/OCR settings within a per-page
       cost budget."

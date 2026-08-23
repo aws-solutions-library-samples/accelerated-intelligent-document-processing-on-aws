@@ -33,12 +33,14 @@ const FeaturesToolsPanel = (): React.JSX.Element => {
     const docsUrl = resolveFeatureDocsUrl(catalog ?? null);
 
     // Lifecycle status, mirroring the nav badges. The panel can't see
-    // entitlement, so an uninstalled marketplace feature reads "Subscribe".
+    // entitlement — that comes from checkFeatureEntitlement on the feature page —
+    // so an uninstalled marketplace feature reads "Subscribe to install"
+    // regardless of whether the customer already holds a subscription.
     let status: { label: string; type: 'success' | 'info' | 'pending' };
     if (installed) {
       status = installed.updateAvailable ? { label: 'Update available', type: 'info' } : { label: 'Ready', type: 'success' };
     } else if (isMarketplace) {
-      status = { label: 'Subscribe to install (future)', type: 'pending' };
+      status = { label: 'Subscribe to install', type: 'pending' };
     } else {
       status = { label: 'Available to install', type: 'pending' };
     }
@@ -50,7 +52,7 @@ const FeaturesToolsPanel = (): React.JSX.Element => {
           <Box>
             <SpaceBetween direction="horizontal" size="xs">
               <b>{displayName}</b>
-              <Badge color={isMarketplace ? 'grey' : 'blue'}>{isMarketplace ? 'Marketplace (future)' : 'Open source'}</Badge>
+              <Badge color={isMarketplace ? 'grey' : 'blue'}>{isMarketplace ? 'AWS Marketplace' : 'Open source'}</Badge>
             </SpaceBetween>
           </Box>
           <StatusIndicator type={status.type}>{status.label}</StatusIndicator>
@@ -95,42 +97,43 @@ const FeaturesToolsPanel = (): React.JSX.Element => {
       {selected}
       <div>
         <p>
-          <b>Preview.</b> The extension framework is still being built out. Today it ships with a bundled demo extension so you can see how
-          it works; more extensions will be available over time.
-        </p>
-        <p>
           Extensions are installable add-ons that extend the IDP Accelerator. Each runs as its own CloudFormation stack in this account and
           appears here once installed.
         </p>
         <h3>Two kinds</h3>
         <ul>
           <li>
-            <b>Open-source</b> — bundled with the accelerator and installable directly.
+            <b>Open source</b> — bundled with the accelerator and installable directly, at no additional cost beyond the AWS resources they
+            create.
           </li>
           <li>
-            <b>Marketplace</b> <i>(future)</i> — paid extensions delivered via AWS Marketplace subscriptions. The framework supports this,
-            but no Marketplace extensions are available yet.
+            <b>AWS Marketplace</b> — paid extensions delivered via an AWS Marketplace subscription. Subscribe on the listing, then install
+            the extension into this stack.
           </li>
         </ul>
         <h3>Lifecycle</h3>
         <ul>
           <li>
-            <b>Install</b> — launch the extension&apos;s CloudFormation stack into this account.
+            <b>Subscribe</b> — for a Marketplace extension, start an AWS Marketplace subscription before installing. You accept pricing, the
+            seller licence terms, and the AWS Customer Agreement on the listing.
+          </li>
+          <li>
+            <b>Install</b> — launch the extension&apos;s CloudFormation stack into this account. It registers itself back to this UI once
+            deployed.
           </li>
           <li>
             <b>Ready</b> — installed and up to date; the extension&apos;s own page is live.
           </li>
           <li>
-            <b>Update</b> — a newer version is available to install.
-          </li>
-          <li>
-            <b>Subscribe</b> <i>(future)</i> — start an AWS Marketplace subscription before installing a paid extension.
+            <b>Update</b> — a newer version is available. Updating relaunches the same CloudFormation stack, so the extension is upgraded in
+            place rather than installed a second time.
           </li>
         </ul>
         <p>
           Most extensions appear in the navigation; open <b>Browse catalog</b> to see the full catalog, including reference samples that
-          don&apos;t get a navigation entry until installed. From an extension&apos;s page an admin can install or update it, or open its
-          documentation.
+          don&apos;t get a navigation entry until installed. From an extension&apos;s page an admin can subscribe, install or update it, or
+          open its documentation. Marketplace extensions are published per Region — one that isn&apos;t available in this stack&apos;s
+          Region says so on its page instead of offering an install.
         </p>
       </div>
     </HelpPanel>

@@ -43,6 +43,31 @@ export function isVerifiedEntitlement(state: FeatureEntitlementState | undefined
   return state === 'ACTIVE' && !!source && CHECKED_SOURCES.has(source);
 }
 
+/**
+ * Human-readable name for the authority that answered the subscription check.
+ *
+ * The raw values are internal identifiers (`marketplace-live`, `simulated`, …).
+ * They belong in the unverified banner, where naming the exact mode is the whole
+ * point, but a customer reading a confirmed subscription should see the product
+ * they bought it from — "AWS Marketplace", not `marketplace-live`.
+ *
+ * Unknown values fall through verbatim rather than being hidden: a source we
+ * don't recognise is worth seeing raw.
+ */
+const SOURCE_LABELS: Partial<Record<NonNullable<Source>, string>> = {
+  'marketplace-live': 'AWS Marketplace',
+  simulated: 'Marketplace simulator',
+  advisory: 'unconfirmed',
+  auto: 'checks disabled',
+  oss: 'open source',
+  none: 'not checked',
+};
+
+export function sourceDisplayLabel(source: Source | undefined): string {
+  if (!source) return 'unknown';
+  return SOURCE_LABELS[source] ?? source;
+}
+
 /** Sources that grant access without a real subscription check behind it. */
 const UNVERIFIED_SOURCES: ReadonlySet<Source> = new Set<Source>([
   'auto', // checks switched off stack-wide

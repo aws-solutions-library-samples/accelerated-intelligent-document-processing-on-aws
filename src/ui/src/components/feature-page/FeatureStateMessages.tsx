@@ -5,6 +5,22 @@ import React from 'react';
 import { Alert, Box, Button, Container, Header, Link, SpaceBetween, Spinner } from '@cloudscape-design/components';
 
 import type { FeatureEntitlement, FeatureLicenseMode } from '../../types/feature-platform';
+import { sourceDisplayLabel } from './entitlement-source';
+
+/**
+ * The buyer's own AWS Marketplace subscription management console.
+ *
+ * Deliberately NOT the product listing page: a listing sells a subscription,
+ * whereas "manage" means view the agreement, change the offer, or cancel — all of
+ * which live in the buyer account's Marketplace console. A real AWS Marketplace
+ * subscription cannot be cancelled from this UI at all (the in-UI Cancel button
+ * drives the simulator's admin API), so this link is the only honest path to it.
+ *
+ * Region-free on purpose: AWS Marketplace is a us-east-1 service and the console
+ * redirects there from wherever the buyer is signed in. Same URL the
+ * "After subscribing on AWS Marketplace" doc page points at, so the two agree.
+ */
+export const MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL = 'https://console.aws.amazon.com/marketplace/home#/subscriptions';
 
 /** "Learn more" external doc link, rendered when a docsUrl is available. */
 export const LearnMore: React.FC<{ docsUrl?: string | null }> = ({ docsUrl }) =>
@@ -445,29 +461,50 @@ export const ActiveSubscriptionBanner: React.FC<{
   cancelError?: string | null;
 }> = ({ entitlement, mismatchNote, canCancel, onCancel, cancelling, cancelError }) => {
   const expires = formatDate(entitlement.expiresAt);
-  const source = entitlement.source ?? 'marketplace';
-  const header = expires ? `Subscription active · expires ${expires}` : 'Subscription active';
+  // The authority, named the way the customer knows it. The raw
+  // `marketplace-live` identifier belongs in the *unverified* banner, where
+  // naming the exact mode is the whole point; a confirmed subscription should say
+  // which product it came from.
+  const source = sourceDisplayLabel(entitlement.source ?? undefined);
+  // One line. The source used to occupy a second row as "Source:
+  // marketplace-live"; parenthesising it into the header says the same thing in
+  // the space the status already took.
+  const header = expires ? `Subscription active (${source}) · expires ${expires}` : `Subscription active (${source})`;
+  const showBody = !!mismatchNote || !!cancelError;
   return (
     <Alert
       type="success"
       header={header}
       statusIconAriaLabel="Subscription active"
       action={
-        canCancel && onCancel ? (
-          <Button loading={cancelling} onClick={onCancel}>
-            Cancel Subscription
+        // "Manage subscription" points at the buyer's own AWS Marketplace
+        // console, the only place a real subscription can be inspected, changed
+        // or cancelled. It lives in the action slot so the banner stays one line.
+        // The in-UI Cancel button drives `unsubscribeFeature`, which only works
+        // against the simulator, so it is still offered for simulated grants
+        // only (see `canCancelSubscription` in FeaturePage).
+        <SpaceBetween direction="horizontal" size="xs">
+          <Button iconName="external" href={MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL} target="_blank">
+            Manage subscription
           </Button>
-        ) : undefined
+          {canCancel && onCancel && (
+            <Button loading={cancelling} onClick={onCancel}>
+              Cancel Subscription
+            </Button>
+          )}
+        </SpaceBetween>
       }
     >
-      Source: <b>{source}</b>
-      {mismatchNote && <Box margin={{ top: 's' }}>{mismatchNote}</Box>}
-      {cancelError && (
-        <Box margin={{ top: 's' }}>
-          <Alert type="error" header="Failed to cancel subscription">
-            {cancelError}
-          </Alert>
-        </Box>
+      {/* Normally renders nothing — these are the exceptional cases they name. */}
+      {showBody && (
+        <SpaceBetween size="s">
+          {mismatchNote && <Box variant="span">{mismatchNote}</Box>}
+          {cancelError && (
+            <Alert type="error" header="Failed to cancel subscription">
+              {cancelError}
+            </Alert>
+          )}
+        </SpaceBetween>
       )}
     </Alert>
   );
