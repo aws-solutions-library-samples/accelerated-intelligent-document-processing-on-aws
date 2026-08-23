@@ -17,7 +17,73 @@ different accumulator). The aggregation Lambda can key off it to reject
 mismatched blobs (or migrate) instead of silently doubling counters.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
+
+
+def _is_empty_value(v: Any) -> bool:
+    """Semantic "empty" for a field's expected/actual value in a
+    ``field_comparisons`` row.
+
+    Stickler emits `None` when the value is absent and `""`/`[]`/`{}` when the
+    value is present-but-empty. All four count as "no value" for the purposes
+    of tn (correctly-empty) / fa (hallucinated) / fn (missed) classification —
+    a correctly-empty list is a `tn`, not a `tp`.
+    """
+    if v is None:
+        return True
+    if isinstance(v, (str, list, dict)) and len(v) == 0:
+        return True
+    return False
+
+
+def classify_field_comparison(fc: Dict[str, Any]) -> str:
+    """Classify a single ``field_comparisons`` row into one of the confusion-
+    matrix cells.
+
+    Returns one of ``"tp"``, ``"tn"``, ``"fa"``, ``"fn"``, ``"fd"`` — matching
+    Stickler's confusion-matrix meaning:
+
+    * ``tp`` — match=True with an expected value (correct hit)
+    * ``tn`` — match=True with no expected value (correctly-empty field)
+    * ``fa`` — match=False with no expected value, actual present (hallucination)
+    * ``fn`` — match=False with expected present, no actual (missed)
+    * ``fd`` — match=False with both sides present (false discovery / wrong value)
+
+    Consumed by:
+    * ``stickler_backend/results.py`` for section-level ``_stickler_counts``
+    * ``test_execution_aggregation_function/index.py`` for run-level metrics
+
+    Kept in this module because both call sites must agree on the classification
+    for per-doc and run-level dashboards to report the same numbers on the same
+    input — a divergence between them would silently reintroduce the class of
+    inconsistency issue #625 was fixing at a different level.
+    """
+    matched = fc.get("match") is True
+    gt_empty = _is_empty_value(fc.get("expected_value"))
+    pr_empty = _is_empty_value(fc.get("actual_value"))
+    if matched:
+        return "tn" if gt_empty else "tp"
+    if gt_empty and not pr_empty:
+        return "fa"
+    if not gt_empty and pr_empty:
+        return "fn"
+    return "fd"
+
+
+def aggregate_row_counts(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    """Aggregate ``field_comparisons`` rows into a confusion-matrix count dict.
+
+    Returns ``{tp, fa, fd, fp, tn, fn}`` where ``fp = fa + fd``. Callers layer
+    their own derived metrics (precision/recall/F1/accuracy/FAR/FDR) on top —
+    the derivation matches Stickler's ``DerivedMetricsCalculator`` semantics
+    and lives in the caller so this module stays a pure schema/contract.
+    """
+    counts = {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
+    for fc in rows:
+        counts[classify_field_comparison(fc)] += 1
+    counts["fp"] = counts["fa"] + counts["fd"]
+    return counts
+
 
 # S3 key template for per-document evaluation output. Both the evaluation
 # service and the aggregation Lambda import this rather than each pinning

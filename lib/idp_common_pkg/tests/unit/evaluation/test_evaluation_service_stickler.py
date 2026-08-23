@@ -2134,3 +2134,51 @@ def test_section_metrics_unchanged_on_flat_all_pass_doc():
     flat_counts: Dict[str, int] = result.metrics["_stickler_counts"]  # type: ignore[assignment]
     assert flat_counts.get("tp") == 2
     assert flat_counts.get("fd") == 0
+
+
+@pytest.mark.unit
+def test_section_metrics_fall_back_to_cm_aggregate_when_no_field_comparisons(
+    monkeypatch,
+):
+    """Defensive fallback: if a Stickler result has an empty ``field_comparisons``
+    but a populated ``cm.aggregate`` (unusual but possible under future Stickler
+    variants or an odd schema), section counts fall back to the aggregate node
+    rather than collapsing to zeros. Without this, a fully-correct extraction
+    would report precision/recall/F1/accuracy = 0.0 when the row list happens
+    to be empty. Simulates the shape by stripping ``field_comparisons`` from
+    Stickler's real output on a flat all-pass doc."""
+    config = {
+        "classes": [
+            {
+                "$id": "d",
+                "x-aws-idp-document-type": "D",
+                "x-aws-idp-evaluation-model-name": "D",
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "x-aws-idp-evaluation-method": "EXACT"}
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="D", page_ids=["1"])
+
+    # Patch Stickler's compare_with to return a result with rows stripped —
+    # simulates the "cm present, rows absent" shape without depending on
+    # future Stickler behavior for real inputs.
+    from stickler import StructuredModel
+
+    orig = StructuredModel.compare_with
+
+    def _strip_rows(self, other, **kwargs):
+        r = orig(self, other, **kwargs)
+        r["field_comparisons"] = []
+        return r
+
+    monkeypatch.setattr(StructuredModel, "compare_with", _strip_rows)
+    result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+    counts: Dict[str, int] = result.metrics["_stickler_counts"]  # type: ignore[assignment]
+    # tp from cm.aggregate fallback → precision/accuracy non-zero
+    assert counts.get("tp", 0) >= 1
+    assert result.metrics["precision"] == pytest.approx(1.0)
+    assert result.metrics["accuracy"] == pytest.approx(1.0)

@@ -610,58 +610,37 @@ def _run_level_counts_from_rows(
     values wrong ends up reporting 100% precision at the run level (issue #625).
     ``field_comparisons`` is the only Stickler view that stays honest about
     every leaf: each row carries a threshold-gated ``match`` decision using the
-    field's own configured comparator + threshold. Aggregating rows uniformly
-    across documents matches the per-doc ``_stickler_counts`` in
-    ``SectionEvaluationResult.metrics`` (see ``stickler_backend/results.py``),
-    so per-doc dashboards and run-level dashboards report the same numbers on
-    the same input.
+    field's own configured comparator + threshold.
 
-    Classification (same 5-way split as the per-doc path):
-      * match=True  + expected present → tp
-      * match=True  + expected absent  → tn
-      * match=False + expected absent, actual present → fa
-      * match=False + expected present, actual absent → fn
-      * match=False + both present                   → fd
+    Uses the same shared classifier (``idp_common.evaluation.contract``) as
+    the per-doc path in ``stickler_backend/results.py``. Row classification
+    that diverges between the two would silently reintroduce a class of
+    per-doc vs run-level dashboard inconsistency — this shared import
+    prevents that.
 
     Returns a dict with the same keys the caller reads from
     ``process_eval.metrics``: ``tp``, ``fa``, ``fd``, ``fp``, ``tn``, ``fn``,
     ``cm_precision``, ``cm_recall``, ``cm_f1``, ``cm_accuracy``.
     """
-    tp = fa = fd = fn = tn = 0
+    from idp_common.evaluation.contract import aggregate_row_counts
+
+    all_rows: List[Dict[str, Any]] = []
     for scr in comparison_results:
         if not scr:
             continue
-        for fc in scr.get("field_comparisons") or []:
-            matched = fc.get("match") is True
-            gt = fc.get("expected_value")
-            pr = fc.get("actual_value")
-            gt_empty = gt is None or gt == ""
-            pr_empty = pr is None or pr == ""
-            if matched:
-                if gt_empty:
-                    tn += 1
-                else:
-                    tp += 1
-            else:
-                if gt_empty and not pr_empty:
-                    fa += 1
-                elif not gt_empty and pr_empty:
-                    fn += 1
-                else:
-                    fd += 1
-    fp = fa + fd
+        all_rows.extend(scr.get("field_comparisons") or [])
+    counts = aggregate_row_counts(all_rows)
+    tp = counts["tp"]
+    fp = counts["fp"]
+    fn = counts["fn"]
+    tn = counts["tn"]
     total = tp + fp + fn + tn
 
     def _sd(num: int, den: int) -> float:
         return float(num) / float(den) if den > 0 else 0.0
 
     return {
-        "tp": tp,
-        "fa": fa,
-        "fd": fd,
-        "fp": fp,
-        "tn": tn,
-        "fn": fn,
+        **counts,
         "cm_precision": _sd(tp, tp + fp),
         "cm_recall": _sd(tp, tp + fn),
         "cm_f1": _sd(2 * tp, 2 * tp + fp + fn),

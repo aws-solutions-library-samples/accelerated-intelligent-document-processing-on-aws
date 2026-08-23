@@ -17,10 +17,12 @@ orchestration. The service provides ``field_config``, ``match_threshold``,
 ``SectionEvaluationResult``.
 """
 
+import logging
 import types
 import typing
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from idp_common.evaluation.contract import aggregate_row_counts
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     SectionEvaluationResult,
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
     from stickler import StructuredModel
 
     from idp_common.models import Section
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_leaf_schema(
@@ -359,8 +363,15 @@ def transform_stickler_result(
     # Bucket rows by their root attribute so per-attribute verdict is O(N) once.
     # Stickler emits ``field_path`` as either the scalar name (``customer_name``),
     # a list index path (``Items[3].name``), or a nested-object path (``Address.city``);
-    # the root is everything before the first ``[`` or ``.``.
+    # the root is everything before the first ``[`` or ``.``. Rows whose path
+    # starts with ``[`` or ``.`` (no leading attribute name) have no root — we
+    # both skip them from ``rows_by_attr`` AND from section counts below, so a
+    # ghost row can't move section metrics without a matching parent verdict.
+    # This shape isn't observed on current Stickler builds; if it ever appears
+    # the log warning surfaces it rather than silently reintroducing the
+    # parent-vs-section drift issue #625 fixed.
     rows_by_attr: Dict[str, List[Dict[str, Any]]] = {}
+    countable_rows: List[Dict[str, Any]] = []
     for fc in field_comparisons:
         path = fc.get("field_path") or ""
         idx_bracket = path.find("[")
@@ -368,8 +379,16 @@ def transform_stickler_result(
         cut_candidates = [i for i in (idx_bracket, idx_dot) if i >= 0]
         root = path[: min(cut_candidates)] if cut_candidates else path
         if not root:
+            logger.warning(
+                "Skipping field_comparisons row with anonymous root (path=%r) "
+                "on section %s — verdict and section counts cannot attribute "
+                "it to a parent attribute.",
+                path,
+                section.section_id,
+            )
             continue
         rows_by_attr.setdefault(root, []).append(fc)
+        countable_rows.append(fc)
 
     attribute_results: List[AttributeEvaluationResult] = []
     for field_name, score in field_scores.items():
@@ -381,25 +400,26 @@ def transform_stickler_result(
         # Verdict: parent is ✓ iff every drilldown row under it is ✓. Falls
         # through to the confusion-matrix cell only if the field has no rows
         # (rare — Stickler always emits at least one for scalars, and one per
-        # item or leaf for structured fields).
+        # item or leaf for structured fields). Fallback deliberately does NOT
+        # consult ``all_fields_matched`` — that flag is item-level for list
+        # fields and is exactly the item-level rollup this module was rewritten
+        # to stop trusting (issue #625). Use the counts-only rule: at least one
+        # hit and no failures.
         my_rows = rows_by_attr.get(field_name) or []
         if my_rows:
             matched = all(fc.get("match") is True for fc in my_rows)
         else:
             field_cell = cm_fields.get(field_name) or {}
             field_overall = field_cell.get("overall") or {}
-            if "all_fields_matched" in field_overall:
-                matched = bool(field_overall["all_fields_matched"])
-            else:
-                has_hit = (field_overall.get("tp", 0) > 0) or (
-                    field_overall.get("tn", 0) > 0
-                )
-                has_fail = (
-                    (field_overall.get("fa", 0) > 0)
-                    or (field_overall.get("fd", 0) > 0)
-                    or (field_overall.get("fn", 0) > 0)
-                )
-                matched = has_hit and not has_fail
+            has_hit = (field_overall.get("tp", 0) > 0) or (
+                field_overall.get("tn", 0) > 0
+            )
+            has_fail = (
+                (field_overall.get("fa", 0) > 0)
+                or (field_overall.get("fd", 0) > 0)
+                or (field_overall.get("fn", 0) > 0)
+            )
+            matched = has_hit and not has_fail
 
         reason = generate_reason(
             field_name,
@@ -466,40 +486,36 @@ def transform_stickler_result(
 
     attribute_results.sort(key=lambda ar: ar.name)
 
-    # Section-level counts: derived by classifying every ``field_comparisons``
-    # row. This is the only Stickler view that:
-    #   * captures list-item FDs (unlike ``cm.aggregate``), AND
-    #   * captures leaf-level FDs inside kept items (unlike ``cm.overall``).
-    # Stickler emits rows at mixed depth — leaves for paired items, item-level
-    # placeholder rows for missing/extra items — but the ``match`` verdict is
-    # threshold-gated per user config in both cases, and counting rows uniformly
-    # gives consistent semantics across all failure modes. The five-way
-    # classification below matches the confusion-matrix meaning:
-    #   tp: match=True with an expected value (correct hit)
-    #   tn: match=True with no expected value (correctly-empty field)
-    #   fa: match=False with no expected value (hallucination / extra)
-    #   fn: match=False with expected present but actual absent (missed)
-    #   fd: match=False with both present but wrong (false discovery)
-    agg_tp = agg_fa = agg_fd = agg_fn = agg_tn = 0
-    for fc in field_comparisons:
-        matched_row = fc.get("match") is True
-        gt_val = fc.get("expected_value")
-        pr_val = fc.get("actual_value")
-        gt_empty = gt_val is None or gt_val == ""
-        pr_empty = pr_val is None or pr_val == ""
-        if matched_row:
-            if gt_empty:
-                agg_tn += 1
-            else:
-                agg_tp += 1
-        else:
-            if gt_empty and not pr_empty:
-                agg_fa += 1
-            elif not gt_empty and pr_empty:
-                agg_fn += 1
-            else:
-                agg_fd += 1
-    agg_fp = agg_fa + agg_fd
+    # Section-level counts: derive by classifying every ``field_comparisons``
+    # row via the shared ``aggregate_row_counts`` helper (kept in
+    # ``idp_common.evaluation.contract`` so the aggregation Lambda uses the same
+    # semantics — a divergence between per-doc and run-level classification
+    # would silently reintroduce the class of inconsistency issue #625 fixed).
+    # This view captures both list-item FDs (which ``cm.aggregate`` misses) and
+    # leaf-level FDs inside kept items (which ``cm.overall`` misses).
+    #
+    # Fallback: if Stickler emits an empty ``field_comparisons`` list but a
+    # populated ``cm.aggregate`` (unusual but possible with future Stickler
+    # variants), use the aggregate node so a perfectly-scoring extraction
+    # doesn't collapse to 0.0.
+    if countable_rows:
+        counts = aggregate_row_counts(countable_rows)
+    else:
+        aggregate = cm.get("aggregate") or {}
+        counts = {
+            "tp": int(aggregate.get("tp", 0) or 0),
+            "fa": int(aggregate.get("fa", 0) or 0),
+            "fd": int(aggregate.get("fd", 0) or 0),
+            "tn": int(aggregate.get("tn", 0) or 0),
+            "fn": int(aggregate.get("fn", 0) or 0),
+        }
+        counts["fp"] = counts["fa"] + counts["fd"]
+    agg_tp = counts["tp"]
+    agg_fa = counts["fa"]
+    agg_fd = counts["fd"]
+    agg_fp = counts["fp"]
+    agg_tn = counts["tn"]
+    agg_fn = counts["fn"]
     total = agg_tp + agg_fp + agg_fn + agg_tn
 
     def _safe_div(num: int, den: int) -> float:

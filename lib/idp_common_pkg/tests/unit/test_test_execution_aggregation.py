@@ -1368,6 +1368,52 @@ class TestRunLevelCountsFromRows:
         for k in ("cm_precision", "cm_recall", "cm_f1", "cm_accuracy"):
             assert m[k] == 0.0
 
+    def test_empty_containers_treated_as_absent_values(self, mock_env):
+        """A ``match=True`` row with `expected_value=[]` and `actual_value=[]`
+        is a **correctly-empty** field (tn), NOT a correct-hit (tp). Same for
+        `""` and `{}`. Similarly, `match=False` with `actual=[]` must land in
+        `fn` (missed), not `fd` (wrong-value). Guards against a semantic
+        classifier drift that would inflate precision when a schema legitimately
+        includes empty containers as valid absent values."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "notes",
+                        "match": True,
+                        "expected_value": [],
+                        "actual_value": [],
+                    },
+                    {
+                        "field_path": "tags",
+                        "match": True,
+                        "expected_value": {},
+                        "actual_value": {},
+                    },
+                    {
+                        "field_path": "attrs",
+                        "match": True,
+                        "expected_value": "",
+                        "actual_value": "",
+                    },
+                    {
+                        "field_path": "items",
+                        "match": False,
+                        "expected_value": ["a", "b"],
+                        "actual_value": [],
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        # All three True rows are correctly-empty → tn=3, not tp=3
+        assert m["tn"] == 3
+        assert m["tp"] == 0
+        # False row with actual=[] treated as missed (actual absent), fn=1
+        assert m["fn"] == 1
+        assert m["fd"] == 0
+
     def test_none_document_is_skipped(self, mock_env):
         """A None entry in the input list is safely ignored."""
         index = import_test_module()
