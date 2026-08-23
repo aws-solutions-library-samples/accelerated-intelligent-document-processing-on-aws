@@ -1088,6 +1088,306 @@ class TestBrierScoreKeyRename:
         assert out["overall"]["brier"] == {"value": 0.5}
 
 
+@pytest.mark.unit
+class TestRunLevelCountsFromRows:
+    """Regression: run-level top-level metrics come from row-level
+    ``field_comparisons`` across every document, not from Stickler's
+    ``aggregate_from_comparisons(...).metrics`` (which is item-level and
+    hides leaf failures inside Hungarian-paired list items — issue #625).
+    """
+
+    def test_flat_all_pass_matches_row_count(self, mock_env):
+        """Two flat scalars, both correct → 2 tp, 0 failures."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": True,
+                        "expected_value": "y",
+                        "actual_value": "y",
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 2
+        assert m["fd"] == m["fa"] == m["fn"] == m["fp"] == 0
+        assert m["cm_precision"] == 1.0
+        assert m["cm_accuracy"] == 1.0
+        assert m["cm_f1"] == 1.0
+
+    def test_case5_list_kept_but_leaves_wrong(self, mock_env):
+        """CASE 5 — every list item Hungarian-paired but 4 of 10 leaves are
+        wrong. Under Stickler's item-level rollup this reads as 100%
+        precision; row-level correctly reports precision=0.60."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    # Item [0] both leaves right.
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": 1.0,
+                        "actual_value": 1.0,
+                    },
+                    # Items [1..4]: name wrong, amount right.
+                    {
+                        "field_path": "Items[1].name",
+                        "match": False,
+                        "expected_value": "B",
+                        "actual_value": "Foo",
+                    },
+                    {
+                        "field_path": "Items[1].amount",
+                        "match": True,
+                        "expected_value": 2.0,
+                        "actual_value": 2.0,
+                    },
+                    {
+                        "field_path": "Items[2].name",
+                        "match": False,
+                        "expected_value": "C",
+                        "actual_value": "Bar",
+                    },
+                    {
+                        "field_path": "Items[2].amount",
+                        "match": True,
+                        "expected_value": 3.0,
+                        "actual_value": 3.0,
+                    },
+                    {
+                        "field_path": "Items[3].name",
+                        "match": False,
+                        "expected_value": "D",
+                        "actual_value": "Baz",
+                    },
+                    {
+                        "field_path": "Items[3].amount",
+                        "match": True,
+                        "expected_value": 4.0,
+                        "actual_value": 4.0,
+                    },
+                    {
+                        "field_path": "Items[4].name",
+                        "match": False,
+                        "expected_value": "E",
+                        "actual_value": "Qux",
+                    },
+                    {
+                        "field_path": "Items[4].amount",
+                        "match": True,
+                        "expected_value": 5.0,
+                        "actual_value": 5.0,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 6
+        assert m["fd"] == 4
+        assert m["fp"] == 4
+        assert m["fa"] == 0
+        assert m["fn"] == 0
+        assert m["cm_precision"] == pytest.approx(0.6)
+        assert m["cm_f1"] == pytest.approx(0.75)
+        assert m["cm_accuracy"] == pytest.approx(0.6)
+
+    def test_four_of_five_rejected_list(self, mock_env):
+        """4-of-5 items entirely wrong (both leaves wrong per item).
+        Stickler still emits leaf rows for the paired items — 10 rows,
+        2 tp + 8 fd → precision = 0.20."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": 1.0,
+                        "actual_value": 1.0,
+                    },
+                ]
+                + [
+                    {
+                        "field_path": f"Items[{i}].name",
+                        "match": False,
+                        "expected_value": "GT",
+                        "actual_value": "PRED",
+                    }
+                    for i in range(1, 5)
+                ]
+                + [
+                    {
+                        "field_path": f"Items[{i}].amount",
+                        "match": False,
+                        "expected_value": 1.0,
+                        "actual_value": 99.0,
+                    }
+                    for i in range(1, 5)
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 2
+        assert m["fd"] == 8
+        assert m["cm_precision"] == pytest.approx(0.2)
+
+    def test_missing_fields_count_as_fn(self, mock_env):
+        """A row with ``match=False``, expected present, actual absent → fn."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        "expected_value": {"n": "A"},
+                        "actual_value": None,
+                    },
+                    {
+                        "field_path": "Items[1]",
+                        "match": False,
+                        "expected_value": {"n": "B"},
+                        "actual_value": None,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["fn"] == 2
+        assert m["tp"] == m["fd"] == m["fa"] == 0
+        assert m["cm_recall"] == 0.0
+
+    def test_extra_fields_count_as_fa(self, mock_env):
+        """A row with ``match=False``, expected absent, actual present → fa."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[]",
+                        "match": False,
+                        "expected_value": None,
+                        "actual_value": {"n": "X"},
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["fa"] == 1
+        assert m["fp"] == 1
+
+    def test_empty_field_pair_counts_as_tn(self, mock_env):
+        """Both sides empty and matched → tn (correctly-empty field)."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "notes",
+                        "match": True,
+                        "expected_value": None,
+                        "actual_value": None,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tn"] == 1
+        assert m["tp"] == 0
+
+    def test_rows_aggregate_across_multiple_documents(self, mock_env):
+        """Across two docs: 3 tp + 1 fd → precision = 3/4, F1 = 6/7."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": False,
+                        "expected_value": "y",
+                        "actual_value": "z",
+                    },
+                ]
+            },
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": True,
+                        "expected_value": "y",
+                        "actual_value": "y",
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 3
+        assert m["fd"] == 1
+        assert m["cm_precision"] == pytest.approx(0.75)
+
+    def test_no_comparison_results(self, mock_env):
+        """Zero documents → all zeros, no ZeroDivisionError."""
+        index = import_test_module()
+        m = index._run_level_counts_from_rows([])
+        for k in ("tp", "fa", "fd", "fp", "tn", "fn"):
+            assert m[k] == 0
+        for k in ("cm_precision", "cm_recall", "cm_f1", "cm_accuracy"):
+            assert m[k] == 0.0
+
+    def test_none_document_is_skipped(self, mock_env):
+        """A None entry in the input list is safely ignored."""
+        index = import_test_module()
+        docs = [
+            None,  # tolerated
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 1
+
+
 class TestConfidenceCurveRecording:
     """`_record_confidence_curve` folds a scoring run into the review estimator.
 

@@ -182,10 +182,20 @@ def test_doc_split_metrics_match_golden():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("fixture_name", _section_input_ids())
-def test_section_attribute_matched_agrees_with_stickler_confusion_matrix(fixture_name):
-    """R3 invariant: every attribute's ``matched`` must equal what Stickler's
-    per-field confusion matrix says (tp+tn > 0). If this ever drifts, we've
-    reintroduced the IDP re-derivation this recommendation removed.
+def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
+    """Consistency invariant: every attribute's ``matched`` must equal
+    "no red drilldown row anywhere under this attribute's subtree." This is
+    the property that eliminates the parent-vs-children contradiction
+    (issue #625) — parent ✓ can never coexist with a ✗ leaf visible in the
+    same section report.
+
+    Reads Stickler's row-level ``field_comparisons`` (the same rows the UI
+    drilldown displays) and asserts the derived attribute verdict matches
+    the "all rows match=True" property. Two Stickler rollup nodes that had
+    been consulted historically — ``cm.overall`` (item-level, hides leaves
+    inside kept items) and ``cm.aggregate`` (leaf-level of matched items,
+    drops rejected items) — each miss one direction of failure, so neither
+    can be the invariant source.
     """
     from idp_common.evaluation.service import EvaluationService
     from idp_common.models import Section
@@ -199,17 +209,33 @@ def test_section_attribute_matched_agrees_with_stickler_confusion_matrix(fixture
         page_ids=spec["page_ids"],
     )
     result = svc.evaluate_section(section, spec["expected"], spec["actual"])
-    cm_fields = (
-        (result.stickler_comparison_result or {})
-        .get("confusion_matrix", {})
-        .get("fields", {})
-    )
+    field_comparisons = (result.stickler_comparison_result or {}).get(
+        "field_comparisons"
+    ) or []
+
+    def _rows_under(attr_name: str):
+        for fc in field_comparisons:
+            path = fc.get("field_path") or ""
+            idx_bracket = path.find("[")
+            idx_dot = path.find(".")
+            cuts = [i for i in (idx_bracket, idx_dot) if i >= 0]
+            root = path[: min(cuts)] if cuts else path
+            if root == attr_name:
+                yield fc
+
     for attr in result.attributes:
-        cell = (cm_fields.get(attr.name) or {}).get("overall") or {}
-        stickler_matched = (cell.get("tp", 0) > 0) or (cell.get("tn", 0) > 0)
-        assert attr.matched == stickler_matched, (
+        my_rows = list(_rows_under(attr.name))
+        if my_rows:
+            expected_matched = all(fc.get("match") is True for fc in my_rows)
+        else:
+            # No rows for this attribute — the code falls through to the
+            # cm-cell path in ``results.py``. Skip the assertion here; the
+            # golden byte-comparison already pins that rare case.
+            continue
+        assert attr.matched == expected_matched, (
             f"{fixture_name}.{attr.name}: IDP matched={attr.matched} vs "
-            f"stickler tp+tn>0={stickler_matched} (cell={cell})"
+            f"drilldown expected={expected_matched} "
+            f"(red rows: {[fc['field_path'] for fc in my_rows if fc.get('match') is False]})"
         )
 
 

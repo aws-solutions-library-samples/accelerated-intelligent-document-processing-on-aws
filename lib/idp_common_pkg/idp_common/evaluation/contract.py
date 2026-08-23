@@ -54,9 +54,21 @@ def compare_with_flags() -> Dict[str, Any]:
     }
 
 
-# Version stamp for the ``stickler_comparison_result`` blob shape. Bump on
-# ANY change that alters what appears at ``result["fields"][name]``,
-# ``result["confusion_matrix"]``, ``result["confidence_metrics"]``, or the
-# top-level keys the aggregation Lambda relies on. Numeric MAJOR.MINOR string
-# so lexicographic and numeric ordering agree.
-STICKLER_RESULT_VERSION = "1.0"
+# Version stamp for the ``stickler_comparison_result`` blob shape AND the
+# derived ``_stickler_counts`` semantics. Bump on ANY change that alters what
+# appears at ``result["fields"][name]``, ``result["confusion_matrix"]``,
+# ``result["confidence_metrics"]``, the top-level keys the aggregation Lambda
+# relies on, OR the meaning of the values in ``_stickler_counts`` on
+# ``SectionEvaluationResult.metrics``. Numeric MAJOR.MINOR string so
+# lexicographic and numeric ordering agree.
+#
+# Version history:
+#   1.0 — initial (v0.6.3 stickler cleanup): counts sourced from
+#         ``cm["aggregate"]`` (leaf-level of matched items) and later
+#         ``cm["overall"]`` (item-level after Hungarian pairing). Both
+#         missed at least one failure mode on list-heavy documents (see #625).
+#   2.0 — leaf-level from row-level ``field_comparisons``: every threshold-
+#         gated leaf verdict Stickler emits contributes to section and
+#         document counts. Fixes both the parent-vs-children contradiction
+#         and the section-metric inflation on list-heavy documents.
+STICKLER_RESULT_VERSION = "2.0"

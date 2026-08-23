@@ -8,6 +8,7 @@ These tests focus on the public API and Stickler integration functionality.
 """
 
 import warnings
+from typing import Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1842,3 +1843,294 @@ def test_has_no_extractable_schema_helper():
         max_workers=1,
     )
     assert svc_empty._has_no_extractable_schema("Cover", expected_results={}) is True
+
+
+# --------------------------------------------------------------------------
+# Regression tests for issue #625: list-field parent verdict + section metrics
+# https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625
+# --------------------------------------------------------------------------
+
+
+def _list_of_five_partial_failure_service():
+    """Config + gt/pred producing a 5-item list where 4 items are entirely
+    wrong. Stickler reports tp=1, fd=4, fp=4 at the field level."""
+    config = {
+        "classes": [
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "doc",
+                "x-aws-idp-document-type": "Doc",
+                "x-aws-idp-evaluation-model-name": "Doc",
+                "type": "object",
+                "properties": {
+                    "Items": {
+                        "type": "array",
+                        "x-aws-idp-evaluation-match-threshold": 0.5,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "x-aws-idp-evaluation-method": "EXACT",
+                                },
+                                "amount": {
+                                    "type": "number",
+                                    "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                                    "x-aws-idp-evaluation-threshold": 0.01,
+                                },
+                            },
+                        },
+                    }
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="Doc", page_ids=["1"])
+    gt = {
+        "Items": [
+            {"name": "A", "amount": 1.0},
+            {"name": "B", "amount": 2.0},
+            {"name": "C", "amount": 3.0},
+            {"name": "D", "amount": 4.0},
+            {"name": "E", "amount": 5.0},
+        ]
+    }
+    pred = {
+        "Items": [
+            {"name": "A", "amount": 1.0},
+            {"name": "X", "amount": 99.0},
+            {"name": "Y", "amount": 88.0},
+            {"name": "Z", "amount": 77.0},
+            {"name": "W", "amount": 66.0},
+        ]
+    }
+    return svc, section, gt, pred
+
+
+@pytest.mark.unit
+def test_list_parent_verdict_reflects_item_failures_not_just_hits():
+    """Issue #625 defect 1: a list field with any matching item was marked ✓
+    even when the majority of items failed, because ``matched`` was
+    ``(tp > 0) or (tn > 0)`` and Stickler's ``tp`` counts matched items.
+    Post-fix: the parent verdict is ``False`` whenever any list item was a
+    false discovery. Guarantees the parent ✓/✗ can't contradict its children
+    the way sirirako reported."""
+    svc, section, gt, pred = _list_of_five_partial_failure_service()
+    result = svc.evaluate_section(section, gt, pred)
+    items = next(a for a in result.attributes if a.name == "Items")
+    assert items.matched is False, (
+        f"parent Items should be ✗ when 4 of 5 items failed; got matched={items.matched}"
+    )
+    cell = (
+        (result.stickler_comparison_result or {})
+        .get("confusion_matrix", {})
+        .get("fields", {})
+        .get("Items", {})
+        .get("overall", {})
+    )
+    # Sanity: the underlying counts confirm the failures Stickler reported.
+    # (``all_fields_matched`` isn't present on per-field cells — only on
+    # ``cm.overall`` — so the verdict falls through to the counts-based
+    # branch, which is exactly the path that used to be wrong.)
+    assert cell.get("fd", 0) == 4
+    assert cell.get("tp", 0) == 1
+
+
+@pytest.mark.unit
+def test_section_metrics_include_list_item_false_discoveries():
+    """Issue #625 defect 2: section metrics were derived from
+    ``cm.aggregate``, which is Stickler's threshold-gated rollup of leaf
+    fields INSIDE matched list items only — unmatched items were dropped
+    entirely, so their false discoveries never reached the counts. A
+    document with 80% of list values wrong was reporting 100% precision,
+    recall, F1, and accuracy. Post-fix (v2.0): counts are derived from
+    Stickler's row-level ``field_comparisons`` — one row per leaf comparison,
+    threshold-gated per user config, so every failure mode is visible."""
+    svc, section, gt, pred = _list_of_five_partial_failure_service()
+    result = svc.evaluate_section(section, gt, pred)
+    metrics = result.metrics
+
+    # Stickler emits 10 leaf rows here — item [0] matches (2 tp), items
+    # [1..4] Hungarian-paired even at score 0.0 with both leaves wrong (8 fd).
+    #   Pre-fix (cm.aggregate):        tp=2, fd=0 → precision=1.0 (defect 2)
+    #   v0.6.3 intermediate (overall): tp=1, fd=4 → precision=0.2 (item-level)
+    #   v2.0 (rows):                   tp=2, fd=8 → precision=0.2 (leaf-level)
+    # Headline number stayed at 0.2 across the last two — but the count
+    # semantics now match what the drilldown UI shows.
+    assert metrics["precision"] == pytest.approx(0.2), (
+        "precision must reflect list-item FDs — pre-fix was 1.0 on 80% wrong data"
+    )
+    assert metrics["accuracy"] == pytest.approx(0.2)
+    assert metrics["f1_score"] == pytest.approx(1.0 / 3.0)
+    assert metrics["false_discovery_rate"] == pytest.approx(0.8)
+    counts: Dict[str, int] = metrics["_stickler_counts"]  # type: ignore[assignment]
+    assert counts.get("tp") == 2
+    assert counts.get("fd") == 8
+    assert counts.get("fp") == 8
+
+
+def _list_of_five_kept_but_wrong_leaves_service():
+    """CASE 5 config + gt/pred: 5-item list where every per-item score is
+    exactly 0.5 (one right child, one wrong) so all items pass the
+    ``match_threshold=0.5`` Hungarian gate — but 4 of the 10 leaves inside
+    are wrong. Sirikaro's original bug shape (issue #625): parent used to
+    show ✓ while the drilldown showed leaf ✗s."""
+    config = {
+        "classes": [
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "doc",
+                "x-aws-idp-document-type": "Doc",
+                "x-aws-idp-evaluation-model-name": "Doc",
+                "type": "object",
+                "properties": {
+                    "Items": {
+                        "type": "array",
+                        "x-aws-idp-evaluation-match-threshold": 0.5,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "x-aws-idp-evaluation-method": "EXACT",
+                                },
+                                "amount": {
+                                    "type": "number",
+                                    "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                                    "x-aws-idp-evaluation-threshold": 0.01,
+                                },
+                            },
+                        },
+                    }
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="Doc", page_ids=["1"])
+    gt = {
+        "Items": [
+            {"name": "Widget A", "amount": 1.0},
+            {"name": "Widget B", "amount": 2.0},
+            {"name": "Widget C", "amount": 3.0},
+            {"name": "Widget D", "amount": 4.0},
+            {"name": "Widget E", "amount": 5.0},
+        ]
+    }
+    pred = {
+        "Items": [
+            {"name": "Widget A", "amount": 1.0},  # right
+            {"name": "Foo", "amount": 2.0},  # name wrong, amount right
+            {"name": "Bar", "amount": 3.0},  # ditto
+            {"name": "Baz", "amount": 4.0},  # ditto
+            {"name": "Qux", "amount": 5.0},  # ditto
+        ]
+    }
+    return svc, section, gt, pred
+
+
+@pytest.mark.unit
+def test_case5_parent_verdict_reflects_leaf_failures_inside_kept_items():
+    """Issue #625, sirikaro's original bug shape: every item is Hungarian-
+    paired above ``match_threshold`` (per-item score = 0.5, exactly at the
+    cutoff), but 4 of the 10 leaves inside are wrong. Under Stickler's
+    item-level rollups (``cm.overall`` and ``all_fields_matched`` at the
+    field cell), the parent reads ✓ — contradicting the drilldown's ✗ rows.
+    Post-fix (v2.0): parent verdict comes from row-level ``field_comparisons``
+    so parent = ✗ whenever any drilldown row under it is red."""
+    svc, section, gt, pred = _list_of_five_kept_but_wrong_leaves_service()
+    result = svc.evaluate_section(section, gt, pred)
+    items = next(a for a in result.attributes if a.name == "Items")
+    assert items.matched is False, (
+        f"parent Items must be ✗ when 4 of 10 leaves failed — pre-fix showed "
+        f"✓ because Stickler's item-level rollup masked leaf failures inside "
+        f"paired items; got matched={items.matched}"
+    )
+    # Sanity: the field-cell view Stickler exposes (which we used to trust)
+    # still says "all matched" — proving row-level derivation is the only
+    # way to catch this shape.
+    field_cell = (
+        (result.stickler_comparison_result or {})
+        .get("confusion_matrix", {})
+        .get("fields", {})
+        .get("Items", {})
+        .get("overall", {})
+    )
+    assert field_cell.get("fd", 0) == 0, (
+        "Stickler's field cell would say fd=0 here (item-level view)"
+    )
+    # But rows disagree — 4 red rows under Items.
+    rows = (result.stickler_comparison_result or {}).get("field_comparisons") or []
+    red_under_items = [
+        fc
+        for fc in rows
+        if fc["field_path"].startswith("Items[") and fc.get("match") is False
+    ]
+    assert len(red_under_items) == 4, (
+        f"expected 4 red drilldown rows under Items; got {len(red_under_items)}"
+    )
+
+
+@pytest.mark.unit
+def test_case5_section_metrics_reflect_leaf_failures_inside_kept_items():
+    """Same CASE 5 scenario. Section-level precision/F1/accuracy must reflect
+    the 4 wrong leaves — under v0.6.3–v0.6.5 semantics these all read 1.0
+    on this doc, silently claiming perfect extraction on 60%-correct data.
+    v2.0 counts every ``field_comparisons`` row, so failures surface."""
+    svc, section, gt, pred = _list_of_five_kept_but_wrong_leaves_service()
+    result = svc.evaluate_section(section, gt, pred)
+    metrics = result.metrics
+    # 10 leaf rows: 6 correct (5 amounts + 1 name) + 4 wrong (4 names).
+    # precision = 6/10 = 0.60. F1 = 2*6 / (2*6 + 4 + 0) = 12/16 = 0.75.
+    assert metrics["precision"] == pytest.approx(0.6)
+    assert metrics["recall"] == pytest.approx(1.0)  # no FN — all items paired
+    assert metrics["f1_score"] == pytest.approx(0.75)
+    assert metrics["accuracy"] == pytest.approx(0.6)
+    assert metrics["false_discovery_rate"] == pytest.approx(0.4)
+    counts: Dict[str, int] = metrics["_stickler_counts"]  # type: ignore[assignment]
+    assert counts.get("tp") == 6
+    assert counts.get("fd") == 4
+    assert counts.get("fp") == 4
+    assert counts.get("fn") == 0
+
+
+@pytest.mark.unit
+def test_section_metrics_unchanged_on_flat_all_pass_doc():
+    """Sanity: switching from ``cm.aggregate`` to ``cm.overall`` must not
+    affect flat (no-list) documents. Stickler yields identical numbers for
+    the two nodes when no arrays are present."""
+    config = {
+        "classes": [
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "w2",
+                "x-aws-idp-document-type": "W2",
+                "x-aws-idp-evaluation-model-name": "W2",
+                "type": "object",
+                "properties": {
+                    "ssn": {
+                        "type": "string",
+                        "x-aws-idp-evaluation-method": "EXACT",
+                    },
+                    "wages": {
+                        "type": "number",
+                        "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                        "x-aws-idp-evaluation-threshold": 0.01,
+                    },
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="W2", page_ids=["1"])
+    result = svc.evaluate_section(
+        section,
+        {"ssn": "123-45-6789", "wages": 50000.0},
+        {"ssn": "123-45-6789", "wages": 50000.0},
+    )
+    assert result.metrics["precision"] == pytest.approx(1.0)
+    assert result.metrics["accuracy"] == pytest.approx(1.0)
+    flat_counts: Dict[str, int] = result.metrics["_stickler_counts"]  # type: ignore[assignment]
+    assert flat_counts.get("tp") == 2
+    assert flat_counts.get("fd") == 0

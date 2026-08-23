@@ -598,6 +598,77 @@ def _load_s3_json(s3_uri: str) -> Dict[str, Any]:
     return json.loads(content)
 
 
+def _run_level_counts_from_rows(
+    comparison_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Compute run-level top-level metrics by classifying every ``field_comparisons``
+    row across every document.
+
+    ``aggregate_from_comparisons(...).metrics`` returns an item-level rollup for
+    list fields (Stickler's ``cm.overall`` semantics), which hides leaf-level
+    failures inside Hungarian-paired items — a document with 80% of its list
+    values wrong ends up reporting 100% precision at the run level (issue #625).
+    ``field_comparisons`` is the only Stickler view that stays honest about
+    every leaf: each row carries a threshold-gated ``match`` decision using the
+    field's own configured comparator + threshold. Aggregating rows uniformly
+    across documents matches the per-doc ``_stickler_counts`` in
+    ``SectionEvaluationResult.metrics`` (see ``stickler_backend/results.py``),
+    so per-doc dashboards and run-level dashboards report the same numbers on
+    the same input.
+
+    Classification (same 5-way split as the per-doc path):
+      * match=True  + expected present → tp
+      * match=True  + expected absent  → tn
+      * match=False + expected absent, actual present → fa
+      * match=False + expected present, actual absent → fn
+      * match=False + both present                   → fd
+
+    Returns a dict with the same keys the caller reads from
+    ``process_eval.metrics``: ``tp``, ``fa``, ``fd``, ``fp``, ``tn``, ``fn``,
+    ``cm_precision``, ``cm_recall``, ``cm_f1``, ``cm_accuracy``.
+    """
+    tp = fa = fd = fn = tn = 0
+    for scr in comparison_results:
+        if not scr:
+            continue
+        for fc in scr.get("field_comparisons") or []:
+            matched = fc.get("match") is True
+            gt = fc.get("expected_value")
+            pr = fc.get("actual_value")
+            gt_empty = gt is None or gt == ""
+            pr_empty = pr is None or pr == ""
+            if matched:
+                if gt_empty:
+                    tn += 1
+                else:
+                    tp += 1
+            else:
+                if gt_empty and not pr_empty:
+                    fa += 1
+                elif not gt_empty and pr_empty:
+                    fn += 1
+                else:
+                    fd += 1
+    fp = fa + fd
+    total = tp + fp + fn + tn
+
+    def _sd(num: int, den: int) -> float:
+        return float(num) / float(den) if den > 0 else 0.0
+
+    return {
+        "tp": tp,
+        "fa": fa,
+        "fd": fd,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "cm_precision": _sd(tp, tp + fp),
+        "cm_recall": _sd(tp, tp + fn),
+        "cm_f1": _sd(2 * tp, 2 * tp + fp + fn),
+        "cm_accuracy": _sd(tp + tn, total),
+    }
+
+
 def _transform_stickler_metrics(
     process_eval,
     doc_weighted_scores: Dict[str, float],
@@ -616,7 +687,11 @@ def _transform_stickler_metrics(
     Returns:
         Dictionary matching existing IDP metrics format (without split metrics)
     """
-    metrics = process_eval.metrics
+    # Top-level metrics come from the row-level ``field_comparisons`` sweep so
+    # list-heavy documents don't silently under-report failures (#625). The
+    # per-field ``process_eval.field_metrics`` is already leaf-level in
+    # Stickler's output and is passed through unchanged below.
+    metrics = _run_level_counts_from_rows(comparison_results)
 
     # Use Stickler's bulk confidence metrics (computed by aggregate_from_comparisons)
     # Stickler automatically aggregates prediction_confidences from comparison results

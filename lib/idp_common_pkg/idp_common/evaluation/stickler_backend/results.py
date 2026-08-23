@@ -341,9 +341,35 @@ def transform_stickler_result(
             "weight": field_schema.get("x-aws-stickler-weight"),
         }
 
-    # Per-field verdicts + section counts come from Stickler's confusion matrix.
+    # Per-field verdicts + section counts come from Stickler's row-level
+    # ``field_comparisons`` — the same rows the UI drilldown displays.
+    # Reading these directly is the only way to guarantee the parent verdict
+    # never contradicts its children: for a list field, ``cm.overall`` and
+    # ``all_fields_matched`` collapse to item-level after Hungarian pairing
+    # and hide leaf failures inside kept items (issue #625). ``cm.aggregate``
+    # goes the other way — it drops rejected items entirely, so their
+    # false discoveries never reach the section counts. Only the raw
+    # ``field_comparisons`` rows honor every failure mode.
     cm = stickler_result.get("confusion_matrix") or {}
     cm_fields: Dict[str, Any] = cm.get("fields") or {}
+    field_comparisons: List[Dict[str, Any]] = (
+        stickler_result.get("field_comparisons") or []
+    )
+
+    # Bucket rows by their root attribute so per-attribute verdict is O(N) once.
+    # Stickler emits ``field_path`` as either the scalar name (``customer_name``),
+    # a list index path (``Items[3].name``), or a nested-object path (``Address.city``);
+    # the root is everything before the first ``[`` or ``.``.
+    rows_by_attr: Dict[str, List[Dict[str, Any]]] = {}
+    for fc in field_comparisons:
+        path = fc.get("field_path") or ""
+        idx_bracket = path.find("[")
+        idx_dot = path.find(".")
+        cut_candidates = [i for i in (idx_bracket, idx_dot) if i >= 0]
+        root = path[: min(cut_candidates)] if cut_candidates else path
+        if not root:
+            continue
+        rows_by_attr.setdefault(root, []).append(fc)
 
     attribute_results: List[AttributeEvaluationResult] = []
     for field_name, score in field_scores.items():
@@ -352,10 +378,28 @@ def transform_stickler_result(
         actual_value = get_nested_value(actual_dict, field_name)
         confidence_info = get_confidence_for_field(confidence_scores, field_name)
 
-        # Verdict from Stickler's per-field cell (tp+tn>0 → matched).
-        field_cell = cm_fields.get(field_name) or {}
-        field_overall = field_cell.get("overall") or {}
-        matched = (field_overall.get("tp", 0) > 0) or (field_overall.get("tn", 0) > 0)
+        # Verdict: parent is ✓ iff every drilldown row under it is ✓. Falls
+        # through to the confusion-matrix cell only if the field has no rows
+        # (rare — Stickler always emits at least one for scalars, and one per
+        # item or leaf for structured fields).
+        my_rows = rows_by_attr.get(field_name) or []
+        if my_rows:
+            matched = all(fc.get("match") is True for fc in my_rows)
+        else:
+            field_cell = cm_fields.get(field_name) or {}
+            field_overall = field_cell.get("overall") or {}
+            if "all_fields_matched" in field_overall:
+                matched = bool(field_overall["all_fields_matched"])
+            else:
+                has_hit = (field_overall.get("tp", 0) > 0) or (
+                    field_overall.get("tn", 0) > 0
+                )
+                has_fail = (
+                    (field_overall.get("fa", 0) > 0)
+                    or (field_overall.get("fd", 0) > 0)
+                    or (field_overall.get("fn", 0) > 0)
+                )
+                matched = has_hit and not has_fail
 
         reason = generate_reason(
             field_name,
@@ -422,29 +466,52 @@ def transform_stickler_result(
 
     attribute_results.sort(key=lambda ar: ar.name)
 
-    # Section-level metrics: derive from Stickler's aggregate. FAR/FDR from
-    # ``fa`` / ``fd`` cells so per-doc + run-level dashboards report the
-    # same numbers (previously per-doc used IDP's ``fp1``/``fp2`` re-count
-    # while the aggregation Lambda already used Stickler's counts).
-    aggregate = cm.get("aggregate") or {}
-    derived = aggregate.get("derived") or {}
-    agg_tp = int(aggregate.get("tp", 0) or 0)
-    agg_fa = int(aggregate.get("fa", 0) or 0)
-    agg_fd = int(aggregate.get("fd", 0) or 0)
-    agg_fp = int(aggregate.get("fp", 0) or 0)
-    agg_tn = int(aggregate.get("tn", 0) or 0)
-    agg_fn = int(aggregate.get("fn", 0) or 0)
+    # Section-level counts: derived by classifying every ``field_comparisons``
+    # row. This is the only Stickler view that:
+    #   * captures list-item FDs (unlike ``cm.aggregate``), AND
+    #   * captures leaf-level FDs inside kept items (unlike ``cm.overall``).
+    # Stickler emits rows at mixed depth — leaves for paired items, item-level
+    # placeholder rows for missing/extra items — but the ``match`` verdict is
+    # threshold-gated per user config in both cases, and counting rows uniformly
+    # gives consistent semantics across all failure modes. The five-way
+    # classification below matches the confusion-matrix meaning:
+    #   tp: match=True with an expected value (correct hit)
+    #   tn: match=True with no expected value (correctly-empty field)
+    #   fa: match=False with no expected value (hallucination / extra)
+    #   fn: match=False with expected present but actual absent (missed)
+    #   fd: match=False with both present but wrong (false discovery)
+    agg_tp = agg_fa = agg_fd = agg_fn = agg_tn = 0
+    for fc in field_comparisons:
+        matched_row = fc.get("match") is True
+        gt_val = fc.get("expected_value")
+        pr_val = fc.get("actual_value")
+        gt_empty = gt_val is None or gt_val == ""
+        pr_empty = pr_val is None or pr_val == ""
+        if matched_row:
+            if gt_empty:
+                agg_tn += 1
+            else:
+                agg_tp += 1
+        else:
+            if gt_empty and not pr_empty:
+                agg_fa += 1
+            elif not gt_empty and pr_empty:
+                agg_fn += 1
+            else:
+                agg_fd += 1
+    agg_fp = agg_fa + agg_fd
+    total = agg_tp + agg_fp + agg_fn + agg_tn
+
+    def _safe_div(num: int, den: int) -> float:
+        return float(num) / float(den) if den > 0 else 0.0
+
     metrics: Dict[str, float] = {
-        "precision": float(derived.get("cm_precision", 0.0) or 0.0),
-        "recall": float(derived.get("cm_recall", 0.0) or 0.0),
-        "f1_score": float(derived.get("cm_f1", 0.0) or 0.0),
-        "accuracy": float(derived.get("cm_accuracy", 0.0) or 0.0),
-        "false_alarm_rate": (
-            agg_fa / (agg_fa + agg_tn) if (agg_fa + agg_tn) > 0 else 0.0
-        ),
-        "false_discovery_rate": (
-            agg_fd / (agg_fd + agg_tp) if (agg_fd + agg_tp) > 0 else 0.0
-        ),
+        "precision": _safe_div(agg_tp, agg_tp + agg_fp),
+        "recall": _safe_div(agg_tp, agg_tp + agg_fn),
+        "f1_score": _safe_div(2 * agg_tp, 2 * agg_tp + agg_fp + agg_fn),
+        "accuracy": _safe_div(agg_tp + agg_tn, total),
+        "false_alarm_rate": _safe_div(agg_fa, agg_fa + agg_tn),
+        "false_discovery_rate": _safe_div(agg_fd, agg_fd + agg_tp),
     }
     # Raw counts for _process_section's document-level rollup (surfaced under
     # a stable key so the metrics dict stays visually clean).
