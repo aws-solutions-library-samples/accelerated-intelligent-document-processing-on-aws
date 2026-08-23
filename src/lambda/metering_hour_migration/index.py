@@ -8,12 +8,11 @@ projection can see them.
 
 Design
 ------
-- **On Create:** the reporting bucket has no metering data yet — return
-  SUCCESS immediately.
-- **On Update:** list all keys under ``metering/`` that lack ``/hour=``;
-  if the count is zero (already migrated, or nothing to migrate), return
-  SUCCESS. Otherwise migrate in-Lambda with a ThreadPoolExecutor for
-  parallel ``CopyObject`` calls.
+- **On Create and Update:** list all keys under ``metering/`` that lack
+  ``/hour=``; if the count is zero (fresh install with no data yet, or
+  an already-migrated stack), return SUCCESS with nothing to do.
+  Otherwise migrate in-Lambda with a ThreadPoolExecutor for parallel
+  ``CopyObject`` calls. Fresh installs no-op immediately (empty bucket).
 - **On Delete:** no-op — the S3 files are managed by their bucket's own
   retention policy.
 
@@ -76,9 +75,7 @@ MAX_INLINE_FILES = 30_000
 COPY_CONCURRENCY = 50
 
 HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
-DATE_PART_PATTERN = re.compile(
-    r"^metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$"
-)
+DATE_PART_PATTERN = re.compile(r"^metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
 
 s3_client = boto3.client("s3")
 
@@ -158,9 +155,7 @@ def _migrate(event, context, bucket: str):
     errors = 0
 
     with ThreadPoolExecutor(max_workers=COPY_CONCURRENCY) as executor:
-        futures = {
-            executor.submit(_migrate_one, bucket, key): key for key in old_keys
-        }
+        futures = {executor.submit(_migrate_one, bucket, key): key for key in old_keys}
         for future in as_completed(futures):
             if time.time() > deadline:
                 # Cancel remaining work — the executor will still finish any

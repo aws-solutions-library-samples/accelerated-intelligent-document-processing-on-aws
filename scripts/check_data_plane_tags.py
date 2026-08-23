@@ -2,7 +2,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Enforce ``idp:plane=data`` on the small whitelist of data-plane Lambdas.
+"""Enforce ``idp:plane=data`` on the small allowlist of data-plane Lambdas.
 
 See docs/reporting-sql-layer.md §10.3 for the tagging rationale.
 Short version:
@@ -10,14 +10,14 @@ Short version:
 - Only per-document processors carry ``idp:plane=data``. Everything else
   is implicitly control plane (invoked by users, admin actions,
   schedules, or system observers, not by document arrival).
-- The whitelist below names each data-plane Lambda by logical ID plus
+- The allowlist below names each data-plane Lambda by logical ID plus
   the template that owns it. The linter verifies each one exists AND
   carries the tag — a rename or a missing tag fails the build.
-- Adding a new pipeline stage means adding it to this whitelist AND
+- Adding a new pipeline stage means adding it to this allowlist AND
   tagging it. The linter's failure message points reviewers here.
 
 Exit code:
-    0 — every whitelisted Lambda has ``idp:plane=data``
+    0 — every allowlisted Lambda has ``idp:plane=data``
     1 — one or more Lambdas are missing the tag or don't exist
 """
 
@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 UNIFIED_TEMPLATE = REPO_ROOT / "patterns" / "unified" / "template.yaml"
 MAIN_TEMPLATE = REPO_ROOT / "template.yaml"
 
-# Data-plane whitelist: Lambda logical IDs classified as "invoked
+# Data-plane allowlist: Lambda logical IDs classified as "invoked
 # per document". See docs/reporting-sql-layer.md §10.4 for the
 # classification rule ("what triggered the invocation").
 #
@@ -55,7 +55,7 @@ MAIN_TEMPLATE = REPO_ROOT / "template.yaml"
 # BackfillWorkerFunction (admin one-shot), FinetuningProcessDocumentFunction
 # (training-set processing, not prod doc arrival), DataMartRollupFunction
 # itself, and all API resolvers / chat / auth / admin functions.
-DATA_PLANE_WHITELIST: dict[str, Path] = {
+DATA_PLANE_ALLOWLIST: dict[str, Path] = {
     # ── Pipeline mode (Textract + Bedrock) ─────────────────────────────
     "OCRFunction": UNIFIED_TEMPLATE,
     "ClassificationFunction": UNIFIED_TEMPLATE,
@@ -178,8 +178,8 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def _check_whitelisted_lambda(path: Path, logical_id: str) -> List[str]:
-    """Ensure a whitelisted data-plane Lambda exists AND carries the tag."""
+def _check_allowlisted_lambda(path: Path, logical_id: str) -> List[str]:
+    """Ensure an allowlisted data-plane Lambda exists AND carries the tag."""
     if not path.exists():
         return [f"{_display_path(path)}: template file not found"]
     template = yaml.load(path.read_text(), Loader=_cfn_tag_loader())
@@ -188,8 +188,8 @@ def _check_whitelisted_lambda(path: Path, logical_id: str) -> List[str]:
     if resource is None:
         return [
             f"{_display_path(path)}: {logical_id} not found in template "
-            f"— DATA_PLANE_WHITELIST is out of date (either add the resource "
-            f"back, or remove it from the whitelist)"
+            f"— DATA_PLANE_ALLOWLIST is out of date (either add the resource "
+            f"back, or remove it from the allowlist)"
         ]
     if _tag_value(resource, "idp:plane") != "data":
         return [f"{_display_path(path)}: {logical_id} is missing idp:plane=data tag"]
@@ -198,8 +198,8 @@ def _check_whitelisted_lambda(path: Path, logical_id: str) -> List[str]:
 
 def main() -> int:
     missing: List[str] = []
-    for logical_id, path in DATA_PLANE_WHITELIST.items():
-        missing.extend(_check_whitelisted_lambda(path, logical_id))
+    for logical_id, path in DATA_PLANE_ALLOWLIST.items():
+        missing.extend(_check_allowlisted_lambda(path, logical_id))
 
     if missing:
         print(
@@ -213,14 +213,14 @@ def main() -> int:
             "    Tags:\n"
             "      idp:plane: data\n\n"
             "If this Lambda is control plane (invoked by user / schedule / admin,\n"
-            "not by document arrival), remove it from DATA_PLANE_WHITELIST in\n"
+            "not by document arrival), remove it from DATA_PLANE_ALLOWLIST in\n"
             "scripts/check_data_plane_tags.py instead.\n\n"
             "See docs/reporting-sql-layer.md §10.3–§10.4.",
             file=sys.stderr,
         )
         return 1
     print(
-        f"OK — all {len(DATA_PLANE_WHITELIST)} whitelisted data-plane Lambdas "
+        f"OK — all {len(DATA_PLANE_ALLOWLIST)} allowlisted data-plane Lambdas "
         f"carry idp:plane=data."
     )
     return 0

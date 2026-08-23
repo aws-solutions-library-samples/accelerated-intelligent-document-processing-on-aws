@@ -17,7 +17,7 @@ consumers (idp-monitor, in-tree analytics agents, and any future
 dashboard/report) answer "additive-over-wide-range" cost and volume
 questions in KB-scale scans instead of GB-scale.
 
-Three new Athena/Glue tables and one scheduled rollup Lambda; no
+Five new Athena/Glue tables and one scheduled rollup Lambda; no
 other infrastructure. This doc is the reference for the shape of the
 tables, the partitioning contract, and the tagging model that drives
 control-plane cost attribution.
@@ -76,19 +76,21 @@ error text, and wall-clock duration are in the tracking DynamoDB
 table, not in Athena. A future `document_lifecycle` table (Phase 2)
 would move these into the SQL layer for KPI queries.
 
-**All three tables are append-only.** A partition is written once and
+**All five tables are append-only.** A partition is written once and
 never rewritten. The write-time partitioning of `metering` (see §2.3)
 means metering rows never land in past partitions, so no
 `INSERT OVERWRITE` / trailing-window / Iceberg complexity is needed.
 
 **Consumer tier picker.** Consumers pick the cheapest sufficient table
-by requested range:
+by requested range **and by the metric they're asking for**. Cost
+(`sum_value`/`sum_cost`) is on `metering_*`; volume (`n_docs`/`sum_pages`)
+is on `metering_docs_*`:
 
-| Requested range | Middle-of-window tier | Live tail (current partial bucket) |
-|---|---|---|
-| `< 2h` | raw `metering` (partition-pruned to hour) | n/a — whole window is "current" |
-| `2h – 24h` | `metering_hourly` | raw `metering` for the current hour |
-| `> 24h` | `metering_daily` | `metering_hourly` for the current day |
+| Requested range | Cost tier | Volume tier (docs, pages) | Live tail (current partial bucket) |
+|---|---|---|---|
+| `< 2h` | raw `metering` (partition-pruned to hour) | raw `metering` (`COUNT(DISTINCT document_id)`, `MAX(number_of_pages)` per doc) | n/a — whole window is "current" |
+| `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for the current hour |
+| `> 24h` | `metering_daily` | `metering_docs_daily` (note: `n_docs` is a doc-hours count at day grain — see §2 for the strict-unique-doc pattern) | `metering_hourly` / `metering_docs_hourly` for the current day |
 
 Sealed hour and day rows never change once written, so consumer
 `SELECT`s against them are safe candidates for Athena result reuse.
@@ -135,12 +137,16 @@ completion-derived. So on any given stack:
   partition = queue time (whatever the `timestamp` column said at the
   time). Dates aren't relocated by the migration — only hours are added.
 
-A query spanning the cutover mixes both semantics silently. In
-practice this only affects docs that crossed midnight during
-processing (the two interpretations agree for everything else). If
-you need the cutover boundary programmatically, look at the earliest
-`hour_ts` in `metering_hourly` — that's the point new-semantic rows
-start appearing.
+A query spanning the cutover mixes both semantics silently. At the
+`hour` grain this affects any document whose processing crossed an
+hour boundary, not just midnight — a document queued at 15:58 and
+completing at 16:04 lands in the queue-derived `hour=15` bucket
+before the cutover and the completion-derived `hour=16` bucket after
+it. At the `date` grain the mismatch reduces to docs that crossed
+midnight during processing. If you need the cutover boundary
+programmatically, look at the earliest `hour_ts` in
+`metering_hourly` — that's the point new-semantic rows start
+appearing.
 
 ---
 
@@ -150,10 +156,11 @@ start appearing.
 Two EventBridge schedules dispatch based on the `mode` field:
 
 - `{"mode": "hourly"}` — every hour at :05 UTC. Writes
-  `metering_hourly` and `control_plane_hourly` for the previous sealed
-  hour.
+  `metering_hourly`, `metering_docs_hourly`, and `control_plane_hourly`
+  for the previous sealed hour.
 - `{"mode": "daily"}` — every day at 00:15 UTC. Writes `metering_daily`
-  for the previous sealed day, reading from `metering_hourly`.
+  and `metering_docs_daily` for the previous sealed day, reading from
+  the corresponding hourly tables.
 
 **Idempotency:** the handler checks whether the target partition
 already has data before writing (Athena `LIMIT 1` for the metering
@@ -264,7 +271,7 @@ recognize a new category.
 
 ### 10.3 Tagging convention + controls
 
-**Rule (whitelist model):** only per-doc-arrival Lambdas carry
+**Rule (allowlist model):** only per-doc-arrival Lambdas carry
 `idp:plane=data`. Everything else is *implicitly* control plane.
 
 This inverts the naive "tag everything" approach so the maintenance
@@ -274,14 +281,14 @@ tagging work.
 
 **Enforcement — `scripts/check_data_plane_tags.py`, wired into `make
 lint` / `fastlint` / `lint-cicd`:** the linter checks that every
-Lambda in the `DATA_PLANE_WHITELIST` list exists in its template AND
+Lambda in the `DATA_PLANE_ALLOWLIST` list exists in its template AND
 carries `Properties.Tags: idp:plane: data`. A rename, removal, or
 missing tag fails the build. This turns a silent misattribution (the
 Lambda's cost quietly falls into `other-control`) into a loud CI
 failure.
 
 **When adding a new pipeline stage:** add the Lambda's logical ID to
-`DATA_PLANE_WHITELIST` in `scripts/check_data_plane_tags.py` **and**
+`DATA_PLANE_ALLOWLIST` in `scripts/check_data_plane_tags.py` **and**
 add `Tags: idp:plane: data` in the CFN block. If the Lambda is
 control plane (user/schedule/admin-triggered, not per-doc-arrival),
 don't touch either.
@@ -296,12 +303,12 @@ the safe default, since we track control plane cost. If a data-plane
 Lambda slips through without a tag, its cost is *misattributed* to
 `other-control`, not lost — and the linter catches this in CI first.
 
-### 10.4 Data-plane Lambda whitelist
+### 10.4 Data-plane Lambda allowlist
 
 Applied classifier: *what triggered the invocation*. If cost scales
 with production doc arrival, it's data plane.
 
-**Data-plane Lambdas** (23 total, all in `DATA_PLANE_WHITELIST`):
+**Data-plane Lambdas** (all in `DATA_PLANE_ALLOWLIST`):
 
 | Lambda | Template | Trigger |
 |---|---|---|
@@ -501,8 +508,19 @@ dependency-sensitive; tracks are independent.
   `DataMartRollupFunction` from `idp-dev-qs` was invisible until an
   operator noticed missing partitions. Phase 2 adds a CloudWatch alarm
   on `AWS/Lambda/Invocations == 0 for 2 hours` → page the operator.
-- **Migration-Lambda pyarrow via layer** (currently bundled). Smaller
-  package, faster cold start.
+- **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the
+  migration Lambdas now use `IDPCommonReportingLayer` for pyarrow +
+  `idp_common`. External customers install this feature via
+  CreateFunction (new resource in this release) so the layer attaches
+  cleanly under the 250 MB "combined code + layers" limit. A *future*
+  release that swaps the rollup Lambda's runtime shape in-place
+  (bundled ↔ layer, or a much larger layer) risks the same
+  update-stack size trap seen once during dev iteration — CFN's
+  `UpdateFunctionConfiguration` call validates old-code + new-layer
+  before `UpdateFunctionCode` runs. If Phase 2 changes the layer
+  materially, deliver the swap via a custom resource that
+  delete-then-recreates the function rather than an in-place
+  configuration update.
 - **`GetResources` tag-filter chunking.** `TagFilters[].Values` caps at
   25; the stack tree today is 6, but a deep future topology would
   throw `ValidationException` rather than degrade. Trivial fix, low

@@ -58,17 +58,37 @@ ATHENA_PRICE_PER_TB = 5.0  # $5 per TB scanned
 LAMBDA_ARM64_GB_SECOND_PRICE = 0.0000133334  # per GB-second on arm64
 LAMBDA_X86_64_GB_SECOND_PRICE = 0.0000166667  # per GB-second on x86_64
 LAMBDA_REQUEST_PRICE = 0.20 / 1_000_000  # $0.20 per 1M requests, both archs
-# Bedrock **per-MILLION-token** prices in USD, keyed by model ID prefix.
-# AWS publishes prices per million tokens; storing them as-is here means
-# the formula in _build_control_plane_rows divides by 1_000_000 (NOT 1_000).
-# A previous version divided by 1000 and overstated cost by 1000× — the
-# unit tests below the constants and the docs pin this now.
-# Fallback to Claude Sonnet pricing for unknown models — best-effort.
+# Cross-region-inference prefixes stripped before pricing-key matching.
+# Real Bedrock model IDs on this codebase are all cross-region routers, e.g.
+# ``us.anthropic.claude-sonnet-4-20250514-v1:0``,
+# ``eu.anthropic.claude-3-7-sonnet-20250219-v1:0``,
+# ``global.anthropic.claude-opus-4-7`` — the leading ``us.``/``eu.``/
+# ``apac.``/``global.`` is a routing prefix, not part of the family name,
+# and previously prevented every pricing key from matching (silent 0-cost
+# for all control-plane Bedrock calls).
+_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "global.")
+
+# Bedrock **per-MILLION-token** prices in USD, keyed by family prefix after
+# region-prefix stripping. AWS publishes prices per million tokens; storing
+# them as-is here means the formula in _build_control_plane_rows divides by
+# 1_000_000 (NOT 1_000). A previous version divided by 1000 and overstated
+# cost by 1000× — the unit tests below the constants and the docs pin this.
+# Ordered longest-prefix-first so ``claude-3-5-haiku`` matches before the
+# more general ``claude-haiku``/``claude-3-`` prefixes that would otherwise
+# eat it and price it wrong. Fallback to Claude Sonnet pricing for unknown
+# models — best-effort.
 BEDROCK_PRICING = {
-    "us.anthropic.claude-opus": {"in": 15.0, "out": 75.0},
-    "us.anthropic.claude-sonnet": {"in": 3.0, "out": 15.0},
-    "us.anthropic.claude-haiku": {"in": 0.80, "out": 4.0},
+    # Anthropic — most specific keys first so prefix scan matches correctly.
     "anthropic.claude-3-5-haiku": {"in": 0.80, "out": 4.0},
+    "anthropic.claude-3-haiku": {"in": 0.25, "out": 1.25},
+    "anthropic.claude-haiku-4-5": {"in": 1.0, "out": 5.0},
+    "anthropic.claude-haiku": {"in": 0.80, "out": 4.0},
+    "anthropic.claude-opus": {"in": 15.0, "out": 75.0},
+    "anthropic.claude-sonnet": {"in": 3.0, "out": 15.0},
+    "anthropic.claude-3-5-sonnet": {"in": 3.0, "out": 15.0},
+    "anthropic.claude-3-7-sonnet": {"in": 3.0, "out": 15.0},
+    "anthropic.claude-3-sonnet": {"in": 3.0, "out": 15.0},
+    # Amazon Nova.
     "amazon.nova-pro": {"in": 0.80, "out": 3.20},
     "amazon.nova-lite": {"in": 0.06, "out": 0.24},
     "amazon.nova-micro": {"in": 0.035, "out": 0.14},
@@ -155,9 +175,7 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         "target_date": target_date,
         "target_hour": target_hour,
         "metering_hourly": _rollup_metering_hourly(target_date, target_hour),
-        "metering_docs_hourly": _rollup_metering_docs_hourly(
-            target_date, target_hour
-        ),
+        "metering_docs_hourly": _rollup_metering_docs_hourly(target_date, target_hour),
         "control_plane_hourly": _rollup_control_plane_hourly(target_date, target_hour),
     }
     logger.info(f"Hourly rollup complete: {results}")
@@ -204,9 +222,7 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
     return {"query_execution_id": query_id, "skipped": False}
 
 
-def _rollup_metering_docs_hourly(
-    target_date: str, target_hour: str
-) -> Dict[str, Any]:
+def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
     """Write ``metering_docs_hourly`` (doc-grain volume + pages) for the
     given hour if not already written.
 
@@ -264,7 +280,7 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
 
     Control-plane Lambdas are discovered via the CFN-native
     ``aws:cloudformation:stack-name`` tag (all IDP Lambdas carry it)
-    minus those with ``idp:plane=data`` (the whitelisted per-doc
+    minus those with ``idp:plane=data`` (the allowlisted per-doc
     processors). Everything else is implicitly control plane — see
     docs/reporting-sql-layer.md §10.3.
     """
@@ -407,7 +423,7 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 
 def _require_hourly_matches_raw_metering(target_date: str) -> None:
     """Fail loudly if metering_hourly is missing any hour that raw metering
-    has data for.
+    has data for (deploy-day exception below).
 
     We compare metering_hourly against RAW metering rather than "all 24
     hours" — a day may legitimately have fewer than 24 hours of data (deploy
@@ -417,6 +433,18 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
     metering does have data for that hour" case — an actual data hole that
     the async retry can fix once the hourly rollup catches up. If both sets
     match, the day is faithfully rolled up; write metering_daily.
+
+    Deploy-day exception: raw ``metering`` predates this rollup Lambda by
+    however long the stack has been up, so on the first daily invocation
+    after deploy raw will have hours the hourly rollup will *never*
+    backfill — the hourly cron only ever targets ``previous_hour(anchor)``,
+    never a historical hour. Blocking daily forever on this would poison
+    the first-ever daily rollup and every subsequent one (idempotency
+    skip means no re-attempt). We treat "hourly is completely empty for
+    the target date" as the deploy-day case and skip the guard; and
+    otherwise only require raw hours ≥ the earliest hourly-written hour
+    to be present. Real transient-outage misses in the go-forward hourly
+    window still fail loudly and get replayed by async retry.
     """
     # nosec B608 — target_date is from datetime.strftime, not user input
     raw_sql = (
@@ -431,12 +459,23 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
     hourly_rows = _run_athena_query_with_results(hourly_sql)
     raw_hours = {r[0] for r in raw_rows if r and r[0]}
     hourly_hours = {r[0] for r in hourly_rows if r and r[0]}
-    missing = raw_hours - hourly_hours
+    if not hourly_hours:
+        logger.info(
+            f"metering_hourly for date={target_date} is empty — treating as "
+            f"first-run/deploy-day and skipping raw-vs-hourly guard. "
+            f"raw metering hours present: {sorted(raw_hours)}"
+        )
+        return
+    earliest_hourly = min(hourly_hours)
+    in_window_raw = {h for h in raw_hours if h >= earliest_hourly}
+    missing = in_window_raw - hourly_hours
     if missing:
         raise RuntimeError(
             f"metering_hourly for date={target_date} is missing hours "
-            f"{sorted(missing)}. Refusing to write incomplete metering_daily; "
-            f"async retry will replay once the hourly rollup catches up."
+            f"{sorted(missing)} within the hourly-rollup window "
+            f"(earliest hourly-written hour = {earliest_hourly!r}). "
+            f"Refusing to write incomplete metering_daily; async retry "
+            f"will replay once the hourly rollup catches up."
         )
 
 
@@ -459,7 +498,7 @@ def _discover_control_plane_lambdas() -> List[str]:
     starting from the root stack, then pass every discovered stack
     name in the ``Values=[...]`` filter of the tag query.
 
-    Data plane is the small explicit whitelist tagged ``idp:plane=data``.
+    Data plane is the small explicit allowlist tagged ``idp:plane=data``.
     Everything else in the tree is implicitly control plane. See §10.3.
     """
     if not STACK_NAME:
@@ -471,9 +510,7 @@ def _discover_control_plane_lambdas() -> List[str]:
         f"Stack tree from root {STACK_NAME!r}: {len(stack_tree)} stack(s) — {stack_tree}"
     )
 
-    all_idp = _get_resources_by_tag(
-        {"aws:cloudformation:stack-name": stack_tree}
-    )
+    all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": stack_tree})
     # Scope the data-plane query to the SAME tree — a shared account with
     # multiple IDP stacks would otherwise cross-contaminate.
     data_plane = set(
@@ -485,8 +522,8 @@ def _discover_control_plane_lambdas() -> List[str]:
     control_plane = [arn for arn in all_idp if arn not in data_plane]
 
     # Emit a WARN log for any Lambda that looks like a known data-plane
-    # processor but lacks the tag — drift detector for the whitelist linter's
-    # blind spots (e.g., a rename that didn't update DATA_PLANE_WHITELIST).
+    # processor but lacks the tag — drift detector for the allowlist linter's
+    # blind spots (e.g., a rename that didn't update DATA_PLANE_ALLOWLIST).
     unified_prefix_hint = [
         "ocr",
         "classification",
@@ -877,12 +914,25 @@ def _build_control_plane_rows(
 
 
 def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
-    """Return per-1K-token pricing for a Bedrock model, falling back to
+    """Return per-MILLION-token pricing for a Bedrock model, falling back to
     Claude Sonnet defaults if the model is unknown.
+
+    Strips the cross-region-inference prefix (``us.``/``eu.``/``apac.``/
+    ``global.``) before matching, so a real model ID like
+    ``us.anthropic.claude-sonnet-4-20250514-v1:0`` resolves against the
+    ``anthropic.claude-sonnet`` key. Iterates longest-key-first so
+    ``anthropic.claude-3-5-haiku`` wins over ``anthropic.claude-haiku``.
     """
     if model:
-        for prefix, price in BEDROCK_PRICING.items():
-            if model.startswith(prefix):
+        stripped = model
+        for region_prefix in _BEDROCK_REGION_PREFIXES:
+            if stripped.startswith(region_prefix):
+                stripped = stripped[len(region_prefix) :]
+                break
+        for prefix, price in sorted(
+            BEDROCK_PRICING.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if stripped.startswith(prefix):
                 return price
     return DEFAULT_BEDROCK_PRICE
 
@@ -1097,9 +1147,7 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
                     f"Athena query {query_id} timed out — stop_query_execution issued."
                 )
             except Exception as stop_err:
-                logger.warning(
-                    f"stop_query_execution({query_id}) failed: {stop_err}"
-                )
+                logger.warning(f"stop_query_execution({query_id}) failed: {stop_err}")
             raise TimeoutError(
                 f"Athena query {query_id} did not complete in {timeout_sec}s"
             )

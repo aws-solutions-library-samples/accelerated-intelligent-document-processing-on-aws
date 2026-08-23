@@ -165,15 +165,28 @@ metering is ~10× more expensive than the equivalent daily rollup query:
 
 | Table | Grain | Written by | Use for |
 |---|---|---|---|
-| `metering_hourly` | hour × config_version × service_api × unit | Hourly rollup Lambda, at N+1:05 UTC for hour N | Ranges of `2h` to `24h` |
-| `metering_daily` | day × config_version × service_api × unit | Daily rollup Lambda, at D+1 00:15 UTC for day D | Ranges of `> 24h` |
+| `metering_hourly` | hour × config_version × service_api × unit | Hourly rollup Lambda, at N+1:05 UTC for hour N | Ranges of `2h` to `24h` — cost per service/unit |
+| `metering_daily` | day × config_version × service_api × unit | Daily rollup Lambda, at D+1 00:15 UTC for day D | Ranges of `> 24h` — cost per service/unit |
+| `metering_docs_hourly` | hour × config_version | Hourly rollup Lambda, alongside `metering_hourly` | Ranges of `2h` to `24h` — doc counts and pages |
+| `metering_docs_daily` | day × config_version | Daily rollup Lambda, alongside `metering_daily` | Ranges of `> 24h` — doc counts and pages |
 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, from CloudWatch metrics | Per-Lambda control-plane cost attribution |
 
-Aggregate columns on `metering_hourly` / `metering_daily`:
-`n_doc_events, sum_value, sum_cost, sum_pages`. **Naming note:**
-`n_doc_events` is event count, not unique document count — a document
-reprocessed across multiple hours produces one row per hour. Consumers
-who need cross-hour unique-doc counts must query raw `metering` with
+Aggregate columns on `metering_hourly` / `metering_daily` (cost per
+service/unit): `sum_value, sum_cost`.
+
+Aggregate columns on `metering_docs_hourly` / `metering_docs_daily`
+(doc-grain volume/pages): `n_docs, sum_pages`. `number_of_pages` is
+stamped identically on every metering row per document, so aggregating
+it at the (service_api, unit) grain of `metering_hourly` would fan the
+page count out by the number of rows a doc touches; the `metering_docs_*`
+tables aggregate via a `MAX(number_of_pages) GROUP BY document_id`
+subquery to collapse the fan-out.
+
+**Naming note:** on `metering_docs_hourly`, `n_docs` is
+`COUNT(DISTINCT document_id)` within that hour. On `metering_docs_daily`,
+`n_docs = SUM(hourly n_docs)`, i.e. a "doc-hours" count (a document
+processed across two hours counts twice). For strict cross-day
+unique-doc counts, query raw `metering` with
 `COUNT(DISTINCT document_id)`.
 
 See [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the

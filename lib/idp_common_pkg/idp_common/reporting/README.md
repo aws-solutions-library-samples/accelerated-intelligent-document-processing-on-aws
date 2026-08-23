@@ -270,8 +270,10 @@ main stack):** for aggregate cost/volume queries over wide date ranges,
 consumers should read from the pre-aggregated Athena tables rather
 than raw metering:
 
-- `metering_hourly` — hourly rollup, hour × config_version × service_api × unit
-- `metering_daily` — daily rollup, day × config_version × service_api × unit
+- `metering_hourly` — hourly cost rollup, hour × config_version × service_api × unit (`sum_value`, `sum_cost`)
+- `metering_daily` — daily cost rollup, day × config_version × service_api × unit (`sum_value`, `sum_cost`)
+- `metering_docs_hourly` — hourly doc/pages rollup, hour × config_version (`n_docs`, `sum_pages`), aggregated via MAX-per-doc to avoid fanning `number_of_pages` out by service/unit rows
+- `metering_docs_daily` — daily doc/pages rollup, day × config_version (`n_docs`, `sum_pages`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
 - `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
 
 See [`docs/reporting-sql-layer.md`](../../../../../docs/reporting-sql-layer.md)
@@ -383,6 +385,13 @@ reporting-bucket/
 │       └── hour=HH/
 │           └── <athena INSERT output>.parquet
 ├── metering_daily/
+│   └── date=YYYY-MM-DD/
+│       └── <athena INSERT output>.parquet
+├── metering_docs_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── <athena INSERT output>.parquet
+├── metering_docs_daily/
 │   └── date=YYYY-MM-DD/
 │       └── <athena INSERT output>.parquet
 ├── control_plane_hourly/

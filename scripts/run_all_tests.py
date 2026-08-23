@@ -112,6 +112,10 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
+    # General scripts/ unit tests (e.g. check_data_plane_tags, run-registry
+    # tests). Run the tests/ subdir specifically for the same "mis-collect
+    # from scripts root" reason as scripts/sdlc/tests above.
+    "scripts/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------

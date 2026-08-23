@@ -4837,10 +4837,11 @@ Resources:
           - Name: hour
             Type: string
 
-  # Doc-grain daily rollup — n_doc_hours + sum_pages_hours at (day, config_version).
+  # Doc-grain daily rollup — n_docs + sum_pages at (day, config_version).
   # SUM from metering_docs_hourly, so a document reprocessed across N hours
-  # is counted N times (each hour it appeared in). For strict cross-day
-  # unique-doc count, query raw metering with COUNT(DISTINCT document_id).
+  # is counted N times (each hour it appeared in — a "doc-hours" count).
+  # For strict cross-day unique-doc counts, query raw metering with
+  # COUNT(DISTINCT document_id).
   MeteringDocsDailyTable:
     Type: AWS::Glue::Table
     Properties:
@@ -5093,12 +5094,12 @@ Resources:
           - id: W89
             reason: "Function only interacts with AWS APIs (Athena, Glue, CloudWatch, S3) — no VPC needed"
           - id: W92
-            reason: "Function invoked hourly at most; no reserved concurrency needed"
+            reason: "ReservedConcurrentExecutions=1 already pins concurrency; the setting is present, not absent"
           - id: W12
             reason: "cloudwatch:GetMetricData and resourcegroupstaggingapi:GetResources require * resource — no partition-level scoping available"
       # checkov:skip=CKV_AWS_116: "Not SQS-triggered; DLQ not applicable to EventBridge scheduled invocations"
       # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
-      # checkov:skip=CKV_AWS_115: "No reserved concurrency needed for hourly cron"
+      # checkov:skip=CKV_AWS_115: "Concurrency pinned to 1 to prevent idempotency check race — no headroom desired"
       # checkov:skip=CKV_AWS_173: "Environment variables contain only configuration"
     Properties:
       PermissionsBoundary:
@@ -5113,6 +5114,16 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
       MemorySize: 512
       Timeout: 900
+      Tracing: Active
+      Layers:
+        # pyarrow + boto3 + idp_common (metrics helper etc.). Same layer the
+        # migration Lambda uses. Bundling pyarrow in this function too would
+        # blow the 250 MB "code + layers" limit on any in-place update that
+        # already had bundled pyarrow deployed — for a fresh install
+        # (every external customer's first deploy of this Phase 1 feature)
+        # CreateFunction is called with new code + new layer only, so
+        # 171 MB (layer) + tiny code = well under 250 MB.
+        - !Ref IDPCommonReportingLayer
       # Pin to 1 concurrent execution so a scheduled invocation racing with
       # an async retry cannot both pass the pre-INSERT idempotency check
       # (SELECT ... LIMIT 1) and double-write metering_hourly rows.
@@ -5171,6 +5182,19 @@ Resources:
                 - cloudwatch:ListMetrics
               # GetMetricData does not support resource-level scoping.
               Resource: "*"
+            - Effect: Allow
+              Action:
+                # PutMetricData for the rollup Lambda's own self-cost emission
+                # (idp_common.metrics.emit_control_plane_cost_metric with
+                # component='rollup-lambda'). Without this, the metric never
+                # lands and control_plane_hourly has no rollup-lambda row —
+                # the rollup's own Athena spend goes invisible. cloudwatch
+                # PutMetricData does not support resource-level scoping.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
             - Effect: Allow
               Action:
                 - tag:GetResources
@@ -5282,6 +5306,10 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
 
   # Hourly rollup: writes metering_hourly and control_plane_hourly for the
   # previous fully-sealed UTC hour. Fires at minute 5 to give in-flight

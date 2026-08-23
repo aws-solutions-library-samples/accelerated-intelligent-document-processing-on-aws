@@ -388,11 +388,84 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is False
         assert any("INSERT INTO" in s for s in captured_sql)
 
+    def test_daily_check_passes_when_hourly_is_empty_deploy_day(self, rollup):
+        """Deploy-day case: raw ``metering`` has hours that predate the
+        rollup Lambda existing, and ``metering_hourly`` is completely
+        empty for the target date. The hourly cron only ever targets
+        ``previous_hour(anchor)``, so those pre-deploy hours will never
+        be backfilled. The guard must treat empty hourly as "first run"
+        and skip — a strict guard here would poison the first-ever daily
+        rollup forever (idempotency skip). Regression pin for round-3
+        review finding: first-daily-after-deploy fails permanently.
+        """
+        # Raw metering: 5 hours worth. Hourly: EMPTY.
+        raw_hours = [[f"{h:02d}"] for h in range(0, 5)]
+        hourly_hours = []
+
+        calls = {"n": 0}
+
+        def fake_query(sql):
+            # First query is against raw metering, second against hourly.
+            calls["n"] += 1
+            if 'FROM "reporting"."metering_hourly"' in sql or "metering_hourly" in sql:
+                return hourly_hours
+            return raw_hours
+
+        captured_sql = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
+            ),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured_sql.append(sql) or "qid-first-run",
+            ),
+        ):
+            result = rollup._run_daily()
+        assert result["skipped"] is False
+        # The INSERT must actually run — the guard must not have blocked us.
+        assert any("INSERT INTO" in s for s in captured_sql)
+
+    def test_daily_check_ignores_raw_hours_before_earliest_hourly(self, rollup):
+        """Round-3 fix: the guard scopes its "raw ⊆ hourly" check to hours
+        ≥ the earliest hour actually written to ``metering_hourly``.
+        Any earlier raw hour is treated as pre-deploy history that the
+        hourly cron will never backfill (see the deploy-day case above).
+        """
+        # Raw has 00..09; hourly starts at 05 (deploy at 05:00).
+        raw_hours = [[f"{h:02d}"] for h in range(0, 10)]
+        hourly_hours = [[f"{h:02d}"] for h in range(5, 10)]
+
+        def fake_query(sql):
+            if "metering_hourly" in sql:
+                return hourly_hours
+            return raw_hours
+
+        captured_sql = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
+            ),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured_sql.append(sql) or "qid-scoped",
+            ),
+        ):
+            result = rollup._run_daily()
+        # Hours 00-04 exist in raw but predate hourly rollup — must NOT
+        # trigger the missing-hours error. INSERT should run.
+        assert result["skipped"] is False
+        assert any("INSERT INTO" in s for s in captured_sql)
+
 
 @pytest.mark.unit
 class TestControlPlaneDiscovery:
     """Discovery is subtractive: all IDP Lambdas in the stack TREE minus
-    data-plane (whitelist model, §10.3). Nested-stack Lambdas MUST be
+    data-plane (allowlist model, §10.3). Nested-stack Lambdas MUST be
     included — a Lambda in a nested stack carries the nested stack's
     aws:cloudformation:stack-name tag, not the root stack's. Filtering by
     root name alone missed 57 of 68 Lambdas on this repo's live topology."""
@@ -671,9 +744,13 @@ class TestControlPlaneRowBuilding:
         assert opus["bedrock_tokens_out"] == 500
         expected_opus = 1000 * 15 / 1_000_000 + 500 * 75 / 1_000_000
         assert abs(opus["est_bedrock_cost"] - expected_opus) < 1e-9
-        # Haiku pricing: $0.80 in / $4 out per MILLION tokens.
+        # Haiku 4.5 pricing: $1 in / $5 out per MILLION tokens (matched by
+        # the more-specific ``anthropic.claude-haiku-4-5`` prefix after the
+        # ``us.`` region strip; if this fell back to the shorter
+        # ``anthropic.claude-haiku`` key it would resolve to $0.80/$4,
+        # which would be a longest-prefix-wins regression).
         haiku = by_model["us.anthropic.claude-haiku-4-5"]
-        expected_haiku = 2000 * 0.80 / 1_000_000 + 1000 * 4 / 1_000_000
+        expected_haiku = 2000 * 1.0 / 1_000_000 + 1000 * 5.0 / 1_000_000
         assert abs(haiku["est_bedrock_cost"] - expected_haiku) < 1e-9
 
     def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(self, rollup):
@@ -895,3 +972,36 @@ class TestBedrockPricing:
     def test_none_model_falls_back(self, rollup):
         p = rollup._bedrock_price_for_model(None)
         assert p == rollup.DEFAULT_BEDROCK_PRICE
+
+    def test_eu_region_prefix_stripped(self, rollup):
+        """A real EU cross-region model ID must match the anthropic.claude
+        family key after the leading ``eu.`` is stripped — otherwise every
+        EU Bedrock call is silently priced at $0.
+        """
+        p = rollup._bedrock_price_for_model(
+            "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        assert p["in"] == 3.0
+        assert p["out"] == 15.0
+
+    def test_global_region_prefix_stripped(self, rollup):
+        p = rollup._bedrock_price_for_model("global.anthropic.claude-opus-4-7")
+        assert p["in"] == 15.0
+        assert p["out"] == 75.0
+
+    def test_claude_3_5_haiku_wins_over_claude_haiku(self, rollup):
+        """Longest-prefix wins: `anthropic.claude-3-5-haiku` must beat the
+        generic `anthropic.claude-haiku`. Both key into different prices
+        (Haiku 3.5 is $0.80/$4; but this pin proves prefix-order matters).
+        """
+        p = rollup._bedrock_price_for_model(
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+        )
+        # Haiku 3.5 pricing in constants: $0.80 / $4.0 per million.
+        assert p["in"] == 0.80
+        assert p["out"] == 4.0
+
+    def test_nova_lite_bare_id(self, rollup):
+        p = rollup._bedrock_price_for_model("us.amazon.nova-lite-v1:0")
+        assert p["in"] == 0.06
+        assert p["out"] == 0.24

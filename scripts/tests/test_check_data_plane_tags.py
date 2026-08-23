@@ -3,14 +3,14 @@
 
 """Unit tests for scripts/check_data_plane_tags.py.
 
-The linter enforces ``idp:plane=data`` on the small whitelist of
+The linter enforces ``idp:plane=data`` on the small allowlist of
 data-plane Lambdas. See docs/reporting-sql-layer.md §10.3.
 
 These tests pin the linter's behavior:
 - Whitelisted Lambda missing the tag → exit 1 with the logical ID named
 - Whitelisted Lambda missing entirely → exit 1 with "out of date" msg
 - Whitelisted Lambda tagged correctly → exit 0
-- Wrong tag value (`idp:plane=control`) on a whitelisted Lambda → exit 1
+- Wrong tag value (`idp:plane=control`) on a allowlisted Lambda → exit 1
 - Both list-of-dicts and dict-form Tags supported (native CFN vs SAM)
 - Repo templates (main + unified) actually pass the check today
 """
@@ -105,7 +105,7 @@ class TestCheckWhitelistedLambda:
                     idp:plane: data
         """,
         )
-        assert linter._check_whitelisted_lambda(template, "MyDataFn") == []
+        assert linter._check_allowlisted_lambda(template, "MyDataFn") == []
 
     def test_untagged_lambda_fails_with_logical_id(self, linter, tmp_path):
         """The failure message must name the logical ID — reviewers need
@@ -120,14 +120,14 @@ class TestCheckWhitelistedLambda:
                   Handler: index.handler
         """,
         )
-        errors = linter._check_whitelisted_lambda(template, "MyDataFn")
+        errors = linter._check_allowlisted_lambda(template, "MyDataFn")
         assert len(errors) == 1
         assert "MyDataFn" in errors[0]
         assert "missing" in errors[0].lower()
 
     def test_wrong_tag_value_fails(self, linter, tmp_path):
         """A Lambda explicitly tagged `idp:plane=control` while on the
-        data-plane whitelist is likely a classification error — flag it,
+        data-plane allowlist is likely a classification error — flag it,
         don't silently accept."""
         template = self._make_template(
             tmp_path,
@@ -141,25 +141,25 @@ class TestCheckWhitelistedLambda:
                     idp:plane: control
         """,
         )
-        errors = linter._check_whitelisted_lambda(template, "MyDataFn")
+        errors = linter._check_allowlisted_lambda(template, "MyDataFn")
         assert len(errors) == 1
         assert "MyDataFn" in errors[0]
 
     def test_missing_lambda_fails_with_actionable_message(self, linter, tmp_path):
-        """A Lambda on the whitelist that isn't in the template = someone
+        """A Lambda on the allowlist that isn't in the template = someone
         renamed or removed it. The message tells the operator to update
-        the whitelist, not to guess."""
+        the allowlist, not to guess."""
         template = self._make_template(tmp_path, "Resources: {}")
-        errors = linter._check_whitelisted_lambda(template, "MyDataFn")
+        errors = linter._check_allowlisted_lambda(template, "MyDataFn")
         assert len(errors) == 1
         assert "MyDataFn" in errors[0]
         assert "not found" in errors[0].lower()
         assert "out of date" in errors[0].lower()
 
     def test_missing_template_fails_gracefully(self, linter, tmp_path):
-        """The whitelist entry may reference a template that was removed
+        """The allowlist entry may reference a template that was removed
         — don't crash, produce a clear error."""
-        errors = linter._check_whitelisted_lambda(
+        errors = linter._check_allowlisted_lambda(
             tmp_path / "does-not-exist.yaml", "MyDataFn"
         )
         assert len(errors) == 1
@@ -185,7 +185,7 @@ class TestCheckWhitelistedLambda:
                     idp:plane: data
         """,
         )
-        assert linter._check_whitelisted_lambda(template, "MyDataFn") == []
+        assert linter._check_allowlisted_lambda(template, "MyDataFn") == []
 
 
 @pytest.mark.unit
@@ -208,4 +208,4 @@ class TestEndToEnd:
         )
         assert "OK" in result.stdout
         # Must name the count so a reader can eyeball whether it looks right.
-        assert "whitelisted data-plane Lambdas" in result.stdout
+        assert "allowlisted data-plane Lambdas" in result.stdout
