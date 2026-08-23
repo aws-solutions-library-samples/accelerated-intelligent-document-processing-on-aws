@@ -122,7 +122,7 @@ features:
     licenseMode: marketplace-live
     # Seed/fallback only — the live value comes from latest.json at runtime.
     # TO BE SUPPLIED: set to the first published Auto Optimizer version.
-    latestVersion: "v0.3.0"
+    latestVersion: "v0.1.0"
     # Published by the closed-source release tooling to the same public buckets
     # and regions as the host's own templates (scripts/aws-release.sh), but under
     # a separate `artifacts/genai-idp-mp/` prefix so neither release process can
