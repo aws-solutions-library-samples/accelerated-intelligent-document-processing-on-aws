@@ -27,6 +27,7 @@ its `make` target and the skill that documents how to run it.
 | Full offline test battery (no AWS) | `make test` | `.claude/skills/full-test-battery.md` |
 | Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make test-packages-cicd` | — *(runs per commit in the GitHub `developer-tests` workflow)* |
 | Seller-service ownership preflight (read-only) | `make seller-entitlement-service-preflight PRODUCT_REGISTRY='{…}'` | `feature-platform/seller-entitlement-service/README.md` |
+| Seller-service **e2e** (deploy → live probe → teardown) | `make stacktest-seller` | `.claude/skills/run-stack-tests.md` |
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
 | Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |

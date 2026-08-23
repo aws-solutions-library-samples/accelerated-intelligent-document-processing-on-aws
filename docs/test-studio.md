@@ -488,6 +488,15 @@ existing folder gets `fileCount`/`status`/`error` refreshed, and a folder
 that has been deleted from S3 gets its row removed. A `contentSignature`
 short-circuit means unchanged folders cost no DDB write.
 
+**Latency caveat.** Each Lambda container memoizes a per-prefix TTL (30 s
+by default) so the UI's 3 s fast poll doesn't repeat two paginated
+`list_objects_v2` calls per registered set every tick. **The TTL is
+server-side and Refresh does not bypass it** — after a direct-S3 add, the
+UI can show a stale `fileCount` for up to 30 s. In practice the discovery
+poll and any second-tab reload land inside the window, so the delay is
+usually invisible; if you're staring at the row after a manual S3 write
+and want the new count immediately, wait one TTL and try again.
+
 ### 2. Test-run management
 
 **2a. Online — started from Test Studio**
@@ -1208,16 +1217,81 @@ Test results include detailed per-field extraction performance metrics displayed
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
 2. **Accuracy**: `(TP + TN) / (TP + FP + TN + FN)` - Overall correctness
-3. **Precision**: `TP / (TP + FP)` - Accuracy of positive predictions
-4. **Recall**: `TP / (TP + FN)` - Coverage of actual positives
-5. **AUROC** (when available): Area Under ROC Curve - how well confidence discriminates correct from incorrect (1.0 = perfect)
-6. **ECE** (when available): Expected Calibration Error - measures calibration quality (0.0 = perfect)
-7. **Brier** (when available): Brier Score - mean squared error between confidence and outcome (0.0 = perfect, 0.25 = random)
-8. **ECARB@30** (when available): Error Capture at Budget 30% - practical metric showing % of errors caught when reviewing lowest-confidence 30% of data, with gain multiplier vs random (e.g., "89% (3.0x)")
-9. **TP** (True Positives): Correctly extracted values
-10. **FP** (False Positives): Incorrectly extracted values
-11. **TN** (True Negatives): Correctly identified as absent
-12. **FN** (False Negatives): Missed extractions
+3. **Observations**: how many comparisons produced this field's accuracy
+4. **95% margin**: sampling uncertainty on that accuracy, in percentage points, with the
+   interval itself in the cell tooltip
+5. **Precision**: `TP / (TP + FP)` - Accuracy of positive predictions
+6. **Recall**: `TP / (TP + FN)` - Coverage of actual positives
+7. **AUROC** (when available): Area Under ROC Curve - how well confidence discriminates correct from incorrect (1.0 = perfect)
+8. **ECE** (when available): Expected Calibration Error - measures calibration quality (0.0 = perfect)
+9. **Brier** (when available): Brier Score - mean squared error between confidence and outcome (0.0 = perfect, 0.25 = random)
+10. **ECARB@30** (when available): Error Capture at Budget 30% - practical metric showing % of errors caught when reviewing lowest-confidence 30% of data, with gain multiplier vs random (e.g., "89% (3.0x)")
+11. **TP** (True Positives): Correctly extracted values
+12. **FP** (False Positives): Incorrectly extracted values
+13. **TN** (True Negatives): Correctly identified as absent
+14. **FN** (False Negatives): Missed extractions
+
+#### Why the margin matters
+
+A field's accuracy is a proportion measured on however many observations that field
+happened to get, and the point estimate alone cannot distinguish 100% measured on 3
+observations from 100% measured on 300. The two justify completely different decisions.
+
+This matters more per field than it does overall. A run's overall accuracy firms up
+quickly — within roughly the first hundred documents — because every document contributes
+to it. A field that appears once per document gains one observation per document, so a
+badly-broken field can sit inside a healthy-looking overall score until the set is large
+enough to expose it. At a measured 90% accuracy:
+
+| Observations | 95% margin |
+|---|---|
+| 20 | ±13.7 pts |
+| 100 | ±6.0 pts |
+| 300 | ±3.4 pts |
+| 500 | ±2.6 pts |
+
+So a field reading "90%" on 20 observations sits somewhere between 69.9% and 97.2% —
+the interval, which is authoritative. (Subtracting the margin from the point estimate
+would suggest 76%; the interval is asymmetric near the ends, which is exactly why the
+tooltip shows the bounds.)
+Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
+about how much evidence there is, not a defect in the field.
+
+The interval is a [Wilson score
+interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),
+not the textbook normal approximation. Per-field results routinely sit at 0% or 100% on
+few observations, where the normal interval leaves `[0, 1]` entirely — at 20 observations
+and 90% accuracy it reports an upper bound of 103%. An impossible accuracy makes a reader
+discount the number instead of the sample size, which is the opposite of the intent.
+
+**What the margin does not cover.** It describes sampling uncertainty only — how much this
+field's accuracy could move if you scored a different sample of the same size from the
+same population. It does not account for:
+
+- **Errors in the ground truth.** If the labels are themselves wrong some of the time, the
+  true accuracy lies outside this interval and no sample size fixes it. This is why label
+  quality (see [How much review is enough?](#how-much-review-is-enough)) is upstream of
+  every number here.
+- **Documents that don't look like production.** A non-representative set gives a tight
+  interval around the wrong number.
+- **Observations that repeat within a document.** For fields appearing many times per
+  document (table rows), observations are not independent — 300 line items from 10
+  documents carry less information than 300 from 300 documents — so the margin reads
+  tighter than it should. Compare **Observations** against the run's document count to see
+  when this applies.
+- **Fields that never appear in the set.** An observation where the field is absent from
+  both the ground truth and the prediction counts as a correct one (a true negative), so a
+  field no document in your set contains reports **100% accuracy** — correctly, in that
+  the system was right to extract nothing, but it tells you nothing about whether the
+  field would be extracted when present. Optional fields on documents that do not carry
+  them behave this way routinely: in one 5-document generated set, three of 38 fields were
+  legitimately absent from every document. The wide margin flags these (100% on 5
+  observations is ±21.7 points), but before acting on any field at 100%, check whether it
+  actually appears — a field's accuracy is only about extraction if there was something to
+  extract.
+
+Runs aggregated before this was added still show both columns: the values are derived from
+the confusion-matrix counts those runs already stored.
 
 **Features:**
 - **Hierarchical Display**: Nested fields with expand/collapse controls

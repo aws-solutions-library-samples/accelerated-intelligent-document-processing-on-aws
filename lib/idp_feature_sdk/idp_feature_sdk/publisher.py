@@ -39,7 +39,12 @@ import boto3
 from rich.console import Console
 
 from .bundle import BundleInfo, validate_bundle
-from .manifest import CommandStep, FeatureManifest, load_manifest
+from .manifest import (
+    CommandStep,
+    FeatureManifest,
+    bake_marketplace_identity,
+    load_manifest,
+)
 
 
 @dataclass
@@ -452,20 +457,17 @@ class FeaturePublisher:
             # into the host's InstalledFeatures row at install time:
             #   <FEATURE_PRODUCT_CODE_TOKEN>  -> marketplace.productCode
             #   <FEATURE_LISTING_URL_TOKEN>   -> marketplace.listingUrl
-            # Both are OPTIONAL (empty for non-marketplace features) — no warning
+            #   <FEATURE_LICENSE_MODE_TOKEN>  -> marketplace.licenseMode (or "none")
+            # All are OPTIONAL (empty for non-marketplace features) — no warning
             # if the placeholders are absent, unlike the required tokens above.
-            baked_text = (
+            # Shared with pack.py via one helper: these were two independent
+            # replace-chains, and adding the third token taught only one of them,
+            # which shipped an unbaked literal on this path.
+            baked_text = bake_marketplace_identity(
                 template_text.replace("<FEATURE_VERSION_TOKEN>", manifest.version)
                 .replace("<FEATURE_ARTIFACT_PREFIX_TOKEN>", extension_base)
-                .replace("<FEATURE_BUCKET_TOKEN>", bucket)
-                .replace(
-                    "<FEATURE_PRODUCT_CODE_TOKEN>",
-                    manifest.marketplace.productCode or "",
-                )
-                .replace(
-                    "<FEATURE_LISTING_URL_TOKEN>",
-                    manifest.marketplace.listingUrl or "",
-                )
+                .replace("<FEATURE_BUCKET_TOKEN>", bucket),
+                manifest.marketplace,
             )
             if "<FEATURE_VERSION_TOKEN>" not in template_text:
                 self.console.log(

@@ -603,6 +603,21 @@ class OcrService:
         Note:
         - Layout feature is included free with any combination of Forms, Tables
         - Signatures feature is included free with Forms, Tables, and Layout
+
+        Both "free in combination" rules mean the returned key omits the free
+        feature, so it contributes nothing to metered cost. Per the Amazon Textract
+        pricing page (https://aws.amazon.com/textract/pricing/): "Signatures feature
+        is included free of cost with any combination of Forms, Tables, Queries, and
+        Layout", and correspondingly for Layout with Forms/Tables/Queries. AWS emits
+        no usage type at all for a feature that is free in combination, which is
+        what our bills show (long stretches of ``SyncTablesPagesProcessed`` with no
+        ``SyncLayoutPagesProcessed`` and no ``SyncSignaturesPagesProcessed`` despite
+        both features being enabled).
+
+        Signatures used ALONE is billed (~$0.0035/page), which is why the
+        ``-Signatures`` key exists. Revisit alongside
+        ``config_library/pricing.yaml`` if Textract's usage types or footnotes
+        change.
         """
         # TODO: Uncomment this when needed
         # Define valid Textract feature types
@@ -2178,7 +2193,234 @@ class OcrService:
         # Join all lines into a single markdown string
         markdown_table = "\n".join(markdown_lines)
 
+        # Signature detections are their own block type with no Text, so the
+        # LINE-only loop above skips them entirely — which meant the SIGNATURES
+        # feature's output (and, critically, its confidence) never reached the
+        # confidence/assessment prompt that consumes this artifact.
+        signature_summary = self._format_signature_summary(
+            self._extract_signature_detections(blocks), blocks
+        )
+        if signature_summary:
+            markdown_table = f"{markdown_table}\n\n{signature_summary}"
+
         return {"text": markdown_table}
+
+    @staticmethod
+    def _extract_signature_detections(
+        blocks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Pull SIGNATURE detections out of Textract-format blocks.
+
+        Emitted only when the OCR backend was asked for the ``SIGNATURES``
+        feature. Each detection carries a confidence and geometry but no text, so
+        every LINE-oriented consumer drops it unless handled explicitly.
+
+        Args:
+            blocks: Textract-format block list.
+
+        Returns:
+            ``[{"id", "confidence", "geometry"}, ...]`` in block order, where
+            ``confidence`` is 0-100 rounded to 1dp (or None) and ``geometry`` is
+            the normalized 0-1 dict from :meth:`_extract_geometry` (or None).
+        """
+        signatures: List[Dict[str, Any]] = []
+        for index, block in enumerate(blocks or [], start=1):
+            if not isinstance(block, dict) or block.get("BlockType") != "SIGNATURE":
+                continue
+            confidence = block.get("Confidence")
+            if confidence is not None:
+                confidence = round(confidence, 1)
+            signatures.append(
+                {
+                    "id": block.get("Id") or f"sig{index}",
+                    "confidence": confidence,
+                    "geometry": OcrService._extract_geometry(block),
+                }
+            )
+        return signatures
+
+    # Detection-confidence bands used to word the signature summary. Textract's
+    # signature confidence is a detection score, not a "how much like a signature"
+    # score, so a very low value routinely means a stray pen mark or scan artifact.
+    _SIGNATURE_CONFIDENCE_BANDS = (
+        (25.0, "very low"),
+        (50.0, "low"),
+        (75.0, "moderate"),
+    )
+
+    @staticmethod
+    def _describe_signature_position(box: Dict[str, Any]) -> str:
+        """
+        Describe a normalized box in the left/right, upper/lower terms schemas use.
+
+        Field descriptions say things like "the taxpayer 1 signature on the left
+        lower side of the page", so a bare ``left=0.572`` forces the consumer to do
+        the spatial mapping itself — which is exactly where it goes wrong on a form
+        with two identically-labelled signature cells.
+        """
+        center_x = box.get("left", 0.0) + box.get("width", 0.0) / 2
+        center_y = box.get("top", 0.0) + box.get("height", 0.0) / 2
+
+        half = "left half" if center_x < 0.5 else "right half"
+        if center_y < 0.33:
+            band = "upper area"
+        elif center_y < 0.66:
+            band = "middle area"
+        else:
+            band = "lower area"
+
+        return f"{half}, {band} (x={center_x:.0%}, y={center_y:.0%})"
+
+    @staticmethod
+    def _find_signature_neighbors(
+        box: Dict[str, Any], blocks: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Find the OCR text immediately left of, right of, and above a region.
+
+        Turns "which of the two 'Signature of taxpayer' cells is this?" from
+        coordinate arithmetic into a text association, using the LINE geometry the
+        page already has. Returns pre-formatted ``direction: "text"`` fragments,
+        omitting directions with no nearby line.
+
+        ``at`` (a line whose box overlaps the detection) is the most useful of the
+        four and the easiest to miss: a signature written on a ruled line overlaps
+        its own printed label, so it is neither strictly left of nor strictly above
+        the mark. Single-character lines are skipped — they are usually OCR noise
+        (a stray tick read as "I") and crowd out the real label.
+        """
+        sig_left = box.get("left", 0.0)
+        sig_top = box.get("top", 0.0)
+        sig_right = sig_left + box.get("width", 0.0)
+        sig_bottom = sig_top + box.get("height", 0.0)
+        # Vertical tolerance for "same row"/"just above": signature boxes are short,
+        # and a printed label often sits a hair inside or above the detected mark.
+        row_pad = max(box.get("height", 0.0), 0.01)
+
+        best: Dict[str, tuple] = {}
+        for block in blocks or []:
+            if not isinstance(block, dict) or block.get("BlockType") != "LINE":
+                continue
+            text = (block.get("Text") or "").strip()
+            geom = OcrService._extract_geometry(block)
+            if len(text) < 2 or not geom:
+                continue
+            line = geom["boundingBox"]
+            line_left = line.get("left", 0.0)
+            line_top = line.get("top", 0.0)
+            line_right = line_left + line.get("width", 0.0)
+            line_bottom = line_top + line.get("height", 0.0)
+
+            overlaps_x = line_right > sig_left and line_left < sig_right
+            overlaps_y = line_bottom > sig_top and line_top < sig_bottom
+            same_row = (
+                line_bottom > sig_top - row_pad and line_top < sig_bottom + row_pad
+            )
+
+            if overlaps_x and overlaps_y:
+                candidate = ("at", 0.0)
+            elif same_row and line_right <= sig_left:
+                candidate = ("left", sig_left - line_right)
+            elif same_row and line_left >= sig_right:
+                candidate = ("right", line_left - sig_right)
+            elif overlaps_x and line_bottom <= sig_top + row_pad:
+                candidate = ("above", max(sig_top - line_bottom, 0.0))
+            else:
+                continue
+
+            direction, distance = candidate
+            if direction not in best or distance < best[direction][0]:
+                best[direction] = (distance, text)
+
+        def _clip(text: str) -> str:
+            return text if len(text) <= 60 else text[:57] + "..."
+
+        return [
+            f'{direction}: "{_clip(best[direction][1])}"'
+            for direction in ("at", "left", "right", "above")
+            if direction in best
+        ]
+
+    @classmethod
+    def _format_signature_summary(
+        cls,
+        signatures: List[Dict[str, Any]],
+        blocks: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """
+        Render signature detections as a compact, self-describing text block.
+
+        Appended to both the page text and the text-confidence artifact so the
+        extraction and confidence prompts see *which* signature regions were
+        detected, *where*, and with *what* confidence.
+
+        The inline ``[SIGNATURE]`` token the linearizer emits carries none of that,
+        and is worse than silent: its position comes from reading order, so on an
+        IRS Form 4549 it landed immediately after the taxpayer-1 date while the
+        detection itself was in the taxpayer-2 cell. Both the extraction and the
+        confidence model then attributed the mark to the wrong taxpayer ("the OCR
+        detected a signature region in the first (left) signature box" for a box at
+        x=57%). Hence: plain-language position, the neighbouring OCR text, an
+        explicit total, and a caveat that the inline token's placement is not
+        evidence of which field the signature belongs to.
+
+        Deliberately NOT a markdown table — page text is scanned by the agentic
+        extraction table parser, which would otherwise pick this up as a document
+        table.
+
+        Args:
+            signatures: Output of :meth:`_extract_signature_detections`.
+            blocks: The page's Textract-format blocks, used to name the text
+                surrounding each detection. Optional; omitted context just makes
+                the entry shorter.
+
+        Returns:
+            The summary block, or "" when there are no detections.
+        """
+        if not signatures:
+            return ""
+
+        total = len(signatures)
+        plural = "" if total == 1 else "s"
+        lines = [
+            "--- OCR signature detections ---",
+            f"The OCR engine flagged {total} region{plural} on this page as "
+            f"containing a signature, listed below with the page position and the "
+            f"surrounding text. No signature was detected anywhere else on the "
+            f"page. Confidence is the engine's signature-DETECTION confidence "
+            f"(0-100): a low value means a faint or ambiguous mark, which may be a "
+            f"stray pen mark or scan artifact rather than a signature. NOTE: the "
+            f"inline [SIGNATURE] token in the text above is placed by reading "
+            f"order, NOT at the detected location — use the positions here to "
+            f"decide which field a signature belongs to.",
+        ]
+        for index, sig in enumerate(signatures, start=1):
+            confidence = sig.get("confidence")
+            if confidence is None:
+                confidence_text = "unknown"
+            else:
+                band = next(
+                    (
+                        label
+                        for limit, label in cls._SIGNATURE_CONFIDENCE_BANDS
+                        if confidence < limit
+                    ),
+                    "high",
+                )
+                confidence_text = f"{confidence} ({band})"
+
+            box = (sig.get("geometry") or {}).get("boundingBox") or {}
+            entry = f"signature {index}: confidence={confidence_text}"
+            if box:
+                entry += f" — page position: {cls._describe_signature_position(box)}"
+                neighbors = cls._find_signature_neighbors(box, blocks or [])
+                if neighbors:
+                    entry += f"; nearest text — {'; '.join(neighbors)}"
+            else:
+                entry += " — page position: unknown"
+            lines.append(entry)
+        return "\n".join(lines)
 
     # Current consolidated OCR page-data schema version. Bump when the shape of
     # pageData.json changes in a backward-incompatible way.
@@ -2244,6 +2486,11 @@ class OcrService:
 
         Geometry is normalized 0-1 (Textract convention), matching what the UI
         bounding-box renderer already consumes.
+
+        Signature detections (Textract ``SIGNATURES`` feature) are carried in a
+        separate ``signatures`` list rather than as pseudo-lines: they have
+        confidence and geometry but no text, so mixing them into ``lines`` would
+        expose them to the value-matching geometry grounder as if they were text.
 
         Args:
             raw_ocr_content: Textract-format dict ({"Blocks": [...]}) when the
@@ -2366,6 +2613,10 @@ class OcrService:
                     }
                 )
 
+        signatures = self._extract_signature_detections(blocks)
+        if signatures and any(sig.get("geometry") for sig in signatures):
+            geometry_available = True
+
         return {
             "schemaVersion": self.PAGE_DATA_SCHEMA_VERSION,
             "provider": provider,
@@ -2373,7 +2624,9 @@ class OcrService:
             "geometryAvailable": geometry_available,
             "confidenceAvailable": confidence_available,
             "wordsAvailable": words_available,
+            "signaturesAvailable": bool(signatures),
             "lines": lines,
+            "signatures": signatures,
         }
 
     def _write_page_data(
@@ -2472,6 +2725,22 @@ class OcrService:
                 logger.error(f"No text content found in document{page_info}")
             else:
                 logger.info(f"Successfully extracted basic text{page_info}")
+
+        # Append the signature detections. The linearizer renders each one as a
+        # bare inline "[SIGNATURE]" token — placed by reading order, with no
+        # confidence — so on its own it cannot be attributed to a specific field
+        # (on a two-column signature block it lands beside the wrong one), and a
+        # 10%-confidence smudge is indistinguishable from a real signature. The
+        # summary supplies position, neighbouring text, and confidence instead.
+        page_blocks = response.get("Blocks", [])
+        signatures = self._extract_signature_detections(page_blocks)
+        summary = self._format_signature_summary(signatures, page_blocks)
+        if summary:
+            logger.info(
+                f"Appended {len(signatures)} signature detection(s){page_info} "
+                f"to page text"
+            )
+            text = f"{text}\n\n{summary}"
 
         return {"text": text}
 

@@ -258,6 +258,12 @@ Resources:
           # product code — no per-host FeatureProductCodeMap needed.
           FEATURE_PRODUCT_CODE: '<FEATURE_PRODUCT_CODE_TOKEN>'
           FEATURE_LISTING_URL: '<FEATURE_LISTING_URL_TOKEN>'
+          # Which authority THIS EXTENSION enforces against ("none" | "simulated"
+          # | "marketplace-live"), from feature.yaml marketplace.licenseMode. The
+          # ui-deployer forwards it to registerFeature so the host checks the same
+          # authority the extension honours, rather than whatever the stack is
+          # pointed at — and can flag it when its own catalog disagrees.
+          FEATURE_LICENSE_MODE: '<FEATURE_LICENSE_MODE_TOKEN>'
 
   RegisterFeatureResource:
     Type: AWS::CloudFormation::CustomResource
@@ -273,6 +279,7 @@ Resources:
       # changes (e.g. a productCode added in a later publish).
       FeatureProductCode: '<FEATURE_PRODUCT_CODE_TOKEN>'
       FeatureListingUrl: '<FEATURE_LISTING_URL_TOKEN>'
+      FeatureLicenseMode: '<FEATURE_LICENSE_MODE_TOKEN>'
 
 Outputs:
   FeatureApiEndpoint:

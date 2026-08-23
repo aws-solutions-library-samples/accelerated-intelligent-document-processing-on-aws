@@ -79,6 +79,35 @@ aws marketplace-discovery get-listing --listing-id prodview-XXXX --region us-eas
   --query 'associatedEntities[0].product.productId' --output text
 ```
 
+The deploy ends by reading the product registry back off the deployed Lambda and
+failing if it did not arrive intact. That check is not paranoia: a mangled registry
+produces an endpoint that deploys clean, answers every request, and refuses every
+activation as an unknown product — which this service deliberately makes
+byte-identical to "not subscribed", so neither a smoke test nor
+`tests/dynamic_activation_test.py` can tell the two apart. Registry problems have
+to be caught at deploy time or not at all.
+
+> **Pass the registry through the CLI, not `sam deploy` by hand.** SAM re-tokenizes
+> `--parameter-overrides` with its own quote-aware parser and silently truncates an
+> unquoted value at the first `"`, so a hand-rolled
+> `sam deploy --parameter-overrides ProductRegistryJson={"prod-…":…}` delivers a
+> registry of exactly `{`. The CLI compacts the JSON and single-quotes it.
+
+### Two account-level prerequisites the template handles for you
+
+Worth knowing about, because both are account-global rather than stack-local:
+
+- **API Gateway CloudWatch role.** A REST stage with access logging is rejected
+  outright unless the account-level role is set, so the stack creates
+  `AWS::ApiGateway::Account` — a per-account, per-region singleton. It is
+  `DeletionPolicy: Retain`, so deleting this stack will *not* clear the setting out
+  from under other APIs in the account; the corollary is that a teardown leaves the
+  role behind by design.
+- **`InvokeRole: NONE`.** SAM would otherwise default the `AWS_IAM` authorizer to
+  invoking the Lambda with *caller* credentials, which both conflicts with the
+  resource policy (the deployment 400s) and could never work cross-account, since
+  buyers do not hold `lambda:InvokeFunction` on your function.
+
 Then note the stack outputs:
 
 ```bash
@@ -112,14 +141,124 @@ admits any AWS principal. API Gateway verifies the caller's SigV4 signature
   buyers need no credentials from the seller. This is what makes it work for an
   arbitrary, unknown set of customers.
 
+## The endpoint URL is indirected — do not hard-code it alone
+
+`ActivationEndpoint` contains the API-Gateway-assigned REST API id
+(`https://<apiId>.execute-api.<region>.amazonaws.com/prod/activate`). If that API
+is ever replaced — a stack rebuild, a region move, an account migration — the id
+changes. Installed extensions are running in **customer** accounts you cannot
+reach to update, so a baked-in URL would be permanent in the worst way: the day
+you need to move, every paying customer breaks at once.
+
+So the endpoint is published as a small pointer object beside `latest.json`, in
+every region the extension is offered in (an extension reads from its own regional
+bucket):
+
+```bash
+idp-feature-cli seller-service publish-endpoint \
+  --feature-id idp-auto-optimizer \
+  --bucket-basename aws-ml-blog \
+  --artifact-regions us-east-1,us-west-2,eu-central-1 \
+  --prefix artifacts/genai-idp-mp
+```
+
+Writes `…/extensions/<featureId>/activation.json`:
+
+```json
+{
+  "schemaVersion": "1.0",
+  "activationEndpoint": "https://xxxx.execute-api.us-east-1.amazonaws.com/prod/activate",
+  "signingKeyId": "arn:aws:kms:us-east-1:…:key/…",
+  "serviceVersion": "0.6.5.dev1",
+  "publishedAt": "2026-08-20T…Z"
+}
+```
+
+Re-run it after any change that replaces the API. Run it **before first publish**
+— indirection added later cannot help bundles already shipped.
+
+### Getting the values to bake in
+
+Extension authors should not copy the endpoint or the key out of a console. One
+command emits everything a release needs to embed:
+
+```bash
+idp-feature-cli seller-service export-trust-bundle --output-dir ./trust
+# -> trust/activation-trust.json, trust/activation-public-key.pem
+```
+
+```json
+{
+  "schemaVersion": "1.0",
+  "activationEndpoint": "https://xxxx.execute-api.us-east-1.amazonaws.com/prod/activate",
+  "kid": "arn:aws:kms:us-east-1:…:key/…",
+  "signingAlgorithm": "RSASSA_PSS_SHA_256",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\n…",
+  "serviceVersion": "0.6.5.dev1",
+  "exportedAt": "…"
+}
+```
+
+`kid` is the signing key **ARN** — an identifier, not the key itself. It is
+byte-identical to the token's `kid` claim, which is what lets a verifier pick the
+right embedded key when two are trusted during a rotation. Omit `--output-dir` to
+print the JSON to stdout for a release script to consume. It reads the endpoint and
+key ARN from the stack and the public key from KMS, so a stale value cannot be
+baked in by accident; it needs `kms:GetPublicKey` under the seller's own
+credentials, which the activation Lambda deliberately does not have.
+
+So the per-release order is:
+
+1. `seller-service export-trust-bundle` → embed the endpoint, `kid`, and public key.
+2. `idp-feature-cli publish` → upload the extension artifacts and `latest.json`.
+3. `seller-service publish-endpoint` → publish/refresh `activation.json`.
+
+### It carries no key material, on purpose
+
+The public verification key stays **embedded in the extension**. It is deliberately
+not in the pointer, and `publish_activation_pointer` refuses to write a document
+containing key material.
+
+The reason is the trust model. If the pointer carried the key, then whoever can
+write to the artifact bucket could substitute a hostile endpoint *and* the key that
+validates its tokens — the bucket would become a forgery trust root and the whole
+gate would be worthless. With key material excluded, a tampered pointer can only
+redirect the request somewhere that cannot produce a signature verifying against
+the embedded key, so the activation **fails closed** and the buyer-side grace
+period absorbs it. Worst case is denial of service, not free access.
+
+`signingKeyId` is a **hint only** — for choosing among keys the extension already
+embeds during a rotation (the token's `kid` claim is the other half of that). Never
+treat it as a key, and never fetch a key from it.
+
+### Why not CloudFront or a custom domain?
+
+A CloudFront distribution in front of this API does not work cleanly: the API uses
+`AWS_IAM`, SigV4 signs the `Host` header, and a client signing for the CloudFront
+domain is rejected by API Gateway because it does not own that hostname — while
+signing for the `execute-api` host puts the API id straight back into the client.
+The CloudFront domain is also itself an AWS-assigned identifier, so it relocates
+the permanence problem rather than removing it.
+
+A **custom domain** (`AWS::ApiGateway::DomainName` + `BasePathMapping`) *is* the
+better end state — fully transparent to installed clients, no client-side logic —
+but it needs a domain delegated to the seller account plus an ACM certificate. When
+one is available, add it and simply publish the domain URL in the pointer; the
+extension side never changes, which is exactly what makes the pointer the migration
+lever for that cutover.
+
 ## Buyer-side integration contract
 
 In your published extension template:
 
 1. Grant the extension's Lambda role `execute-api:Invoke` on the activation
-   endpoint (see the `RequiredBuyerPermission` output).
-2. On startup, and on a schedule shorter than `TokenTtlSeconds`, POST
-   `{"productId": "prod-…"}` to `ActivationEndpoint` with SigV4.
+   endpoint (see the `RequiredBuyerPermission` output). Grant it on the **API id
+   wildcard** rather than one literal id if you can, so a repointed endpoint does
+   not also need an IAM change in the customer's account.
+2. Resolve the endpoint from `activation.json` (above), cache it, and fall back to
+   the URL compiled into the bundle if the pointer is unreachable. Then, on startup
+   and on a schedule shorter than `TokenTtlSeconds`, POST `{"productId": "prod-…"}`
+   to it with SigV4.
 3. Verify the returned token with the embedded **public** key, and check
    `buyerAccountId` matches the account you are running in and `exp` is in the
    future.
@@ -145,8 +284,15 @@ In your published extension template:
 
 Claims: `{productId, buyerAccountId, freeTier, iat, exp}`.
 
-Failures: `403 not_entitled` (no active agreement), `404 unknown product`,
+Failures: `403 not_entitled`, `400` (malformed body), `413` (body over 4 KB),
 `401 unauthenticated` (API misconfigured — should be impossible with `AWS_IAM`).
+
+Note there is **no distinct status for an unregistered product**: "unknown
+product" returns the same `403` and the same body as "no active agreement", on
+purpose, so the endpoint is not a product-existence oracle for anyone with an AWS
+account. Do not branch on it — you will never see it. The corollary is that a
+misconfigured registry is indistinguishable from an unsubscribed customer from
+out here, which is why the registry is verified at deploy time instead.
 
 ## Who has activated? (visibility)
 

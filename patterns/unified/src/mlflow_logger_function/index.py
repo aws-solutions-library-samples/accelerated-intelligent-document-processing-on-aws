@@ -77,7 +77,17 @@ def _extract_field_metrics(field_metrics):
     Returns flat dict like {"field_name.cm_recall": 0.95, ...}.
     """
     flat = {}
-    extract_keys = {"cm_precision", "cm_recall", "cm_f1", "cm_accuracy"}
+    # accuracy_observations / accuracy_margin ride along because comparing per-field
+    # accuracy across runs is precisely where sample size decides whether a difference
+    # means anything.
+    extract_keys = {
+        "cm_precision",
+        "cm_recall",
+        "cm_f1",
+        "cm_accuracy",
+        "accuracy_observations",
+        "accuracy_margin",
+    }
     for field_name, field_data in field_metrics.items():
         if not isinstance(field_data, dict):
             continue
@@ -289,12 +299,18 @@ def handler(event, context):
         # Merge base params with config params
         all_params = {**params, **config_params}
         if all_params:
-            logger.info("Logging %d params: %s", len(all_params), list(all_params.keys()))
+            logger.info(
+                "Logging %d params: %s", len(all_params), list(all_params.keys())
+            )
             mlflow.log_params(all_params)
             logger.info("Params logged successfully")
 
         if flat_metrics:
-            logger.info("Logging %d flat metrics: %s", len(flat_metrics), list(flat_metrics.keys()))
+            logger.info(
+                "Logging %d flat metrics: %s",
+                len(flat_metrics),
+                list(flat_metrics.keys()),
+            )
             mlflow.log_metrics(flat_metrics)
             logger.info("Flat metrics logged successfully")
 
@@ -305,13 +321,21 @@ def handler(event, context):
 
         # Log complex nested structures as JSON artifacts
         if artifact_data:
-            logger.info("Logging %d metric artifacts: %s", len(artifact_data), list(artifact_data.keys()))
+            logger.info(
+                "Logging %d metric artifacts: %s",
+                len(artifact_data),
+                list(artifact_data.keys()),
+            )
         for name, data in artifact_data.items():
             _log_artifact_json(name, data)
 
         # Log config artifacts (prompts, class definitions)
         if config_artifacts:
-            logger.info("Logging %d config artifacts: %s", len(config_artifacts), list(config_artifacts.keys()))
+            logger.info(
+                "Logging %d config artifacts: %s",
+                len(config_artifacts),
+                list(config_artifacts.keys()),
+            )
         for name, data in config_artifacts.items():
             _log_artifact_json(name, data)
 
@@ -325,11 +349,14 @@ def handler(event, context):
 
     return {
         "statusCode": 200,
-        "body": json.dumps({
-            "run_id": run_id,
-            "experiment_name": experiment_name,
-            "metrics_logged": len(flat_metrics),
-            "params_logged": len(all_params),
-            "artifacts_logged": list(artifact_data.keys()) + list(config_artifacts.keys()),
-        }),
+        "body": json.dumps(
+            {
+                "run_id": run_id,
+                "experiment_name": experiment_name,
+                "metrics_logged": len(flat_metrics),
+                "params_logged": len(all_params),
+                "artifacts_logged": list(artifact_data.keys())
+                + list(config_artifacts.keys()),
+            }
+        ),
     }

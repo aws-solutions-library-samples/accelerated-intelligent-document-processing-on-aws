@@ -55,9 +55,50 @@ class UiSpec:
 class MarketplaceSpec:
     productCode: Optional[str] = None  # noqa: N815
     listingUrl: Optional[str] = None  # noqa: N815
+    # Which authority THIS EXTENSION enforces its subscription against:
+    # "none" | "simulated" | "marketplace-live". Baked into the extension's
+    # template at publish time and forwarded to the host's registerFeature at
+    # install, so the host can check the same authority the extension honours
+    # instead of whatever the stack happens to be pointed at.
+    #
+    # Defaults to `none` (serve and declare) — deliberately the OPPOSITE of the
+    # host catalog's `marketplace-live` default. An unrecognised value must not
+    # lock a paying customer out of something they bought, so the extension side
+    # degrades to serving; the host side must not over-claim verification, so it
+    # degrades to the strictest authority. See docs/feature-platform.md.
+    #
+    # OPTIONAL in a second sense: an extension that already keeps the mode
+    # somewhere else (e.g. a CloudFormation Mappings constant its functions read)
+    # should omit this and send `licenseMode` in the registerFeature payload
+    # directly. The host only requires it in the payload; declaring the same fact
+    # here as well is the drift the mismatch detector exists to catch.
+    licenseMode: Optional[str] = None  # noqa: N815
     # Used only when auto-seeding the marketplace simulator product on deploy.
     pricingModel: Optional[str] = None  # noqa: N815
     dimensions: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def bake_marketplace_identity(text: str, marketplace: "MarketplaceSpec") -> str:
+    """Bake the three ``marketplace.*`` publish-time tokens into `text`.
+
+    Lives here, next to the fields it reads, because BOTH publish paths need it:
+    `pack.py` bakes a wrapper template and `publisher.py` bakes the feature
+    template. They were two independent `.replace()` chains, and the moment a
+    third token was added (`licenseMode`) only one of them learned about it — so
+    the field baked correctly on the pack path and shipped as a literal
+    `<FEATURE_LICENSE_MODE_TOKEN>` on the publish path. One list, one place.
+
+    Every token is OPTIONAL: a placeholder that isn't present is a no-op, so a
+    template that doesn't use one is unaffected.
+    """
+    return (
+        text.replace("<FEATURE_PRODUCT_CODE_TOKEN>", marketplace.productCode or "")
+        .replace("<FEATURE_LISTING_URL_TOKEN>", marketplace.listingUrl or "")
+        # Absent → "none": an extension that says nothing about its licensing is
+        # not claiming to enforce anything, and the host must not infer that it
+        # does. The host's own catalog default is deliberately the strict one.
+        .replace("<FEATURE_LICENSE_MODE_TOKEN>", marketplace.licenseMode or "none")
+    )
 
 
 @dataclass(frozen=True)
@@ -193,6 +234,7 @@ def load_manifest(project_dir: Path | str) -> FeatureManifest:
         marketplace=MarketplaceSpec(
             productCode=marketplace.get("productCode"),
             listingUrl=marketplace.get("listingUrl"),
+            licenseMode=marketplace.get("licenseMode"),
             pricingModel=marketplace.get("pricingModel"),
             dimensions=list(marketplace.get("dimensions") or []),
         ),

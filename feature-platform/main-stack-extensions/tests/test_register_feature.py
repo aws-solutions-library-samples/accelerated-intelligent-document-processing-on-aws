@@ -150,3 +150,70 @@ def test_unknown_field_raises(monkeypatch, installed_features_table, load_lambda
 
     with pytest.raises(ValueError, match="Unknown field"):
         mod.handler(make_appsync_event("frobnicate", {}), None)
+
+
+# ---------------------------------------------------------------------------
+# licenseMode — what the EXTENSION declares it enforces against.
+#
+# This is what makes the host's catalog entry verifiable rather than aspirational:
+# checkFeatureEntitlement prefers this value, so the host checks the authority the
+# extension actually honours, and can report a mismatch when its own catalog
+# disagrees. Without propagation there is no way to detect that recurring.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["none", "simulated", "marketplace-live"])
+def test_license_mode_is_persisted(
+    monkeypatch, installed_features_table, load_lambda, mode
+):
+    mod = _preload(monkeypatch, installed_features_table, load_lambda)
+    payload = dict(VALID_INPUT, licenseMode=mode)
+    mod.handler(make_appsync_event("registerFeature", {"input": payload}), None)
+
+    row = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table(installed_features_table)
+        .get_item(Key={"featureId": "docs-by-status"})["Item"]
+    )
+    assert row["licenseMode"] == mode
+
+
+def test_unrecognised_license_mode_is_dropped_not_persisted(
+    monkeypatch, installed_features_table, load_lambda
+):
+    """A typo must not silently pick an authority.
+
+    The install row is the HIGHEST-priority input to the host's authority
+    resolution, so persisting garbage would win over both the catalog and the
+    stack default. Dropping it falls back to the catalog, which is the safe
+    direction.
+    """
+    mod = _preload(monkeypatch, installed_features_table, load_lambda)
+    payload = dict(VALID_INPUT, licenseMode="marketplace_live")  # underscore typo
+    mod.handler(make_appsync_event("registerFeature", {"input": payload}), None)
+
+    row = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table(installed_features_table)
+        .get_item(Key={"featureId": "docs-by-status"})["Item"]
+    )
+    assert "licenseMode" not in row
+
+
+def test_absent_license_mode_persists_nothing(
+    monkeypatch, installed_features_table, load_lambda
+):
+    """An extension published before the field existed installs unchanged.
+
+    Absent (not "none") so the host can tell "this extension said nothing" from
+    "this extension said check nothing" and fall through to the catalog.
+    """
+    mod = _preload(monkeypatch, installed_features_table, load_lambda)
+    mod.handler(make_appsync_event("registerFeature", {"input": VALID_INPUT}), None)
+
+    row = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table(installed_features_table)
+        .get_item(Key={"featureId": "docs-by-status"})["Item"]
+    )
+    assert "licenseMode" not in row

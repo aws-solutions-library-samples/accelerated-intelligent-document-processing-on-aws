@@ -73,13 +73,11 @@ interface SchemaAttribute {
   [key: string]: unknown;
 }
 
-interface Example {
-  id?: string;
-  name: string;
-  classPrompt: string;
-  attributesPrompt: string;
-  imagePath: string;
-}
+/**
+ * A few-shot example entry. Field keys are the canonical `x-aws-idp-*` names
+ * (legacy camelCase keys are still read) — see ExamplesEditor.
+ */
+type Example = Record<string, unknown>;
 
 interface SchemaClass {
   id: string;

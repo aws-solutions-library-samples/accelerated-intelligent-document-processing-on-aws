@@ -895,7 +895,6 @@ export const getTestSets = /* GraphQL */ `
       createdAt
       updatedAt
       error
-      lastAddResult
       documentClassType
       configVersion
     }

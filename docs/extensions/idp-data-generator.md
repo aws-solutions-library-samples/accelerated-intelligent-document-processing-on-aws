@@ -93,6 +93,62 @@ A self-contained extension stack that plugs into the host contract:
 - **Job status** is feature-owned (a DynamoDB tracking table), surfaced through
   the FeatureApi.
 
+## Tuning and troubleshooting
+
+Generation is long and expensive — a high-quality batch with scan/fax effects can run for
+an hour or more and cost tens of dollars — so the failure modes are worth knowing. All
+three below were hit on a real stack while building a 100-document set.
+
+### The stack parameters that matter
+
+| Parameter | Default | When to change it |
+|---|---|---|
+| `SeedNodeTimeoutSeconds` | 10800 (3h) | A run fails with `Node 'doc_loop' execution timed out`. The cap is per *stage*, and one stage renders the whole batch, so its cost scales with document count x quality x augmentation — not per document. Because the stage is all-or-nothing, exceeding it discards every document generated so far. |
+| `BedrockMaxAttempts` | 10 | Rarely. Retries transient Bedrock faults in botocore, beneath SEED and strands. |
+| `GeneratorModelId` | Sonnet | Cost or quality trade-offs. |
+
+### "Node 'doc_loop' execution timed out"
+
+The render stage exceeded `SeedNodeTimeoutSeconds` and the whole batch was lost. Raise the
+parameter rather than shrinking the batch — but check the log first, because a run that
+*thrashes* rather than works looks the same from outside. Count critic rejections:
+
+```
+aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT --since 3h   | grep -c "data_critic rejected"
+```
+
+A handful is normal. Over a hundred for a dozen documents means the generator is retrying,
+not rendering — see below.
+
+### Documents rejected in a loop
+
+If the log repeats a rejection like *"fields … were set to `null` instead of being omitted
+entirely"*, the config's field descriptions and its JSON Schema disagree. IDP config
+classes are written for extraction, where the convention for an absent field is an
+explicit null (many descriptions say "Output null if not shown"), but a JSON Schema
+`string` cannot hold null — so the instruction is unsatisfiable and every document retries
+until the stage budget is gone. The generator now widens optional scalar fields to accept
+null in its own copy of the schema, so this resolves itself; if you see it, the extension
+predates that fix and should be updated.
+
+### A run that goes silent
+
+Scan/fax augmentation is CPU-bound image work and, unlike generation, produces little log
+output while it runs — so a slow augmentation and a dead runtime look identical. The job
+record carries `heartbeatAt` and `elapsedMinutes`, updated once a minute while the run
+lives, which distinguishes them: a heartbeat that keeps advancing means the runtime is
+working, a frozen one means it is gone. A job whose heartbeat goes stale is failed
+automatically rather than showing as generating forever.
+
+### A transient Bedrock error ending a long run
+
+`internalServerException` from `ConverseStream` is retryable — its own message says to try
+again — but the generator reaches Bedrock through SEED and strands, so the accelerator's
+own retry decorators are not on that path. `BedrockMaxAttempts` makes botocore retry
+underneath every library in the container. One caveat: an error that arrives *mid-stream*
+cannot be retried by the SDK, so a failure after a long run is still possible and simply
+re-running is the remedy.
+
 ## Command line
 
 The [`idp-cli bootstrap`](../idp-cli.md) command runs the same synthesis pipeline

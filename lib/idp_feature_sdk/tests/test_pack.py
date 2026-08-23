@@ -136,8 +136,13 @@ def test_pack_feature_template_has_all_tokens_baked(
         "<FEATURE_BUCKET_TOKEN>",
         "<FEATURE_PRODUCT_CODE_TOKEN>",
         "<FEATURE_LISTING_URL_TOKEN>",
+        "<FEATURE_LICENSE_MODE_TOKEN>",
     ):
         assert token not in tmpl, f"{token} was left unbaked"
+    # The manifest omits marketplace.licenseMode, so the token bakes to the
+    # extension-side default: enforce nothing. An extension that says nothing is
+    # not claiming to enforce anything, and the host must not infer that it does.
+    assert "LicenseMode: none" in tmpl or "LicenseMode: 'none'" in tmpl
     assert f"ArtifactPrefix: {_BASE}" in tmpl or f"ArtifactPrefix: '{_BASE}'" in tmpl
 
 

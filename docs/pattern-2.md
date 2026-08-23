@@ -639,7 +639,7 @@ To use few shot examples in your deployment:
 
 1. **Use the example configuration**: Deploy with `ConfigurationDefaultS3Uri` pointing to `config_library/unified/few_shot_example/config.yaml`
 2. **Create custom examples**: Copy the example configuration and modify it with your own document examples
-3. **Provide example images**: Place example document images in the appropriate directory and reference them in the `imagePath` field
+3. **Provide example images**: Place example document images in the appropriate directory and reference them in the `x-aws-idp-image-path` field
 
 ### Best Practices
 

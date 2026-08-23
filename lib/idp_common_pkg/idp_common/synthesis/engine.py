@@ -172,6 +172,24 @@ def _seed_model_key(model_id: str) -> str:
     return model_id
 
 
+def _seed_node_timeout_s() -> int:
+    """Per-stage timeout for the generation pipeline."""
+    return int(os.environ.get("SEED_NODE_TIMEOUT_S", str(3 * 3600)))
+
+
+def _seed_pipeline_timeout_s() -> int:
+    """Whole-pipeline timeout, always strictly greater than the per-stage one.
+
+    These two are easy to misorder, and the failure is silent: a pipeline timeout
+    at or below the stage timeout means a stage can never use the budget it was
+    given, so raising the stage timeout appears to do nothing. Held at twice the
+    stage timeout unless overridden higher.
+    """
+    node_s = _seed_node_timeout_s()
+    configured = int(os.environ.get("SEED_PIPELINE_TIMEOUT_S", str(2 * node_s)))
+    return max(configured, node_s * 2)
+
+
 def _raise_seed_node_timeout() -> None:
     """Raise SEED's per-node timeout default (600s) for long high-quality runs.
 
@@ -181,10 +199,18 @@ def _raise_seed_node_timeout() -> None:
     Generator API does not expose the knob, so adjust the function's default —
     ``batch.py`` holds a reference to the same function object, so this covers
     the fan-out path too. Our runtime watchdog (just under the ~8h AgentCore
-    session ceiling) remains the terminal backstop. Tunable via
-    SEED_NODE_TIMEOUT_S; skipped gracefully if SEED's signature changes.
+    session ceiling) remains the terminal backstop. Skipped gracefully if SEED's
+    signature changes.
+
+    The default is 3h, not 1h. The cap applies per *stage*, and one stage renders
+    a whole batch, so its cost scales with count x quality x augmentation rather
+    than with a single document: a 49-document high-quality augmented run spent
+    over an hour in doc_loop and was killed with every document lost. Prefer
+    raising this over silently truncating a run. Tunable via
+    SEED_NODE_TIMEOUT_S, which the generator extension exposes as a stack
+    parameter.
     """
-    timeout_s = int(os.environ.get("SEED_NODE_TIMEOUT_S", "3600"))
+    timeout_s = _seed_node_timeout_s()
     try:
         import inspect
 
@@ -250,7 +276,7 @@ def synthesize(
         output_dir=batch_out,
         augment=job.augment,
         session=boto3.Session(),
-        timeout=int(os.environ.get("SEED_PIPELINE_TIMEOUT_S", str(3 * 3600))),
+        timeout=_seed_pipeline_timeout_s(),
     )
 
     usage = SynthesisUsage()

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -19,14 +20,20 @@ from .scaffold import ScaffoldError, ScaffoldOptions, scaffold_feature
 from .seller_service import (
     DEFAULT_MARKETPLACE_REGION,
     SellerServiceError,
+    build_activation_pointer,
     build_sam_deploy_command,
+    build_trust_bundle,
     fetch_activations,
+    fetch_signing_public_key,
     find_seller_service_dir,
     parse_product_registry,
     preflight,
+    publish_activation_pointer,
     read_service_version,
     resolve_stack_output,
     run_command,
+    utc_now_iso,
+    verify_deployed_registry,
 )
 
 console = Console()
@@ -1302,6 +1309,21 @@ def seller_service_deploy_cmd(
             ),
             cwd=service_dir,
         )
+
+        # Verify the registry actually reached the function. A mangled registry
+        # produces an endpoint that looks healthy and refuses every customer.
+        import boto3
+
+        deployed = verify_deployed_registry(
+            cfn_client=boto3.client("cloudformation", region_name=region),
+            lambda_client=boto3.client("lambda", region_name=region),
+            stack_name=stack_name,
+            expected_product_ids=result.product_ids,
+        )
+        console.print(
+            f"[green]✓[/green] Deployed registry serves "
+            f"{len(deployed)} product(s): {', '.join(sorted(deployed))}"
+        )
     except SellerServiceError as exc:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
@@ -1319,6 +1341,193 @@ def seller_service_deploy_cmd(
     console.print(
         "    # feature-platform/seller-entitlement-service/README.md "
         "'Buyer-side integration contract'"
+    )
+
+
+@seller_service_group.command("export-trust-bundle")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to export from.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Write activation-trust.json + activation-public-key.pem here. Omit to "
+    "print the JSON to stdout.",
+)
+def seller_service_export_trust_bundle_cmd(
+    region: str,
+    stack_name: str,
+    output_dir: Optional[Path],
+) -> None:
+    """Export the material an extension bakes in at build time.
+
+    Emits the activation endpoint, the `kid` (the signing key ARN — byte-identical
+    to the token's `kid` claim), the signing algorithm, and the **public**
+    verification key as PEM.
+
+    Run this once per extension release and embed the result. The public key is
+    safe to ship in public artifacts: it verifies tokens, it cannot mint them. It
+    belongs embedded rather than fetched at runtime — a key fetched from the
+    artifact bucket would make that bucket a forgery trust root, which is exactly
+    why `activation.json` carries the endpoint and nothing else.
+    """
+    try:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name=region)
+        endpoint = resolve_stack_output(cfn, stack_name, "ActivationEndpoint")
+        key_arn = resolve_stack_output(cfn, stack_name, "TokenSigningKeyArn")
+        try:
+            service_version = resolve_stack_output(cfn, stack_name, "ServiceVersion")
+        except SellerServiceError:
+            service_version = ""
+
+        der = fetch_signing_public_key(boto3.client("kms", region_name=region), key_arn)
+        bundle = build_trust_bundle(
+            activation_endpoint=endpoint,
+            kid=key_arn,
+            public_key_der=der,
+            service_version=service_version,
+            exported_at=utc_now_iso(),
+        )
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    if output_dir is None:
+        # Plain print, not console.print: this is machine-readable output that a
+        # release script will pipe, so it must not pick up Rich markup or wrapping.
+        print(json.dumps(bundle, indent=2, sort_keys=True))
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = output_dir / "activation-trust.json"
+    pem_path = output_dir / "activation-public-key.pem"
+    bundle_path.write_text(
+        json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    pem_path.write_text(bundle["publicKeyPem"], encoding="utf-8")
+    console.print(f"[green]✓[/green] {bundle_path}")
+    console.print(f"[green]✓[/green] {pem_path}")
+    console.print(f"  endpoint {bundle['activationEndpoint']}")
+    console.print(f"  kid      {bundle['kid']}")
+    console.print(f"  alg      {bundle['signingAlgorithm']}")
+
+
+@seller_service_group.command("publish-endpoint")
+@_mp_region_option
+@click.option(
+    "--stack-name",
+    default="idp-seller-entitlement",
+    show_default=True,
+    help="Seller-service stack to read the ActivationEndpoint from.",
+)
+@click.option(
+    "--feature-id",
+    "feature_ids",
+    multiple=True,
+    required=True,
+    help="Extension featureId to publish the pointer for. Repeatable — pass every "
+    "extension served by this endpoint.",
+)
+@click.option(
+    "--bucket-basename",
+    required=True,
+    help="Artifact bucket basename; the region is appended, matching "
+    "`idp-feature-cli publish` (e.g. 'aws-ml-blog' -> 'aws-ml-blog-us-east-1').",
+)
+@click.option(
+    "--artifact-regions",
+    required=True,
+    help="Comma-separated regions to publish into — EVERY region the extension is "
+    "offered in, since an extension reads the pointer from its own regional bucket.",
+)
+@click.option(
+    "--prefix",
+    "s3_prefix",
+    default="",
+    help="S3 key prefix under the bucket, matching the catalog's templateKey "
+    "(e.g. 'artifacts/genai-idp-mp').",
+)
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Do NOT set public-read. The pointer is read by extensions in arbitrary "
+    "buyer accounts, so it normally must be public — like the template beside it.",
+)
+def seller_service_publish_endpoint_cmd(
+    region: str,
+    stack_name: str,
+    feature_ids: tuple,
+    bucket_basename: str,
+    artifact_regions: str,
+    s3_prefix: str,
+    private: bool,
+) -> None:
+    """Publish the activation endpoint as a pointer file next to latest.json.
+
+    This is the indirection layer for the endpoint URL. The URL embeds an
+    API-Gateway-assigned API id, so replacing the API would otherwise
+    permanently break every already-installed extension — those run in customer
+    accounts the seller cannot reach. Extensions read this pointer instead.
+
+    Carries no key material by design: the public verification key stays embedded
+    in the extension, so a tampered pointer can only cause a fail-closed
+    activation, never a forged entitlement.
+    """
+    try:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name=region)
+        endpoint = resolve_stack_output(cfn, stack_name, "ActivationEndpoint")
+        try:
+            key_id = resolve_stack_output(cfn, stack_name, "TokenSigningKeyArn")
+        except SellerServiceError:
+            key_id = ""
+        try:
+            service_version = resolve_stack_output(cfn, stack_name, "ServiceVersion")
+        except SellerServiceError:
+            service_version = ""
+
+        document = build_activation_pointer(
+            activation_endpoint=endpoint,
+            signing_key_id=key_id,
+            service_version=service_version,
+            published_at=utc_now_iso(),
+        )
+
+        targets = [r.strip() for r in artifact_regions.split(",") if r.strip()]
+        if not targets:
+            raise SellerServiceError("--artifact-regions listed no regions")
+
+        console.print(f"  endpoint: {endpoint}")
+        console.print(f"  features: {', '.join(feature_ids)}")
+        console.print()
+        for artifact_region in targets:
+            bucket = f"{bucket_basename}-{artifact_region}"
+            written = publish_activation_pointer(
+                s3_client=boto3.client("s3", region_name=artifact_region),
+                bucket=bucket,
+                feature_ids=list(feature_ids),
+                document=document,
+                s3_prefix=s3_prefix,
+                make_public=not private,
+            )
+            for key in written:
+                console.print(f"[green]✓[/green] s3://{bucket}/{key}")
+    except SellerServiceError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    console.print()
+    console.print(
+        "[green]✓ Activation pointer published.[/green] Extensions should read it "
+        "at activation time and fall back to their embedded default if unreachable."
     )
 
 

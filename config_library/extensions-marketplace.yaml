@@ -11,6 +11,36 @@
 # Counterpart for bundled OSS extensions: extensions-oss.yaml.
 #
 # ---------------------------------------------------------------------------
+# licenseMode — which authority the HOST checks, per extension
+# ---------------------------------------------------------------------------
+#
+# `none` | `simulated` | `marketplace-live`. **A missing licenseMode defaults to
+# `marketplace-live`**, applied by `idp-cli publish` when it writes catalog.json.
+#
+# That default is deliberately the OPPOSITE of the extension-side default, which
+# is `none`. The asymmetry is the point, because the two sides fail in different
+# directions:
+#
+#   - On the EXTENSION side, an unrecognised or missing value must not lock a
+#     paying customer out of something they bought, so it degrades to
+#     serve-and-declare (`none`).
+#   - On the HOST side, an unrecognised or missing value must not OVER-CLAIM
+#     verification for a product listed in the *marketplace* catalog, so it
+#     degrades to the strictest authority (`marketplace-live`).
+#
+# Please keep both defaults. The inconsistency is intentional; "fixing" it makes
+# one of the two sides fail in the wrong direction.
+#
+# It is NOT inferred from `marketplaceListingUrl`, though every entry here has
+# one. Inferring would break the simulator dev loop for paid extensions — the
+# case this design exists to support, since a listed product still has to be
+# developed against a simulator before release. It is also unsound on its own
+# terms: the entry template below ships a placeholder
+# `.../pp/REPLACE` listing URL, so presence tracks "somebody filled in the
+# template", not "this listing is live". "Is this a paid extension" and "which
+# authority must answer for it" are different questions.
+#
+# ---------------------------------------------------------------------------
 # Schema 1.1 — per-region artifact mapping
 # ---------------------------------------------------------------------------
 #
@@ -70,6 +100,19 @@ features:
     productCode: "q0k0s3zuuga46hle6fecx547"
     productId: "prod-a5ee62vs2xa72"
     marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y"
+    # Which authority the HOST must confirm this extension's subscription against.
+    # Per-extension, so one stack can check a listed product against real AWS
+    # Marketplace while checking in-development extensions against a simulator.
+    #   marketplace-live  buyer-side SearchAgreements against REAL AWS. Use for a
+    #                     published listing. This is also the default when the
+    #                     field is absent (see the header note).
+    #   simulated         seller-side GetEntitlements against the stack's
+    #                     marketplace-simulator. Use while developing — including
+    #                     for a paid extension before release.
+    #   none              check nothing.
+    # Auto Optimizer is listed and published, so the only honest answer for it
+    # comes from real AWS Marketplace.
+    licenseMode: marketplace-live
     # Seed/fallback only — the live value comes from latest.json at runtime.
     # TO BE SUPPLIED: set to the first published Auto Optimizer version.
     latestVersion: "v0.3.0"
@@ -106,6 +149,9 @@ features:
   #   productCode: "REPLACE_WITH_MARKETPLACE_PRODUCT_CODE"
   #   productId: "prod-REPLACE"
   #   marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/REPLACE"
+  #   # none | simulated | marketplace-live. Omit for marketplace-live. Use
+  #   # `simulated` while the listing is still in development.
+  #   licenseMode: marketplace-live
   #   latestVersion: "1.0.0"
   #   regions:
   #     us-east-1:

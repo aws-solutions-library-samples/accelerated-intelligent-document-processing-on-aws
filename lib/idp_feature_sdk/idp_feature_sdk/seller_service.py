@@ -210,6 +210,32 @@ def preflight(
     return result
 
 
+def _sam_override(key: str, value: str) -> str:
+    """One ``Key=Value`` element for ``sam deploy --parameter-overrides``.
+
+    SAM does **not** take each argv element literally. It re-tokenizes the string
+    with its own quote-aware parser, and an *unquoted* value is truncated at the
+    first double quote. Passing raw JSON therefore delivered a product registry of
+    exactly ``{`` — and nothing surfaced it: the endpoint deployed clean, every
+    activation was refused as "unknown product", and the service deliberately makes
+    "unknown product" byte-identical to "not entitled" so as not to leak an
+    existence oracle. A fully non-functional deployment looked perfectly healthy,
+    including to the live security test.
+
+    Wrapping in single quotes makes SAM take the value verbatim (verified against
+    SAM CLI 1.142.1 by reading back the parsed overrides). The equally-effective
+    alternative — escaping every inner ``"`` — is not used because it corrupts any
+    value that legitimately contains an escaped quote.
+    """
+    if "'" in value:
+        raise SellerServiceError(
+            f"{key} contains a single quote, which cannot be passed through "
+            "`sam deploy --parameter-overrides` safely. Remove it.\n"
+            f"  value: {value}"
+        )
+    return f"{key}='{value}'"
+
+
 def build_sam_deploy_command(
     *,
     service_dir: Path,
@@ -222,12 +248,26 @@ def build_sam_deploy_command(
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """The `sam deploy` argv. Separated out so tests can assert it without AWS."""
-    overrides = [f"ProductRegistryJson={product_registry_json}"]
+    # Compact the registry before quoting it. Two reasons: SAM's override parser
+    # splits on whitespace, so a pretty-printed / multi-line JSON blob (an obvious
+    # thing for an operator to paste when registering a second product) would be
+    # shredded; and canonicalising here means the deployed value is byte-comparable
+    # with what we read back after deploy.
+    try:
+        compact_registry = json.dumps(
+            json.loads(product_registry_json), separators=(",", ":"), sort_keys=True
+        )
+    except ValueError as exc:
+        raise SellerServiceError(
+            f"--product-registry is not valid JSON: {exc}"
+        ) from exc
+
+    overrides = [_sam_override("ProductRegistryJson", compact_registry)]
     if allowed_accounts:
-        overrides.append(f"AllowedAccounts={allowed_accounts}")
+        overrides.append(_sam_override("AllowedAccounts", allowed_accounts))
     if token_ttl_seconds is not None:
-        overrides.append(f"TokenTtlSeconds={token_ttl_seconds}")
-    overrides.append(f"MarketplaceAgreementRegion={region}")
+        overrides.append(_sam_override("TokenTtlSeconds", str(token_ttl_seconds)))
+    overrides.append(_sam_override("MarketplaceAgreementRegion", region))
 
     cmd = [
         "sam",
@@ -271,6 +311,285 @@ def run_command(cmd: list[str], cwd: Optional[Path] = None) -> None:
         raise SellerServiceError(
             f"`{' '.join(cmd[:2])}` failed with exit code {exc.returncode}."
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Activation endpoint pointer (indirection)
+# ---------------------------------------------------------------------------
+#
+# The activation endpoint URL contains the API Gateway REST API id, which AWS
+# assigns. If the API is ever replaced — a stack rebuild, a region move, an
+# account migration — the id changes, and every already-installed copy of the
+# extension is running in a CUSTOMER's account where the seller cannot reach it to
+# update a baked-in URL. That makes the URL permanent in the worst way.
+#
+# So the endpoint is published as a small pointer object next to `latest.json`,
+# and the extension reads it at activation time rather than trusting only what was
+# compiled in. Same pattern, and the same regional layout, as `latest.json`.
+#
+# SECURITY: the pointer carries NO key material, deliberately.
+# --------------------------------------------------------
+# The public verification key stays embedded in the published extension. If the
+# pointer file also carried the key, then whoever can write to the artifact bucket
+# could substitute both a hostile endpoint AND the key that validates its tokens —
+# making the bucket a forgery trust root and the entitlement gate worthless.
+#
+# With key material excluded, a tampered pointer can only redirect the request to
+# somewhere that cannot produce a signature verifying against the embedded key. The
+# activation then fails closed, and the buyer-side grace period on the
+# last-known-good token absorbs it. Worst case is denial of service, not free access.
+#
+# `signingKeyId` is therefore a HINT ONLY — for choosing among keys the extension
+# already embeds during a rotation. It must never be treated as a key, or fetched
+# from.
+
+ACTIVATION_POINTER_FILENAME = "activation.json"
+ACTIVATION_POINTER_SCHEMA_VERSION = "1.0"
+
+
+def utc_now_iso() -> str:
+    """Same format publisher._now_iso() writes into latest.json, so the two
+    pointer objects are comparable by eye."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def activation_pointer_key(feature_id: str, s3_prefix: str = "") -> str:
+    """S3 key for a feature's activation pointer, mirroring `latest.json`'s layout.
+
+    Version-free and at the extension base, because it is a pointer: readers must
+    resolve the *current* endpoint, not one pinned to a release.
+    """
+    base = f"extensions/{feature_id}/{ACTIVATION_POINTER_FILENAME}"
+    prefix = s3_prefix.strip("/")
+    return f"{prefix}/{base}" if prefix else base
+
+
+def build_activation_pointer(
+    *,
+    activation_endpoint: str,
+    signing_key_id: str = "",
+    service_version: str = "",
+    published_at: str = "",
+) -> dict:
+    """The pointer document. Pure, so its shape is a tested contract."""
+    if not activation_endpoint.startswith("https://"):
+        raise SellerServiceError(
+            "activation endpoint must be an https URL, got: "
+            f"{activation_endpoint!r}. Extensions send SigV4-signed credentials "
+            "to it; plaintext http would expose them."
+        )
+    document = {
+        "schemaVersion": ACTIVATION_POINTER_SCHEMA_VERSION,
+        "activationEndpoint": activation_endpoint,
+    }
+    # Hint only — never key material. See the note above.
+    if signing_key_id:
+        document["signingKeyId"] = signing_key_id
+    if service_version:
+        document["serviceVersion"] = service_version
+    if published_at:
+        document["publishedAt"] = published_at
+    return document
+
+
+def publish_activation_pointer(
+    *,
+    s3_client: Any,
+    bucket: str,
+    feature_ids: list[str],
+    document: dict,
+    s3_prefix: str = "",
+    make_public: bool = True,
+) -> list[str]:
+    """Write the pointer for each feature into one regional bucket.
+
+    Returns the keys written. Public-read by default: the reader is an extension
+    running in an arbitrary buyer account, exactly like the template and
+    `latest.json` it sits beside.
+    """
+    if "publicKey" in document or "publicKeyPem" in document or "key" in document:
+        raise SellerServiceError(
+            "refusing to publish key material in the activation pointer — that "
+            "would make the artifact bucket a forgery trust root. The public "
+            "verification key belongs embedded in the extension."
+        )
+    body = json.dumps(document, indent=2, sort_keys=True).encode("utf-8")
+    extra: dict[str, Any] = {"ContentType": "application/json"}
+    if make_public:
+        extra["ACL"] = "public-read"
+
+    written = []
+    for feature_id in feature_ids:
+        key = activation_pointer_key(feature_id, s3_prefix)
+        try:
+            s3_client.put_object(Bucket=bucket, Key=key, Body=body, **extra)
+        except Exception as exc:  # noqa: BLE001
+            raise SellerServiceError(
+                f"could not write s3://{bucket}/{key}: {exc}"
+            ) from exc
+        written.append(key)
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Build-time trust material
+# ---------------------------------------------------------------------------
+#
+# What an extension author needs, once per release, to bake into the bundle:
+#
+#   * the public verification key — EMBEDDED, so tokens are verified against
+#     something an attacker cannot swap;
+#   * `kid` — the value the service actually puts in the token's `kid` claim, so
+#     the verifier can map a claim to one of the keys it embeds during a rotation;
+#   * the activation endpoint — as the compiled-in fallback for when the runtime
+#     pointer (`activation.json`) is unreachable.
+#
+# Note the deliberate asymmetry with the pointer file: the public key belongs
+# HERE, in build-time material that ends up inside the published bundle, and NOT
+# in the runtime pointer. Runtime-fetched key material would make the artifact
+# bucket a forgery trust root; build-time embedded key material is exactly what
+# stops it being one.
+
+TRUST_BUNDLE_SCHEMA_VERSION = "1.0"
+# nosec B105 - "RSASSA_PSS_SHA_256" is a KMS signing-algorithm NAME, not a
+# credential. Bandit's hardcoded-password heuristic fires only because the
+# identifier contains the substring "TOKEN". Nothing secret is expressible here:
+# the value is echoed to buyers in every activation response, and the signing key
+# never leaves KMS.
+TOKEN_SIGNING_ALGORITHM = "RSASSA_PSS_SHA_256"  # nosec B105
+
+
+def der_to_pem(der: bytes, label: str = "PUBLIC KEY") -> str:
+    """Wrap DER bytes as PEM. KMS returns SubjectPublicKeyInfo DER; most verifier
+    libraries want PEM, and doing the conversion here keeps a base64/openssl
+    incantation out of every extension's release process."""
+    import base64 as _b64
+    import textwrap
+
+    body = _b64.b64encode(der).decode("ascii")
+    lines = textwrap.wrap(body, 64)
+    return (
+        f"-----BEGIN {label}-----\n" + "\n".join(lines) + f"\n-----END {label}-----\n"
+    )
+
+
+def fetch_signing_public_key(kms_client: Any, key_arn: str) -> bytes:
+    """The SubjectPublicKeyInfo DER for the token signing key.
+
+    Verifies the key is actually a signing key: exporting an ENCRYPT_DECRYPT key's
+    public half here would produce a bundle that silently fails every
+    verification.
+    """
+    try:
+        resp = kms_client.get_public_key(KeyId=key_arn)
+    except Exception as exc:  # noqa: BLE001
+        raise SellerServiceError(
+            f"Could not fetch the public key for {key_arn}: {exc}\n"
+            "The caller needs kms:GetPublicKey on the signing key. Note the "
+            "activation Lambda deliberately does NOT hold that permission — run "
+            "this with your own seller credentials."
+        ) from exc
+
+    usage = str(resp.get("KeyUsage", ""))
+    if usage != "SIGN_VERIFY":
+        raise SellerServiceError(
+            f"{key_arn} has KeyUsage {usage!r}, not SIGN_VERIFY. That is not the "
+            "token signing key — a bundle built from it would fail every "
+            "verification."
+        )
+    der = resp.get("PublicKey")
+    if not der:
+        raise SellerServiceError(f"KMS returned no public key for {key_arn}")
+    return bytes(der)
+
+
+def build_trust_bundle(
+    *,
+    activation_endpoint: str,
+    kid: str,
+    public_key_der: bytes,
+    service_version: str = "",
+    exported_at: str = "",
+) -> dict:
+    """Build-time trust material for one seller service. Pure, so its shape is a
+    tested contract that the extension build can rely on."""
+    if not kid:
+        raise SellerServiceError(
+            "kid is empty. It must be the signing key ARN, byte-identical to the "
+            "`kid` claim the service puts in its tokens, or a verifier cannot map "
+            "a token to the key that signed it."
+        )
+    return {
+        "schemaVersion": TRUST_BUNDLE_SCHEMA_VERSION,
+        "activationEndpoint": activation_endpoint,
+        # Byte-identical to the token's `kid` claim (the Lambda uses the key ARN).
+        "kid": kid,
+        "signingAlgorithm": TOKEN_SIGNING_ALGORITHM,
+        "publicKeyPem": der_to_pem(public_key_der),
+        "serviceVersion": service_version,
+        "exportedAt": exported_at,
+    }
+
+
+def verify_deployed_registry(
+    *,
+    cfn_client: Any,
+    lambda_client: Any,
+    stack_name: str,
+    expected_product_ids: list[str],
+) -> dict:
+    """Read the registry back off the DEPLOYED function and confirm it survived.
+
+    This exists because a mangled registry is invisible from the outside. The
+    endpoint deploys clean, answers every request, and refuses every activation
+    with the same body it uses for a genuine non-subscriber — so neither a smoke
+    test nor the live security test can tell a correctly-configured service from
+    one serving no products at all. The only reliable check is to look at what the
+    function actually received. Raises rather than warns: shipping an endpoint that
+    refuses all paying customers is worse than a failed deploy.
+    """
+    try:
+        detail = cfn_client.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId="ActivateFunction"
+        )
+        function_name = detail["StackResourceDetail"]["PhysicalResourceId"]
+        config = lambda_client.get_function_configuration(FunctionName=function_name)
+    except Exception as exc:  # noqa: BLE001
+        raise SellerServiceError(
+            "Deployed, but could not read the activation function back to verify "
+            f"the product registry: {exc}\n"
+            "Check it by hand before announcing the endpoint: the registry must "
+            "list every product you expect to serve."
+        ) from exc
+
+    raw = (
+        (config.get("Environment") or {})
+        .get("Variables", {})
+        .get("PRODUCT_REGISTRY_JSON", "")
+    )
+    try:
+        deployed = json.loads(raw)
+        if not isinstance(deployed, dict):
+            raise ValueError(f"expected a JSON object, got {type(deployed).__name__}")
+    except ValueError as exc:
+        raise SellerServiceError(
+            f"The product registry did not survive deployment: {exc}\n"
+            f"  the function received: {raw!r}\n"
+            "Every activation will be refused as an unknown product — which is "
+            "indistinguishable from 'not subscribed' from the caller's side, so "
+            "this would not show up in testing. Do not announce this endpoint."
+        ) from exc
+
+    missing = [p for p in expected_product_ids if p not in deployed]
+    if missing:
+        raise SellerServiceError(
+            f"These products are not in the DEPLOYED registry: {', '.join(missing)}\n"
+            f"  the function received: {raw}\n"
+            "Activation for them will be refused as an unknown product."
+        )
+    return deployed
 
 
 def read_service_version(service_dir: Path) -> Optional[str]:

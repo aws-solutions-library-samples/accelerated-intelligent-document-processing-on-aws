@@ -15,7 +15,6 @@ query GetTestSets {
     createdAt
     updatedAt
     error
-    lastAddResult
     documentClassType
     configVersion
   }

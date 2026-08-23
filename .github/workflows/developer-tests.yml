@@ -118,9 +118,12 @@ jobs:
 
       # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.
       # This target covers the package/Lambda suites it does not: idp_cli, idp_sdk,
-      # idp_feature_sdk, the feature-platform resolvers, and the seller
-      # entitlement service (including its template-security assertions and
-      # payload-robustness fuzz corpus). All offline — no AWS, no credentials.
+      # idp_feature_sdk, the feature-platform resolvers, the seller entitlement
+      # service (including its template-security assertions and payload-robustness
+      # fuzz corpus), and the SDLC harness suite (deployment-variant probes, the
+      # API security cases, and the IAM trust-policy partition guards that keep a
+      # GovCloud-only principal out of a commercial trust policy — see issue #632).
+      # All offline — no AWS, no credentials.
       # These were previously ungated: ~400 tests, including ones that have caught
       # real security bugs, ran only on developers' machines.
       - name: Run package and Lambda test suites

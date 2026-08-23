@@ -87,7 +87,7 @@ def test_happy_path_simulator_mode(monkeypatch, load_lambda, installed_features_
     assert result["expiresAt"] is None
     assert result["customerIdentifier"] == "CUST-default"
     assert result["productCode"] == "prod123"
-    assert result["source"] == "simulator"
+    assert result["source"] == "simulated"
     # Constructed marketplaceUrl
     assert result["marketplaceUrl"].startswith(
         "http://sim.example.com/marketplace/pp/prod123"
@@ -162,7 +162,7 @@ def test_marketplace_mode_uses_install_row_listing_url(
     assert (
         result["marketplaceUrl"] == "https://aws.amazon.com/marketplace/pp/prodview-abc"
     )
-    assert result["source"] == "marketplace"
+    assert result["source"] == "simulated"
 
 
 def test_simulator_endpoint_wins_over_install_listing_url(

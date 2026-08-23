@@ -132,6 +132,54 @@ def _strip_to_generator(node: Any) -> Any:
     return node
 
 
+def _allow_null_on_optional_leaves(node: Any) -> None:
+    """Let optional scalar fields hold ``null`` in the GENERATOR schema.
+
+    IDP config classes are written for extraction, where the convention for a field
+    the document does not contain is an explicit null — many field descriptions say
+    so outright ("Output null if not shown"). The same schema is then handed to the
+    generator, where ``type: "string"`` cannot hold null: the generator follows the
+    description, JSON Schema validation rejects the result, the critic bounces it,
+    and the document is retried. Observed on a real run: 119 critic rejections and
+    138 instances of that single contradiction while producing 11 documents, which
+    exhausted the render stage's hour and lost the whole batch.
+
+    Resolved in the direction the config author intended — the instruction stays,
+    and the generator schema is widened to permit it — rather than by rewriting
+    field descriptions we do not own. Required fields are left alone: those must
+    always be present, so a null there is a genuine failure worth a retry.
+
+    Extraction is unaffected; this widens only the copy handed to the generator.
+    """
+    if isinstance(node, dict):
+        props = node.get("properties")
+        if isinstance(props, dict):
+            required_here = node.get("required") or ()
+            for name, sub in props.items():
+                if isinstance(sub, dict):
+                    _allow_null_on_optional_leaves(sub)
+                    if name in required_here:
+                        continue
+                    sub_type = sub.get("type")
+                    # Scalars only. Widening an object or array to null would let the
+                    # generator drop whole structures rather than a single value.
+                    if isinstance(sub_type, str) and sub_type not in (
+                        "object",
+                        "array",
+                        "null",
+                    ):
+                        sub["type"] = [sub_type, "null"]
+                        # An enum constrains the value independently of type, so
+                        # widening type alone leaves null invalid and the field back in
+                        # the critic-retry loop this exists to break.
+                        choices = sub.get("enum")
+                        if isinstance(choices, list) and None not in choices:
+                            sub["enum"] = [*choices, None]
+        items = node.get("items")
+        if isinstance(items, dict):
+            _allow_null_on_optional_leaves(items)
+
+
 def config_class_to_generator_schema(
     class_dict: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -168,6 +216,9 @@ def config_class_to_generator_schema(
     if "required" in stripped:
         generator_schema["required"] = stripped["required"]
     generator_schema["properties"] = stripped.get("properties", {})
+    # Reconcile the extraction convention ("output null if absent") with what the
+    # generator's validator accepts. See _allow_null_on_optional_leaves.
+    _allow_null_on_optional_leaves(generator_schema)
     return generator_schema
 
 

@@ -381,6 +381,17 @@ convention), matching what the UI bounding-box renderer consumes.
   "geometryAvailable": true,     // any unit has geometry
   "confidenceAvailable": true,   // any unit has confidence
   "wordsAvailable": true,        // any line has word children
+  "signaturesAvailable": true,   // the page has signature detections
+  "signatures": [                // SIGNATURES feature; [] when not requested/found
+    {
+      "id": "sig-1",
+      "confidence": 11.0,        // 0–100 detection confidence, optional
+      "geometry": {              // optional; normalized 0–1
+        "boundingBox": { "left": 0.57, "top": 0.88, "width": 0.04, "height": 0.02 },
+        "polygon": [ { "x": 0.57, "y": 0.88 } ]
+      }
+    }
+  ],
   "lines": [
     {
       "id": "line-1",
@@ -414,6 +425,51 @@ convention), matching what the UI bounding-box renderer consumes.
 The producer derives `pageData.json` in-process from the same OCR result already
 used for `rawText.json`/`textConfidence.json` (`OcrService._build_page_data`),
 so it adds **no extra OCR calls**.
+
+### Signature detections
+
+When the OCR backend is asked for the Textract `SIGNATURES` feature, each
+detection is a block with a **confidence and geometry but no text**. They are
+kept in their own `signatures` array rather than mixed into `lines`, because the
+`ocr_only` geometry grounder matches extracted values against line *text* and a
+textless pseudo-line has nothing to match.
+
+The same detections are surfaced in two other places, both of which previously
+dropped them silently:
+
+- **`textConfidence.json`** — appended after the LINE table as an `OCR signature
+  detections` block, so the confidence prompt can see that a signature region was
+  flagged and with what confidence.
+- **The parsed page text** (`result.json`, which feeds the extraction prompt and
+  the UI markdown view) — same block, appended after the text.
+
+The linearizer already emits an inline `[SIGNATURE]` token per detection, but on
+its own that token is not usable evidence: it is placed by reading order (so it
+can land beside an unrelated field) and carries no confidence, making a genuine
+signature indistinguishable from a 10%-confidence smudge.
+
+The appended block therefore reports, per detection:
+
+- **confidence with a band** — `confidence=11.0 (very low)`; Textract's score is a
+  *detection* confidence, so a very low value often means a stray mark;
+- **position in words** — `right half, lower area (x=59%, y=89%)`, matching the
+  left/right, upper/lower language field descriptions actually use;
+- **the surrounding OCR text** — `at:` (a line whose box overlaps the mark, e.g. the
+  ruled label a signature is written on), plus `left:` / `right:` / `above:`;
+- **an explicit total** (`flagged 1 region on this page`), so a consumer weighing two
+  signature fields can see that only one region exists;
+- **a caveat** that the inline `[SIGNATURE]` token's placement is reading-order
+  derived and is *not* evidence of which field the signature belongs to.
+
+Raw coordinates alone were measured to be unusable: on the two-column signature
+block of an IRS Form 4549, both the extraction and the confidence model read a
+detection at `left=0.572` as "the first (left) signature box". Naming the
+overlapping label and the page half removes the spatial inference. Single-character
+lines are skipped when picking neighbours — a stray tick OCR'd as `"I"` would
+otherwise crowd out the real label.
+
+The block is deliberately **not** formatted as a markdown table, since page text is
+scanned by the agentic extraction table parser.
 
 ## Lambda Integration Example
 
