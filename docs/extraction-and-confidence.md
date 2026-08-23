@@ -1069,7 +1069,13 @@ Common patterns: **visual-first** (image before instructions), **verification**
 tables/stamps/signatures the text misses). The placeholder works seamlessly with
 few-shot examples. For **confidence** prompts, images are only processed when
 `{DOCUMENT_IMAGE}` is explicitly present (text-only assessment otherwise) — and
-exactly **one** occurrence is required when present.
+exactly **one** occurrence is required when present. The prompt is the *only*
+thing that decides this: `geometry.mode` does not affect whether page images are
+attached, because a confidence pass that is never asked for bounding boxes still
+needs the image to judge visually-evidenced fields (signature / checkbox / stamp
+booleans, handwriting, struck-through values). To make the confidence pass
+text-only — e.g. to cut input tokens on a long table — remove `{DOCUMENT_IMAGE}`
+from the confidence `task_prompt`.
 
 **Multi-page handling.** Images are processed in page order with no image count
 limits (following the Bedrock API removal of image count restrictions); documents

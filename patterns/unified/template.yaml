@@ -690,7 +690,14 @@ Resources:
                     - "global.anthropic.claude-opus-4-8:1m"
                     - "global.anthropic.claude-opus-5"
                     - "global.anthropic.claude-opus-5:1m"
-                examples:
+                # NOTE: the Web UI edits document classes with the JSON Schema
+                # builder, not this schema-driven form (ConfigurationLayout filters
+                # `classes` out), so this block is descriptive only. Field names here
+                # are the canonical v0.6 keys; the legacy camelCase aliases
+                # (classPrompt / attributesPrompt / imagePath) are still accepted on
+                # read. Only `name` is required: each service uses its own prompt
+                # field and skips examples that leave it empty.
+                x-aws-idp-examples:
                   type: array
                   description: Class few-shot examples
                   listLabel: Few-shot examples
@@ -699,25 +706,22 @@ Resources:
                     type: object
                     required:
                       - name
-                      - classPrompt
-                      - attributesPrompt
-                      - imagesPath
                     properties:
                       name:
                         type: string
                         description: Example name
                         order: 0
-                      classPrompt:
+                      x-aws-idp-class-prompt:
                         type: string
-                        description: Classification prompt as few-shot classification example for this class
+                        description: Classification prompt as few-shot classification example for this class. Optional - examples without it are skipped by classification.
                         order: 2
-                      attributesPrompt:
+                      x-aws-idp-attributes-prompt:
                         type: string
-                        description: Extraction prompt as few-shot attribute value extraction example for this class.
+                        description: Extraction prompt as few-shot attribute value extraction example for this class. Optional - examples without it are skipped by extraction.
                         order: 3
-                      imagePath:
+                      x-aws-idp-image-path:
                         type: string
-                        description: Image(s) Path in the Configuration Bucket. Supports single files, or S3 prefixes for folders with multiple images. Optional but recommended for better visual understanding.
+                        description: Image(s) Path in the Configuration Bucket. Supports single files, or S3 prefixes for folders with multiple images. Optional but recommended for better visual understanding. An unreadable path logs a warning and the example is still sent as text.
                         order: 4
                 attributes:
                   type: array
@@ -1123,7 +1127,7 @@ Resources:
                 type: string
                 title: Task prompt
                 format: textarea
-                description: Task prompt - include placeholders {CLASS_NAMES_AND_DESCRIPTIONS} (replaced with the class names and descriptions for all specified classes), {FEW_SHOT_EXAMPLES} (replaced by classPrompt and image data from examples in class definitions), {DOCUMENT_TEXT} (replaced by the OCR output), and for multi-modal classification {DOCUMENT_IMAGE} (replaced by the page image attachment). Optionally include {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (replaced with class names, descriptions, AND schema attribute field names — useful for disambiguating classes with similar names but different extraction schemas; opt-in and cost-neutral when not referenced). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
+                description: Task prompt - include placeholders {CLASS_NAMES_AND_DESCRIPTIONS} (replaced with the class names and descriptions for all specified classes), {FEW_SHOT_EXAMPLES} (replaced by the x-aws-idp-class-prompt text and image data from each class's x-aws-idp-examples; renders empty when no class defines examples, so it is safe to leave in), {DOCUMENT_TEXT} (replaced by the OCR output), and for multi-modal classification {DOCUMENT_IMAGE} (replaced by the page image attachment). Optionally include {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (replaced with class names, descriptions, AND schema attribute field names — useful for disambiguating classes with similar names but different extraction schemas; opt-in and cost-neutral when not referenced). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
                 order: 16
               postHook:
                 type: array
@@ -1565,7 +1569,7 @@ Resources:
                 type: string
                 title: Task prompt (extraction)
                 format: textarea
-                description: "Extraction-only task prompt — used when confidence runs separately or is disabled. Placeholders: {DOCUMENT_CLASS}, {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> for Bedrock prompt caching. Overridable per class via 'x-aws-idp-extraction-task-prompt'."
+                description: "Extraction-only task prompt — used when confidence runs separately or is disabled. Placeholders: {DOCUMENT_CLASS}, {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (the class's x-aws-idp-examples x-aws-idp-attributes-prompt text + images; renders empty when the class defines none), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> for Bedrock prompt caching. Overridable per class via 'x-aws-idp-extraction-task-prompt'."
                 order: 13
                 hideWhen: { field: "extraction.confidence.mode", value: "integrated" }
               task_prompt_extraction_with_confidence:

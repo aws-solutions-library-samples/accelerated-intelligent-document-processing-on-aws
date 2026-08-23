@@ -54,7 +54,21 @@ _OPTIONAL_FIELDS = (
     # product code straight from the install row — no per-host configuration.
     "productCode",
     "marketplaceListingUrl",
+    # Which authority the EXTENSION ITSELF enforces its subscription against
+    # ("none" | "simulated" | "marketplace-live"), baked from the manifest the
+    # same way. This is what makes the host's catalog entry verifiable rather
+    # than aspirational: checkFeatureEntitlement prefers this value, so the host
+    # checks the authority the extension actually honours, and reports a mismatch
+    # when the catalog disagrees. Absent for anything installed before this
+    # existed — the resolver falls back to the catalog, then the stack setting.
+    "licenseMode",
 )
+
+# Mirrors _LICENSE_MODES in check_feature_entitlement. An unrecognised value is
+# dropped rather than persisted: the row is the highest-priority input to the
+# host's authority resolution, so letting a typo through would silently pick an
+# authority nobody chose. Dropping it falls back to the catalog entry.
+_LICENSE_MODES = ("none", "simulated", "marketplace-live")
 
 
 def _validate_input(payload: Dict[str, Any]) -> None:
@@ -90,6 +104,27 @@ def _register(payload: Dict[str, Any]) -> Dict[str, Any]:
         val = payload.get(f)
         if val:
             item[f] = val
+
+    declared_mode = item.get("licenseMode")
+    if declared_mode is not None and declared_mode not in _LICENSE_MODES:
+        # Deliberately does NOT name a source file. The host has no idea where the
+        # extension got this value: the bundled SDK bakes it from the manifest's
+        # `marketplace.licenseMode`, but an extension is equally free to declare it
+        # as a CloudFormation Mappings constant, a stack parameter, or anything
+        # else its ui-deployer can read — the host only requires it in the payload.
+        # An earlier version of this message told the operator to fix "the
+        # manifest", which is wrong advice for any extension that declares it
+        # elsewhere.
+        logger.warning(
+            "Feature %s sent licenseMode=%r in its registerFeature payload, which "
+            "is not one of %s. Dropping it; the host will fall back to its catalog "
+            "entry for this feature. Fix whatever the extension's ui-deployer "
+            "reads the value from.",
+            item["featureId"],
+            declared_mode,
+            ", ".join(_LICENSE_MODES),
+        )
+        item.pop("licenseMode")
 
     table = _dynamodb.Table(_INSTALLED_FEATURES_TABLE)
     table.put_item(Item=item)

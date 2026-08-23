@@ -1162,6 +1162,16 @@ Conditions:
   DocumentSectionsCrawlerScheduleEnabled:
     !Not [ !Equals [ !Ref DocumentSectionsCrawlerFrequency, "Manual" ] ]
   HasPermissionsBoundary: !Not [ !Equals [ !Ref PermissionsBoundaryArn, "" ] ]
+  # GovCloud-only trust-policy statements are gated on this so that a commercial
+  # deployment renders a trust policy with no GovCloud principals in it. That is
+  # not cosmetic: an IAM role's AssumeRolePolicyDocument can only be changed on
+  # an existing role via iam:UpdateAssumeRolePolicy, so shipping a
+  # partition-specific principal unconditionally rewrites the document on every
+  # other partition's next stack UPDATE. Deployments using a CloudFormation
+  # service role (or permissions boundary) that lacks that action then fail and
+  # wedge in UPDATE_ROLLBACK_FAILED — the rollback needs the same action, so it
+  # cannot self-recover. See issue #632.
+  IsGovCloudPartition: !Equals [ !Ref "AWS::Partition", "aws-us-gov" ]
   HasCustomConfigPath: !Not [ !Equals [ !Ref CustomConfigPath, "" ] ]
   # When the LWA layer ARN is left blank, construct the region/partition default.
   HasLambdaWebAdapterLayerArn:
@@ -9800,6 +9810,18 @@ Resources:
         # intrinsics), list one statement per known principal — only the
         # one matching the deploy region's actual federated caller is ever
         # exercised by STS; the others are inert.
+        #
+        # The GovCloud statements ARE inert for STS at runtime, but they are NOT
+        # inert at deploy time: they are part of the trust-policy document, so
+        # listing them unconditionally made a commercial stack UPDATE rewrite the
+        # document and call iam:UpdateAssumeRolePolicy. Under a CFN service role
+        # or permissions boundary without that action the update fails and the
+        # stack wedges in UPDATE_ROLLBACK_FAILED (issue #632). They are therefore
+        # gated on IsGovCloudPartition, which makes the rendered commercial
+        # document byte-identical to the pre-GovCloud one (no diff -> no
+        # UpdateAssumeRolePolicy call). Both statements stay present on GovCloud:
+        # the principal is per-region, and gating them on region instead would
+        # churn the trust policy of already-deployed GovCloud stacks for no gain.
         Statement:
           - Effect: Allow
             Principal:
@@ -9811,26 +9833,32 @@ Resources:
                 "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
               "ForAnyValue:StringLike":
                 "cognito-identity.amazonaws.com:amr": authenticated
-          - Effect: Allow
-            Principal:
-              Federated: cognito-identity-us-gov.amazonaws.com
-            Action:
-              - sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "cognito-identity-us-gov.amazonaws.com:aud": !Ref IdentityPool
-              "ForAnyValue:StringLike":
-                "cognito-identity-us-gov.amazonaws.com:amr": authenticated
-          - Effect: Allow
-            Principal:
-              Federated: cognito-identity.us-gov-east-1.amazonaws.com
-            Action:
-              - sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "cognito-identity.us-gov-east-1.amazonaws.com:aud": !Ref IdentityPool
-              "ForAnyValue:StringLike":
-                "cognito-identity.us-gov-east-1.amazonaws.com:amr": authenticated
+          - !If
+            - IsGovCloudPartition
+            - Effect: Allow
+              Principal:
+                Federated: cognito-identity-us-gov.amazonaws.com
+              Action:
+                - sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "cognito-identity-us-gov.amazonaws.com:aud": !Ref IdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity-us-gov.amazonaws.com:amr": authenticated
+            - !Ref "AWS::NoValue"
+          - !If
+            - IsGovCloudPartition
+            - Effect: Allow
+              Principal:
+                Federated: cognito-identity.us-gov-east-1.amazonaws.com
+              Action:
+                - sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "cognito-identity.us-gov-east-1.amazonaws.com:aud": !Ref IdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.us-gov-east-1.amazonaws.com:amr": authenticated
+            - !Ref "AWS::NoValue"
       PermissionsBoundary:
         !If [
           HasPermissionsBoundary,

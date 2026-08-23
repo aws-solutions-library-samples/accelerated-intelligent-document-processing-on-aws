@@ -1978,6 +1978,31 @@ STDERR:
             )
         return {}
 
+    # Mirrors _LICENSE_MODES in check_feature_entitlement/index.py.
+    _LICENSE_MODES = ("none", "simulated", "marketplace-live")
+
+    def _marketplace_license_mode(self, item):
+        """Validated `licenseMode` for one marketplace catalog entry.
+
+        Absent → `marketplace-live` (see the call site for why the host's default
+        is the strict one). An unrecognised value is a hard error rather than a
+        silent downgrade: a typo here decides which authority confirms a paid
+        subscription, and getting that wrong quietly is the failure this whole
+        field exists to prevent.
+        """
+        raw = item.get("licenseMode")
+        if raw is None or raw == "":
+            return "marketplace-live"
+        mode = str(raw).strip()
+        if mode not in self._LICENSE_MODES:
+            self.log_error(
+                f"{self._MARKETPLACE_EXTENSIONS_FILE}: feature "
+                f"{item.get('featureId')!r} has licenseMode={raw!r}, which is not "
+                f"one of {', '.join(self._LICENSE_MODES)}."
+            )
+            sys.exit(1)
+        return mode
+
     def _load_marketplace_features(self):
         """Load + normalize the curated marketplace extension list.
 
@@ -2030,6 +2055,27 @@ STDERR:
                     "productCode": item.get("productCode") or "",
                     "productId": item.get("productId") or "",
                     "marketplaceListingUrl": item.get("marketplaceListingUrl") or "",
+                    # Which authority the HOST must check this extension against:
+                    # "none" | "simulated" | "marketplace-live". Per-extension, so
+                    # one stack can confirm a listed product against real AWS
+                    # Marketplace while checking in-development extensions against
+                    # a simulator.
+                    #
+                    # Defaulted HERE, at publish time, rather than at runtime, and
+                    # that placement is load-bearing: the resolver's fallback chain
+                    # is row → catalog → legacy stack setting, so a runtime default
+                    # would shadow the legacy step and change behaviour for a stack
+                    # running an older catalog. Baking it means a current catalog
+                    # always carries an explicit value and the legacy step is
+                    # reached only by a catalog that genuinely predates the field.
+                    #
+                    # The default is `marketplace-live` — deliberately the OPPOSITE
+                    # of the extension-side default (`none`). An unrecognised value
+                    # must not OVER-CLAIM verification for something listed in the
+                    # *marketplace* catalog, so the host degrades to the strictest
+                    # authority; the extension degrades to serving so it can't lock
+                    # a paying customer out. See docs/feature-platform.md.
+                    "licenseMode": self._marketplace_license_mode(item),
                     # Schema 1.1: explicit per-region bucket + version-free
                     # template key. Always present (possibly empty) so the host
                     # reads exactly one shape.
@@ -2243,6 +2289,11 @@ STDERR:
             # samples set false so they're only in the Browse catalog page.
             "showInNav": manifest.showInNav,
             "source": "oss",
+            # Open-source extensions have no Marketplace contract, so there is no
+            # authority to check. extensions-oss.yaml needs no field for this —
+            # absent means `none` there — but the CATALOG states it explicitly so
+            # every entry the host reads has one shape.
+            "licenseMode": "none",
             "latestVersion": manifest.version,
             # OSS extension artifacts live in the (same) artifacts bucket the
             # main template is published to, under a VERSION-FREE extension base

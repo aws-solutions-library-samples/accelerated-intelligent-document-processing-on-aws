@@ -329,12 +329,16 @@ class TestAssessmentService:
 
     @patch("idp_common.assessment.service.bedrock.extract_text_from_response")
     @patch("idp_common.assessment.service.bedrock.invoke_model")
-    def test_images_dropped_in_ocr_only_mode(
+    def test_page_images_reach_content_builder_in_every_geometry_mode(
         self, mock_invoke_model, mock_extract_text, mock_config
     ):
-        """B1: in ocr_only/off geometry modes the confidence call is text-only —
-        page images are omitted (they add ~1.7K input tok each and don't help a
-        no-bbox confidence judgement). In llm/llm_grounded modes images are kept."""
+        """Page images are handed to the content builder regardless of geometry.mode.
+
+        Whether they are actually attached is decided by the prompt (presence of
+        {DOCUMENT_IMAGE}), not by geometry.mode: a confidence pass that is not
+        asked for bounding boxes still needs the image to judge visually-evidenced
+        fields (signature/checkbox/stamp booleans, handwriting).
+        """
         mock_invoke_model.return_value = {
             "response": {
                 "stopReason": "end_turn",
@@ -362,10 +366,35 @@ class TestAssessmentService:
             # 7th positional arg is page_images passed into the content builder.
             return builder.call_args.args[6]
 
-        assert _run("ocr_only") == []  # images dropped
-        assert _run("off") == []  # images dropped
-        assert _run("llm_grounded") == [b"img1", b"img2", b"img3"]  # kept
-        assert _run("llm") == [b"img1", b"img2", b"img3"]  # kept
+        for mode in ("ocr_only", "off", "llm_grounded", "llm"):
+            assert _run(mode) == [b"img1", b"img2", b"img3"], mode
+
+    @patch("idp_common.assessment.service.image.prepare_bedrock_image_attachment")
+    def test_images_attached_only_when_placeholder_present(
+        self, mock_attachment, service
+    ):
+        """{DOCUMENT_IMAGE} in the template is what decides image attachment."""
+        mock_attachment.side_effect = lambda img: {"image": img}
+
+        def _build(template: str):
+            return service._build_content_with_or_without_image_placeholder(
+                template,
+                "text",
+                "invoice",
+                "attrs",
+                "{}",
+                "",
+                [b"img1", b"img2"],
+            )
+
+        with_placeholder = _build("before {DOCUMENT_IMAGE} after")
+        assert [item for item in with_placeholder if "image" in item] == [
+            {"image": b"img1"},
+            {"image": b"img2"},
+        ]
+
+        without_placeholder = _build("no image placeholder here")
+        assert not any("image" in item for item in without_placeholder)
 
     def test_format_property_descriptions(self, service):
         """Test formatting property descriptions from JSON Schema."""
@@ -412,6 +441,110 @@ class TestAssessmentService:
         assert "Transaction amount" in formatted
         assert "  - balance" in formatted
         assert "Account balance after transaction" in formatted
+
+    def test_format_property_descriptions_resolves_refs(self, service):
+        """$ref-based groups and lists must render their real descriptions.
+
+        Schemas authored in the UI put groups/list items in ``$defs`` and
+        reference them, which previously collapsed every such property to
+        ``Name  \t[  ]`` — the confidence model saw no field descriptions at all.
+        """
+        schema = {
+            "$id": "tax_form",
+            "type": "object",
+            "properties": {
+                "Signatures": {"$ref": "#/$defs/Signatures"},
+                "Payments": {"$ref": "#/$defs/Payments"},
+            },
+            "$defs": {
+                "Signatures": {
+                    "type": "object",
+                    "description": "Signatures of the examiner and taxpayer",
+                    "properties": {
+                        "SignatureOfTaxpayer1": {
+                            "type": "boolean",
+                            "description": "Does taxpayer 1's signature exist?",
+                        },
+                        "DateOfSignature1": {"$ref": "#/$defs/SignatureDate"},
+                    },
+                },
+                "SignatureDate": {
+                    "type": "string",
+                    "description": "Date next to the signature",
+                },
+                "Payments": {
+                    "type": "array",
+                    "description": "Payments applied to the balance",
+                    "x-aws-idp-list-item-description": "One payment",
+                    "items": {"$ref": "#/$defs/Payment"},
+                },
+                "Payment": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "string", "description": "Amount paid"},
+                    },
+                },
+            },
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        # Group behind a $ref: own description plus nested members.
+        assert "Signatures  \t[ Signatures of the examiner and taxpayer ]" in formatted
+        assert "  - SignatureOfTaxpayer1  \t[ Does taxpayer 1's signature exist? ]" in (
+            formatted
+        )
+        # A nested member that is itself a $ref resolves too.
+        assert "  - DateOfSignature1  \t[ Date next to the signature ]" in formatted
+        # List behind a $ref, with $ref'd item shape.
+        assert "Payments  \t[ Payments applied to the balance ]" in formatted
+        assert "Each item: One payment" in formatted
+        assert "  - amount  \t[ Amount paid ]" in formatted
+
+    def test_format_property_descriptions_tolerates_bad_refs(self, service):
+        """Unresolvable refs degrade gracefully instead of raising."""
+        schema = {
+            "$id": "odd",
+            "type": "object",
+            "properties": {
+                "dangling": {"$ref": "#/$defs/Nope"},
+                "remote": {"$ref": "https://example.com/schema.json"},
+                "cyclic": {"$ref": "#/$defs/Loop"},
+                "plain": {"type": "string", "description": "A normal field"},
+            },
+            "$defs": {"Loop": {"$ref": "#/$defs/Loop"}},
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        for name in ("dangling", "remote", "cyclic", "plain"):
+            assert name in formatted
+        assert "A normal field" in formatted
+
+    def test_format_property_descriptions_ref_sibling_description_wins(self, service):
+        """A description alongside a $ref overrides the definition's."""
+        schema = {
+            "$id": "override",
+            "type": "object",
+            "properties": {
+                "Group": {
+                    "$ref": "#/$defs/Group",
+                    "description": "Local override description",
+                }
+            },
+            "$defs": {
+                "Group": {
+                    "type": "object",
+                    "description": "Shared description",
+                    "properties": {},
+                }
+            },
+        }
+
+        formatted = service._format_property_descriptions(schema)
+
+        assert "Group  \t[ Local override description ]" in formatted
+        assert "Shared description" not in formatted
 
     def test_confidence_thresholds_in_schema(self, service):
         """Test that confidence thresholds are present in JSON Schema."""

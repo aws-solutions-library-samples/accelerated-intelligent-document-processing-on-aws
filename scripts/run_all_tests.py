@@ -59,6 +59,11 @@ RUN_ROOTS = [
     "lib/idp_sdk/tests",
     "lib/idp_feature_sdk/tests",
     "feature-platform/main-stack-extensions/tests",
+    # Seller entitlement service (Marketplace signing/entitlement). Already run
+    # explicitly by `make test-packages-cicd`, so it is verified green headless;
+    # registering it here keeps `make test` from hard-erroring on an
+    # unclassified directory, which blocked the whole gate.
+    "feature-platform/seller-entitlement-service/tests",
     # ConfBench Test Set extension. test_planner.py self-skips unless
     # huggingface_hub + pyarrow are installed (ingest/planner.py imports both at
     # module scope); the other three modules run unconditionally. Install

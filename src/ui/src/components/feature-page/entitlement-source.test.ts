@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isUnverifiedGrant, isVerifiedEntitlement, unverifiedReason } from './entitlement-source';
+import { isUnverifiedGrant, isVerifiedEntitlement, licenseModeMismatchNote, unverifiedReason } from './entitlement-source';
+import type { FeatureEntitlement } from '../../types/feature-platform';
 
 describe('isVerifiedEntitlement', () => {
   it('is true only for ACTIVE from the real buyer-side check', () => {
@@ -15,8 +16,7 @@ describe('isVerifiedEntitlement', () => {
     // pointed at a fake Marketplace. Counting them as verified let a production
     // host aimed at a simulator render a clean "subscription active" with no
     // warning and no metric.
-    expect(isVerifiedEntitlement('ACTIVE', 'simulator')).toBe(false);
-    expect(isVerifiedEntitlement('ACTIVE', 'marketplace')).toBe(false);
+    expect(isVerifiedEntitlement('ACTIVE', 'simulated')).toBe(false);
   });
 
   it('is FALSE for auto and advisory — the whole point of the flag', () => {
@@ -55,8 +55,7 @@ describe('isUnverifiedGrant', () => {
   });
 
   it('is true for simulator-backed grants', () => {
-    expect(isUnverifiedGrant('ACTIVE', 'simulator')).toBe(true);
-    expect(isUnverifiedGrant('ACTIVE', 'marketplace')).toBe(true);
+    expect(isUnverifiedGrant('ACTIVE', 'simulated')).toBe(true);
   });
 
   it('is false when nothing was granted', () => {
@@ -66,7 +65,7 @@ describe('isUnverifiedGrant', () => {
   });
 
   it('never overlaps with isVerifiedEntitlement', () => {
-    const sources = ['marketplace', 'marketplace-live', 'simulator', 'auto', 'advisory', 'oss', 'none'] as const;
+    const sources = ['marketplace-live', 'simulated', 'auto', 'advisory', 'oss', 'none'] as const;
     for (const source of sources) {
       expect(isVerifiedEntitlement('ACTIVE', source) && isUnverifiedGrant('ACTIVE', source)).toBe(false);
     }
@@ -85,7 +84,7 @@ describe('unverifiedReason', () => {
   });
 
   it('names the simulator for simulator-backed modes', () => {
-    for (const source of ['simulator', 'marketplace'] as const) {
+    for (const source of ['simulated'] as const) {
       expect(unverifiedReason(source)).toContain('simulator');
     }
   });
@@ -93,5 +92,52 @@ describe('unverifiedReason', () => {
   it('falls back to a generic explanation', () => {
     expect(unverifiedReason('none')).toBeTruthy();
     expect(unverifiedReason(undefined)).toBeTruthy();
+  });
+});
+
+describe('licenseModeMismatchNote', () => {
+  const ent = (over: Partial<FeatureEntitlement> = {}): FeatureEntitlement => ({
+    featureId: 'idp-auto-optimizer',
+    state: 'ACTIVE',
+    expiresAt: null,
+    customerIdentifier: null,
+    productCode: 'p',
+    source: 'marketplace-live',
+    ...over,
+  });
+
+  it('is null when there is no mismatch', () => {
+    expect(licenseModeMismatchNote(ent())).toBeNull();
+    expect(licenseModeMismatchNote(ent({ licenseModeMismatch: false }))).toBeNull();
+    expect(licenseModeMismatchNote(null)).toBeNull();
+    expect(licenseModeMismatchNote(undefined)).toBeNull();
+  });
+
+  it('names the reported case specifically — catalog simulated, extension live', () => {
+    // The dangerous direction: the page would otherwise show a simulator-backed
+    // subscription that the extension is going to ignore.
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'marketplace-live', catalogLicenseMode: 'simulated' }),
+    );
+    expect(note).toMatch(/real AWS Marketplace subscription/i);
+    expect(note).toMatch(/simulator development/i);
+    expect(note).toMatch(/licenseMode/);
+  });
+
+  it('falls back to a generic note for any other disagreement', () => {
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'simulated', catalogLicenseMode: 'marketplace-live' }),
+    );
+    expect(note).toMatch(/simulated/);
+    expect(note).toMatch(/marketplace-live/);
+  });
+
+  it('says the host follows the EXTENSION, not the catalog', () => {
+    // Aligning the host with the extension is the only way the two gates agree;
+    // the note must not imply the host is about to check the catalog's authority.
+    const note = licenseModeMismatchNote(
+      ent({ licenseModeMismatch: true, declaredLicenseMode: 'marketplace-live', catalogLicenseMode: 'simulated' }),
+    );
+    expect(note).toMatch(/checking real AWS Marketplace to match the extension/i);
   });
 });

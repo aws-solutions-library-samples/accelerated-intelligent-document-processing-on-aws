@@ -690,10 +690,11 @@ Patterns 2 and 3 support multiple OCR backend engines for flexible document proc
 ocr:
   backend: textract  # or "bda", "bedrock", "none"
 
-  # Textract features. DEFAULT: TABLES + LAYOUT (see trade-off below).
+  # Textract features. DEFAULT: TABLES + LAYOUT + SIGNATURES (see trade-off below).
   features:
     - name: TABLES
     - name: LAYOUT
+    - name: SIGNATURES
 
   # For BDA backend (optional): use a specific standard-output SYNC project
   # instead of the per-stack <stackname>_OCR_StdOutput project the stack
@@ -712,15 +713,18 @@ ocr:
   single flat per-page price and no feature tuning. One call returns markdown
   tables, layout, word confidence, and bounding boxes; per-page processing scales
   past BDA's ~10-page synchronous limit automatically.
-- **Textract** — you need only raw text (cheapest), or you already tune specific
-  Textract features. For table-heavy docs, `TABLES`+`LAYOUT` on Textract (~$0.065/page)
-  is often comparable in total cost to BDA ($0.01/page) once you weigh the extra
-  Textract feature cost against BDA's flat rate; benchmark on your corpus.
+- **Textract** — you need only raw text (much cheaper: ~$0.0015/page), or you
+  already tune specific Textract features. For table-heavy docs, `TABLES` on
+  Textract (~$0.015/page, with `LAYOUT` and `SIGNATURES` free alongside it) costs
+  somewhat more per page than BDA ($0.01/page) up to 1M pages/month and the same
+  above it (Textract's `TABLES` tier drops to $0.010); benchmark accuracy on your
+  corpus rather than choosing on price alone.
 
 ### Textract features & the TABLES cost/accuracy trade-off
 
 `ocr.features` selects which Amazon Textract analysis features run. The default is
-**`TABLES` + `LAYOUT`**.
+**`TABLES` + `LAYOUT` + `SIGNATURES`** — of which only `TABLES` is billed (see
+below).
 
 - **`TABLES` is on by default because tables are common and the accuracy gain is
   large.** It makes Textract emit structured Table/Cell blocks (with per-cell text,
@@ -730,8 +734,9 @@ ocr:
   brokerage statement, `TABLES` extracted **all 1,440 rows (every page)** while
   `LAYOUT`-only silently dropped ~5 pages (~300 rows) where the plain-text
   linearization mis-segmented the table.
-- **Cost trade-off** (`TABLES`+`LAYOUT` ≈ **$0.065/page** vs `LAYOUT`-only ≈
-  **$0.004/page**, ~16× on the Textract line item):
+- **Cost trade-off** (`TABLES` ≈ **$0.015/page**, with `LAYOUT` and `SIGNATURES`
+  free alongside it, vs `LAYOUT`-only ≈ **$0.004/page** — ~3.75× on the Textract
+  line item):
   - **Documents *with* tables:** the extra OCR cost is typically *more*
     cost-effective and scalable end-to-end — cleaner cell structure means fewer LLM
     extraction retries, fewer confidence truncations/re-batches, and less downstream
@@ -741,6 +746,73 @@ ocr:
     entry** to fall back to cheaper `LAYOUT`-only OCR.
 
 Set `ocr.features` per configuration to match the documents each stack processes.
+
+### The `SIGNATURES` feature
+
+`SIGNATURES` is **on by default**, because signature presence is a common
+extraction target (loan packages, tax forms, claims, consents) and it adds **no
+Textract charge** in the default combination. The
+[Textract pricing page](https://aws.amazon.com/textract/pricing/) states it
+directly: *"Signatures feature is included free of cost with any combination of
+Forms, Tables, Queries, and Layout"* — AWS emits no usage type at all for a feature
+that is free in combination. Used **alone**, without any of those features,
+`SIGNATURES` is billed at ~$0.0035/page.
+
+With `SIGNATURES` enabled, Textract reports each region it believes contains a
+signature, as a **detection confidence plus a bounding box** — not text. Those
+detections reach the rest of the pipeline in three places:
+
+- **Page text** (used by the extraction prompt and the Web UI markdown view) —
+  the linearizer inserts an inline `[SIGNATURE]` token per detection, and an
+  `OCR signature detections` block is appended listing each one's normalized
+  position and confidence.
+- **`textConfidence.json`** (used by the confidence/assessment prompt) — the same
+  block, appended after the per-line confidence table.
+- **`pageData.json`** — a `signatures` array, which the Web UI page viewer lists
+  under **Signature detections** with a clickable bounding box and a
+  colour-coded confidence.
+
+**Read the confidence.** A detection is not proof of a signature: Textract will
+flag a stray pen mark, smudge or scanning artifact, typically at *low*
+confidence (single- or low-double-digit). The appended block reports each
+detection's confidence band, its page position in left/right + upper/lower terms,
+and the OCR text it sits on or next to — because a bare `left=0.572` is not usable
+evidence in practice: on the form in
+[#634](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/634)
+both the extraction and the confidence model read that as *"the first (left)
+signature box"* when the detection was in the right-hand cell.
+
+#### Extracting a reliable signed/unsigned boolean
+
+Measured on that form — an unsigned Form 4549 whose left signature cell holds only
+a faint smudge, with a date filled in beside it — **no single measure was enough**.
+Each of these, on its own, still returned `true` for the unsigned field
+(Claude Sonnet 4.5, temperature 0, page images attached, repeated runs):
+
+- the OCR detections block alone;
+- strict field descriptions alone;
+- few-shot examples alone.
+
+What worked, reproducibly, was **all three together**:
+
+1. **Say what counts, in the field description.** A signature is a handwritten name
+   or initials; a date in the adjacent column is *not* evidence of one; stray marks,
+   smudges and scan artifacts are *not* signatures; if no signature region is
+   detected in that cell, answer false.
+2. **Give a few-shot example of the negative case** — the unsigned document *with* a
+   date present, and a note that small marks are not signatures. This is the single
+   biggest contributor, and it needs `{FEW_SHOT_EXAMPLES}` in your extraction
+   `task_prompt` (present in the shipped prompts; a custom prompt must add it).
+   See [few-shot-examples.md](few-shot-examples.md).
+3. **Keep `SIGNATURES` enabled** so the detections block is there. With steps 1-2
+   but *without* it, the false positive did not disappear — it **moved to the other
+   taxpayer's field**, because the model could tell a mark existed somewhere but not
+   which cell it was in.
+
+**If your corpus has no signature fields, remove the `SIGNATURES` entry.** Pages
+with a detection (including false positives on stray ink) add a few prompt tokens
+and an extra signal the model may over-read, for no benefit when nothing asks about
+signatures. Removing it costs nothing, since the feature was free to begin with.
 
 ### Bedrock OCR Benefits
 

@@ -84,6 +84,22 @@ Each example includes four key components:
 - **`x-aws-idp-attributes-prompt`**: The expected attribute extraction results in exact JSON format (used for extraction). Can include sample OCR text output to demonstrate the text from which attributes should be extracted.
 - **`x-aws-idp-image-path`**: Path to example document image(s) - supports single files, local directories, or S3 prefixes (optional but recommended for better visual understanding)
 
+> **The `x-aws-idp-*` names above are canonical; legacy camelCase is still read.**
+> Earlier versions stored these three fields as `classPrompt`, `attributesPrompt`
+> and `imagePath` — the container has always been `x-aws-idp-examples`, but the
+> entry fields lagged behind. Both spellings behave identically wherever examples
+> are consumed, so **no config needs changing**. What produces the canonical form:
+> the UI's schema editor writes it (and drops the legacy alias from any example you
+> edit), config migration converts it, and the shipped `config_library` presets use
+> it. If an example somehow carries both, the `x-aws-idp-*` value wins.
+
+> **Unreadable example images degrade to text-only.** If `x-aws-idp-image-path`
+> cannot be read (bucket in another account/partition, object deleted, missing
+> `s3:GetObject`), a warning is logged and the example is used **without** its
+> image rather than failing the document. Check the Extraction/Classification
+> function logs for `using example '<name>' without images` if examples look like
+> they are having less effect than expected.
+
 ### Example Processing Rules
 
 **Important**: Examples are only processed if they contain the required prompt field for the specific task:
@@ -161,7 +177,7 @@ When pointing to a directory or S3 prefix, the system automatically:
 The system uses these environment variables for resolving relative paths:
 
 - **`CONFIGURATION_BUCKET`**: S3 bucket name for configuration files
-  - Used when `imagePath` doesn't start with `s3://`
+  - Used when `x-aws-idp-image-path` doesn't start with `s3://`
   - The path is treated as a key within this bucket
 
 - **`ROOT_DIR`**: Root directory for local file resolution
@@ -173,13 +189,13 @@ The system uses these environment variables for resolving relative paths:
 Few-shot examples in Pattern-2 support both multimodal and text-only approaches:
 
 **Multimodal Examples (Recommended)**:
-- Include both `imagePath` and text descriptions in prompts
+- Include both `x-aws-idp-image-path` and text descriptions in prompts
 - Provide visual context alongside text explanations
 - Help models understand document layout and formatting
 - Most effective for complex document types
 
 **Text-Only Examples**:
-- Include sample document text (OCR output) within `classPrompt` or `attributesPrompt`
+- Include sample document text (OCR output) within `x-aws-idp-class-prompt` or `x-aws-idp-attributes-prompt`
 - Useful when images are not available or for privacy-sensitive scenarios
 - Can demonstrate text patterns and content structure
 - Still provide significant accuracy improvements over no examples
@@ -187,7 +203,7 @@ Few-shot examples in Pattern-2 support both multimodal and text-only approaches:
 **Example with OCR Text Content**:
 ```yaml
 examples:
-  - classPrompt: |
+  - x-aws-idp-class-prompt: |
       This is an example of the class 'invoice'. 
       
       Example document text:
@@ -198,7 +214,7 @@ examples:
       Total Amount: $1,250.00
       Due Date: February 15, 2024
     name: "Invoice1"
-    attributesPrompt: |
+    x-aws-idp-attributes-prompt: |
       For the above invoice text, expected attributes are:
           "invoice_number": "INV-2024-001",
           "invoice_date": "January 15, 2024",
@@ -206,8 +222,8 @@ examples:
           "customer_name": "ACME Corp", 
           "total_amount": "$1,250.00",
           "due_date": "February 15, 2024"
-    # imagePath is optional - can be omitted for text-only examples
-    imagePath: "config_library/unified/your_config/example-images/invoice1.pdf"
+    # x-aws-idp-image-path is optional - can be omitted for text-only examples
+    x-aws-idp-image-path: "config_library/unified/your_config/example-images/invoice1.pdf"
 ```
 
 ## How Few-Shot Examples Work in Pattern-2
@@ -219,27 +235,27 @@ Pattern-2 uses few-shot examples differently for classification and extraction t
 When classifying documents:
 - **Example Scope**: Uses examples from ALL document classes
 - **Purpose**: Help the model distinguish between different document types
-- **Content**: Uses `classPrompt` field from examples (with optional images)
+- **Content**: Uses `x-aws-idp-class-prompt` field from examples (with optional images)
 - **Benefit**: Model sees visual and/or textual examples of each class to make better classification decisions
-- **Filtering**: Only examples with non-empty `classPrompt` fields are included
+- **Filtering**: Only examples with non-empty `x-aws-idp-class-prompt` fields are included
 
 ### Extraction Process
 
 When extracting attributes from documents:
 - **Example Scope**: Uses examples ONLY from the specific document class being processed
 - **Purpose**: Show the expected attribute extraction format and values
-- **Content**: Uses `attributesPrompt` field from examples (with optional images)
+- **Content**: Uses `x-aws-idp-attributes-prompt` field from examples (with optional images)
 - **Benefit**: Model sees concrete examples of what the extraction output should look like
-- **Filtering**: Only examples with non-empty `attributesPrompt` fields are included
+- **Filtering**: Only examples with non-empty `x-aws-idp-attributes-prompt` fields are included
 
 | Aspect | Classification | Extraction |
 |--------|---------------|------------|
 | **Example Scope** | ALL classes | Specific class only |
-| **Prompt Field** | `classPrompt` | `attributesPrompt` |
+| **Prompt Field** | `x-aws-idp-class-prompt` | `x-aws-idp-attributes-prompt` |
 | **Purpose** | Distinguish document types | Show extraction format |
 | **Content** | Document type descriptions + optional OCR text | Expected JSON attribute values + optional OCR text |
 | **Images** | Optional but recommended | Optional but recommended |
-| **Filtering** | Requires non-empty `classPrompt` | Requires non-empty `attributesPrompt` |
+| **Filtering** | Requires non-empty `x-aws-idp-class-prompt` | Requires non-empty `x-aws-idp-attributes-prompt` |
 
 ## Setting Up Few-Shot Examples
 
@@ -350,6 +366,17 @@ classes:
 ```
 
 ### Step 4: Update Task Prompts with Cache Points
+
+> **The shipped prompts already include `{FEW_SHOT_EXAMPLES}`.** The default
+> classification `task_prompt` and all three default extraction prompt variants
+> (`task_prompt`, `task_prompt_extraction_with_confidence`,
+> `task_prompt_extraction_with_confidence_topk`) carry the placeholder ahead of
+> `<<CACHEPOINT>>`, so defining examples on a class is enough for both services to
+> use them — no prompt edit required. It is a no-op for classes with no examples
+> (and for a service whose prompt field on those examples is empty). What *does*
+> still need the placeholder added by hand: any config that replaces a shipped
+> `task_prompt` with its own copy. A custom prompt without the placeholder silently
+> ignores every example.
 
 Ensure your classification and extraction task prompts include the `{FEW_SHOT_EXAMPLES}` placeholder and use `<<CACHEPOINT>>` for optimal performance. You can also use the `{DOCUMENT_IMAGE}` placeholder for precise image positioning:
 
@@ -506,24 +533,24 @@ task_prompt: |
 
 2. **Include Required Prompt Fields**
    ```yaml
-   # Good - includes both classPrompt and attributesPrompt for full functionality
-   - classPrompt: "This is an example of the class 'invoice'"
-     attributesPrompt: |
+   # Good - includes both x-aws-idp-class-prompt and x-aws-idp-attributes-prompt for full functionality
+   - x-aws-idp-class-prompt: "This is an example of the class 'invoice'"
+     x-aws-idp-attributes-prompt: |
        expected attributes are:
            "invoice_number": "INV-001",
            "total_amount": "$1,250.00"
-     imagePath: "invoice1.jpg"
+     x-aws-idp-image-path: "invoice1.jpg"
    
    # Limited - only works for classification (extraction will skip this example)
-   - classPrompt: "This is an example of the class 'invoice'"
-     # Missing attributesPrompt - skipped during extraction
-     imagePath: "invoice2.jpg"
+   - x-aws-idp-class-prompt: "This is an example of the class 'invoice'"
+     # Missing x-aws-idp-attributes-prompt - skipped during extraction
+     x-aws-idp-image-path: "invoice2.jpg"
    ```
 
 3. **Provide Complete Attribute Sets**
    ```yaml
    # Good - shows all attributes with realistic values
-   attributesPrompt: |
+   x-aws-idp-attributes-prompt: |
      For the sample invoice text above, expected attributes are:
          "sender_name": "John Smith",
          "sender_address": "123 Main St, City, State 12345",
@@ -534,7 +561,7 @@ task_prompt: |
          "attachments": null
    
    # Avoid - incomplete attribute sets
-   attributesPrompt: |
+   x-aws-idp-attributes-prompt: |
      expected attributes are:
          "sender_name": "John Smith"
          # Missing other important attributes
@@ -542,7 +569,7 @@ task_prompt: |
 
 4. **Handle Null Values Explicitly**
    ```yaml
-   attributesPrompt: |
+   x-aws-idp-attributes-prompt: |
      expected attributes are:
          "invoice_number": "INV-2024-001",
          "po_number": null,  # Explicitly show when fields are not present
@@ -560,11 +587,11 @@ task_prompt: |
 
    ```yaml
    # Good: Use descriptive, ordered filenames
-   imagePath: "examples/letters/"
+   x-aws-idp-image-path: "examples/letters/"
    # Contents: 001_formal_letter.jpg, 002_informal_letter.png, 003_business_letter.jpg
 
    # Good: Group related examples together
-   imagePath: "s3://config-bucket/examples/invoices/"
+   x-aws-idp-image-path: "s3://config-bucket/examples/invoices/"
    # Contents: invoice_simple.jpg, invoice_complex.png, invoice_international.jpg
    ```
 
@@ -676,14 +703,21 @@ Monitor these metrics to ensure optimal cache usage:
 ### Common Issues
 
 **Examples Not Loading**
-- Verify `{FEW_SHOT_EXAMPLES}` placeholder exists in task prompts
+- Verify `{FEW_SHOT_EXAMPLES}` placeholder exists in task prompts. The shipped
+  extraction prompts include it; a **custom** extraction `task_prompt` and every
+  classification prompt must add it explicitly, and exactly once (the placeholder
+  is ignored if it appears more than once).
 - Check that examples are defined for the document classes being processed
-- Ensure examples have the required prompt fields (`classPrompt` for classification, `attributesPrompt` for extraction)
-- For image examples: Ensure image paths are correct and files exist
+- Ensure examples have the required prompt fields (`x-aws-idp-class-prompt` /
+  `classPrompt` for classification, `x-aws-idp-attributes-prompt` /
+  `attributesPrompt` for extraction)
+- For image examples: Ensure image paths are correct and files exist. An
+  unreadable path logs `using example '<name>' without images` and the example is
+  still sent as text.
 
 **Examples Being Skipped**
-- Verify that examples have non-empty `classPrompt` field for classification tasks
-- Verify that examples have non-empty `attributesPrompt` field for extraction tasks
+- Verify that examples have non-empty `x-aws-idp-class-prompt` field for classification tasks
+- Verify that examples have non-empty `x-aws-idp-attributes-prompt` field for extraction tasks
 - Check that the prompt field contains actual content, not just whitespace
 - Review the example processing rules described in this documentation
 
@@ -707,7 +741,7 @@ Monitor these metrics to ensure optimal cache usage:
 
 **Inconsistent Results**
 - Review example quality and ensure they're representative
-- Check that `attributesPrompt` format matches expected output exactly
+- Check that `x-aws-idp-attributes-prompt` format matches expected output exactly
 - Ensure examples cover the range of variations in your documents
 - For text examples: Verify OCR text samples are realistic and accurate
 

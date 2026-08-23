@@ -33,6 +33,14 @@ classification:
     <document-image>: Visual representation of the document page that provides layout, formatting, and visual structure information
     <document-types>: List of valid document types with their descriptions that the document must be classified into
     </variables>
+  # {FEW_SHOT_EXAMPLES} is present so a class that defines x-aws-idp-examples has
+  # them used WITHOUT also having to edit this prompt (examples defined but never
+  # sent is a silent, hard-to-notice failure). Classification uses each example's
+  # x-aws-idp-class-prompt (plus x-aws-idp-image-path); an example with no
+  # class-prompt is skipped, and with no examples at all the section renders empty
+  # and nothing is added to the request. Examples sit before <<CACHEPOINT>> because
+  # they are static per config and therefore cacheable — which matters more here
+  # than for extraction, since classification runs per page.
   task_prompt: >-
     <task-description>
     Analyze the provided document using both its visual layout and textual content to determine its document type and whether this page begins a new document or continues the previous one.
@@ -41,6 +49,10 @@ classification:
     <document-types>
     {CLASS_NAMES_AND_DESCRIPTIONS}
     </document-types>
+
+    <few-shot-examples>
+    {FEW_SHOT_EXAMPLES}
+    </few-shot-examples>
 
     <classification-instructions>
     Follow these steps to classify the document:

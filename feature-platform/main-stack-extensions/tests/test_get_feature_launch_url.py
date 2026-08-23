@@ -345,7 +345,6 @@ def test_marketplace_region_hit_returns_bare_public_url(
 
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
     # Force the entitlement gate open (GetEntitlements isn't moto-backed).
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
 
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
@@ -402,7 +401,6 @@ def test_marketplace_region_miss_fails_closed(monkeypatch, mock_stack, load_lamb
         ],
     )
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
     # The stack runs in us-east-1, which the entry does NOT list.
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
@@ -436,7 +434,6 @@ def test_marketplace_legacy_flat_schema_still_works(
     _put_catalog(bucket, [entry])
 
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
     )
@@ -462,7 +459,6 @@ def test_marketplace_legacy_flat_schema_other_region_fails_closed(
     _put_catalog(bucket, [entry])
 
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
     )
@@ -484,7 +480,6 @@ def test_marketplace_empty_catalog_latest_version_still_launches(
     _put_catalog(bucket, [_mp_entry(bucket, latestVersion="")])
 
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: True)
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
     )
@@ -493,7 +488,22 @@ def test_marketplace_empty_catalog_latest_version_still_launches(
     assert result["templateUrl"].endswith(_MP_TEMPLATE_KEY)
 
 
-def test_marketplace_not_entitled_raises(monkeypatch, mock_stack, load_lambda):
+def test_launch_url_does_not_gate_on_entitlement(monkeypatch, mock_stack, load_lambda):
+    """This resolver must NOT re-check entitlement. It used to, and the check
+    denied every genuinely subscribed customer.
+
+    It required a CustomerIdentifier that a real-Marketplace stack does not have
+    (no request header, and DEFAULT_CUSTOMER_IDENTIFIER is empty there), so it
+    raised before making any API call; and it asked seller-side GetEntitlements,
+    which returns 200-with-an-empty-list from a buyer account for a usage-based
+    SaaS listing. The customer saw "Subscription active" on the page and "no
+    entitlement" on the Launch button.
+
+    `checkFeatureEntitlement` is the single host-side authority and already decides
+    whether Launch is offered. Every marketplace test in this file used to
+    monkeypatch the gate to True, which is exactly why none of them caught it —
+    so this test deliberately supplies NO entitlement state of any kind.
+    """
     bucket = mock_stack["bucket"]
     _put_catalog(
         bucket,
@@ -504,6 +514,7 @@ def test_marketplace_not_entitled_raises(monkeypatch, mock_stack, load_lambda):
                 "source": "marketplace",
                 "latestVersion": "0.1.4",
                 "productCode": "prod-xyz",
+                "licenseMode": "marketplace-live",
                 "sellerBucket": bucket,
                 "sellerBucketRegion": "us-east-1",
                 "templateKey": "features/my-paid-extension/v0.1.4/template.yaml",
@@ -511,13 +522,17 @@ def test_marketplace_not_entitled_raises(monkeypatch, mock_stack, load_lambda):
         ],
     )
     mod = _preload_marketplace(monkeypatch, mock_stack, load_lambda)
-    monkeypatch.setattr(mod, "_has_active_entitlement", lambda pc, ci: False)
 
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "my-paid-extension"}, groups=["Admin"]
     )
-    with pytest.raises(mod.NotEntitledError):
-        mod.handler(event, None)
+    result = mod.handler(event, None)
+    assert result["templateUrl"].endswith(
+        "features/my-paid-extension/v0.1.4/template.yaml"
+    )
+    # And the retired gate's machinery is gone, not merely bypassed.
+    assert not hasattr(mod, "_has_active_entitlement")
+    assert not hasattr(mod, "NotEntitledError")
 
 
 def test_marketplace_entry_with_no_region_mapping_at_all(

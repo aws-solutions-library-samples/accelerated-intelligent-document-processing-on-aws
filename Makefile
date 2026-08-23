@@ -323,6 +323,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
+	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
+	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests

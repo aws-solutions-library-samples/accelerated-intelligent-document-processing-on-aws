@@ -20,7 +20,115 @@ This guide walks through the end-to-end workflow for creating a custom test set 
 https://github.com/user-attachments/assets/d5e0d590-ce8b-4e14-b2b7-8bde31e57ec2
 
 
-## Workflow Overview
+## Why you need one
+
+When you use AI to extract data from documents, the first question is always: how accurate
+is it? There is one honest way to answer — compare the system's answers against answers
+you already know are correct. A golden dataset is that answer key: real documents where a
+person has confirmed the correct value for every field you extract.
+
+Two things it gives you that nothing else does.
+
+**A real accuracy number.** Skimming documents and forming an impression is not a
+substitute. Check a field on 20 documents and its true accuracy could sit anywhere in a
+27-point range — a field that looks like 90% could really be 70%. Nobody can make a launch or
+staffing decision on a range that wide. Test Studio reports the per-field margin alongside
+the accuracy for exactly this reason (see [Field-Level
+Metrics](./test-studio.md#field-level-metrics)).
+
+**A way to improve.** Every change you make — a reworded prompt, a different model — fixes
+some fields and breaks others at the same time. The only way to know whether a change
+helped *overall* is to score before and after against the same answer key. Most of what
+teams find this way turns out to be gaps in their own prompts and mistakes in their own
+labels, not model problems, and none of it surfaces without the answer key.
+
+### Why there are no shortcuts
+
+**The answer key has to be better than the system it grades.** If a tenth of your labels
+are wrong and your system is also wrong a tenth of the time, half the "errors" you chase
+will be mistakes in your own answer key. Careful annotators still get roughly 1 field in
+20 wrong on a first pass, and a golden set needs to be far better than that. The way to
+close the gap is repetition: label, compare against model output, correct, compare again.
+Golden data is the product of several passes, never one.
+
+**Do not let the system grade itself.** Scored against its own predictions, a
+configuration reports near-perfect accuracy no matter how it actually performs, so
+self-grading measures nothing. This matters because of how the set gets built: to save
+labour we start from model predictions and have a person correct them rather than label
+from scratch (bootstrapping). It works and we recommend it, but reviewers tend to approve
+whatever is already filled in, so a bad prompt can push its own mistakes into the answer
+key and then score well against them.
+
+The accelerator manages that tradeoff in two ways. Confidence-guided review puts the
+fields most likely to be wrong in front of the reviewer first, so a focused review that
+actually happens beats a thorough one that does not. And scoring is **refused** outright
+when a run would measure a configuration against labels that same configuration drafted —
+see [How much review is enough?](./test-studio.md#how-much-review-is-enough).
+
+### How much data
+
+Your overall accuracy score firms up quickly, within roughly the first hundred documents.
+The accuracy of an individual *field* does not, because a field appearing once per
+document gives you one observation per document — so a badly failing field can hide inside
+a healthy-looking overall score. Fields that repeat within a document (invoice line items)
+need fewer documents; fields appearing once per document drive the requirement.
+
+| Documents | Observations per field | 95% margin |
+|---|---|---|
+| 20 | 20 | ±13.7 pts |
+| 100 | 100 | ±6.0 pts |
+| 300 | 300 | ±3.4 pts |
+| 500 | 500 | ±2.6 pts |
+
+Test Studio does not size your set for you — it tells you how much of the set you already
+have still needs human review, and how much to trust that estimate. Use the table above to
+decide how many documents to *collect*; use the estimator to decide how much of them to
+*review*.
+
+## Two paths
+
+Both end with a published test set you can score against. Pick by what you already have.
+
+### Path A — bootstrap the labels (recommended)
+
+Start from the test set and let the pipeline draft the labels. Fewest actions, and it is
+the path the confidence-guided review and effort estimator are built around.
+
+```
+┌──────────────┐   ┌──────────────┐   ┌───────────────┐   ┌──────────────┐   ┌─────────────┐
+│ 1. Define    │──▶│ 2. Create a  │──▶│ 3. Generate   │──▶│ 4. Review    │──▶│ 5. Publish  │
+│    fields    │   │    test set  │   │    draft      │   │    worst-    │   │    a        │
+│              │   │    from docs │   │    labels     │   │    first     │   │    version  │
+└──────────────┘   └──────────────┘   └───────────────┘   └──────────────┘   └─────────────┘
+  What to extract   No baseline/       Runs the active     Only what the      Runs pin the
+  and what each     folder needed      config over the     estimator says     ground truth
+  field means                          set                 needs it           they scored
+```
+
+1. **Define your fields** in the configuration panel — the structure, each field's meaning,
+   its type and expected format, and which answer is correct when a document offers two
+   candidates. This is Step 1 and Step 2 below, and it is the part only your team can do.
+2. **Create a test set from documents alone** — no `baseline/` folder. See [Creating Test
+   Sets](./test-studio.md#creating-test-sets).
+3. **Generate draft labels.** The set's documents run through the ordinary OCR →
+   classification → extraction → assessment pipeline, and the results are written as
+   ground-truth candidates tagged `draft-machine` with per-field confidence. See [Draft
+   labeling](./test-studio.md#draft-labeling-unlabeled-documents--ground-truth).
+4. **Review worst-first.** **Set up team annotation** tells you how many documents need
+   human eyes for a target label accuracy, how much that will cost in time, and how much to
+   trust that estimate. Several people can work one set at once, scoped to only their
+   assigned sets. See [How much review is
+   enough?](./test-studio.md#how-much-review-is-enough) and [Team
+   annotation](./test-studio.md#team-annotation-the-scoped-queue).
+5. **Publish a version** so runs pin the ground truth they scored against — see
+   [Versioning test sets](./test-studio.md#versioning-test-sets).
+
+### Path B — process first, then register (more control)
+
+The original workflow: process documents *before* the test set exists, correct the
+predictions in the document editor, and register the corrected results as ground truth.
+Choose this when you want Discovery to derive the schema from your samples, or want
+per-document control before anything is registered.
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐    ┌───────────────┐
@@ -32,20 +140,8 @@ https://github.com/user-attachments/assets/d5e0d590-ce8b-4e14-b2b7-8bde31e57ec2
   accuracy           from samples        configuration       in the UI editor    register set       configurations
 ```
 
-> **Shortcut: let the pipeline draft the labels for you.** The six steps below
-> process documents *before* the test set exists, then register the corrected
-> results as its ground truth. If you would rather start from the test set, you
-> can instead create one from your documents alone — no `baseline/` folder — and
-> click **Generate draft labels** on it. That runs the active configuration over
-> the set, writes machine-generated ground truth with per-field confidence, and
-> sorts the documents worst-first so you review the least trustworthy ones
-> first. The manual path in this guide gives you more control over the
-> intermediate steps (notably Discovery and per-document review before anything
-> is registered); the shortcut gets you to a reviewable draft in two actions.
-> See [Draft labeling](./test-studio.md#draft-labeling-unlabeled-documents--ground-truth).
->
-> Either way, finish by **publishing a version** so runs pin the ground truth
-> they scored against — see [Versioning test sets](./test-studio.md#versioning-test-sets).
+The six steps below document Path B. Steps 1–2 apply to both paths, and Step 6 (running
+and comparing test executions) is how you use the set whichever way you built it.
 
 ## Step 1: Configure for Maximum Accuracy
 

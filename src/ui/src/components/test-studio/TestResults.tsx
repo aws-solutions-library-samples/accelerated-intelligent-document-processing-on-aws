@@ -21,6 +21,7 @@ import {
   ExpandableSection,
   RadioGroup,
   Pagination,
+  Popover,
   TextFilter,
   CollectionPreferences,
 } from '@cloudscape-design/components';
@@ -34,6 +35,7 @@ import TestStudioHeader from './TestStudioHeader';
 import useAppContext from '../../contexts/app';
 import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
+import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -352,6 +354,10 @@ const ComprehensiveBreakdown = ({
           const [fieldMetricsVisibleColumns, setFieldMetricsVisibleColumns] = React.useState([
             'fieldName',
             'accuracy',
+            // Directly after accuracy: a per-field accuracy measured on 3 observations
+            // and one measured on 300 read identically without them.
+            'observations',
+            'accuracyMargin',
             'precision',
             'recall',
             ...(hasConfidenceData ? ['auroc', 'ecab30', 'ece', 'brier'] : []),
@@ -363,12 +369,22 @@ const ComprehensiveBreakdown = ({
 
           // Build hierarchical structure with confidence data
           const allItems = Object.entries(fieldMetrics).map(([fieldName, metrics]) => {
-            const m = metrics as { tp?: number; fp?: number; tn?: number; fn?: number };
+            const m = metrics as {
+              tp?: number;
+              fp?: number;
+              tn?: number;
+              fn?: number;
+              accuracy_observations?: number;
+              accuracy_margin?: number;
+              accuracy_low?: number;
+              accuracy_high?: number;
+            };
             const tp = m.tp ?? 0;
             const fp = m.fp ?? 0;
             const tn = m.tn ?? 0;
             const fn = m.fn ?? 0;
             const total = tp + fp + tn + fn;
+            const interval = accuracyIntervalForField(m);
 
             // Extract field-level confidence metrics (if available)
             // Backend aggregates confidence to match field_metrics keys (pattern-based)
@@ -395,6 +411,14 @@ const ComprehensiveBreakdown = ({
               tn,
               fn,
               accuracy: total > 0 ? ((tp + tn) / total).toFixed(3) : 'N/A',
+              observations: interval ? interval.observations : 0,
+              accuracyMargin: formatMargin(interval),
+              // Sorting must key on the number: the displayed value is formatted, and
+              // "±10.2" sorts before "±5.9" as a string. The accuracy column gets away
+              // with a string because toFixed(3) is fixed-width; margins are not.
+              accuracyMarginValue: interval ? interval.margin : -1,
+              accuracyBounds: formatBounds(interval),
+              lowEvidence: isLowEvidence(interval),
               precision: tp + fp > 0 ? (tp / (tp + fp)).toFixed(3) : 'N/A',
               recall: tp + fn > 0 ? (tp / (tp + fn)).toFixed(3) : 'N/A',
               auroc: auroc !== null && auroc !== undefined ? auroc.toFixed(3) : 'N/A',
@@ -512,6 +536,46 @@ const ComprehensiveBreakdown = ({
               cell: (item: (typeof displayItems)[0]) => item.accuracy,
               sortingField: 'accuracy',
               minWidth: 150,
+            },
+            {
+              id: 'observations',
+              header: 'Observations',
+              cell: (item: (typeof displayItems)[0]) => (item.observations > 0 ? item.observations : '—'),
+              sortingField: 'observations',
+              minWidth: 120,
+            },
+            {
+              id: 'accuracyMargin',
+              header: '95% margin',
+              cell: (item: (typeof displayItems)[0]) =>
+                item.observations > 0 ? (
+                  <Popover
+                    dismissButton={false}
+                    position="top"
+                    size="small"
+                    triggerType="text"
+                    content={
+                      <SpaceBetween size="xxs">
+                        <Box variant="small">95% confidence interval: {item.accuracyBounds}</Box>
+                        <Box variant="small" color="text-body-secondary">
+                          Measured on {item.observations} observation(s). Sampling uncertainty only — it does not account for errors in the
+                          ground truth itself, or for observations that repeat within one document.
+                        </Box>
+                      </SpaceBetween>
+                    }
+                  >
+                    {/* Not colour alone: a subdued margin is a real statement about
+                        evidence, so it carries text too. */}
+                    <Box variant="span" color={item.lowEvidence ? 'text-status-inactive' : undefined}>
+                      {item.accuracyMargin}
+                      {item.lowEvidence ? ' (low n)' : ''}
+                    </Box>
+                  </Popover>
+                ) : (
+                  '—'
+                ),
+              sortingField: 'accuracyMarginValue',
+              minWidth: 130,
             },
             {
               id: 'precision',
@@ -696,6 +760,8 @@ const ComprehensiveBreakdown = ({
                               options: [
                                 { id: 'fieldName', label: 'Field Name', editable: false },
                                 { id: 'accuracy', label: 'Accuracy' },
+                                { id: 'observations', label: 'Observations' },
+                                { id: 'accuracyMargin', label: '95% margin' },
                                 { id: 'precision', label: 'Precision' },
                                 { id: 'recall', label: 'Recall' },
                                 ...(hasConfidenceData
