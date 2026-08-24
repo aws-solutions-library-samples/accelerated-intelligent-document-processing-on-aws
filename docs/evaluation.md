@@ -897,34 +897,47 @@ Result: 1/2 sections correct = 50% accuracy
 
 ### Seeing which pages were misclassified (Web UI)
 
-The three accuracies above tell you *how much* classification went wrong. The
-**Classification vs Ground Truth** panel on a document's detail page tells you
-*where*: it appears whenever a document was evaluated against ground truth that
-carries section boundaries, directly above the Sections table.
+The three accuracies above tell you *how much* classification went wrong. Where
+a document has ground truth, the Web UI tells you *where* — annotated onto the
+class values you are already looking at, rather than in a separate report you
+have to cross-reference.
 
-It shows:
+**Document Sections and Document Pages tables.** A section or page whose class
+disagrees with ground truth carries a **Class mismatch** alert beside its
+Class/Type value. Hovering it shows what ground truth expects, what this run
+assigned, and the page range involved. Nothing is added to a row that matches,
+and nothing at all is added for a document with no ground truth — the tables
+look exactly as they did before. The alert also appears in **Edit mode**, next
+to the class dropdown, which is where the class can actually be corrected.
 
-- The three summary accuracies, with the page counts behind them.
-- A **Pages** table — one row per page: its ground-truth class, the class this
-  run assigned, and whether they match.
-- A **Sections** table — each ground-truth section beside the predicted section
-  that matched it (with its page ranges), plus any **extra** predicted sections
-  that matched nothing, so an over-split shows both halves of the error rather
-  than only the missing ground-truth section. A section whose pages and class
-  are right but whose page order differs is flagged separately.
-- A **Mismatches only** toggle, on by default when there are mismatches (the
-  usual reason for opening this from a low-scoring document) and off when the
-  run was clean, so the table never looks empty for the wrong reason.
+A section's verdict is derived from **its pages**, not by pairing it with a
+ground-truth section. When the split itself is wrong there is no single
+counterpart section to compare against, but every page still has a ground-truth
+class — so a section that merged two ground-truth documents reports *both*
+classes it spans ("Section spans more than one ground-truth class") instead of
+an unhelpful "no match". A section is flagged even when one of the classes it
+spans equals its own, because in that case the boundary is what is wrong.
+
+**Visual Editor ("View Data") under Show Evaluation.** Toggling **Show
+Evaluation** now compares the section's `document_class` as well as its fields,
+above the field list: the class this run assigned, the class ground truth
+expects, and a match/mismatch verdict. Both values are shown whether or not they
+agree, since you asked to see the comparison. It reads the same
+`evaluation/results.json` the field-level comparison already loads, and falls
+back to the baseline file's own `document_class.type` for a document with no
+page-level comparison.
 
 Why this matters when reading scores: a misclassified page was extracted against
 the **wrong schema**, so its low extraction score is a symptom, not the cause.
 Fixing the classification first avoids tuning extraction prompts against a
-document the pipeline was never reading as the right type. The panel says so
-inline when a mismatch is present.
+document the pipeline was never reading as the right type. Both the hover and the
+Visual Editor say so inline.
 
-Page numbers in the panel are 1-based, matching the page viewer. (Internally
+Page numbers shown are 1-based, matching the page viewer. (Internally
 `page_indices` in `results.json` are 0-based — computed as
-`page_id - min(page_id)` — so the panel converts them.)
+`page_id - min(page_id)` — so the UI converts them.) A page ground truth says
+nothing about is left unannotated rather than flagged: an incomplete baseline is
+not a misclassification.
 
 ### Report Structure
 

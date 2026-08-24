@@ -24,7 +24,6 @@ import './DocumentPanel.css';
 import DocumentViewers from '../document-viewers/DocumentViewers';
 import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
-import ClassificationComparisonPanel from '../classification-comparison';
 import ChatPanel from '../chat-panel';
 import useConfiguration from '../../hooks/use-configuration';
 import usePricing from '../../hooks/use-pricing';
@@ -40,6 +39,7 @@ import type { DocumentVersionDetail } from './DocumentVersionsPanel';
 import { DocumentVersionProvider } from '../../contexts/document-version';
 import { claimReview } from '../../graphql/generated';
 import usePolling from '../../hooks/use-polling';
+import useClassificationComparison from '../../hooks/use-classification-comparison';
 import { exportDocument, triggerBrowserDownload } from './document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
@@ -894,6 +894,12 @@ export const DocumentPanel = ({
     } as typeof localItem;
   }, [viewingRunId, versionDetail, localItem]);
 
+  // Ground-truth-vs-predicted classification, loaded once here and shared by
+  // the Sections and Pages tables so each annotates its Class/Type values from
+  // one request. Empty for a document with no evaluation, in which case neither
+  // table shows anything new.
+  const classificationIndex = useClassificationComparison(displayedItem.evaluationReportUri);
+
   // Create enhanced item with configuration. Use the doc's own version
   // config so the header Confidence Alerts badge reads the threshold the
   // document was actually assessed against — otherwise the header count
@@ -1001,14 +1007,6 @@ export const DocumentPanel = ({
           ruleValidationResultUri={displayedItem.ruleValidationResultUri}
           evaluationStatus={displayedItem.evaluationStatus}
         />
-        {/* Ground truth vs predicted classification. Renders nothing unless the
-            document was evaluated against baseline sections, so it only appears
-            where there is something to compare. Placed above the sections table
-            because a class mismatch explains the extraction scores below it. */}
-        <ClassificationComparisonPanel
-          evaluationReportUri={displayedItem.evaluationReportUri}
-          evaluationStatus={displayedItem.evaluationStatus}
-        />
         <SectionsPanel
           {...({
             sections: displayedItem.sections,
@@ -1024,9 +1022,10 @@ export const DocumentPanel = ({
             // Editing is disabled for a historical snapshot; the panels also
             // gate their own edit affordances via useDocumentVersion().isHistorical.
             onDocumentUpdate: viewingRunId ? undefined : setLocalItem,
+            classificationIndex,
           } as Record<string, unknown>)}
         />
-        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem } as Record<string, unknown>)} />
+        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem, classificationIndex } as Record<string, unknown>)} />
         <DocumentVersionsPanel objectKey={localItem.objectKey} viewingRunId={viewingRunId} onViewVersion={handleViewVersion} />
         <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
 

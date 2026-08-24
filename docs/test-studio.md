@@ -997,12 +997,14 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 - Integrated delete operations
 
 **Diagnosing a low-scoring document.** Opening a document from *Documents with
-Lowest Weighted Overall Scores* lands on its detail page, where the
-**Classification vs Ground Truth** panel shows, per page and per section, what
-the ground truth said the class was and what the run classified it as. Check
-this before reading the extraction scores: a misclassified page was extracted
-against the wrong schema, so its low score is a symptom rather than the cause.
-See [Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
+Lowest Weighted Overall Scores* lands on its detail page, where any section or
+page whose class disagrees with ground truth carries a **Class mismatch** alert
+next to its Class/Type value — hover it for the expected class. The Visual
+Editor's **Show Evaluation** toggle compares the section's class alongside its
+fields. Check the class before reading the extraction scores: a misclassified
+page was extracted against the wrong schema, so its low score is a symptom
+rather than the cause. See
+[Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
 
 ### Bulk Aggregation with Stickler
 
