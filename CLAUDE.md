@@ -464,6 +464,7 @@ that domain:
 | `.claude/skills/srt-security-scan.md` | Running the SRT security scan (`make srt-scan`), triaging HIGH findings, and mitigating (`# nosec`/code fix) or suppressing (`scripts/srt/issues.json`) them |
 | `.claude/skills/curate-security-results.md` | Publishing a public-safe, auditable snapshot of the four security tests (SRT, ZAP DAST, RBAC static/dynamic) into `security/test-results/<version>/` via `scripts/security/curate_results.py` |
 | `.claude/skills/api-rbac-test.md` | Verifying API authorization (Cognito groups + config-version scope) via `make api-test` / `make api-test-static`; adding a new API operation |
+| `.claude/skills/ux-test.md` | Browser-driven UX testing of the web UI against a live stack (`make ux-test`) — functional pass/fail per flow **plus** usability findings. The only test layer here that opens a browser; flows live in `scripts/ux_flows.yaml` |
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |

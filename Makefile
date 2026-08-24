@@ -393,6 +393,22 @@ endif
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
 
+# Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
+# Browser-driven UX test. Not a self-contained target on purpose: the browsing and
+# the usability judgement are done by the agent following
+# .claude/skills/ux-test.md, so this prepares a throwaway session and prints what
+# to do next rather than pretending a shell script can assess a user experience.
+ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test.md)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
+endif
+	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
+	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	    --group $(if $(GROUP),$(GROUP),Admin) \
+	    $(if $(REGION),--region $(REGION),)
+	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
+	@echo -e "$(YELLOW)Remember to run the teardown command printed above.$(NC)"
+
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.
 stacktest-zap: ## ZAP DAST scan (STACK_NAME=... [REPORT_DIR=./dir] or self-deploy w/ TEMPLATE_URL=...)
