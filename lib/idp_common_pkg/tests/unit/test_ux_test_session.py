@@ -263,9 +263,16 @@ def test_the_skill_documents_teardown_and_the_no_false_pass_rule():
         Path(__file__).resolve().parents[4] / ".claude" / "skills" / "ux-test.md"
     ).read_text(encoding="utf-8")
 
-    assert "teardown" in skill.lower()
+    lowered = skill.lower()
+    assert "teardown" in lowered
     assert "AWS_PROFILE=default" in skill
-    assert "without exercising it" in skill or "without having exercised it" in skill
+    # Asserted as a rule rather than a phrase, so rewording the skill does not
+    # fail this for no reason — but dropping the rule does.
+    assert "did not load" in lowered or "didn't load" in lowered, (
+        "the skill must still forbid reporting on a screen that was never loaded"
+    )
+    # And the reason the whole layer exists: a real browser, driven.
+    assert "screenshot" in lowered
 
 
 @pytest.mark.unit

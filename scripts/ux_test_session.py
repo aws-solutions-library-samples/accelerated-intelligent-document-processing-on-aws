@@ -177,6 +177,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_url(args: argparse.Namespace) -> int:
+    """Just the web UI URL.
+
+    The common case is a reviewer attaching to their own already-signed-in
+    browser, which needs no user and no teardown — only the address. Keeping
+    that a separate subcommand means the simple path stays one command with
+    nothing to clean up afterwards.
+    """
+    print(_web_url(args.stack, args.region))
+    return 0
+
+
 def cmd_teardown(args: argparse.Namespace) -> int:
     ctx = _resolve_or_explain(args.stack, args.region)
     delete_cognito_user(ctx, args.email)
@@ -188,6 +200,11 @@ def cmd_teardown(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    url = sub.add_parser("url", help="Print the stack's web UI URL and nothing else")
+    url.add_argument("stack")
+    url.add_argument("--region", default="us-east-1")
+    url.set_defaults(func=cmd_url)
 
     setup = sub.add_parser("setup", help="Create a throwaway UX-test session")
     setup.add_argument("stack")

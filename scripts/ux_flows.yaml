@@ -12,9 +12,20 @@
 # Spencer's customer-derived stories can be logged against the same ids rather
 # than described free-form and reported twice in different words.
 #
-# This is a STARTER set, on purpose. The agreed approach was to make this work
-# for one or two flows before making it work for twenty. Add flows here rather
-# than in the skill file; the skill reads this.
+# This file is the FALLBACK and the memory — not the definition of scope. A
+# review normally starts from whatever the user asks for at run time ("look at
+# the annotation flow", "here are three things my customer struggled with"), and
+# nothing here needs editing to review something new.
+#
+# What it holds that a runtime prompt cannot:
+#   * Preconditions. 6.1 needs a *misclassified* document and no shipped test set
+#     has one; someone asking for a classification review will not think to say
+#     that, and without it the review only ever sees the happy path.
+#   * Regression memory. The flows that broke before keep getting looked at even
+#     when nobody remembers to ask.
+#
+# Add a recurring use case here AFTER reviewing it once, when you know what it
+# actually needs. Written beforehand it tends to encode a guess.
 #
 # Fields:
 #   id          Story id (see above). Stable — findings reference it.
