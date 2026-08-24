@@ -30,9 +30,8 @@ Agreed constraints — do not exceed them without being asked:
   browser infrastructure, no new Feature Platform extension. Those were all
   considered and deferred; the local version gets most of the value.
 - **Read-mostly, and never against a customer stack.** Use a dev stack. Flows
-  that write (saving a correction, re-extracting) are fine there.
-- **A throwaway user, never a real operator's account.** `ux_test_session.py`
-  makes one.
+  that write (saving a correction, re-extracting) are fine there — and note that
+  when attached to your own browser, those writes are attributed to you.
 
 ## What you need
 
@@ -48,29 +47,59 @@ AWS_PROFILE=default aws cloudformation list-stacks --region <region> \
     --query "StackSummaries[?ParentId==null].StackName" --output text
 ```
 
-**2. Browser control — check this before promising a run.** There is no browser
-automation in this repo and none is assumed; it comes from an MCP server the
-developer configures:
+**2. Browser control — confirm it before promising a run.** There is no browser
+automation in this repo and none is assumed; it comes from an MCP server:
 
-| Option | Behaviour |
-|---|---|
-| Playwright MCP | Launches its own clean browser. Preferred: a fresh profile per run is what you want when testing a first-time experience, and it cannot disturb the developer's open tabs. |
-| Chrome DevTools MCP | Can attach to an already-running Chrome. Use when the developer specifically wants their own browser driven. |
+```bash
+claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest \
+    --browserUrl http://127.0.0.1:9222 --redactNetworkHeaders
+```
 
-Added with `claude mcp add <name> -- <command>`; confirm the tools are actually
-present before starting, because *the failure mode here is a confident report
-about a UI nobody looked at.*
+Then enable the debugging server **inside the already-running Chrome**, at
+`chrome://inspect/#remote-debugging` (Chrome 144+). Do it that way rather than
+relaunching with `--remote-debugging-port=9222`: **the flag has no effect on an
+already-running Chrome** — a second launch just hands off to the existing process
+and CDP stays off — so using it means fully quitting Chrome first and losing the
+signed-in session that was the point.
+
+MCP servers load at session start, so **the tools only appear after restarting
+Claude Code.** Check they are actually present before starting a run: *the
+failure mode here is a confident report about a UI nobody looked at.*
+
+`--redactNetworkHeaders` is not decoration — the session carries Cognito bearer
+tokens, and without it they end up in the transcript.
 
 **If no browser tooling is available, the whole run is blocked.** Say so plainly
 and offer to walk the flows with the developer manually. **Never report a flow as
 passed without having exercised it** — that reintroduces, at the reporting step,
 exactly the false assurance this layer exists to remove.
 
-The session does **not** use the developer's logged-in browser: setup mints a
-throwaway user and the browser signs in with those credentials. That is
-deliberate — a UX run saves edits, claims review locks and can reset labels, none
-of which should happen under a real operator's identity; and the personas need
-separate users anyway.
+### Attaching to your own Chrome vs. a throwaway user
+
+Both are legitimate; they cover different flows.
+
+**Attach to your Chrome** (the above) reuses your existing signed-in session. It
+is the simpler path: no credentials to mint, and it does not widen the app
+client's auth flows. The cost is that CDP over your primary profile gives
+whatever attaches full read/write over **every** site that browser is signed into
+— AWS console, source control, mail — not just the IDP stack. That is a bigger
+exposure than a clean profile, so:
+
+- Prefer a **separate Chrome profile** (`--user-data-dir=/tmp/ux-chrome`) signed
+  into the stack only, if you are going to leave 9222 open habitually. You keep
+  the sign-in-once benefit with the blast radius scoped to the stack.
+- `--allowedUrlPattern` (Chrome 149+) can restrict the server to the stack's
+  domains. Introduce it carefully: an over-tight pattern silently blocks a
+  subresource, the SPA then looks broken, and the run reports a **false UX
+  finding** — the worst output this tool can produce.
+- Writes happen under **your** identity. Edits are attributed to you in the
+  revision history. Fine on a dev stack; think before anywhere else.
+
+**A throwaway user** (`ux_test_session.py`) is still required for the persona
+flows — you cannot be an Annotator by reusing an Admin session, so 4.1 and 12.1
+need `--group Annotator`. It also keeps writes out of a real operator's audit
+trail. The cost is that setup temporarily widens the app client's auth flows,
+which teardown must restore.
 
 ## Running it
 
