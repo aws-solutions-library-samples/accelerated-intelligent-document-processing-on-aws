@@ -132,6 +132,75 @@ class TestWebUrlResolution:
 
 
 @pytest.mark.unit
+class TestWrongStackOrRegion:
+    """A wrong --region is the likeliest way to mis-invoke this, and the hardest
+    to spot: the stack genuinely does not exist where you looked. The default was
+    a nine-frame traceback ending in a botocore ValidationError — exactly the
+    "does the error say what to do?" failure this harness exists to catch in the
+    product."""
+
+    def test_a_missing_stack_names_the_region_and_suggests_alternatives(self):
+        module = _load_module()
+
+        with (
+            patch.object(
+                module,
+                "resolve_stack",
+                side_effect=RuntimeError("Stack with id X does not exist"),
+            ),
+            patch.object(
+                module,
+                "_candidate_stacks",
+                return_value=["IDP-dev-stack4", "IDP-other"],
+            ),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                module._resolve_or_explain("IDP-typo", "us-east-1")
+
+        message = str(excinfo.value)
+        assert "us-east-1" in message
+        assert "--region" in message
+        assert "IDP-dev-stack4" in message
+        # Not a traceback.
+        assert "Traceback" not in message
+
+    def test_no_candidates_points_at_region_and_profile(self):
+        """The other real cause: credentials for a different account."""
+        module = _load_module()
+
+        with (
+            patch.object(
+                module,
+                "resolve_stack",
+                side_effect=RuntimeError("Stack with id X does not exist"),
+            ),
+            patch.object(module, "_candidate_stacks", return_value=[]),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                module._resolve_or_explain("IDP-typo", "eu-west-1")
+
+        assert "AWS_PROFILE" in str(excinfo.value)
+
+    def test_an_unrelated_failure_is_not_swallowed(self):
+        """Only the not-found case gets the friendly treatment; a permissions or
+        network failure must still surface as itself."""
+        module = _load_module()
+
+        with patch.object(
+            module, "resolve_stack", side_effect=RuntimeError("AccessDenied")
+        ):
+            with pytest.raises(RuntimeError, match="AccessDenied"):
+                module._resolve_or_explain("s", "us-east-1")
+
+    def test_suggestions_never_break_the_error_message(self):
+        """If listing stacks also fails, the primary error still gets reported."""
+        module = _load_module()
+
+        with patch.object(module, "aws", side_effect=RuntimeError("boom")):
+            assert module._candidate_stacks("us-east-1") == []
+
+
+@pytest.mark.unit
 class TestFlowsFile:
     """The skill reads scripts/ux_flows.yaml, so a malformed file breaks the run."""
 

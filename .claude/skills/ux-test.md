@@ -36,26 +36,61 @@ Agreed constraints — do not exceed them without being asked:
 
 ## What you need
 
-- A deployed IDP stack with the web UI enabled, and `AWS_PROFILE=default` (the
-  ambient sandbox credentials point at a *different* account — see CLAUDE.md).
-- Browser control. Any of: a Playwright or Chrome DevTools MCP server, or an
-  attached local browser session. If the user has none configured, say so and
-  offer to walk the flows with them manually rather than pretending to have
-  driven the UI — **never report a flow as passed without having exercised it.**
+**1. A deployed IDP stack with the web UI enabled**, and `AWS_PROFILE=default`
+(the ambient sandbox credentials point at a *different* account — see CLAUDE.md).
+The stack's **region** matters: a stack is invisible from any other region, and
+passing the wrong `--region` is the most common way to mis-invoke this. Find it
+with:
+
+```bash
+AWS_PROFILE=default aws cloudformation list-stacks --region <region> \
+    --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+    --query "StackSummaries[?ParentId==null].StackName" --output text
+```
+
+**2. Browser control — check this before promising a run.** There is no browser
+automation in this repo and none is assumed; it comes from an MCP server the
+developer configures:
+
+| Option | Behaviour |
+|---|---|
+| Playwright MCP | Launches its own clean browser. Preferred: a fresh profile per run is what you want when testing a first-time experience, and it cannot disturb the developer's open tabs. |
+| Chrome DevTools MCP | Can attach to an already-running Chrome. Use when the developer specifically wants their own browser driven. |
+
+Added with `claude mcp add <name> -- <command>`; confirm the tools are actually
+present before starting, because *the failure mode here is a confident report
+about a UI nobody looked at.*
+
+**If no browser tooling is available, the whole run is blocked.** Say so plainly
+and offer to walk the flows with the developer manually. **Never report a flow as
+passed without having exercised it** — that reintroduces, at the reporting step,
+exactly the false assurance this layer exists to remove.
+
+The session does **not** use the developer's logged-in browser: setup mints a
+throwaway user and the browser signs in with those credentials. That is
+deliberate — a UX run saves edits, claims review locks and can reset labels, none
+of which should happen under a real operator's identity; and the personas need
+separate users anyway.
 
 ## Running it
 
 ```bash
-# 1. Create a throwaway session (prints url / email / password / teardown cmd)
+# 1. Create a throwaway session. Prints url / email / password / group and the
+#    exact teardown command. Pass the stack's OWN region.
 AWS_PROFILE=default ./scripts/ux_test_session.py setup <STACK_NAME> \
-    --group Admin --region us-west-2
+    --group Admin --region <region>
 
-# 2. Drive the flows in scripts/ux_flows.yaml with the browser.
+# 2. Sign in at the printed url with the printed credentials, then drive the
+#    flows in scripts/ux_flows.yaml.
 
-# 3. ALWAYS tear down — the command is in the setup output
+# 3. ALWAYS tear down — copy the command from the setup output
 AWS_PROFILE=default ./scripts/ux_test_session.py teardown <STACK_NAME> \
-    --email ux-test-xxxx@example.invalid --region us-west-2
+    --email ux-test-xxxx@example.invalid --region <region>
 ```
+
+The URL is resolved from the stack's `ApplicationWebURL` output, so you pass a
+stack name and never a URL — that output is correct under both hosting variants
+(CloudFront, or the REST API stage when the SPA is served from API Gateway).
 
 `make ux-test STACK_NAME=<stack>` prints the same instructions, for
 discoverability via `make help`.

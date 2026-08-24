@@ -91,8 +91,66 @@ def _web_url(stack: str, region: str) -> str:
     return url
 
 
+def _candidate_stacks(region: str) -> list[str]:
+    """Root IDP stacks in this region, for a wrong-name error message.
+
+    Best-effort: if listing fails we simply have no suggestions to offer, which
+    is no worse than the message without them.
+    """
+    try:
+        names = aws(
+            "cloudformation",
+            "list-stacks",
+            "--stack-status-filter",
+            "CREATE_COMPLETE",
+            "UPDATE_COMPLETE",
+            "UPDATE_ROLLBACK_COMPLETE",
+            "--query",
+            "StackSummaries[?ParentId==null].StackName",
+            "--output",
+            "text",
+            region=region,
+        )
+    except Exception:  # noqa: BLE001 — a suggestion list is a nicety
+        return []
+    return [n for n in names.split() if "idp" in n.lower()]
+
+
+def _resolve_or_explain(stack: str, region: str):
+    """resolve_stack, but a wrong stack name or region reads as an instruction.
+
+    The default was a nine-frame traceback ending in a botocore ValidationError,
+    which is exactly the "does the error say what to do?" failure this harness
+    exists to catch elsewhere. Wrong region is the likeliest cause and the
+    hardest to spot, since the stack genuinely does not exist where you looked.
+    """
+    try:
+        return resolve_stack(stack, region)
+    except RuntimeError as err:
+        if "does not exist" not in str(err):
+            raise
+        candidates = _candidate_stacks(region)
+        lines = [
+            f"Stack {stack!r} does not exist in {region}.",
+            "",
+            "The most common cause is the wrong --region: a stack is invisible "
+            "from any other one.",
+        ]
+        if candidates:
+            lines += ["", f"IDP stacks found in {region}:"]
+            lines += [f"  {name}" for name in candidates]
+        else:
+            lines += [
+                "",
+                f"No IDP stacks found in {region} at all — try another region, "
+                "or check AWS_PROFILE (the sandbox default points at a "
+                "different account than the deployment).",
+            ]
+        raise SystemExit("\n".join(lines)) from err
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
-    ctx = resolve_stack(args.stack, args.region)
+    ctx = _resolve_or_explain(args.stack, args.region)
     url = _web_url(args.stack, args.region)
 
     email = f"ux-test-{secrets.token_hex(4)}@example.invalid"
@@ -120,7 +178,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_teardown(args: argparse.Namespace) -> int:
-    ctx = resolve_stack(args.stack, args.region)
+    ctx = _resolve_or_explain(args.stack, args.region)
     delete_cognito_user(ctx, args.email)
     restore_auth_flows(ctx)
     print(f"Deleted {args.email} and restored app-client auth flows.")
