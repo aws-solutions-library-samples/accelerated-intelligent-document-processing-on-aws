@@ -408,6 +408,12 @@ def handle_cache_update_request(event, context):
                 "gradedPacketMetrics": aggregated_metrics.get(
                     "graded_packet_metrics", {}
                 ),
+                # Per-section classification mismatches. Absent on the Athena
+                # fallback path, which has the accuracy percentages but not the
+                # per-document detail — hence the default rather than a KeyError.
+                "classificationErrors": aggregated_metrics.get(
+                    "classification_errors", {}
+                ),
                 # Documents whose sections all had no extractable schema were
                 # dropped from ``weighted_overall_scores`` upstream; expose the
                 # count so the UI can render "N excluded" next to the
@@ -615,6 +621,7 @@ def get_test_results(test_run_id):
             or "fieldMetrics" not in cached_metrics
             or "gradedPacketMetrics" not in cached_metrics
             or "excludedDocumentCount" not in cached_metrics
+            or "classificationErrors" not in cached_metrics
             or isinstance(cached_scores, list)
         ):
             logger.info(
@@ -685,6 +692,7 @@ def get_test_results(test_run_id):
                 "splitClassificationMetrics", {}
             ),
             "gradedPacketMetrics": cached_metrics.get("gradedPacketMetrics", {}),
+            "classificationErrors": cached_metrics.get("classificationErrors", {}),
             "excludedDocumentCount": cached_metrics.get("excludedDocumentCount", 0),
             "totalCost": cached_metrics.get("totalCost", 0),
             "costBreakdown": cached_metrics.get("costBreakdown", {}),

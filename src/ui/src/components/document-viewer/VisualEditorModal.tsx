@@ -30,6 +30,7 @@ import PageImageViewer from '../common/PageImageViewer';
 import type { PageImageViewerHandle } from '../common/PageImageViewer';
 import EditHistoryTab from './EditHistoryTab';
 import ProcessingReportTab from './ProcessingReportTab';
+import { classificationComparisonForSection, describeVerdict } from './classificationComparison';
 
 const client = generateClient();
 
@@ -737,6 +738,20 @@ const VisualEditorModal = ({
   );
   const pageIdStrings = useMemo(() => pageIds.map(String), [pageIds]);
 
+  // Ground-truth comparison for this section's document class. Null when the
+  // evaluation carries no split detail, or when the section cannot be matched to
+  // one unambiguously — see classificationComparison.ts for why that case shows
+  // nothing rather than a best guess.
+  const classificationComparison = useMemo(
+    () =>
+      classificationComparisonForSection(
+        evaluationResults,
+        (sectionData?.Id || sectionData?.SectionId) as string | number | undefined,
+        allSections.length || 1,
+      ),
+    [evaluationResults, sectionData?.Id, sectionData?.SectionId, allSections.length],
+  );
+
   // Reset per-document view state when the modal closes. Image loading belongs to
   // PageImageViewer, which presigns and caches per page id.
   useEffect(() => {
@@ -1095,6 +1110,31 @@ const VisualEditorModal = ({
                           <Alert type="info" header="Evaluation Comparison Mode">
                             Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
                             and reasons.
+                          </Alert>
+                        )}
+                        {/* The class is model output too, and a wrong one invalidates
+                            every field below it — so it belongs in the comparison
+                            rather than only in the section header. */}
+                        {showEvaluation && classificationComparison && (
+                          <Alert
+                            type={classificationComparison.verdict === 'match' ? 'success' : 'warning'}
+                            header={
+                              classificationComparison.verdict === 'match'
+                                ? `Classification matches ground truth: ${classificationComparison.predicted}`
+                                : 'Classification does not match ground truth'
+                            }
+                          >
+                            <SpaceBetween size="xxs">
+                              {classificationComparison.verdict !== 'match' && (
+                                <Box variant="p">
+                                  Expected <b>{classificationComparison.expected ?? '—'}</b>, predicted{' '}
+                                  <b>{classificationComparison.predicted ?? 'no matching section'}</b>.
+                                </Box>
+                              )}
+                              <Box variant="small" color="text-body-secondary">
+                                {describeVerdict(classificationComparison)}
+                              </Box>
+                            </SpaceBetween>
                           </Alert>
                         )}
                         {inferenceResult ? (

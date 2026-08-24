@@ -23,6 +23,7 @@ import {
   Badge,
   Box,
   Button,
+  CopyToClipboard,
   FormField,
   Header,
   Input,
@@ -85,6 +86,17 @@ interface GroundTruthVisualEditorProps {
    * correction, since reextractTestSetDocument is keyed on the set.
    */
   testSetId?: string;
+  /**
+   * Canonical path of a field to select on open ("LineItems[0].Rate"), from a
+   * shared deep link. Ancestors are expanded so the field is actually on screen.
+   */
+  focusFieldPath?: string | null;
+  /**
+   * Builds a shareable link to one field. Supplied by callers that have a URL to
+   * share (the annotation queue); omitted elsewhere, which hides the affordance
+   * rather than offering a link that goes nowhere.
+   */
+  buildFieldLink?: ((fieldPath: string) => string) | null;
 }
 
 const getSectionLabel = (sectionId: string, data: Record<string, unknown> | null): string => {
@@ -103,6 +115,8 @@ const GroundTruthVisualEditor = ({
   saveButtonText,
   onReextracted,
   testSetId,
+  focusFieldPath = null,
+  buildFieldLink = null,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
   const { user } = useAppContext();
   const { pages, isLoading: pagesLoading, error: pagesError, previewUnavailable } = useTestDocPages(bucket, inputKey);
@@ -114,6 +128,8 @@ const GroundTruthVisualEditor = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
+  // Canonical path of the field the reviewer last clicked, so it can be linked.
+  const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   const [filterMode, setFilterMode] = useState<SelectProps.Option>({ label: 'Show all fields', value: 'none' });
   const [activeTabId, setActiveTabId] = useState('visual');
@@ -380,6 +396,27 @@ const GroundTruthVisualEditor = ({
     setActiveFieldGeometry(geometry ?? null);
   };
 
+  /**
+   * Bring a deep-linked field on screen and select it.
+   *
+   * Runs after the section's data has rendered, hence the dependency on
+   * `localData` rather than on mount. Nothing collapses fields by default here,
+   * so no ancestor expansion is needed — if that ever changes, this is where the
+   * expansion belongs, because a link to a field inside a collapsed object would
+   * otherwise scroll to nothing.
+   */
+  useEffect(() => {
+    if (!focusFieldPath || !localData) return;
+    setSelectedFieldPath(focusFieldPath);
+    // Defer to the paint that renders the fields; the node does not exist yet on
+    // the tick that localData lands.
+    const timer = window.setTimeout(() => {
+      const node = document.querySelector(`[data-field-path="${CSS.escape(focusFieldPath)}"]`);
+      if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [focusFieldPath, localData]);
+
   const handleToggleCollapse = (pathKey: string) => {
     setCollapsedPaths((prev) => {
       const next = new Set(prev);
@@ -569,6 +606,29 @@ const GroundTruthVisualEditor = ({
                               ]}
                             />
                           </FormField>
+                          {/* One affordance for the selected field rather than a button on
+                              every one of them: a bank statement section runs to hundreds of
+                              fields, and the reviewer has already clicked the one they mean
+                              in order to look at it. */}
+                          {buildFieldLink && selectedFieldPath && (
+                            <FormField
+                              label="Ask someone about this field"
+                              description={
+                                <>
+                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Paste it in Slack when
+                                  you need a second opinion on a value.
+                                </>
+                              }
+                            >
+                              <CopyToClipboard
+                                variant="button"
+                                copyButtonText="Copy link to field"
+                                textToCopy={buildFieldLink(selectedFieldPath)}
+                                copySuccessText="Field link copied"
+                                copyErrorText="Could not copy the field link"
+                              />
+                            </FormField>
+                          )}
                           <FormFieldRenderer
                             fieldKey="Document Data"
                             value={inferenceResult}
@@ -576,6 +636,7 @@ const GroundTruthVisualEditor = ({
                             isReadOnly={isReadOnly}
                             onFieldFocus={handleFieldFocus}
                             onFieldDoubleClick={handleFieldFocus}
+                            onFieldPathSelect={setSelectedFieldPath}
                             path={[]}
                             explainabilityInfo={explainabilityInfo}
                             collapsedPaths={collapsedPaths}

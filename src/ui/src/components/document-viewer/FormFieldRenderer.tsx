@@ -89,6 +89,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
     geometry,
     onFieldFocus,
     onFieldDoubleClick,
+    // Notified with the canonical path of the clicked field ("LineItems[0].Rate"),
+    // whether or not it has geometry. Separate from onFieldFocus, which carries a
+    // bounding box and therefore cannot fire for a field the OCR did not locate —
+    // so it cannot be used to tell which field is selected.
+    onFieldPathSelect,
     path = [],
     explainabilityInfo = null,
     mergedConfig = null,
@@ -405,6 +410,13 @@ const FormFieldRenderer = memo<Record<string, any>>(
         event.stopPropagation();
       }
 
+      // Announce the selection before the geometry hunt below, so a field with no
+      // bounding box is still selectable (and therefore still linkable).
+      if (onFieldPathSelect) {
+        const selectedPath = buildComparisonKey(path);
+        if (selectedPath) onFieldPathSelect(selectedPath);
+      }
+
       let actualGeometry = geometry;
 
       // Try to extract geometry from explainabilityInfo if not provided
@@ -523,6 +535,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
             onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
             role="button"
             tabIndex={0}
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -726,6 +739,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
             }}
             role="button"
             tabIndex={0}
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -939,6 +953,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
             }}
             role="button"
             tabIndex={0}
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -1304,6 +1319,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         confidence={fieldConfidence}
                         geometry={fieldGeometry}
                         onFieldFocus={onFieldFocus}
+                        onFieldPathSelect={onFieldPathSelect}
                         onFieldDoubleClick={onFieldDoubleClick}
                         path={[...path, key]}
                         explainabilityInfo={explainabilityInfo}
@@ -1337,6 +1353,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
             onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
             role="button"
             tabIndex={0}
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -1693,6 +1710,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         confidence={itemConfidence}
                         geometry={itemGeometry}
                         onFieldFocus={onFieldFocus}
+                        onFieldPathSelect={onFieldPathSelect}
                         onFieldDoubleClick={onFieldDoubleClick}
                         path={[...path, index]}
                         explainabilityInfo={explainabilityInfo}
@@ -1730,6 +1748,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
             }}
             role="button"
             tabIndex={0}
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{ cursor: geometry ? 'pointer' : 'default' }}
           >
             <FormField

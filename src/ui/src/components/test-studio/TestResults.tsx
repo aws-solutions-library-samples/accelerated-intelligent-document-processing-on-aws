@@ -36,12 +36,14 @@ import useAppContext from '../../contexts/app';
 import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
+import ClassificationErrorsPanel from './ClassificationErrorsPanel';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
   parseAccuracyBreakdown,
   parseSplitClassificationMetrics,
   parseGradedPacketMetrics,
+  parseClassificationErrors,
   parseFieldMetrics,
   parseConfusionMatrix,
   parseConfidenceMetrics,
@@ -1133,6 +1135,10 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
       : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fieldMetrics: any = results.fieldMetrics ? parseFieldMetrics(results.fieldMetrics as string) : null;
+  // Per-section classification mismatches. Absent on runs aggregated before this
+  // shipped and on the Athena fallback path, both of which parse to {} — the
+  // panel renders nothing rather than an empty table in that case.
+  const classificationErrors = results.classificationErrors ? parseClassificationErrors(results.classificationErrors as string) : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _confusionMatrix: any = results.confusionMatrix ? parseConfusionMatrix(results.confusionMatrix as string) : null;
 
@@ -1726,6 +1732,10 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             })()}
           </Container>
         )}
+
+        {/* Above the breakdown tables on purpose: a wrong class invalidates the
+            field numbers below it, so it should be read first. */}
+        <ClassificationErrorsPanel classificationErrors={classificationErrors} testSetId={results.testSetId as string | undefined} />
 
         {/* Breakdown Tables */}
         {(costBreakdown || accuracyBreakdown || splitClassificationMetrics || gradedPacketMetrics || fieldMetrics) && (

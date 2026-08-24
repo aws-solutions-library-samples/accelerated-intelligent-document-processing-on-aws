@@ -109,6 +109,8 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   // that document.
   const [searchParams] = useSearchParams();
   const requestedDoc = searchParams.get('doc');
+  // Canonical field path from a shared link, e.g. "?doc=x.pdf&field=LineItems[0].Rate".
+  const requestedField = searchParams.get('field');
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
   const { canAnnotate, isAnnotatorOnly, loading: roleLoading } = useUserRole();
@@ -405,6 +407,24 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   const progressPct = queue && queue.totalDocs > 0 ? Math.round((queue.reviewedDocs / queue.totalDocs) * 100) : 0;
 
   const queueLink = `${window.location.origin}/${testSetAnnotateHref(testSetId ?? '')}`;
+
+  /**
+   * Link to one field of the open document, for "what should this value be?".
+   *
+   * Deliberately a link rather than an in-app handoff: the alternative considered
+   * was routing a question to a subject-matter expert's own queue, which assumes
+   * a customer organised that way. A URL works for anyone with Slack, and the
+   * recipient's access is still checked on arrival — the link only navigates.
+   */
+  const buildFieldLink = useCallback(
+    (fieldPath: string) => {
+      const params = new URLSearchParams();
+      if (selected?.objectKey) params.set('doc', selected.objectKey);
+      params.set('field', fieldPath);
+      return `${queueLink}?${params.toString()}`;
+    },
+    [queueLink, selected?.objectKey],
+  );
 
   /**
    * Per-document actions live in the editor pane's header, not below it: on a long
@@ -721,6 +741,8 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                   saveButtonText="Save & next in queue"
                   testSetId={testSetId}
                   onReextracted={() => loadQueue(false)}
+                  focusFieldPath={requestedField}
+                  buildFieldLink={buildFieldLink}
                 />
               )}
             </SpaceBetween>

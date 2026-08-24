@@ -878,6 +878,28 @@ Two consequences worth knowing:
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
 
+To find *which* documents need this, use the
+[Classification errors](#finding-classification-errors) panel on a test run
+rather than hunting through the queue — a misclassified document often raises few
+confidence alerts and so sorts low in worst-first order.
+
+### Asking someone about one field
+
+Some values cannot be settled by whoever is reviewing — the reviewer may not know
+what a particular reference number means on this customer's paperwork. Clicking a
+field reveals **Copy link to field**, which produces a URL that opens the same
+document with that field selected and scrolled into view. Paste it into Slack or
+a ticket to ask for a second opinion.
+
+The link is just navigation: the recipient's access is still checked on arrival,
+so sharing one with someone who has no access to that test set grants them
+nothing. Annotators see only their assigned sets either way.
+
+This is deliberately a link rather than a formal escalation queue. Routing a
+question to a designated subject-matter expert assumes an organisation structured
+that way, and adds a workflow to maintain; a URL works for any team that already
+has a chat tool, and the reviewer keeps ownership of the document.
+
 ### Revision history
 
 Each label records who changed it, when, and which fields moved. Open a document
@@ -991,6 +1013,8 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
     - Split Accuracy With Order (average across documents)  
     - Total Pages, Total Splits (sums across documents)
     - Correctly Classified Pages, Correctly Split counts (sums across documents)
+  - **Classification errors**: which documents were misclassified and as what (see
+    [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
 - Side-by-side test comparison with all metrics including configuration versions
 - Export capabilities (JSON/CSV downloads include all metrics)
@@ -1073,6 +1097,44 @@ the re-aggregation finishes to see the graded rows. Because the cache write
 always includes the `gradedPacketMetrics` key — `{}` when a run legitimately
 has no graded metrics, e.g. single-section documents — a run is re-queued at
 most once and never loops.
+
+### Finding classification errors
+
+Split accuracy tells you *how often* classification was right. The
+**Classification errors** panel tells you *which documents* were wrong and what
+they were confused for, so the number is actionable without opening each
+document's evaluation report.
+
+This matters more than the percentage suggests. Extraction runs against the
+schema of the class a document was assigned, so a wrong class makes every field
+for that document unreliable — including fields that look perfectly plausible,
+because the model filled in the wrong schema competently. Worse, a misclassified
+document can be *confidently* wrong, which means it raises few confidence alerts
+and therefore ranks **low priority** in the annotation queue's worst-first order.
+Without this panel it is the failure most likely to go unnoticed.
+
+Three kinds are distinguished, because they call for different fixes:
+
+| Issue | Meaning | What to do |
+|---|---|---|
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **No matching section** | The ground truth expects a section that no predicted section matched. | A *splitting* problem, not a labelling one — look at classification granularity rather than the class list. |
+| **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
+
+Each row links into the annotation queue for that document, which is where the
+class is corrected — see
+[Correcting a misclassified document](#correcting-a-misclassified-document).
+
+**Two limits worth knowing:**
+
+- The list is **capped** (200 entries), because a run's whole result set is stored
+  as a single record. Wrong-class errors sort first so a run full of page-order
+  differences cannot crowd them out, and the panel states the true total when it
+  truncates — "Showing the first 200 of 340".
+- Runs evaluated **before this shipped** show no panel until they re-aggregate,
+  which happens automatically the first time you open their results. Runs
+  aggregated through the Athena fallback path have the percentages but not the
+  per-section detail.
 
 ### Field-Level Metrics
 

@@ -1883,6 +1883,7 @@ export type SyncBdaIdpResponse = {
 export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
+  classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;
   confidenceMetrics?: Maybe<Scalars['AWSJSON']['output']>;

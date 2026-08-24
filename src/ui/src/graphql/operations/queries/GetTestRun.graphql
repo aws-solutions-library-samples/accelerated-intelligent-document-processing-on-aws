@@ -17,6 +17,7 @@ query GetTestRun($testRunId: String!) {
     fieldMetrics
     splitClassificationMetrics
     gradedPacketMetrics
+    classificationErrors
     totalCost
     costBreakdown
     createdAt

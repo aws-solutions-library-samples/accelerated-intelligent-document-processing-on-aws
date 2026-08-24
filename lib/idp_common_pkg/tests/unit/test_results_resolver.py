@@ -351,9 +351,15 @@ def test_fresh_cache_does_not_requeue_when_graded_metrics_legitimately_empty():
     """
     test_run_id = "run-post-graded-empty"
     # A "fresh" post-release cache: adds every key the guard now checks for
-    # (gradedPacketMetrics + excludedDocumentCount as of this release).
+    # (gradedPacketMetrics + excludedDocumentCount + classificationErrors as of
+    # this release). Add the new key here whenever one joins metrics_to_cache,
+    # otherwise this test fails for the right reason — the guard would re-queue
+    # a cache that is in fact complete.
     fresh_cache = dict(
-        _PRE_GRADED_CACHE, gradedPacketMetrics={}, excludedDocumentCount=0
+        _PRE_GRADED_CACHE,
+        gradedPacketMetrics={},
+        excludedDocumentCount=0,
+        classificationErrors={},
     )
     mock_table = Mock()
     mock_table.get_item.return_value = {
@@ -601,6 +607,104 @@ def test_stickler_metrics_survive_athena_failure():
     assert result["split_classification_metrics"] == {}
     assert result["total_cost"] == 0
     assert result["cost_breakdown"] == {}
+
+
+@pytest.mark.unit
+def test_classification_errors_are_cached_and_served():
+    """The aggregator's per-section class detail must survive the cache round-trip.
+
+    Three hops have to agree for this to reach the UI — the aggregation Lambda's
+    snake_case key, the camelCase key written to testRunResult, and the read path
+    — and each is in a different file, so a rename in one is invisible until the
+    panel is silently empty.
+    """
+    test_run_id = "run-with-class-errors"
+    payload = {
+        "errors": [
+            {
+                "doc_key": "d1.pdf",
+                "section_id": "section_1",
+                "kind": "class",
+                "expected_class": "Invoice",
+                "predicted_class": "Receipt",
+                "expected_pages": [0],
+                "predicted_pages": [0],
+            }
+        ],
+        "total": 1,
+        "documents_affected": 1,
+        "truncated": False,
+    }
+    mock_table = Mock()
+    mock_sqs = Mock()
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", mock_sqs),
+        patch.object(
+            index,
+            "_aggregate_test_run_metrics",
+            return_value={"classification_errors": payload},
+        ),
+    ):
+        index.handle_cache_update_request(
+            {"Records": [{"body": json.dumps({"testRunId": test_run_id})}]}, None
+        )
+
+    cached = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+        ":metrics"
+    ]
+    assert cached["classificationErrors"] == payload
+
+    # And the read path serves it rather than dropping it on the floor.
+    mock_read_table = Mock()
+    mock_read_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(
+            test_run_id,
+            dict(
+                _PRE_GRADED_CACHE,
+                gradedPacketMetrics={},
+                excludedDocumentCount=0,
+                classificationErrors=payload,
+            ),
+        )
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_read_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == payload
+
+
+@pytest.mark.unit
+def test_a_cache_written_before_this_release_serves_an_empty_panel():
+    """An older cache must render as "nothing to show", not crash the query."""
+    test_run_id = "run-pre-class-errors"
+    mock_table = Mock()
+    mock_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(test_run_id, dict(_PRE_GRADED_CACHE))
+    }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == {}
 
 
 @pytest.mark.unit

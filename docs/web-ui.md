@@ -52,6 +52,35 @@ Many bundled samples are tuned for a specific configuration preset in the [Confi
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
+## Comparing a document against its baseline
+
+On a document that has an evaluation baseline, **View Data → Show evaluation**
+compares what was extracted against the ground truth, highlighting mismatched
+fields with their scores and reasons.
+
+The comparison covers the **document class** as well as the fields. The class is
+model output like any other, and getting it wrong invalidates everything beneath
+it — extraction runs against that class's schema, so the fields can be filled in
+competently and still be wrong. A banner above the fields reports one of:
+
+- **Classification matches ground truth** — the class agrees.
+- **Wrong class** — expected and predicted are both named, with a note that the
+  fields below were extracted under the predicted class's schema.
+- **No matching section** — the ground truth expects a section covering these
+  pages that no predicted section matched. A splitting difference, not a
+  labelling one.
+- **Page order** — right class and pages, different order. Extraction is
+  unaffected.
+
+The banner is omitted when the evaluation carries no split detail, and also when
+a multi-section document's section cannot be matched to a ground-truth section
+unambiguously — showing a *guessed* expected class would be worse than showing
+none, since a reviewer might "correct" a document that was already right.
+
+For the run-level view of the same information across every document in a test
+set, see
+[Finding classification errors](./test-studio.md#finding-classification-errors).
+
 ## Edit Sections
 
 The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
