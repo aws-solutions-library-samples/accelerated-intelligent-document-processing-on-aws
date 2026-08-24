@@ -43,6 +43,7 @@ https://github.com/user-attachments/assets/b0bc5df0-cd8f-472c-98c6-299ac3a9bd43
   - [Web UI Interface](#web-ui-interface)
   - [API Integration](#api-integration)
   - [Processing Results](#processing-results)
+  - [Class name normalization](#class-name-normalization)
 - [BDA Integration](#bda-integration)
   - [Automated Blueprint Creation](#automated-blueprint-creation)
   - [Intelligent Update Detection](#intelligent-update-detection)
@@ -318,7 +319,7 @@ In Multi-Section Package mode, the UI displays:
 
 1. **PDF Page Thumbnails** — rendered in the browser using `pdfjs-dist`, showing a visual grid of all pages with color-coded highlighting for each defined range
 2. **Page Range Inputs** — editable start/end page numbers for each range
-3. **Document Type Labels** — optional text field per range for labeling the document type (e.g., "W2 Form", "Invoice"). When provided, the label is used as a class name hint for the discovery LLM.
+3. **Document Type Labels** — optional text field per range for labeling the document type (e.g., `W2-Form`, `Invoice`). When provided, the label is used as a class name hint for the discovery LLM. Labels are normalized to the class-name character set before use (see [Class name normalization](#class-name-normalization)).
 
 #### AI Auto-Detect Sections
 
@@ -366,14 +367,14 @@ sections = discovery.auto_detect_sections(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf"
 )
-# Returns: [{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 5, "type": "W2 Form"}, ...]
+# Returns: [{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 5, "type": "W2-Form"}, ...]
 
 # Discover a specific page range with class name hint
 result = discovery.discovery_classes_with_document(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf",
     page_range="3-5",
-    class_name_hint="W2 Form"
+    class_name_hint="W2-Form"
 )
 
 # Override the Bedrock model for a single call
@@ -873,6 +874,41 @@ result = discovery.discovery_classes_with_document_and_ground_truth(
 - **Export for Review**: Download configuration for manual review and editing
 - **Merge with Existing**: Combine with current document class definitions
 - **Create New Class**: Add as new document type to existing configuration
+
+### Class name normalization
+
+A document class id (`$id` / `x-aws-idp-document-type`) is not only a label: it
+is composed into names in downstream AWS APIs. The strictest consumer is Bedrock
+Data Automation, whose `CreateBlueprint` requires the blueprint name to match
+`[a-zA-Z0-9-_]+` — and the accelerator builds that name as
+`{stack}-{class_id}-{suffix}`. A class id containing a space therefore fails the
+API call outright rather than degrading.
+
+Discovery's prompts ask the model for a name in that character set, but a prompt
+is guidance, not a guarantee. Discovery therefore normalizes the id before
+saving it:
+
+| Discovered id | Saved as |
+|---|---|
+| `Task cards` | `Task-cards` |
+| `Blank page` | `Blank-page` |
+| `Invoice (Final)` | `Invoice-Final` |
+| `Bank_Statement` | `Bank_Statement` (unchanged) |
+| `W2-Form` | `W2-Form` (unchanged) |
+
+Notes:
+
+- **Letters, digits, hyphens and underscores are preserved as-is.** An id that
+  already works is never rewritten, so no BDA blueprint (or anything else keyed
+  on the class name) is orphaned by a rename.
+- **The original text is kept** in the class `description` when the class has no
+  description of its own, so the human-readable name is not lost.
+- **An id with nothing usable in it** (e.g. `???`) is left unchanged and logged
+  as a warning — inventing a name would present a fabricated class as if the
+  model had produced it. Rename it in the Schema Builder before using features
+  that derive resource names from the class id.
+- The Web UI's Schema Builder enforces the same character set when you author or
+  edit a class by hand.
 
 ## BDA Integration
 

@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import boto3
 from pydantic import BaseModel
 
+from idp_common.config.class_names import sanitize_class_name
+
 if TYPE_CHECKING:
     from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
     from idp_common.bda.bda_blueprint_service import BdaBlueprintService
@@ -360,8 +362,12 @@ class BlueprintOptimizer:
             schema_copy
         )
 
+        # Sanitized identically to the sync path (and to _blueprint_lookup
+        # above), so a class id with a space produces a name BDA accepts and
+        # the next lookup still finds it.
         blueprint_name = (
-            f"{self.blueprint_service.blueprint_name_prefix}-{class_name}"
+            f"{self.blueprint_service.blueprint_name_prefix}-"
+            f"{sanitize_class_name(class_name)}"
             f"-{uuid.uuid4().hex[:8]}"
         )
 

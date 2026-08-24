@@ -62,8 +62,44 @@ if not result["valid"]:
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `constants.py` | Configuration constants. |
+| `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `schema_constants.py` | JSON Schema extension keys (e.g. `x-aws-idp-document-type`, `x-aws-idp-extraction-model`, `x-aws-idp-extraction-system-prompt`, `x-aws-idp-extraction-task-prompt`). |
 | `system_defaults/` | Packaged default configuration YAML used as the merge base. |
+
+## Class ids
+
+A document class id (`$id` / `x-aws-idp-document-type`) is composed into
+downstream resource names, so it is constrained by its strictest consumer:
+Bedrock Data Automation requires a blueprint name matching `[a-zA-Z0-9-_]+`, and
+blueprint names are built as `{stack}-{class_id}-{suffix}`. `class_names.py` is
+the single definition of that rule, so write paths and name-composing paths
+cannot drift:
+
+```python
+from idp_common.config.class_names import is_valid_class_name, sanitize_class_name
+
+is_valid_class_name("Bank_Statement")   # True
+is_valid_class_name("Task cards")       # False
+sanitize_class_name("Task cards")       # "Task-cards"
+sanitize_class_name("Bank_Statement")   # "Bank_Statement"  (unchanged)
+sanitize_class_name("???")              # ""  -> caller decides
+```
+
+Two properties matter when calling it:
+
+- **Valid ids are returned byte-identically**, underscores included. Do not
+  substitute `BdaBlueprintService._sanitize_project_name`, which maps `_` to `-`
+  — renaming a working class would orphan the BDA blueprint created under the
+  old name (lookup misses it, and orphan cleanup then deletes it as unexpected).
+- **The empty string means "nothing usable"**, not "use a default". Callers
+  raise or skip; inventing a name would silently mislabel the class.
+
+Callers: `discovery/classes_discovery.py` (normalizes a discovered id at its
+single write path, and sanitizes the `class_name_hint` before injecting it into
+the prompt), `bda/bda_blueprint_service.py` (blueprint create, lookup, and
+orphan-cleanup prefixes — all three must agree), `bda/blueprint_optimizer.py`.
+The Web UI's `SchemaBuilder.tsx` enforces the same pattern for hand-authored
+classes.
 
 ## Configuration records
 
