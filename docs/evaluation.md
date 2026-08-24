@@ -1406,6 +1406,34 @@ pin/constant drift fail loudly instead of silently disagreeing.
 - **Repository**: https://github.com/awslabs/stickler
 - **PyPI**: https://pypi.org/project/stickler-eval/
 
+## When a section fails to evaluate
+
+A section that could not be evaluated at all — as distinct from one that was
+[excluded](#excluded-sections-in-evaluation) or scored badly — is reported with
+an **⚠️ EVALUATION FAILED** block naming the cause, and its metrics are zeroed.
+
+Each failure carries a `failure_type` in the section's metrics, and the report's
+remediation follows it:
+
+| `failure_type` | Cause | What to do |
+|---|---|---|
+| `missing_schema_configuration` | The class is absent from the `evaluation` schema and no baseline data was available to infer one | Add the class to the config, or pass baseline data |
+| `empty_nested_object` | A nested object in the schema has no properties | Give it at least one property, or remove it |
+| `extraction_parsing_failed` | The model's extraction output was not parseable JSON | Check for truncation (`max_tokens`) or commentary around the JSON; re-extract |
+| `baseline_data_validation_error` | The baseline values' types disagree with the schema | Fix the baseline, or widen the schema field type |
+| `schema_configuration_error` | Any other schema/config error | Review the schema against the reported error |
+| `unexpected_error` | Anything else | Read the reported error |
+
+Two things worth knowing when reading such a block:
+
+- **The zeros mean "not scored", not "scored zero".** They are placeholders for
+  a section that was never evaluated, so they look alarming next to a healthy
+  document-level score. They do still count against the document-level
+  aggregates, which is why the block is prominent.
+- A results file written before `failure_type` existed shows the failure reason
+  with no "How to fix" list. That is deliberate: remediation for the wrong cause
+  is worse than none.
+
 ## Excluded Sections in Evaluation
 
 If a document class is marked with
