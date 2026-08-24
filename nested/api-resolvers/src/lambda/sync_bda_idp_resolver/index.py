@@ -262,9 +262,10 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         sync_failed_classes = []
         sync_succeeded_classes = []
         all_warnings = []
-        
+        failure_reasons = []
+
         if isinstance(result, list):
-            for item in result: 
+            for item in result:
                 if item.get('status') == 'success':
                     sync_succeeded_classes.append(item.get('class'))
                     # Collect warnings (skipped properties) for this class
@@ -273,7 +274,14 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 else:
                     class_name = item.get('class', 'Unknown')
                     sync_failed_classes.append(class_name)
-        
+                    # Surface why, so the user isn't left with a bare failed
+                    # count and a CloudWatch hunt for the actual API error.
+                    reason = item.get('error')
+                    if reason:
+                        failure_reasons.append(f"{class_name}: {reason}")
+
+        failure_detail = f" ({'; '.join(failure_reasons)})" if failure_reasons else ""
+
         logger.info(f"BDA/IDP sync completed. Direction: {sync_direction}, Succeeded: {len(sync_succeeded_classes)}, Failed: {len(sync_failed_classes)}")
         
         # Update BDA project tracking in version table
@@ -292,28 +300,28 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 manager.set_bda_sync_status(versionName, "error")
             return {
                 "success": False,
-                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.",
+                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}",
                 "processedClasses": [],
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
                 "bdaSyncStatus": "error",
                 "error": {
                     "type": "SYNC_ERROR", 
-                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}"
+                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}{failure_detail}"
                 }
             }
         elif len(sync_failed_classes) > 0:
             # Partial failure
             return {
                 "success": True,  # Partial success
-                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}",
+                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}",
                 "processedClasses": sync_succeeded_classes,
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
                 "bdaSyncStatus": "partial",
                 "error": {
                     "type": "PARTIAL_SYNC_ERROR",
-                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}"
+                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}{failure_detail}"
                 }
             }
         else:

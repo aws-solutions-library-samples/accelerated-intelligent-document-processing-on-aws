@@ -3,7 +3,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isUnverifiedGrant, isVerifiedEntitlement, licenseModeMismatchNote, unverifiedReason } from './entitlement-source';
+import {
+  isUnverifiedGrant,
+  isVerifiedEntitlement,
+  licenseModeMismatchNote,
+  sourceDisplayLabel,
+  unverifiedReason,
+} from './entitlement-source';
 import type { FeatureEntitlement } from '../../types/feature-platform';
 
 describe('isVerifiedEntitlement', () => {
@@ -69,6 +75,27 @@ describe('isUnverifiedGrant', () => {
     for (const source of sources) {
       expect(isVerifiedEntitlement('ACTIVE', source) && isUnverifiedGrant('ACTIVE', source)).toBe(false);
     }
+  });
+});
+
+describe('sourceDisplayLabel', () => {
+  it('names the product a customer bought from, not the licenseMode identifier', () => {
+    expect(sourceDisplayLabel('marketplace-live')).toBe('AWS Marketplace');
+  });
+
+  it('still distinguishes a simulator, so the label cannot launder a fake check', () => {
+    expect(sourceDisplayLabel('simulated')).toBe('Marketplace simulator');
+    expect(sourceDisplayLabel('simulated')).not.toMatch(/^AWS Marketplace$/);
+  });
+
+  it('passes an unrecognised source through verbatim rather than hiding it', () => {
+    // A source we don't know about is worth seeing raw — inventing a friendly
+    // name for it would be the one case where the label misleads.
+    expect(sourceDisplayLabel('brand-new-mode' as never)).toBe('brand-new-mode');
+  });
+
+  it('does not throw on a missing source', () => {
+    expect(sourceDisplayLabel(undefined)).toBe('unknown');
   });
 });
 

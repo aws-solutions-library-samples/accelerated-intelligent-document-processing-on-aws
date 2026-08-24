@@ -301,6 +301,51 @@ class DocumentEvaluationResult:
 
         return result
 
+    @staticmethod
+    def _failure_remediation(sr: "SectionEvaluationResult") -> List[str]:
+        """Return "How to fix" lines appropriate to *this* section's failure.
+
+        Keyed on ``metrics["failure_type"]``, which ``evaluate_section`` sets
+        alongside ``evaluation_failed``. Results written before that field
+        existed carry no type; those get no remediation list rather than a
+        guessed one — the failure reason above already states the cause, and
+        advice for the wrong cause is worse than no advice.
+        """
+        failure_type = sr.metrics.get("failure_type")
+        steps: List[str] = []
+
+        if failure_type == "missing_schema_configuration":
+            steps = [
+                f"1. Add a configuration for '{sr.document_class}' in your `evaluation` config YAML",
+                "2. Ensure the document class name matches exactly (case-insensitive)",
+                "3. Or provide baseline/expected data when calling evaluate_document() to enable auto-generation",
+            ]
+        elif failure_type == "empty_nested_object":
+            steps = [
+                "1. Add at least one property to the nested object named above, or remove it from the schema",
+                "2. Re-run the evaluation",
+            ]
+        elif failure_type == "extraction_parsing_failed":
+            steps = [
+                "1. Open the section's extraction output — the model's response was not parseable JSON",
+                "2. Check whether the response was truncated (raise `max_tokens`) or wrapped in commentary",
+                "3. Re-run extraction for this document, then re-evaluate",
+            ]
+        elif failure_type == "baseline_data_validation_error":
+            steps = [
+                "1. Compare the baseline (expected) values against the class schema — the types disagree",
+                "2. Fix the baseline data (or widen the schema field type) and re-run the evaluation",
+            ]
+        elif failure_type == "schema_configuration_error":
+            steps = [
+                f"1. Review the `evaluation` schema for '{sr.document_class}' against the error above",
+                "2. Re-run the evaluation once the schema is valid",
+            ]
+
+        if not steps:
+            return []
+        return ["**How to fix:**", *steps, ""]
+
     def to_markdown(self) -> str:
         """Convert evaluation results to clean, portable markdown format."""
         sections = []
@@ -636,19 +681,22 @@ class DocumentEvaluationResult:
 
             # Check if this section had an evaluation failure
             if sr.metrics.get("evaluation_failed", False):
+                failure_reason = (
+                    sr.attributes[0].reason
+                    if sr.attributes and sr.attributes[0].reason
+                    else ""
+                )
                 sections.append("")
                 sections.append("⚠️ **EVALUATION FAILED**")
                 sections.append("")
+                # State the actual cause. This block used to assert that no
+                # configuration was found for the class, and print the matching
+                # "how to fix" list, for *every* failure — so a parsing error or
+                # a baseline type mismatch was described as a missing config,
+                # sending users to fix something that was not wrong.
                 sections.append(
-                    f"This section could not be evaluated because no configuration was found for document class: **{sr.document_class}**"
-                )
-                sections.append("")
-                sections.append("**Reasons for failure:**")
-                sections.append(
-                    "- No schema configuration exists for this document class in your evaluation config"
-                )
-                sections.append(
-                    "- No baseline data was provided to auto-generate a schema"
+                    failure_reason
+                    or f"This section could not be evaluated for document class: **{sr.document_class}**"
                 )
                 sections.append("")
                 sections.append("**Impact:**")
@@ -659,32 +707,29 @@ class DocumentEvaluationResult:
                     "- The failure is reflected in document-level aggregate metrics"
                 )
                 sections.append("")
-                sections.append("**How to fix:**")
-                sections.append(
-                    f"1. Add a configuration for '{sr.document_class}' in your `evaluation` config YAML"
-                )
-                sections.append(
-                    "2. Ensure the document class name matches exactly (case-insensitive)"
-                )
-                sections.append(
-                    "3. Or provide baseline/expected data when calling evaluate_document() to enable auto-generation"
-                )
-                sections.append("")
 
-                # Show the failure reason from attributes if available
-                if sr.attributes and sr.attributes[0].reason:
-                    sections.append("**Detailed error:**")
-                    sections.append(f"```\n{sr.attributes[0].reason}\n```")
-                    sections.append("")
+                for line in self._failure_remediation(sr):
+                    sections.append(line)
 
                 # Still show the metrics (all zeros) for transparency
                 sections.append("### Metrics (Failure State)")
+                sections.append("")
+                # Say what the zeros are. They are placeholders for a section
+                # that was never scored, not measurements of a bad extraction —
+                # read as accuracy they look alarming next to a healthy
+                # document-level score.
+                sections.append(
+                    "> These zeros mean *not scored*, not *scored zero* — this section "
+                    "was never evaluated, so there is nothing measured to report. They "
+                    "do count against the document-level aggregates above."
+                )
+                sections.append("")
                 metrics_table = (
                     "| Metric | Value | Rating |\n| ------ | :----: | :----: |\n"
                 )
                 for metric, value in sr.metrics.items():
-                    if metric == "evaluation_failed":
-                        continue  # Skip the flag itself in the table
+                    if metric in ("evaluation_failed", "failure_type"):
+                        continue  # Skip internal flags in the table
                     formatted_value = (
                         f"{value:.4f}"
                         if isinstance(value, (int, float))

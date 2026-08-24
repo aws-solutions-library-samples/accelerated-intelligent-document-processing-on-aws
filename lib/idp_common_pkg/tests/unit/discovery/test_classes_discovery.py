@@ -867,3 +867,244 @@ class TestDiscoveryRejectsOpenAI:
         _reject_openai_responses_model("us.anthropic.claude-opus-4-8")
         _reject_openai_responses_model("us.amazon.nova-pro-v1:0")
         _reject_openai_responses_model(None)
+
+
+# ---------------------------------------------------------------------------
+# Regression: a discovered class id must be usable by every downstream feature.
+#
+# Discovery's schema prompt asks for "no spaces", but nothing enforced it, and
+# the multi-section auto-detect prompt actively suggested a label WITH a space
+# ("W2 Form") which was then injected as the class name. The resulting ids
+# ("Task cards", "Blank page") persisted fine and only failed much later, in
+# BDA sync, where a blueprint name must match [a-zA-Z0-9-_]+.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestDiscoveredClassIdNormalization:
+    """Tests for class-id normalization on the discovery write path."""
+
+    @pytest.fixture
+    def service(self):
+        with (
+            patch("boto3.resource"),
+            patch("idp_common.bedrock.BedrockClient"),
+            patch(
+                "idp_common.discovery.classes_discovery.ConfigurationReader"
+            ) as mock_config_reader,
+            patch("idp_common.discovery.classes_discovery.ConfigurationManager"),
+            patch.dict("os.environ", {"CONFIGURATION_TABLE_NAME": "test-config-table"}),
+        ):
+            mock_config_reader.return_value.get_merged_configuration.return_value = (
+                IDPConfig()
+            )
+            svc = ClassesDiscovery(
+                input_bucket="b", input_prefix="d.pdf", region="us-west-2"
+            )
+            svc.config_manager = MagicMock()
+            svc.config_manager.get_raw_configuration.return_value = {}
+            return svc
+
+    def _saved_classes(self, service):
+        service.config_manager.save_raw_configuration.assert_called_once()
+        return service.config_manager.save_raw_configuration.call_args[0][1]["classes"]
+
+    def _saved_class(self, service):
+        classes = self._saved_classes(service)
+        assert len(classes) == 1
+        return classes[0]
+
+    def test_class_id_with_space_is_normalized_on_save(self, service):
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Task-cards"
+        assert saved["x-aws-idp-document-type"] == "Task-cards"
+        # The readable original is preserved rather than discarded.
+        assert saved["description"] == "Task cards"
+
+    def test_existing_description_is_not_overwritten(self, service):
+        service._merge_and_save_class(
+            {
+                "$id": "Blank page",
+                "x-aws-idp-document-type": "Blank page",
+                "description": "An intentionally blank separator page",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Blank-page"
+        assert saved["description"] == "An intentionally blank separator page"
+
+    def test_valid_class_id_is_left_untouched(self, service):
+        """Underscores and hyphens are legal — normalizing them would rename
+        classes that already work and orphan their BDA blueprints."""
+        service._merge_and_save_class(
+            {
+                "$id": "Bank_Statement",
+                "x-aws-idp-document-type": "Bank_Statement",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Bank_Statement"
+        assert saved["x-aws-idp-document-type"] == "Bank_Statement"
+        # No description invented for a class that needed no rename.
+        assert "description" not in saved
+
+    def test_dedup_uses_the_normalized_id(self, service):
+        """Re-discovering the same document must update its class, not add a
+        second one under a differently-spelled id."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task-cards",
+                    "x-aws-idp-document-type": "Task-cards",
+                    "description": "first pass",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Task-cards"
+        assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_stale_unnormalized_id_is_replaced_not_duplicated(self, service):
+        """The upgrade path: a version saved before this fix still holds the
+        spaced spelling, and that is exactly the config that hit #624.
+
+        Keying the merge on the raw id would leave 'Task cards' in place and
+        add 'Task-cards' beside it — two classes composing the same BDA
+        blueprint name prefix, fighting over one blueprint on every sync.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task cards",
+                    "x-aws-idp-document-type": "Task cards",
+                    "description": "saved before normalization",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service)  # asserts exactly one class remains
+        assert saved["$id"] == "Task-cards"
+        assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_unrelated_classes_are_not_collapsed_by_normalization(self, service):
+        """Only the class being written may be re-keyed.
+
+        Two curated classes can normalize to the same id ('Invoice (Final)'
+        and 'Invoice-Final'). Re-keying every existing entry on its sanitized
+        id would silently drop one of them while saving an unrelated class.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {"$id": "Invoice (Final)", "type": "object", "properties": {}},
+                {"$id": "Invoice-Final", "type": "object", "properties": {}},
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved_ids = [c["$id"] for c in self._saved_classes(service)]
+        assert saved_ids == ["Invoice (Final)", "Invoice-Final", "Task-cards"]
+
+    def test_unusable_class_id_is_left_alone_rather_than_invented(self, service):
+        """Nothing valid remains in '???'. Inventing a name would present a
+        fabricated class as if the model had produced it."""
+        service._merge_and_save_class(
+            {
+                "$id": "???",
+                "x-aws-idp-document-type": "???",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        assert self._saved_class(service)["$id"] == "???"
+
+    def test_auto_detect_prompt_does_not_suggest_labels_with_spaces(self, service):
+        """The default auto-detect prompt's own example became the class name,
+        so the example itself has to be a valid id."""
+        import inspect
+
+        source = inspect.getsource(ClassesDiscovery.auto_detect_sections)
+        assert '"W2 Form"' not in source
+        assert '"W2-Form"' in source
+
+    def test_class_name_hint_is_sanitized_before_injection(self, service):
+        """An auto-detected section label reaches the prompt as an explicit
+        instruction that overrides the schema prompt's own 'no spaces' rule."""
+        with (
+            patch("idp_common.utils.s3util.S3Util.get_bytes", return_value=b"x"),
+            patch(
+                "idp_common.bedrock.extract_text_from_response",
+                return_value=json.dumps(
+                    {
+                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "$id": "W2-Form",
+                        "x-aws-idp-document-type": "W2-Form",
+                        "type": "object",
+                        "properties": {"a": {"type": "string"}},
+                    }
+                ),
+            ),
+        ):
+            service.bedrock_client.invoke_model = MagicMock(
+                return_value={
+                    "response": {"output": {"message": {"content": [{"text": "{}"}]}}},
+                    "metering": {},
+                }
+            )
+
+            service._extract_data_from_document(
+                document_content=b"x",
+                file_extension="pdf",
+                class_name_hint="W2 Form",
+            )
+
+            content = service.bedrock_client.invoke_model.call_args.kwargs["content"]
+            prompt = next(part["text"] for part in content if "text" in part)
+            assert '"W2-Form" as the document class name' in prompt
+            assert "W2 Form" not in prompt

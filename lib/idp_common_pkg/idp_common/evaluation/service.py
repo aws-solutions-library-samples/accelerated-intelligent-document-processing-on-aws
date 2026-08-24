@@ -1515,6 +1515,7 @@ class EvaluationService:
                 field_match = re.search(r"Error in field '([^']+)'", error_message)
                 field_name = field_match.group(1) if field_match else "unknown"
 
+                failure_type = "empty_nested_object"
                 failure_reason = (
                     f"Schema error for document class '{class_name}': "
                     f"Nested object '{field_name}' has no properties defined. "
@@ -1522,6 +1523,7 @@ class EvaluationService:
                     f"Either add properties to '{field_name}' in your schema or remove it entirely."
                 )
             elif "No schema configuration found" in error_message:
+                failure_type = "missing_schema_configuration"
                 failure_reason = (
                     f"No schema configuration found for document class: {class_name}. "
                     f"Cannot evaluate without configuration or baseline data. "
@@ -1529,6 +1531,7 @@ class EvaluationService:
                 )
             else:
                 # Generic schema/configuration error
+                failure_type = "schema_configuration_error"
                 failure_reason = f"Schema configuration error for document class '{class_name}': {error_message}"
 
             return SectionEvaluationResult(
@@ -1554,6 +1557,9 @@ class EvaluationService:
                     "false_discovery_rate": 0.0,
                     "weighted_overall_score": 0.0,
                     "evaluation_failed": True,
+                    # Names the cause so the report can explain *this* failure
+                    # rather than assuming a missing configuration.
+                    "failure_type": failure_type,
                 },
             )
 
@@ -1567,12 +1573,14 @@ class EvaluationService:
             # Check if it's a Pydantic validation error
             error_type = type(e).__name__
             if "ValidationError" in error_type:
+                failure_type = "baseline_data_validation_error"
                 failure_reason = (
                     f"Data validation error: The baseline data format doesn't match the schema for document class '{class_name}'. "
                     f"This typically means the baseline data has different types than expected. "
                     f"Details: {str(e)}"
                 )
             else:
+                failure_type = "unexpected_error"
                 failure_reason = f"Unexpected error during evaluation: {str(e)}"
 
             return SectionEvaluationResult(
@@ -1598,6 +1606,7 @@ class EvaluationService:
                     "false_discovery_rate": 0.0,
                     "weighted_overall_score": 0.0,
                     "evaluation_failed": True,  # Flag to identify failed evaluations
+                    "failure_type": failure_type,
                 },
             )
 

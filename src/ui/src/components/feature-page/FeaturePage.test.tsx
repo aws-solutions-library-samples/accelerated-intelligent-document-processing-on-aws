@@ -247,6 +247,35 @@ describe('FeaturePage 7-state renderer', () => {
     });
     renderPage(['Admin']);
     expect(screen.getByRole('button', { name: /Launch stack/i })).toBeInTheDocument();
+    // This screen asserts the subscription is ACTIVE, so it owes the customer the
+    // same route to managing it as the installed page — not having launched the
+    // stack yet doesn't make the subscription any less billable.
+    expect(screen.getByRole('link', { name: /Manage subscription/i })).toHaveAttribute(
+      'href',
+      'https://console.aws.amazon.com/marketplace/home#/subscriptions',
+    );
+  });
+
+  it('does not offer "Manage subscription" for an OSS extension', () => {
+    // No Marketplace contract exists, so there is nothing to manage — a link into
+    // the subscriptions console would be a dead end.
+    mockCatalog({ source: 'oss' });
+    mockedUseInstalled.mockReturnValue({
+      features: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: () => undefined,
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'oss' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Admin']);
+    expect(screen.getByRole('button', { name: /Launch stack/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Manage subscription/i })).not.toBeInTheDocument();
   });
 
   it('shows "Awaiting installation" when ACTIVE + not installed + non-admin', () => {
@@ -266,6 +295,10 @@ describe('FeaturePage 7-state renderer', () => {
     renderPage(['Viewer']);
     expect(screen.getByText(/Awaiting installation/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Launch stack/i })).not.toBeInTheDocument();
+    // Managing the subscription is an AWS-account action guarded by the caller's
+    // own IAM permissions, not by the IDP Admin group — a viewer may be the
+    // account's billing owner, and they are the one being charged.
+    expect(screen.getByRole('link', { name: /Manage subscription/i })).toBeInTheDocument();
   });
 
   it('renders feature UI + up-to-date banner when ACTIVE + installed at latest', () => {
@@ -515,12 +548,44 @@ describe('FeaturePage 7-state renderer', () => {
     });
     renderPage(['Admin']);
 
-    expect(screen.getByText(/Subscription active/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Source:$/)).toBeInTheDocument();
+    // One line, and it names the product rather than the internal licenseMode
+    // identifier: "Subscription active (AWS Marketplace)", not a second row
+    // reading "Source: marketplace-live".
+    expect(screen.getByText(/Subscription active \(AWS Marketplace\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Source:$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/marketplace-live/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Access allowed without a verified subscription/i)).not.toBeInTheDocument();
     // Cancel is only offered for simulator-backed subscriptions — a real AWS
-    // Marketplace subscription can only be cancelled in the buyer's console.
+    // Marketplace subscription can only be cancelled in the buyer's console,
+    // which is what "Manage subscription" links to.
     expect(screen.queryByRole('button', { name: /Cancel Subscription/i })).not.toBeInTheDocument();
+    const manage = screen.getByRole('link', { name: /Manage subscription/i });
+    expect(manage).toHaveAttribute('href', 'https://console.aws.amazon.com/marketplace/home#/subscriptions');
+    expect(manage).toHaveAttribute('target', '_blank');
+  });
+
+  it('offers "Manage subscription" to a non-admin too', () => {
+    // Viewing and cancelling your own Marketplace subscription happens in the AWS
+    // console under the caller's own IAM permissions, so the host has no business
+    // gating the link on the IDP Admin group — an IDP viewer may well be the
+    // account's billing owner.
+    const inst = installed({ installedVersion: '1.0.0', latestVersion: '1.0.0' });
+    mockedUseInstalled.mockReturnValue({
+      features: [inst],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      byId: (id) => (id === inst.featureId ? inst : undefined),
+    });
+    mockedUseEntitlement.mockReturnValue({
+      entitlement: ent({ state: 'ACTIVE', source: 'marketplace-live' }),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    renderPage(['Viewer']);
+
+    expect(screen.getByRole('link', { name: /Manage subscription/i })).toBeInTheDocument();
   });
 
   it('never renders both subscription banners at once', () => {
