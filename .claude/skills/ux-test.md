@@ -39,25 +39,37 @@ they would otherwise land in the transcript.
 **Then restart Claude Code** — MCP servers load at session start, so the tools
 are absent until it restarts.
 
-### 2. Relaunch Chrome with remote debugging (once)
-
-Fully **quit** Chrome (⌘Q on macOS — closing the window is not enough), then:
+### 2. Launch a debug Chrome with its own profile (once)
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    --remote-debugging-port=9222 >/dev/null 2>&1 &
+    --remote-debugging-port=9222 \
+    --user-data-dir="$HOME/.cache/chrome-idp-ux" \
+    --no-first-run --no-default-browser-check >/dev/null 2>&1 &
 ```
 
-No `--user-data-dir`: this is the user's **normal profile**, so their tabs,
-cookies and existing IDP sign-in all come back. The signed-in session lives in the
-profile on disk, not in the running process — quitting loses nothing. Suggest they
-add the flag to how they normally launch Chrome so this never comes up again.
-
-Verify before going further:
+Verify before going further — this must return JSON, not 404 and not nothing:
 
 ```bash
-curl -s http://127.0.0.1:9222/json/version    # must return JSON, not 404
+curl -s http://127.0.0.1:9222/json/version
 ```
+
+**The dedicated `--user-data-dir` is mandatory, not a preference.** Chrome ≥136
+**silently ignores `--remote-debugging-port` on the default profile**: Chrome
+starts normally, but the port never answers and nothing explains why. This is a
+deliberate Chrome hardening — remote debugging on the everyday profile would
+expose every signed-in cookie to any local process — so it is not going to come
+back. Do not offer "reuse your normal profile" as an option; it does not work on
+any current Chrome.
+
+Consequence, worth stating to the user up front so it is not a surprise: **the
+reviewer signs into the stack once in this profile.** The profile persists at
+`~/.cache/chrome-idp-ux`, so it is a one-time cost, not per-run.
+
+If the port does not answer, the usual cause is a Chrome already holding it.
+Check with `lsof -nP -iTCP:9222 -sTCP:LISTEN`, and never start a second Chrome on
+a port another Chrome holds — they split across IPv4 and IPv6 on the same number
+and the browser can hang.
 
 ### 3. Get the stack URL and make sure they are signed in
 
@@ -69,15 +81,22 @@ AWS_PROFILE=default ./scripts/ux_test_session.py url <STACK_NAME> --region <regi
 *different* account (see CLAUDE.md). A stack is invisible from the wrong region;
 if the name is not found the script lists the IDP stacks it can see.
 
-Then have the user open that URL in the debug-enabled Chrome and sign in as
-themselves. **That is the whole setup** — no separate profile, no second window,
-no throwaway credentials.
+Then have the user open that URL in the debug Chrome and sign in as themselves.
+First run in a fresh profile means an actual sign-in; after that the profile
+remembers it.
+
+**Known bug on a cold sign-in:** a fresh profile can land on a blank page after
+valid credentials (a credential-fetch race the app does not recover from). A
+reload fixes it. If it happens, that is not your review finding — it is already
+written up; just reload and carry on.
 
 ### Gotchas, all of them measured rather than assumed
 
-- **`--remote-debugging-port` has no effect on an already-running Chrome.** A
-  second launch hands off to the existing process and CDP stays off. Hence the
-  quit in step 2.
+- **Chrome ≥136 ignores `--remote-debugging-port` on the default profile** —
+  silently, so it looks like the flag worked. A dedicated `--user-data-dir` is
+  required. See step 2.
+- **`--remote-debugging-port` has no effect on an already-running Chrome** either;
+  a second launch hands off to the existing process and CDP stays off.
 - **`chrome://inspect/#remote-debugging` does not work with this tool.** It opens
   the port but serves no HTTP discovery endpoints (`/json/version` → 404), and
   `--autoConnect` and `--wsEndpoint` both time out against it. The toggle is also

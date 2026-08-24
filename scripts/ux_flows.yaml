@@ -69,9 +69,19 @@ flows:
     persona: Admin
     priority: p0
     setup:
-      - A document with a baseline whose ground-truth class differs from the
-        predicted class. If none exists, correct a document's class to something
-        wrong and re-extract to create one.
+      # Do NOT create this by using flow 6.2 — that flow is currently broken and
+      # drops the corrected class, so the fixture never appears and 6.1 looks
+      # untestable. Edit the baseline directly instead:
+      #
+      #   aws s3 cp s3://<testset-bucket>/<set>/baseline/<doc>/sections/1/result.json .
+      #   # change document_class.type to a different class, then put it back
+      #   aws s3 cp result.json s3://<testset-bucket>/<set>/baseline/<doc>/sections/1/result.json
+      #
+      # That makes the ground-truth class disagree with what the pipeline
+      # predicted, which is exactly the condition 6.1 is about.
+      - A document whose baseline ground-truth class differs from the class the
+        pipeline predicted. Create it by editing the baseline result.json in S3
+        (see the comment above), not via flow 6.2.
     steps:
       - Open the document's detail page.
       - Open View Data and enable Show evaluation.
