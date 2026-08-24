@@ -52,6 +52,43 @@ Many bundled samples are tuned for a specific configuration preset in the [Confi
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
+## Evaluation report
+
+On a document that was evaluated against a baseline, **View Evaluation Report**
+opens a summary that leads with the two figures the report exists to answer:
+
+- **Extraction accuracy** — weighted by field importance when the configuration
+  assigns weights, otherwise the plain proportion of fields that matched (the
+  label says which, because they are not the same number).
+- **Classification accuracy** — page level, shown separately because
+  classification and extraction fail independently. A document can be classified
+  perfectly and extracted badly, or the reverse, and one number cannot stand for
+  both.
+- **F1 score**, with precision and recall beneath it.
+
+A figure with no value is **omitted rather than shown as 0%** — a zero would be
+indistinguishable from "scored nothing correctly", which is the one actively
+wrong reading available. A document that could not be scored at all (no section
+had an extractable schema) says so instead of showing zeros.
+
+Below that, one expandable section per document section, each carrying the
+per-field table: expected value, extracted value, score, and the comparison
+method with the evaluator's own reason in a tooltip. Sections with mismatches are
+expanded by default. **Mismatches only** hides everything that matched, for
+working through problems on a wide document. A wrong class is called out at the
+top of its section, because it makes the field table below it meaningless rather
+than merely wrong.
+
+**Comparison methods used** lists the comparators this document's evaluation
+applied. Worth checking when a score is surprising: "Acme Inc" not matching
+"Acme, Inc." is usually a comparison-method question rather than an extraction
+one.
+
+The markdown report is still generated and is one click away via **Markdown
+report**, which is also where **download** and **print** live. Documents
+evaluated by an older build, whose JSON results cannot be read, fall back to the
+markdown automatically.
+
 ## Comparing a document against its baseline
 
 On a document that has an evaluation baseline, **View Data → Show evaluation**
