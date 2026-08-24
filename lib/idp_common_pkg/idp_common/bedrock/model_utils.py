@@ -68,6 +68,63 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
     return model_id, None
 
 
+def resolve_model_id_from_arn(model_id: str) -> str:
+    """
+    Reduce a Bedrock model ARN to the model ID it names.
+
+    Bedrock accepts either a bare model ID (``us.anthropic.claude-sonnet-4-6``)
+    or an ARN. GovCloud has no bare cross-region inference-profile path, so a
+    GovCloud config must name an account-scoped inference-profile ARN. Callers
+    that look a model up in a catalog keyed by model ID (pricing.yaml) need the
+    trailing segment.
+
+    ARN fields are colon-delimited and the resource segment itself contains
+    colons (model IDs end in ``:0``), so the split is bounded at 5 and the
+    resource type is then stripped at the first ``/``.
+
+    Anything that is not a well-formed ARN — a bare model ID, ``LambdaHook``,
+    or a malformed string — is returned unchanged. Opaque resources
+    (``application-inference-profile/<uuid>``, ``provisioned-model/<id>``)
+    resolve to that opaque id, since the underlying foundation model cannot be
+    determined without a GetInferenceProfile API call.
+
+    Examples:
+        >>> resolve_model_id_from_arn(
+        ...     "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012"
+        ...     ":inference-profile/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        ... )
+        'us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0'
+
+        >>> resolve_model_id_from_arn(
+        ...     "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6"
+        ... )
+        'anthropic.claude-sonnet-4-6'
+
+        >>> resolve_model_id_from_arn("us.anthropic.claude-sonnet-4-6")
+        'us.anthropic.claude-sonnet-4-6'
+
+    Args:
+        model_id: A Bedrock model ID or ARN.
+
+    Returns:
+        The model ID named by the ARN, or the input unchanged when it is not a
+        parseable ARN.
+    """
+    if not model_id or not model_id.startswith("arn:"):
+        return model_id
+
+    # arn:<partition>:<service>:<region>:<account>:<resource-type>/<resource-id>
+    parts = model_id.split(":", 5)
+    if len(parts) < 6:
+        return model_id
+
+    resource = parts[5]
+    if "/" not in resource:
+        return model_id
+
+    return resource.split("/", 1)[1] or model_id
+
+
 @lru_cache(maxsize=1)
 def _load_model_limits() -> list[dict]:
     """
