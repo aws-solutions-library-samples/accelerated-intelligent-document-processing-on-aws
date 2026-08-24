@@ -659,6 +659,14 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   failedFiles: Int
   overallAccuracy: Float
   weightedOverallScores: AWSJSON
+  # Run-level mean of ``weightedOverallScores`` — the "Avg Weighted Score" the UI
+  # shows. Unlike ``overallAccuracy`` (an unweighted micro-average over every
+  # field comparison) each document's score honours the config's
+  # ``x-aws-idp-evaluation-weight`` weights, so the two figures legitimately
+  # differ. Provided because callers previously had to average
+  # ``weightedOverallScores`` themselves; an API client that only wants the
+  # headline number no longer has to fetch the whole per-document map.
+  avgWeightedOverallScore: Float
   # Count of documents in this run whose sections all have no extractable
   # schema (auto-detected no-op) — those docs are excluded from
   # ``weightedOverallScores`` and from the histogram / lowest-scores UI.

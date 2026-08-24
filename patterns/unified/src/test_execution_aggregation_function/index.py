@@ -37,6 +37,29 @@ _GRADED_PACKET_KEYS = (
 )
 
 
+def average_weighted_overall_score(
+    doc_weighted_scores: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """Mean of the per-document weighted overall scores, or None if there are none.
+
+    The run-level companion to ``weighted_overall_scores``. Each document's score
+    already honours the config's ``x-aws-idp-evaluation-weight`` field weights
+    (Stickler computes it per document); this is an unweighted mean ACROSS
+    documents, so every document counts equally regardless of how many fields it
+    has. That is deliberate — it matches what the Test Studio UI has always
+    displayed as "Avg Weighted Score" — but it is a choice, so callers wanting a
+    field-count-weighted roll-up should not assume this is it.
+    """
+    if not doc_weighted_scores:
+        return None
+    scores = [
+        float(score) for score in doc_weighted_scores.values() if score is not None
+    ]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda handler for test execution aggregation.
@@ -62,13 +85,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         result = aggregate_test_run_with_stickler(test_run_id, tracking_table_name)
 
-        # Calculate average weighted score from document-level scores
-        weighted_scores = result.get("weighted_overall_scores", {})
-        avg_weighted_score = None
-        if weighted_scores:
-            scores = [score for score in weighted_scores.values() if score is not None]
-            if scores:
-                avg_weighted_score = sum(scores) / len(scores)
+        # The average weighted score is part of the returned metrics now, rather
+        # than being computed here purely to log it and then discarded.
+        avg_weighted_score = result.get("avg_weighted_overall_score")
 
         # Format avg_weighted_score
         avg_weighted_score_str = (
@@ -687,6 +706,12 @@ def _transform_stickler_metrics(
     return {
         "overall_accuracy": metrics.get("cm_accuracy"),
         "weighted_overall_scores": doc_weighted_scores,
+        # Run-level roll-up of the per-document scores above. Previously every
+        # consumer had to average the dict itself (the Test Studio UI does so in
+        # seven places), which meant each one owned a copy of the definition.
+        "avg_weighted_overall_score": average_weighted_overall_score(
+            doc_weighted_scores
+        ),
         "average_confidence": average_confidence,  # Now computed from Stickler if available
         "confidence_metrics": confidence_metrics,  # NEW: Full calibration metrics (v0.4.0+)
         "accuracy_breakdown": {
@@ -976,6 +1001,7 @@ def _empty_metrics() -> Dict[str, Any]:
     return {
         "overall_accuracy": None,
         "weighted_overall_scores": {},
+        "avg_weighted_overall_score": None,
         "average_confidence": None,
         "accuracy_breakdown": {
             "precision": None,

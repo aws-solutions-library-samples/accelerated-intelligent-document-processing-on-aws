@@ -223,6 +223,7 @@ class TestAggregation:
 
         assert metrics["overall_accuracy"] is None
         assert metrics["weighted_overall_scores"] == {}
+        assert metrics["avg_weighted_overall_score"] is None
         assert metrics["average_confidence"] is None
         assert metrics["document_count"] == 0
         assert "accuracy_breakdown" in metrics
@@ -234,6 +235,30 @@ class TestAggregation:
         # so the UI never has to distinguish "field absent" from "0 excluded".
         assert metrics["excluded_documents"] == []
         assert metrics["excluded_document_count"] == 0
+
+    def test_average_weighted_overall_score(self, mock_env):
+        """Run-level roll-up of the per-document weighted scores.
+
+        An unweighted mean ACROSS documents, so it matches the figure the Test
+        Studio UI has always shown as "Avg Weighted Score". Documents with no
+        score (``None``) are skipped rather than counted as zero — otherwise a
+        single unscored document would silently drag the run-level number down.
+        """
+        index = import_test_module()
+
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7}
+        ) == pytest.approx(0.8)
+
+        # None scores are excluded from both numerator and denominator.
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": None}
+        ) == pytest.approx(0.8)
+
+        # No usable scores → None, never 0.0 (which would read as "perfectly bad").
+        assert index.average_weighted_overall_score({}) is None
+        assert index.average_weighted_overall_score(None) is None
+        assert index.average_weighted_overall_score({"doc1.pdf": None}) is None
 
     def test_calculate_false_alarm_rate(self, mock_env):
         """Test false alarm rate calculation.
