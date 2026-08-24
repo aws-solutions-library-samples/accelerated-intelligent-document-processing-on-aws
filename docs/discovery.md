@@ -903,6 +903,13 @@ Notes:
   on the class name) is orphaned by a rename.
 - **The original text is kept** in the class `description` when the class has no
   description of its own, so the human-readable name is not lost.
+- **A version saved before normalization is repaired in place.** If the config
+  already holds the un-normalized spelling of a class (`Task cards`),
+  re-discovering that document replaces that entry rather than adding
+  `Task-cards` beside it — two classes sharing a normalized id would also share
+  a BDA blueprint name prefix. Classes you are not re-discovering are never
+  renamed, including two curated classes that happen to normalize to the same
+  id.
 - **An id with nothing usable in it** (e.g. `???`) is left unchanged and logged
   as a warning — inventing a name would present a fabricated class as if the
   model had produced it. Rename it in the Schema Builder before using features

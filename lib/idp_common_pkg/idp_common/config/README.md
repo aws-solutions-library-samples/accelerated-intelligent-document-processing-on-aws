@@ -95,9 +95,12 @@ Two properties matter when calling it:
   raise or skip; inventing a name would silently mislabel the class.
 
 Callers: `discovery/classes_discovery.py` (normalizes a discovered id at its
-single write path, and sanitizes the `class_name_hint` before injecting it into
-the prompt), `bda/bda_blueprint_service.py` (blueprint create, lookup, and
-orphan-cleanup prefixes — all three must agree), `bda/blueprint_optimizer.py`.
+single write path, matches a stale un-normalized entry for the *same* class so
+re-discovery replaces it rather than duplicating it, and sanitizes the
+`class_name_hint` before injecting it into the prompt),
+`bda/bda_blueprint_service.py` (blueprint create, lookup, and orphan-cleanup
+prefixes — all three must agree), `bda/blueprint_optimizer.py`,
+`discovery/multi_document_discovery.py` (reports the id that was saved).
 The Web UI's `SchemaBuilder.tsx` enforces the same pattern for hand-authored
 classes.
 

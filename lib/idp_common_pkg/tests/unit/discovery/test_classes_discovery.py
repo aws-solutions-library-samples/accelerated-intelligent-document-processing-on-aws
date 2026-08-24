@@ -905,11 +905,12 @@ class TestDiscoveredClassIdNormalization:
             svc.config_manager.get_raw_configuration.return_value = {}
             return svc
 
-    def _saved_class(self, service):
+    def _saved_classes(self, service):
         service.config_manager.save_raw_configuration.assert_called_once()
-        classes = service.config_manager.save_raw_configuration.call_args[0][1][
-            "classes"
-        ]
+        return service.config_manager.save_raw_configuration.call_args[0][1]["classes"]
+
+    def _saved_class(self, service):
+        classes = self._saved_classes(service)
         assert len(classes) == 1
         return classes[0]
 
@@ -989,6 +990,65 @@ class TestDiscoveredClassIdNormalization:
         saved = self._saved_class(service)
         assert saved["$id"] == "Task-cards"
         assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_stale_unnormalized_id_is_replaced_not_duplicated(self, service):
+        """The upgrade path: a version saved before this fix still holds the
+        spaced spelling, and that is exactly the config that hit #624.
+
+        Keying the merge on the raw id would leave 'Task cards' in place and
+        add 'Task-cards' beside it — two classes composing the same BDA
+        blueprint name prefix, fighting over one blueprint on every sync.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task cards",
+                    "x-aws-idp-document-type": "Task cards",
+                    "description": "saved before normalization",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service)  # asserts exactly one class remains
+        assert saved["$id"] == "Task-cards"
+        assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_unrelated_classes_are_not_collapsed_by_normalization(self, service):
+        """Only the class being written may be re-keyed.
+
+        Two curated classes can normalize to the same id ('Invoice (Final)'
+        and 'Invoice-Final'). Re-keying every existing entry on its sanitized
+        id would silently drop one of them while saving an unrelated class.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {"$id": "Invoice (Final)", "type": "object", "properties": {}},
+                {"$id": "Invoice-Final", "type": "object", "properties": {}},
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved_ids = [c["$id"] for c in self._saved_classes(service)]
+        assert saved_ids == ["Invoice (Final)", "Invoice-Final", "Task-cards"]
 
     def test_unusable_class_id_is_left_alone_rather_than_invented(self, service):
         """Nothing valid remains in '???'. Inventing a name would present a

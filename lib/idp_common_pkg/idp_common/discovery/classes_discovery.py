@@ -514,6 +514,27 @@ class ClassesDiscovery:
 
         # Add/update the new discovered class
         if new_class_id:
+            # A version written before class ids were normalized can still hold
+            # the un-normalized spelling of this very class ("Task cards"), so
+            # match on the normalized form as well — otherwise re-discovering it
+            # adds a near-duplicate beside the stale entry, and the two would
+            # then compose the same BDA blueprint name prefix and fight over one
+            # blueprint. Only an id that normalizes to *this* one is replaced;
+            # unrelated classes keep their own ids untouched.
+            stale_ids = [
+                cls_id
+                for cls_id in classes_by_id
+                if cls_id != new_class_id
+                and sanitize_class_name(cls_id) == new_class_id
+            ]
+            for stale_id in stale_ids:
+                logger.info(
+                    "Replacing existing class %r with its normalized id %r.",
+                    stale_id,
+                    new_class_id,
+                )
+                del classes_by_id[stale_id]
+
             classes_by_id[new_class_id] = new_class
 
         # Convert back to list
