@@ -82,6 +82,12 @@ Once started, the agent streams its progress live to the UI. You are free to log
 2. **Subscribe on [AWS Marketplace](https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y)**, where you accept pricing, the beta licence terms, and the AWS Customer Agreement. Subscribe with the same AWS account your IDP Accelerator stack runs in — a subscription held by another account in your organization isn't visible to a member account's stack.
 3. **Install it from the IDP web UI.** Sign in as an `Admin`, open **Auto Optimizer (Beta)** under **Extensions**, and choose **Launch Stack**. Full walkthrough: [After Subscribing on AWS Marketplace](../marketplace-subscription-next-steps.md).
 
+
+
+https://github.com/user-attachments/assets/5a3345ce-f52f-44de-993d-a3b1efae0aad
+
+
+
 Manage or cancel the subscription any time from the [AWS Marketplace subscriptions console](https://console.aws.amazon.com/marketplace/home#/subscriptions). Cancelling does not delete the extension's CloudFormation stack — delete that separately if you want its resources removed.
 
 For questions about the beta, reach out to your AWS account team.
