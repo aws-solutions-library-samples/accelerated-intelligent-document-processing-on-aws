@@ -460,6 +460,106 @@ class TestExponentialBackoffRetry:
         assert result == "success"
         assert call_count == 1
 
+    def test_retry_on_lowercase_internal_server_exception(self):
+        """Regression: the streaming spelling must retry.
+
+        Reported live from synthetic data generation:
+        "An error occurred (internalServerException) when calling the
+        ConverseStream operation ... Try your request again" — and the caller
+        failed on the first attempt. converse_stream is wrapped by THIS
+        (synchronous) decorator, whose retryable list was a narrower hardcoded
+        four that omitted InternalServerException entirely; the async decorator's
+        list had it, but only in the capitalised non-streaming spelling. Bedrock's
+        streaming APIs lower-case the first letter of the same condition, so both
+        halves of the bug had to be fixed: share DEFAULT_RETRYABLE_ERRORS, and
+        compare case-insensitively.
+        """
+        call_count = 0
+
+        @exponential_backoff_retry(max_retries=3, initial_delay=0.01)
+        def flaky_stream():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise MockClientError(
+                    {
+                        "Error": {
+                            "Code": "internalServerException",
+                            "Message": "The system encountered an unexpected error during processing. Try your request again.",
+                        }
+                    },
+                    "ConverseStream",
+                )
+            return "recovered"
+
+        assert flaky_stream() == "recovered"
+        assert call_count == 3
+
+    def test_retry_on_capitalised_internal_server_exception(self):
+        """The non-streaming spelling retries here too (it previously did not)."""
+        call_count = 0
+
+        @exponential_backoff_retry(max_retries=3, initial_delay=0.01)
+        def flaky():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise MockClientError(
+                    {
+                        "Error": {
+                            "Code": "InternalServerException",
+                            "Message": "transient",
+                        }
+                    },
+                    "Converse",
+                )
+            return "ok"
+
+        assert flaky() == "ok"
+        assert call_count == 2
+
+    def test_sync_decorator_shares_the_default_retryable_set(self):
+        """Guards against the two decorators drifting apart again.
+
+        The sync path silently had a much narrower list than the async one, which
+        is why a condition listed as retryable still failed a streaming call.
+        """
+        from idp_common.utils.bedrock_utils import DEFAULT_RETRYABLE_ERRORS
+
+        call_count = 0
+
+        @exponential_backoff_retry(max_retries=2, initial_delay=0.01)
+        def unavailable():
+            nonlocal call_count
+            call_count += 1
+            raise MockClientError(
+                {"Error": {"Code": "serviceUnavailableException", "Message": "busy"}},
+                "ConverseStream",
+            )
+
+        # Listed (capitalised) in the shared set, sent lower-cased by streaming.
+        assert "ServiceUnavailableException" in DEFAULT_RETRYABLE_ERRORS
+        with pytest.raises(botocore.exceptions.ClientError):
+            unavailable()
+        assert call_count == 2, "should have retried before giving up"
+
+    def test_still_does_not_retry_a_genuine_client_error(self):
+        """Case-insensitivity must not turn real failures into retry storms."""
+        call_count = 0
+
+        @exponential_backoff_retry(max_retries=3, initial_delay=0.01)
+        def denied():
+            nonlocal call_count
+            call_count += 1
+            raise MockClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
+                "ConverseStream",
+            )
+
+        with pytest.raises(botocore.exceptions.ClientError):
+            denied()
+        assert call_count == 1
+
     def test_retry_on_throttling_exception(self):
         """Test retry on ThrottlingException."""
         call_count = 0

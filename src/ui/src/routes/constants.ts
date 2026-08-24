@@ -34,6 +34,20 @@ export const testSetDocumentHref = (testSetId: string, objectKey: string, view?:
     .split('/')
     .map(encodeURIComponent)
     .join('/')}${view ? `?view=${view}` : ''}`;
+/**
+ * Hash-link helper: href for a test set's annotation queue
+ * (/test-studio/sets/:testSetId/annotate). This link only navigates; access is
+ * enforced server-side against the user's allowedTestSets, so it grants nothing on
+ * its own and is safe to share with a scoped annotator.
+ */
+export const testSetAnnotateHref = (testSetId: string, objectKey?: string): string =>
+  `#${TEST_SET_DETAIL_PATH}/${encodeURIComponent(testSetId)}/annotate${objectKey ? `?doc=${encodeURIComponent(objectKey)}` : ''}`;
+/**
+ * Landing page for an annotator assigned to more than one test set (or before
+ * their scope has resolved). Lists their queues; a single-set annotator is sent
+ * straight to the queue instead.
+ */
+export const ANNOTATE_LANDING_PATH = `${TEST_STUDIO_PATH}/annotate`;
 export const CUSTOM_MODELS_PATH = `${DOCUMENTS_PATH}/custom-models`;
 
 // --- Feature Platform ---

@@ -32,12 +32,20 @@ open-source features it builds with the curated closed-source list in
       ]
     }
 
+Each entry also reports whether the feature can actually be installed in THIS
+stack's region (`availableInRegion` / `availableRegions`), so the UI can say
+"not available in eu-west-2" instead of offering a Subscribe button that leads
+to a dead end. Marketplace features are region-scoped because `sam package`
+bakes an absolute, region-specific `s3://bucket/key` CodeUri into the published
+template; OSS features ship alongside the host and are always available.
+
 Called by any signed-in user (Viewer and up). Never raises when the catalog is
 missing or unreachable: it returns [] so the UI keeps working.
 
 Environment:
     CONFIGURATION_BUCKET    The stack's own ConfigurationBucket (catalog lives here)
     CATALOG_KEY             Key of the catalog manifest (default config_library/catalog.json)
+    HOST_REGION             Region availability is evaluated against (defaults to AWS_REGION)
     LOG_LEVEL               Logging level (default INFO)
 """
 
@@ -54,8 +62,35 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
 _CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
+_HOST_REGION = os.environ.get("HOST_REGION") or os.environ.get("AWS_REGION", "")
 
 _s3 = boto3.client("s3")
+
+
+def _available_regions(entry: Dict[str, Any]) -> List[str]:
+    """Sorted regions a marketplace feature publishes artifacts to.
+
+    Reads catalog schema 1.1's ``regions`` map, falling back to the deprecated
+    flat ``sellerBucketRegion``. Kept byte-for-byte equivalent to the helper of
+    the same name in `get_feature_launch_url` so the UI's availability badge and
+    the resolver that actually builds the launch URL can never disagree — a
+    feature shown as available must be launchable.
+    """
+    regions = entry.get("regions")
+    if isinstance(regions, dict):
+        found = sorted(
+            str(r)
+            for r, spec in regions.items()
+            if isinstance(spec, dict)
+            and (spec.get("sellerBucket") or "").strip()
+            and (spec.get("templateKey") or "").strip()
+        )
+        if found:
+            return found
+    legacy_region = (entry.get("sellerBucketRegion") or "").strip()
+    if legacy_region and (entry.get("sellerBucket") or "").strip():
+        return [legacy_region]
+    return []
 
 
 def _read_catalog() -> Optional[Dict[str, Any]]:
@@ -96,6 +131,23 @@ def _to_catalog_feature(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(feature_id, str) or not feature_id:
         return None
     source = entry.get("source") or "oss"
+
+    # Region availability. OSS features are published alongside the host, so
+    # they are available wherever the host runs: report an empty region list and
+    # availableInRegion=true rather than inventing a list to filter against.
+    # Marketplace features are genuinely region-scoped (region-specific baked
+    # CodeUri), so an unlisted region means "cannot install here".
+    if source == "marketplace":
+        available_regions = _available_regions(entry)
+        # No HOST_REGION resolvable (shouldn't happen in Lambda) → don't claim
+        # unavailability we can't substantiate; let the launch resolver decide.
+        available_in_region = (
+            (_HOST_REGION in available_regions) if _HOST_REGION else True
+        )
+    else:
+        available_regions = []
+        available_in_region = True
+
     return {
         "featureId": feature_id,
         "displayName": entry.get("displayName") or feature_id,
@@ -113,6 +165,11 @@ def _to_catalog_feature(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # OSS-only: where the feature artifacts live in the artifacts bucket.
         "artifactBucket": entry.get("artifactBucket") or None,
         "artifactPrefix": entry.get("artifactPrefix") or None,
+        # Can this feature be installed in the host's own region? Lets the UI
+        # explain "not available in <region>" instead of offering a Subscribe
+        # button that dead-ends. Empty availableRegions = not region-scoped.
+        "availableInRegion": available_in_region,
+        "availableRegions": available_regions,
     }
 
 

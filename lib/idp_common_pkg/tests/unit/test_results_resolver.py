@@ -350,7 +350,11 @@ def test_fresh_cache_does_not_requeue_when_graded_metrics_legitimately_empty():
     presence check after one pass and never be re-queued again.
     """
     test_run_id = "run-post-graded-empty"
-    fresh_cache = dict(_PRE_GRADED_CACHE, gradedPacketMetrics={})
+    # A "fresh" post-release cache: adds every key the guard now checks for
+    # (gradedPacketMetrics + excludedDocumentCount as of this release).
+    fresh_cache = dict(
+        _PRE_GRADED_CACHE, gradedPacketMetrics={}, excludedDocumentCount=0
+    )
     mock_table = Mock()
     mock_table.get_item.return_value = {
         "Item": _stale_cache_metadata(test_run_id, fresh_cache)

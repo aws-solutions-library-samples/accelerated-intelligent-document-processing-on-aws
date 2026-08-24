@@ -54,6 +54,7 @@ Exit codes:
 from __future__ import annotations
 
 import ast
+import subprocess  # nosec B404 — reads .gitignore state via `git check-ignore`
 import sys
 from pathlib import Path
 from typing import List, NamedTuple, Optional, Tuple
@@ -344,6 +345,31 @@ def check_file(path: Path) -> List[Finding]:
     return findings
 
 
+def git_ignored(paths: List[Path]) -> set:
+    """Which of these paths git is told to ignore.
+
+    Generalises PRUNE_MARKERS, which lists build output and vendored trees by
+    hand: anything .gitignore already excludes is not code this gate owns. Without
+    it, a developer with a nested checkout or an unpacked artifact under the repo
+    fails the gate on files that CI never sees. Untracked files that are *not*
+    ignored are still checked, so a new Lambda is covered before it is committed.
+    """
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(  # nosec B603/B607 — fixed argv, no shell
+            ["git", "check-ignore", "--stdin"],
+            cwd=REPO_ROOT,
+            input="\n".join(str(p) for p in paths),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()  # No git available: fall back to PRUNE_MARKERS alone.
+    return {Path(line).resolve() for line in proc.stdout.splitlines() if line}
+
+
 def iter_python_files(targets: List[str]) -> List[Path]:
     roots = [Path(t) for t in targets] if targets else [REPO_ROOT]
     files: List[Path] = []
@@ -357,7 +383,8 @@ def iter_python_files(targets: List[str]) -> List[Path]:
             if any(m in posix for m in PRUNE_MARKERS):
                 continue
             files.append(path)
-    return sorted(set(files))
+    ignored = git_ignored(files)
+    return sorted({p for p in files if p.resolve() not in ignored})
 
 
 def main(argv: List[str]) -> int:

@@ -159,10 +159,18 @@ export default defineConfig({
               slug: "feature-platform-developer-guide",
             },
             {
+              // Registered as the AWS Marketplace listing's post-subscribe /
+              // "Account login details" URL. Buyers land here straight from
+              // Marketplace, so this slug is effectively a public contract —
+              // renaming it breaks the listing until the seller updates it.
+              label: "After Subscribing on AWS Marketplace",
+              slug: "marketplace-subscription-next-steps",
+            },
+            {
               label: "Extensions",
               items: [
                 {
-                  label: "Auto Optimizer",
+                  label: "Auto Optimizer (Beta)",
                   slug: "extensions/auto-optimizer",
                 },
                 {
@@ -282,6 +290,14 @@ export default defineConfig({
             },
           ],
         },
+        // AUTO-SIDEBAR-START
+        {
+          label: "New & Uncategorized",
+          items: [
+            { label: "Rule Validation Z3", slug: "rule-validation-z3" },
+          ],
+        },
+        // AUTO-SIDEBAR-END
       ],
     }),
   ],

@@ -1,0 +1,373 @@
+# Configuration for Rule Translation and Value Extraction Services
+# This file contains settings for two LLM-based services
+
+# ============================================================================
+# RULE TRANSLATOR SERVICE
+# Translates natural language rules into SMT-LIB constraints with path mappings
+# ============================================================================
+rule_translator:
+  # Bedrock Model Configuration
+  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  temperature: 0.0  # Use 0.0 for deterministic output
+  max_tokens: 4096
+
+  # System Prompt - Sets the context and role for the LLM
+  system_prompt: |
+    You are an expert at translating business rules into formal SMT-LIB constraints for the Z3 theorem prover.
+    
+    Your task is to receive a natural language business rule and example data, then output:
+    1. Variable definitions (name, type: Int/Real/Bool/String, required: true/false)
+    2. Data path mappings (variable name → JSON path in dot notation) - ONLY if ALL parameters are directly extractable
+    3. SMT-LIB constraint logic that formalizes the rule
+    
+    Output must be valid JSON with the following structure:
+    {
+      "parameters": [{"name": "var1", "type": "Real", "required": true, "description": "Brief explanation"}, ...],
+      "path_mappings": [{"parameter_name": "var1", "data_path": "path.to.field"}, ...],
+      "constraints": ["(constraint1)", "(constraint2)", ...]
+    }
+    
+    CRITICAL DESIGN PRINCIPLES:
+    
+    1. PREFER BOOLEAN PARAMETERS OVER STRING COMPARISONS
+       - Instead of: {"name": "province", "type": "String"} with constraint (= province "Quebec")
+       - Use: {"name": "is_quebec_province", "type": "Bool"} with constraint is_quebec_province
+       - This avoids string matching issues (case sensitivity, abbreviations, variations)
+       - Let LLM interpret "QC" → is_quebec_province=true during extraction
+    
+    2. ALL-OR-NOTHING PATH MAPPINGS
+       - If ALL parameters can be directly extracted from JSON paths → provide complete path_mappings
+       - If ANY parameter requires interpretation → provide EMPTY path_mappings []
+       - Examples of direct values: amounts, dates, raw strings at specific paths
+       - Examples of interpretive: is_quebec_province (needs to check province field), 
+         is_adequate_fund (needs to check existence AND amount), is_purchase_application
+       - When path_mappings is empty, the system will automatically use LLM extraction
+    
+    3. WHEN TO USE EACH APPROACH
+       - Path-based (provide mappings): Simple rules with direct field comparisons
+         Example: "Amount must be greater than 10000" → can map "amount" to a path
+       - LLM-based (empty mappings): Rules with categorical checks, interpretations, or complex logic
+         Example: "Quebec condos must have adequate funds" → use is_quebec_condo boolean, no mappings
+    
+    Important guidelines:
+    - Use dot notation for nested JSON paths (e.g., "documents.tax_bill.inference_result.amount")
+    - All parameters referenced in constraints must be declared
+    - Use appropriate SMT-LIB types: Int for integers, Real for decimals, Bool for booleans, String for text
+    - Mark parameters as required: true if they must exist, false if optional/computed
+    - Add brief descriptions to parameters explaining what they represent (helps extraction LLM)
+    - Use SMT-LIB operators: =, <, >, <=, >=, +, -, *, /, and, or, not, implies (=>), ite
+    - For conditional logic, use (=> condition consequence) for implications
+    - Prefer boolean parameters for categorical checks (province, property type, status, etc.)
+    - If using booleans for interpretation, set path_mappings to empty array []
+    - CRITICAL: Constraints must directly encode pass/fail logic using implications (=>)
+    - DO NOT create an "outcome" variable - use implications to express when rules are satisfied
+    - Example: Instead of (= outcome (ite condition "pass" "fail")), use (=> condition requirement)
+
+  # Task Prompt Template - Used for each translation request
+  # Placeholders: {rule} and {data_example} will be replaced with actual values
+  task_prompt_template: |
+    Translate the following business rule into SMT-LIB constraints:
+    
+    Rule: {rule}
+    
+    Example Data Structure:
+    {data_example}
+    
+    Generate:
+    1. Variable definitions with appropriate types (Int, Real, Bool, String)
+    2. Path mappings showing where to extract each variable from the data
+    3. SMT-LIB constraints that formalize the rule logic
+    
+    Output as JSON with this exact structure:
+    {{
+      "parameters": [
+        {{"name": "variable_name", "type": "Real", "required": true, "description": "Brief explanation"}},
+        ...
+      ],
+      "path_mappings": [
+        {{"parameter_name": "variable_name", "data_path": "path.to.field"}},
+        ...
+      ],
+      "constraints": [
+        "(constraint expression)",
+        ...
+      ]
+    }}
+
+  # Few-Shot Examples - Demonstrate translation patterns
+  few_shot_examples:
+    # Example 1: Boolean-based rule with LLM extraction (NO path mappings)
+    - rule: "Quebec condominiums must have contingency fund with at least $10,000 reserve"
+      data_example:
+        application:
+          province: "Quebec"
+          type: "purchase"
+        property:
+          type: "condominium"
+        documents:
+          dvd:
+            contingency_fund:
+              exists: true
+              reserve_amount: 25000
+      output:
+        parameters:
+          - name: "is_quebec_condo"
+            type: "Bool"
+            required: true
+            description: "Whether property is a condominium in Quebec province"
+          - name: "has_adequate_fund"
+            type: "Bool"
+            required: true
+            description: "Whether contingency fund exists with at least $10,000 reserve"
+        path_mappings: []
+        constraints:
+          - "(=> is_quebec_condo has_adequate_fund)"
+    
+    # Example 2: Simple comparison with fixed margin (path-based extraction)
+    - rule: "Municipal tax must match SAP tax within 5% margin"
+      data_example:
+        documents:
+          municipal_tax_bill:
+            inference_result:
+              property_tax_amount: "5100"
+        sap_data:
+          sap_real_estate_transaction:
+            financial_details:
+              taxes_and_fees:
+                property_tax_annual: "5200"
+      output:
+        parameters:
+          - name: "municipal_tax"
+            type: "Real"
+            required: true
+          - name: "sap_tax"
+            type: "Real"
+            required: true
+          - name: "margin"
+            type: "Real"
+            required: false
+        path_mappings:
+          - parameter_name: "municipal_tax"
+            data_path: "documents.municipal_tax_bill.inference_result.property_tax_amount"
+          - parameter_name: "sap_tax"
+            data_path: "sap_data.sap_real_estate_transaction.financial_details.taxes_and_fees.property_tax_annual"
+        constraints:
+          - "(= margin 0.05)"
+          - "(and (>= sap_tax (* municipal_tax (- 1 margin))) (<= sap_tax (* municipal_tax (+ 1 margin))))"
+
+    # Example 2: Conditional logic with dynamic parameters
+    - rule: "Municipal tax must match SAP tax, with margin depending on credit score: 5% if credit score >= 600, otherwise 2%"
+      data_example:
+        documents:
+          municipal_tax_bill:
+            inference_result:
+              property_tax_amount: "5100"
+        sap_data:
+          sap_real_estate_transaction:
+            financial_details:
+              taxes_and_fees:
+                property_tax_annual: "5200"
+            buyer:
+              credit_score: 650
+      output:
+        parameters:
+          - name: "municipal_tax"
+            type: "Real"
+            required: true
+          - name: "sap_tax"
+            type: "Real"
+            required: true
+          - name: "credit_score"
+            type: "Int"
+            required: true
+          - name: "margin"
+            type: "Real"
+            required: false
+        path_mappings:
+          - parameter_name: "municipal_tax"
+            data_path: "documents.municipal_tax_bill.inference_result.property_tax_amount"
+          - parameter_name: "sap_tax"
+            data_path: "sap_data.sap_real_estate_transaction.financial_details.taxes_and_fees.property_tax_annual"
+          - parameter_name: "credit_score"
+            data_path: "sap_data.sap_real_estate_transaction.buyer.credit_score"
+        constraints:
+          - "(= margin (ite (>= credit_score 600) 0.05 0.02))"
+          - "(and (>= sap_tax (* municipal_tax (- 1 margin))) (<= sap_tax (* municipal_tax (+ 1 margin))))"
+
+    # Example 3: Mathematical formula with conditional logic
+    - rule: "Heating cost must match calculated value within 5% margin. Formula: For condos: heating_cost = area * 2.5. For houses: heating_cost = MAX(area * 3.0, 1500)"
+      data_example:
+        documents:
+          heating_bill:
+            inference_result:
+              annual_heating_cost: "7500"
+        sap_data:
+          sap_real_estate_transaction:
+            property_information:
+              property_type: "house"
+              living_area_sqft: 2000
+      output:
+        parameters:
+          - name: "actual_heating_cost"
+            type: "Real"
+            required: true
+          - name: "property_type"
+            type: "String"
+            required: true
+          - name: "area"
+            type: "Real"
+            required: true
+          - name: "calculated_cost"
+            type: "Real"
+            required: false
+          - name: "margin"
+            type: "Real"
+            required: false
+        path_mappings:
+          - parameter_name: "actual_heating_cost"
+            data_path: "documents.heating_bill.inference_result.annual_heating_cost"
+          - parameter_name: "property_type"
+            data_path: "sap_data.sap_real_estate_transaction.property_information.property_type"
+          - parameter_name: "area"
+            data_path: "sap_data.sap_real_estate_transaction.property_information.living_area_sqft"
+        constraints:
+          - "(= margin 0.05)"
+          - "(= calculated_cost (ite (= property_type \"condo\") (* area 2.5) (ite (>= (* area 3.0) 1500) (* area 3.0) 1500)))"
+          - "(and (>= actual_heating_cost (* calculated_cost (- 1 margin))) (<= actual_heating_cost (* calculated_cost (+ 1 margin))))"
+
+    # Example 4: String matching across multiple sources
+    - rule: "Buyer name must match exactly across OACIQ PA document and SAP records"
+      data_example:
+        documents:
+          oaciq_pa:
+            inference_result:
+              buyer_name: "John Smith"
+        sap_data:
+          sap_real_estate_transaction:
+            transaction_parties:
+              buyer:
+                full_name: "John Smith"
+      output:
+        parameters:
+          - name: "oaciq_buyer_name"
+            type: "String"
+            required: true
+          - name: "sap_buyer_name"
+            type: "String"
+            required: true
+        path_mappings:
+          - parameter_name: "oaciq_buyer_name"
+            data_path: "documents.oaciq_pa.inference_result.buyer_name"
+          - parameter_name: "sap_buyer_name"
+            data_path: "sap_data.sap_real_estate_transaction.transaction_parties.buyer.full_name"
+        constraints:
+          - "(= oaciq_buyer_name sap_buyer_name)"
+
+    # Example 5: Asymmetric tolerance ranges
+    - rule: "Purchase price can be up to 10% higher than SAP price, but not more than 2% lower"
+      data_example:
+        documents:
+          purchase_agreement:
+            inference_result:
+              purchase_price: "675000"
+        sap_data:
+          sap_real_estate_transaction:
+            financial_details:
+              purchase_price: "650000"
+      output:
+        parameters:
+          - name: "doc_price"
+            type: "Real"
+            required: true
+          - name: "sap_price"
+            type: "Real"
+            required: true
+          - name: "upper_margin"
+            type: "Real"
+            required: false
+          - name: "lower_margin"
+            type: "Real"
+            required: false
+        path_mappings:
+          - parameter_name: "doc_price"
+            data_path: "documents.purchase_agreement.inference_result.purchase_price"
+          - parameter_name: "sap_price"
+            data_path: "sap_data.sap_real_estate_transaction.financial_details.purchase_price"
+        constraints:
+          - "(= upper_margin 0.10)"
+          - "(= lower_margin 0.02)"
+          - "(and (>= doc_price (* sap_price (- 1 lower_margin))) (<= doc_price (* sap_price (+ 1 upper_margin))))"
+
+# ============================================================================
+# VALUE EXTRACTION SERVICE
+# Extracts parameter values from any data format (structured, unstructured, text)
+# ============================================================================
+value_extraction:
+  # Bedrock Model Configuration
+  model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  temperature: 0  # Use 0.0 for deterministic output
+  max_tokens: 2048
+
+  # System Prompt - For extracting values from any data format
+  system_prompt: |
+    You are an expert at extracting structured data from various formats.
+    
+    Your task is to extract specific parameter values from the provided data, which may be:
+    - Structured JSON (any schema)
+    - Unstructured text
+    - Mixed formats
+    - Lists or arrays
+    
+    You will receive:
+    1. A rule description explaining what the data represents
+    2. Parameter definitions (name, type, required)
+    3. Data in any format
+    
+    Your job is to identify and extract the values for each parameter from the data.
+    
+    Output must be valid JSON with this exact structure:
+    {
+      "extracted_values": {
+        "parameter_name": value,
+        ...
+      }
+    }
+    
+    Important guidelines:
+    - Extract values that match the parameter types (Int, Real, Bool, String)
+    - For Real/Int types, extract numeric values (remove currency symbols, commas, etc.)
+    - For percentages used in calculations: ALWAYS use decimal form (e.g., 5% → 0.05, 10% → 0.10, 35% → 0.35)
+    - For percentage ratios (like GDS, LTV): Use the actual number (e.g., 35% GDS → 35.0, not 0.35)
+    - Parameter names with "threshold", "margin", "variance", "tolerance" typically need decimal form
+    - For Bool types, use true/false
+    - For String types, preserve the text as-is
+    - If a required parameter cannot be found or doesn't apply to the data, use a sensible default:
+      * For Real/Int: use 0 or 0.0
+      * For Bool: use false
+      * For String: use empty string ""
+    - Use the rule description, parameter names, and parameter descriptions to understand what to extract
+    - Only output the JSON, no additional text
+
+  # Task Prompt Template
+  task_prompt_template: |
+    Extract parameter values from the following data:
+    
+    Rule Description: {rule_description}
+    Natural Language Rule: {natural_language_rule}
+    
+    Parameters to Extract:
+    {parameters_json}
+    
+    Data Format: {data_type}
+    Data:
+    {data}
+    
+    Extract the values for each parameter from the data. Use the parameter names, types, descriptions, and rule description to understand what values to extract.
+    
+    Output as JSON with this exact structure:
+    {{
+      "extracted_values": {{
+        "parameter_name": value,
+        ...
+      }}
+    }}

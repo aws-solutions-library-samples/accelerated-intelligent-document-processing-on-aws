@@ -1,5 +1,5 @@
-query ListDocuments($startDateTime: AWSDateTime, $endDateTime: AWSDateTime, $limit: Int, $nextToken: String) {
-  listDocuments(startDateTime: $startDateTime, endDateTime: $endDateTime, limit: $limit, nextToken: $nextToken) {
+query ListDocuments($startDateTime: AWSDateTime, $endDateTime: AWSDateTime, $limit: Int, $nextToken: String, $view: DocumentView) {
+  listDocuments(startDateTime: $startDateTime, endDateTime: $endDateTime, limit: $limit, nextToken: $nextToken, view: $view) {
     Documents {
       PK
       SK

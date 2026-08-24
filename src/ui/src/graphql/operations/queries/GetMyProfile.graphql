@@ -6,5 +6,6 @@ query GetMyProfile {
     status
     createdAt
     allowedConfigVersions
+    allowedTestSets
   }
 }

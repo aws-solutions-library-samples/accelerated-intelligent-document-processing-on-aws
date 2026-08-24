@@ -109,6 +109,7 @@ Want to see it in action first? We provide a complete healthcare example with sa
 ## Key Features
 
 - **Multi-Level Validation Workflow**: Policy classification, section-level evaluation, rule type consolidation, and orchestrated summary generation
+- **Dual Validation Engines**: Choose LLM (semantic) or [Z3 (symbolic/deterministic)](./rule-validation-z3.md) per rule via `x-aws-idp-validation-engine`
 - **Policy Classification**: Automatically determines which policy types apply to a document before validation
 - **Asynchronous Processing**: Concurrent evaluation of multiple rules with built-in rate limiting
 - **Intelligent Chunking**: Page-aware text chunking that preserves page boundaries and context

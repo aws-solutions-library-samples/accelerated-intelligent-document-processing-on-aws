@@ -85,6 +85,26 @@ export function parseWeightedOverallScores(json: unknown): WeightedOverallScores
   return safeParse<WeightedOverallScores>(json, {});
 }
 
+/**
+ * Parse ``weightedOverallScores`` and drop entries whose value isn't a finite
+ * number. The aggregation Lambda already omits documents excluded from scoring
+ * (no extractable schema) from the map, so in practice this returns the same
+ * shape — but it lets Test Studio call sites read the map as clean data
+ * without repeating a defensive filter at every histogram / lowest-scores /
+ * average call site (previously 6+ duplicates). Callers that need the raw
+ * shape (e.g. exposing null explicitly) can still use ``parseWeightedOverallScores``.
+ */
+export function parseWeightedOverallScoresFinite(json: unknown): Record<string, number> {
+  const raw = parseWeightedOverallScores(json);
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 export function parseSplitClassificationMetrics(json: unknown): SplitClassificationMetrics {
   return safeParse<SplitClassificationMetrics>(json, {});
 }

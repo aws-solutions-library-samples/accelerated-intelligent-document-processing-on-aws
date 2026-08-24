@@ -429,20 +429,43 @@ components/
 ## Test Sets
 
 ### Creating Test Sets
-1. **Pattern-based**: Define file patterns (e.g., `*.pdf`) with bucket type selection
-   - **Input Bucket**: Scan main processing bucket for matching files
-   - **Test Set Bucket**: Scan dedicated test set bucket for matching files
-   - **Description**: Optional description field (max 500 characters) to document the test set purpose
-   - **Document Classification Type**: Optional metadata to categorize test set classification characteristics:
-     - **Unspecified**: No classification type specified (default)
-     - **Single Class**: All documents in test set belong to same document class
-     - **Multi Class**: Documents span multiple document classes
-     - **Packet Splitting**: Test set designed for document splitting evaluation (packets containing multiple sub-documents)
-   - **Modified after filter**: Optional time filter to include only recently modified files — choose a preset (Last 1 hour, 24 hours, 7 days, etc.) or pick a custom date/time (useful for incremental workflows)
-2. **Zip Upload**: Upload zip containing `input/` and `baseline/` folders
-   - **Description**: Optional description field (max 500 characters) to document the test set purpose
-   - **Document Classification Type**: Optional metadata (same values as pattern-based creation)
-3. **Direct Upload**: Files uploaded directly to TestSetBucket are auto-detected
+
+Click **Create test set** on the Test Sets tab. A three-step wizard asks what you
+are starting from, because each source leaves the set in a materially different
+state:
+
+| Source | What you provide | What you have afterwards |
+|---|---|---|
+| **Upload documents with ground truth** | A zip with `input/` and matching `baseline/` folders | Ready to publish |
+| **Upload documents only** | A zip with just `input/` | Needs labeling — run [draft labeling](#draft-labeling-unlabeled-documents--ground-truth) next |
+| **From files already in a bucket** | A file pattern (e.g. `*.pdf`) over the input or test set bucket | Labeled where baselines exist |
+| **Generate synthetic documents** | A configuration or a description | Synthetic, labeled |
+
+The last option requires the synthetic data generator extension; it is hidden when
+the extension isn't installed.
+
+Every source shares three optional fields:
+
+- **Name** — letters, numbers, spaces, hyphens and underscores (max 50). Becomes
+  the test set id.
+- **Description** — max 500 characters.
+- **Document classification type** — metadata describing the mix of documents:
+  *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
+  (packets containing multiple sub-documents).
+
+The **From files already in a bucket** step adds a **Modified after** filter —
+a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
+it easy to pick up only recently reviewed documents — and a **Check matching
+files** button that reports the match count before you commit. When reading from
+the input bucket, documents with no ground truth in the evaluation baseline bucket
+are skipped rather than failing, so a broad pattern is safe.
+
+**Direct upload** still works as an alternative to the wizard: files placed
+directly into the TestSetBucket under `<set-name>/input/…` are auto-detected.
+
+Once a set exists, select it and use **Actions** to browse its documents, annotate
+its ground truth, add more documents, publish a version, edit its details, or
+delete it.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -505,7 +528,7 @@ my-test-set/
 ├── input/
 │   ├── document1.pdf
 │   └── document2.pdf
-└── baseline/
+└── baseline/                      # optional — omit for an unlabeled test set
     ├── document1.pdf/
     │   └── [ground truth files]
     └── document2.pdf/
@@ -513,10 +536,375 @@ my-test-set/
 ```
 
 ### Validation Rules
-- Each input file must have corresponding baseline folder
+- Each input file must have a corresponding baseline folder, **or** the test set
+  must have no baseline folder at all
 - Baseline folder name must match input filename exactly
+- A test set with **no** `baseline/` folder is valid but *unlabeled* — it is
+  waiting for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+  A *partially* labeled set (baselines for some documents but not others) is
+  still a validation error, since that indicates an incomplete upload rather
+  than a deliberate label-later workflow.
 - When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
+
+### Label state
+
+Alongside `status` (does the test set's structure validate?), each test set
+carries a **label state** describing how much trustworthy ground truth it has:
+
+| Label state | Meaning |
+|---|---|
+| `unlabeled` | Documents only, no ground truth yet. Run **Generate draft labels**. |
+| `draft` | Machine-generated labels present, not yet reviewed by a human. |
+| `labeled` | Ground truth was supplied directly (upload or synthetic generation). |
+
+Label state is independent of publishing: you can publish a version of a `draft`
+set, and the unreviewed fields stay flagged as machine-generated.
+
+### Removing documents from a test set
+
+Select a test set and use **Remove documents** to drop documents from the
+working draft. For each named document this deletes its `input/` object and its
+entire `baseline/<file>/` folder, then recounts `fileCount` from S3.
+
+Removal edits the **mutable working draft**. Already-published versions are
+unaffected as metadata records; see the storage caveat under
+[Versioning](#versioning-test-sets).
+
+### Source provenance
+
+Each test set records where its documents came from, shown as a **Source** column:
+
+- **Uploaded** — supplied by a user (zip upload, pattern-based, or direct S3 upload)
+- **Synthetic** — produced by the synthetic data generator, which writes a
+  `.source` marker into the test set prefix
+- **Mixed** — both
+
+## Versioning test sets
+
+A test set is a **versioned benchmark object**, not just a folder of files. It
+has one mutable working draft plus zero or more immutable published versions —
+the same model as a version-control system: the draft is the working tree,
+publishing is a commit, and the *active reference* is the tag that scoring
+follows.
+
+### Publishing a version
+
+Select a COMPLETED test set and click **Publish version**. This freezes the
+current document and label state into a numbered version (`v1`, `v2`, …) and, by
+default, marks it the **active reference** — the version that test runs record
+themselves as having scored against. Publishing does not require every document
+to be reviewed; unreviewed fields keep their machine labels and remain flagged
+as such, which supports time-boxed "first pass" golden sets.
+
+The **Version** column shows the active reference, and notes when the latest
+published version is ahead of it.
+
+Concurrency: version numbers are allocated atomically, so two people publishing
+at the same moment get distinct versions rather than one silently overwriting
+the other. Published version items are also write-protected, and the
+active-reference pointer only ever moves forward.
+
+### Run pinning
+
+When a test run starts, it records the test set's active reference alongside the
+configuration version it captured. This is symmetric to config pinning and
+makes results interpretable later: comparing two runs, you can tell whether a
+metric moved because the *configuration* changed or because the *ground truth*
+did. A run against a never-published test set records no version.
+
+> **Storage caveat (known limitation).** A published version snapshots the test
+> set's *metadata* — document count, source, label state, config version — not
+> the document and label **bytes**. All versions share the one `baseline/`
+> prefix, so editing ground truth in the working draft also changes what an
+> already-published version resolves to. True byte-level immutability requires
+> either an S3 object-version manifest per published version or copying content
+> on publish; the choice is coupled to the `DataRetentionInDays` retention
+> setting and is not yet implemented.
+
+## Draft labeling: unlabeled documents → ground truth
+
+Creating a test set normally requires ground truth up front, which is the
+expensive part. Draft labeling inverts that: upload documents **only**, run the
+active configuration over them to produce machine-generated ground-truth
+candidates with per-field confidence, then review the least trustworthy ones.
+
+### Generating draft labels
+
+1. Create a test set with documents but no `baseline/` folder (it registers with
+   label state `unlabeled`)
+2. Open the test set and click **Generate draft labels**
+3. Progress is reported as documents complete; labels appear in the table as
+   they land
+
+Under the hood a labeling job is an ordinary test run: the documents go through
+the same OCR → classification → extraction → assessment pipeline that scoring
+runs use, and the results are harvested back into the test set's `baseline/`
+prefix. This is deliberate — it means the confidence numbers attached to draft
+labels are produced the same way as the ones a real evaluation reports, rather
+than by a parallel code path that could drift.
+
+By default the job labels every document in the set using the deployment's
+active configuration; you can specify a different configuration version.
+
+### Label provenance
+
+Every label records where it came from, shown as a chip in the document table:
+
+| Chip | Meaning |
+|---|---|
+| **Draft (machine)** | Generated by draft labeling; unreviewed |
+| **Reviewed (human)** | Confirmed or corrected by a person in the ground-truth editor |
+| **Uploaded** / **Synthetic** | Supplied as ground truth when the set was created |
+| **Unlabeled** | No label yet |
+
+Machine-drafted labels are never styled like human-verified ones — the
+distinction is what makes the review loop trustworthy.
+
+**Re-running is safe.** Draft labeling replaces a label only when that label is
+itself a machine draft. Human-reviewed labels and hand-uploaded ground truth are
+left untouched, so re-running with a newer configuration refreshes the drafts
+without destroying confirmed work.
+
+### Confidence-guided review
+
+Each document shows the **lowest** per-field confidence across its sections —
+the weakest field, not an average that would hide it. Confidence is colored
+against the *configured* alert threshold from your assessment configuration
+(red below the threshold, amber just above it), so the colors agree with the
+confidence alerts elsewhere in the app instead of using fixed cutoffs.
+
+The table defaults to **worst-first** ordering whenever confidence data is
+present, so review starts where the labels are least trustworthy. Sorting
+applies to the current page (document listing is paginated server-side).
+
+Reviewing a draft label is the same **Edit Ground Truth** flow described above;
+saving flips the label to *Reviewed (human)*. Once enough of the set is
+reviewed, publish a version to freeze it as a benchmark.
+
+## How much review is enough?
+
+Reviewing every document in a large set is expensive, and most of that effort is
+spent confirming labels that were already right. The **review-effort estimate**
+answers the practical question instead: *how many documents must a human review
+to reach a target accuracy?*
+
+It works by measuring a **confidence→accuracy curve** for your test set — the
+probability that a field labeled at a given confidence is actually correct. From
+that curve it derives:
+
+| Output | Meaning |
+|---|---|
+| **Documents to review** | Fewest documents that reach the target, taken in confidence-alert order |
+| **Implied cutoff** | The confidence value at the boundary of that set |
+| **Residual error** | Expected error remaining after that review |
+| **Effort** | Estimated review time, including the audit sample below |
+| **Audit sample** | Random spot-check of the *high-confidence* documents |
+| **Burndown** | Residual error at every review depth |
+
+### The curve is measured, and it improves
+
+The curve comes from three sources of increasing fidelity:
+
+1. **A prior**, before anything has been measured on your set — carried over from
+   other sets so a cold start still gets an answer.
+2. **Your reviewers' verdicts.** Every time someone saves a reviewed document,
+   each field they *changed* is recorded as a case where the model was wrong and
+   each field they *left alone* as a case where it was right. Because review is
+   worst-first, these observations land exactly in the low-confidence range the
+   estimate is most sensitive to. This is what "self-corrects as your team
+   reviews" means concretely.
+3. **A scoring run.** Running the test set measures correctness across the
+   *whole* confidence range, including the high-confidence documents review never
+   opens. This is the only source that can fully validate the estimate.
+
+Curves are kept per **configuration version**, because confidence means
+different things across models and prompts — a curve measured under one config is
+not reused after a change that shifts those semantics.
+
+### Every estimate states how much to trust it
+
+A docs-to-review number computed from a generic prior looks identical to one
+measured on your data, which makes it easy to over-trust. Each estimate therefore
+carries an **estimate-confidence** state:
+
+| State | What it means |
+|---|---|
+| **Prior** | Nothing measured on this set yet. Treat as a rough planning figure. |
+| **Partially measured** | Some review observations, but the high-confidence range is still unmeasured. |
+| **Measured** | A scoring run has measured the full confidence range. |
+| **Unreliable** | Confidence does not predict correctness here — see below. |
+
+Prior-driven estimates are reported as a **range** rather than a point value, and
+the range tightens as observations accumulate.
+
+### When confidence can't be trusted
+
+The whole approach rests on an assumption: lower confidence means a likelier
+error. That is usually true, but not guaranteed, and two failure modes would
+otherwise let the estimate certify a set that isn't actually accurate:
+
+- **Overconfident model** — wrong *and* confident, so errors sit in the
+  high-confidence documents that worst-first review never opens. This is the
+  dangerous case: the estimate would report the target as met while real accuracy
+  is lower.
+- **Degenerate confidence** — every field scores about the same, so there is no
+  worst-first signal at all and the review order is effectively arbitrary.
+
+Both are detected. When either is present the estimate reports
+**Unreliable** and recommends reviewing everything instead of a small sample,
+rather than returning a number that looks actionable but isn't.
+
+The **audit sample** is the standing mitigation for the first case: a small
+random sample of the high-confidence, auto-accepted documents. It is the only
+way to find confident errors, and it doubles as the only source of observations
+for the high-confidence end of the curve. Its cost is included in the reported
+effort rather than excluded to make the headline number smaller.
+
+> **Note on the effort model.** Review time is currently estimated from the
+> number of fields and sections per document using fixed per-field and per-page
+> rates, measured from the test set where possible. It does not yet account for
+> field complexity or individual annotator speed, so treat the time figure as
+> coarser than the document count.
+
+## Team annotation: the scoped queue
+
+Once a test set has draft labels, several people can review it in parallel from a
+shared **worst-first queue**. The queue is a view over the existing HITL review
+machinery, so annotation uses the same ground-truth editor, the same claim-to-lock
+behavior, and the same audit trail as production review.
+
+### The Annotator role
+
+`Annotator` is a least-privilege role for exactly this job — typically someone
+onboarded for a single labeling effort, often external. An annotator is scoped by
+**`allowedTestSets`**: the test set(s) they may read and annotate. They cannot
+list other test sets, run configurations, publish versions, or review production
+documents.
+
+Create one from **User Management**: set the persona to `Annotator` and assign the
+test set(s), then share the queue link
+(`#/test-studio/sets/<test-set-id>/annotate`). You can copy that link from the
+**Copy queue link** button on the queue itself, or open the queue for any set via
+**Actions → Annotate ground truth**.
+
+An annotator must be assigned at least one test set — an account with none is
+denied every set by the scope check, so the create form refuses to submit without
+one. Assignments can be changed later from **Edit scope** without recreating the
+account.
+
+### What an annotator sees
+
+Signing in, an annotator lands directly in their queue; if they have several
+assigned sets they get a list to choose from. Their navigation contains that one
+link and nothing else — no document list, no configuration, no other test sets.
+
+The queue page shows:
+
+- **Team progress** — reviewed / total for the whole set, shared across everyone
+  working it, plus how many documents are currently claimed by other people.
+- **Review queue** — the documents ordered by **confidence alerts**: the number of
+  fields scoring below their configured threshold, most first, with the lowest
+  field confidence breaking ties. This matches how human review has always ranked
+  work in the Document List — a field below its threshold needs a human whether it
+  missed by 2 points or 40 — and it reflects the actual effort in a document,
+  which a single lowest score does not. Each card also shows the label source. A
+  document claimed by someone else is greyed out and names who has it.
+- **The ground-truth editor** — the same editor used everywhere else in Test
+  Studio, with the page images, per-field confidence, the JSON tab, and the
+  revision history.
+- **Save & next in queue** — saves the correction, marks the document reviewed,
+  and moves to the next available document.
+
+Per-document actions (claim, release, skip, mark reviewed) sit at the top of the
+editor pane, so finishing a long document does not mean scrolling past every field
+to reach them.
+
+On large sets the queue is read a page at a time, and the page says so rather than
+implying the whole set has been ranked.
+
+> **The link is not a credential.** It only navigates; access is gated by the
+> annotator's scoped Cognito session and re-checked server-side on every
+> operation. A leaked link is useless without a scoped login, and revoking access
+> is a user-management change rather than a URL rotation.
+
+`allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
+*which config versions'* documents a user sees). A user can carry both.
+
+### Working the queue collaboratively
+
+- **One shared queue per set.** Every annotator pulls from the same worst-first
+  list; there is no manual assignment.
+- **Claim to lock.** Opening a document claims it. A document claimed by someone
+  else drops out of everyone else's "next in queue", so parallel annotators
+  self-partition without colliding — and the work self-balances, since whoever
+  finishes first takes the next worst document.
+- **Resume your own work.** A document you already claimed stays available *to
+  you*, so an interrupted session picks up where it left off.
+- **Shared progress.** The queue reports set-level counts (reviewed, remaining,
+  claimed by others) across all annotators, so everyone sees the same picture.
+- **Reviewed documents drop out** of the queue but still count toward progress.
+
+Documents with no labels at all sort **first** — an unlabeled document is the
+least trustworthy thing in the set, not the most.
+
+Not yet supported: explicit per-annotator assignment, multi-reviewer agreement
+and adjudication, and review time-boxes.
+
+### Correcting a misclassified document
+
+Draft labeling runs the whole configuration, so a multi-class set is labeled by
+whatever class the pipeline decided each document was. When that decision is
+wrong, correcting it is two steps rather than one: the class *and* the fields
+underneath it, which were extracted against the wrong schema.
+
+In the editor, **Class label** is a dropdown of the classes defined by the config
+version that produced these labels — not the deployment's currently active
+configuration, which may have moved on since. Choosing a different class offers
+**Change class & re-extract**, which re-runs that one document and waits for the
+new labels before returning, so you are never left looking at fields from the
+previous class.
+
+Two consequences worth knowing:
+
+- **Re-extraction replaces this document's labels**, including confirmed ones.
+  Asking to re-extract after correcting the class is a statement that the current
+  labels are wrong, so they stop counting as reviewed. Everything else in the set
+  is untouched.
+- **A class the configuration does not define stays selectable** if the document
+  already carries it, so a class that was later renamed can still be seen and
+  corrected rather than silently blanked.
+
+Annotators can do this within their assigned sets; the operation is scope-checked
+per test set like every other annotation operation.
+
+### Revision history
+
+Each label records who changed it, when, and which fields moved. Open a document
+and use the **Revision History** tab — the same tab, and the same view, as the
+document detail editor in the main app.
+
+Confirming labels with no edits is recorded too: the sign-off is itself the
+auditable event. The history lives inside the label, so it travels with a published
+version.
+
+This covers "who approved these labels and when". Multi-stage approval chains
+(preparer / reviewer / approver with separate sign-offs) are not implemented.
+
+### Clearing draft labels
+
+Re-labeling with a corrected configuration is the normal loop while tuning one, but
+a re-run only *replaces* a draft where the new run produces a section for it. A run
+that splits a document differently therefore leaves the previous sections behind,
+and because a document's confidence is the minimum across its sections, one stale
+section keeps the document reading low after the real problem is fixed.
+
+**Clear draft labels** (Admin/Author, on the test set's document list) deletes every
+machine draft in the set and leaves the documents in place, ready to re-label.
+
+Only labels tagged `draft-machine` are removed. Reviewed labels, and any ground
+truth that was uploaded or generated, are kept — a configuration retry must never
+be able to discard the team's annotation work.
 
 ### Upload Methods
 1. **UI Zip Upload**: S3 event → Lambda extraction → Validation → Status update
@@ -608,6 +996,16 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 - Export capabilities (JSON/CSV downloads include all metrics)
 - Integrated delete operations
 
+**Diagnosing a low-scoring document.** Opening a document from *Documents with
+Lowest Weighted Overall Scores* lands on its detail page, where any section or
+page whose class disagrees with ground truth carries a **Class mismatch** alert
+next to its Class/Type value — hover it for the expected class. The Visual
+Editor's **Show Evaluation** toggle compares the section's class alongside its
+fields. Check the class before reading the extraction scores: a misclassified
+page was extracted against the wrong schema, so its low score is a symptom
+rather than the cause. See
+[Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
+
 ### Bulk Aggregation with Stickler
 
 Test Studio uses Stickler's `BulkStructuredModelEvaluator` for accurate metric aggregation across multiple documents:
@@ -693,16 +1091,81 @@ Test results include detailed per-field extraction performance metrics displayed
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
 2. **Accuracy**: `(TP + TN) / (TP + FP + TN + FN)` - Overall correctness
-3. **Precision**: `TP / (TP + FP)` - Accuracy of positive predictions
-4. **Recall**: `TP / (TP + FN)` - Coverage of actual positives
-5. **AUROC** (when available): Area Under ROC Curve - how well confidence discriminates correct from incorrect (1.0 = perfect)
-6. **ECE** (when available): Expected Calibration Error - measures calibration quality (0.0 = perfect)
-7. **Brier** (when available): Brier Score - mean squared error between confidence and outcome (0.0 = perfect, 0.25 = random)
-8. **ECARB@30** (when available): Error Capture at Budget 30% - practical metric showing % of errors caught when reviewing lowest-confidence 30% of data, with gain multiplier vs random (e.g., "89% (3.0x)")
-9. **TP** (True Positives): Correctly extracted values
-10. **FP** (False Positives): Incorrectly extracted values
-11. **TN** (True Negatives): Correctly identified as absent
-12. **FN** (False Negatives): Missed extractions
+3. **Observations**: how many comparisons produced this field's accuracy
+4. **95% margin**: sampling uncertainty on that accuracy, in percentage points, with the
+   interval itself in the cell tooltip
+5. **Precision**: `TP / (TP + FP)` - Accuracy of positive predictions
+6. **Recall**: `TP / (TP + FN)` - Coverage of actual positives
+7. **AUROC** (when available): Area Under ROC Curve - how well confidence discriminates correct from incorrect (1.0 = perfect)
+8. **ECE** (when available): Expected Calibration Error - measures calibration quality (0.0 = perfect)
+9. **Brier** (when available): Brier Score - mean squared error between confidence and outcome (0.0 = perfect, 0.25 = random)
+10. **ECARB@30** (when available): Error Capture at Budget 30% - practical metric showing % of errors caught when reviewing lowest-confidence 30% of data, with gain multiplier vs random (e.g., "89% (3.0x)")
+11. **TP** (True Positives): Correctly extracted values
+12. **FP** (False Positives): Incorrectly extracted values
+13. **TN** (True Negatives): Correctly identified as absent
+14. **FN** (False Negatives): Missed extractions
+
+#### Why the margin matters
+
+A field's accuracy is a proportion measured on however many observations that field
+happened to get, and the point estimate alone cannot distinguish 100% measured on 3
+observations from 100% measured on 300. The two justify completely different decisions.
+
+This matters more per field than it does overall. A run's overall accuracy firms up
+quickly — within roughly the first hundred documents — because every document contributes
+to it. A field that appears once per document gains one observation per document, so a
+badly-broken field can sit inside a healthy-looking overall score until the set is large
+enough to expose it. At a measured 90% accuracy:
+
+| Observations | 95% margin |
+|---|---|
+| 20 | ±13.7 pts |
+| 100 | ±6.0 pts |
+| 300 | ±3.4 pts |
+| 500 | ±2.6 pts |
+
+So a field reading "90%" on 20 observations sits somewhere between 69.9% and 97.2% —
+the interval, which is authoritative. (Subtracting the margin from the point estimate
+would suggest 76%; the interval is asymmetric near the ends, which is exactly why the
+tooltip shows the bounds.)
+Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
+about how much evidence there is, not a defect in the field.
+
+The interval is a [Wilson score
+interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),
+not the textbook normal approximation. Per-field results routinely sit at 0% or 100% on
+few observations, where the normal interval leaves `[0, 1]` entirely — at 20 observations
+and 90% accuracy it reports an upper bound of 103%. An impossible accuracy makes a reader
+discount the number instead of the sample size, which is the opposite of the intent.
+
+**What the margin does not cover.** It describes sampling uncertainty only — how much this
+field's accuracy could move if you scored a different sample of the same size from the
+same population. It does not account for:
+
+- **Errors in the ground truth.** If the labels are themselves wrong some of the time, the
+  true accuracy lies outside this interval and no sample size fixes it. This is why label
+  quality (see [How much review is enough?](#how-much-review-is-enough)) is upstream of
+  every number here.
+- **Documents that don't look like production.** A non-representative set gives a tight
+  interval around the wrong number.
+- **Observations that repeat within a document.** For fields appearing many times per
+  document (table rows), observations are not independent — 300 line items from 10
+  documents carry less information than 300 from 300 documents — so the margin reads
+  tighter than it should. Compare **Observations** against the run's document count to see
+  when this applies.
+- **Fields that never appear in the set.** An observation where the field is absent from
+  both the ground truth and the prediction counts as a correct one (a true negative), so a
+  field no document in your set contains reports **100% accuracy** — correctly, in that
+  the system was right to extract nothing, but it tells you nothing about whether the
+  field would be extracted when present. Optional fields on documents that do not carry
+  them behave this way routinely: in one 5-document generated set, three of 38 fields were
+  legitimately absent from every document. The wide margin flags these (100% on 5
+  observations is ±21.7 points), but before acting on any field at 100%, check whether it
+  actually appears — a field's accuracy is only about extraction if there was something to
+  extract.
+
+Runs aggregated before this was added still show both columns: the values are derived from
+the confusion-matrix counts those runs already stored.
 
 **Features:**
 - **Hierarchical Display**: Nested fields with expand/collapse controls

@@ -308,4 +308,6 @@ class TestServiceSideLegacyLookup:
         service = RuleValidationService.__new__(RuleValidationService)
 
         assert service._get_policy_types(config) == ["legacy_policy"]
-        assert service._get_rule_questions(config, "legacy_policy") == ["Question one?"]
+        metadata = service._get_rule_metadata(config, "legacy_policy")
+        assert len(metadata) == 1
+        assert metadata[0]["description"] == "Question one?"

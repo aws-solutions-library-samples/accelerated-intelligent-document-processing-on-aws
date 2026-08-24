@@ -60,6 +60,32 @@ Parameters:
     Default: us.anthropic.claude-sonnet-4-6
     Description: Bedrock model ID the generator uses for synthesis.
 
+  BedrockMaxAttempts:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 30
+    Description: >-
+      botocore retry attempts for calls made inside the generator runtime, including
+      the Bedrock calls SEED makes through strands. Generous because a run is long and
+      expensive: losing an hour of generation to one transient 5xx costs far more than
+      a few extra retries. Set to 1 to disable retrying.
+
+  SeedNodeTimeoutSeconds:
+    Type: Number
+    Default: 10800
+    MinValue: 600
+    MaxValue: 27000
+    Description: >-
+      Per-stage timeout for the generation pipeline. The document-rendering stage
+      is the one that hits this: its cost scales with document count, quality
+      (more critic retries per document) and augmentation (extra render passes),
+      and a whole batch of documents shares one stage. A 49-document
+      high-quality augmented run exceeded 3600s. Raise this before reducing
+      count if a run fails with "Node 'doc_loop' execution timed out"; the
+      runtime's own watchdog, just under the AgentCore session ceiling, remains
+      the terminal backstop.
+
 Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
 
@@ -494,6 +520,17 @@ Resources:
         BOOTSTRAP_TRACKING_TABLE: !Ref BootstrapTrackingTable
         HOST_TRACKING_TABLE: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
         GENERATOR_MODEL_ID: !Ref GeneratorModelId
+        SEED_NODE_TIMEOUT_S: !Ref SeedNodeTimeoutSeconds
+        # Retry transient Bedrock faults in botocore, beneath every library in this
+        # container. The generator reaches Bedrock through SEED, which calls it through
+        # strands, so our own retry decorators are never on that path: a single
+        # `internalServerException` from ConverseStream — the kind whose own message
+        # says "Try your request again" — surfaced as a strands EventLoopException and
+        # discarded a 78-minute run. Retrying at the SDK layer covers every caller
+        # regardless of which library makes the call. Adaptive mode also backs off on
+        # throttling, which matters when documents generate concurrently.
+        AWS_RETRY_MODE: adaptive
+        AWS_MAX_ATTEMPTS: !Ref BedrockMaxAttempts
         # Strands file_write/editor tools prompt for interactive confirmation
         # otherwise, which auto-cancels in the headless runtime.
         BYPASS_TOOL_CONSENT: "true"
@@ -690,14 +727,24 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref BootstrapTrackingTable
         - Statement:
+            # UpdateItem (and only UpdateItem — no delete, no batch write) so
+            # _reap_dead_jobs can fail a job whose runtime stopped heartbeating.
+            # Without this the reaper's broad except swallows AccessDenied and the
+            # job stays IN_PROGRESS forever.
+            - Effect: Allow
+              Action: [dynamodb:UpdateItem]
+              Resource: !GetAtt BootstrapTrackingTable.Arn
             - Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:Scan]
               Resource:
                 - !Sub
                   - "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}"
                   - T: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationTableName' }
+            # UpdateItem on the host table: _release_host_test_set clears a reaped
+            # job's test-set record off GENERATING (conditional on GENERATING), which
+            # is what actually stops the spinner in Test Studio.
             - Effect: Allow
-              Action: [dynamodb:GetItem]
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]
               Resource:
                 - !Sub
                   - "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}"

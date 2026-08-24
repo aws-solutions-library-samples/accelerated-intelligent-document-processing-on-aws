@@ -122,7 +122,7 @@ Few-shot examples work by including reference documents with known expected attr
 ### Key Differences from Classification
 
 - **Example Scope**: Extraction uses examples ONLY from the specific document class being processed (e.g., only "letter" examples when extracting from a "letter" document)
-- **Prompt Field**: Uses `attributesPrompt` instead of `classPrompt` from examples
+- **Prompt Field**: Uses `x-aws-idp-attributes-prompt` instead of `x-aws-idp-class-prompt` from examples
 - **Purpose**: Shows expected attribute extraction format and values rather than distinguishing between document types
 
 ### Configuration
@@ -142,9 +142,9 @@ classes:
         description: "The name of the person receiving the letter..."
       # ... other attributes
     examples:
-      - classPrompt: "This is an example of the class 'letter'"
+      - x-aws-idp-class-prompt: "This is an example of the class 'letter'"
         name: "Letter1"
-        attributesPrompt: |
+        x-aws-idp-attributes-prompt: |
           expected attributes are:
               "sender_name": "Will E. Clark",
               "sender_address": "206 Maple Street P.O. Box 1056 Murray Kentucky 42071-1056",
@@ -156,10 +156,10 @@ classes:
               "signature": "Will E. Clark",
               "cc": null,
               "reference_number": "TNJB 0008497"
-        imagePath: "config_library/unified/few_shot_example/example-images/letter1.jpg"
-      - classPrompt: "This is an example of the class 'letter'"
+        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+      - x-aws-idp-class-prompt: "This is an example of the class 'letter'"
         name: "Letter2"
-        attributesPrompt: |
+        x-aws-idp-attributes-prompt: |
           expected attributes are:
               "sender_name": "William H. W. Anderson",
               "sender_address": "P O. BOX 12046 CAMERON VILLAGE STATION RALEIGH N. c 27605",
@@ -171,44 +171,44 @@ classes:
               "signature": "Bill",
               "cc": null,
               "reference_number": null
-        imagePath: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
 ```
 
 ### Configuration Parameters
 
 Each few-shot example includes:
 
-- **classPrompt**: A description identifying this as an example of the document class (used for classification)
-- **attributesPrompt**: The expected attribute extraction results showing the exact JSON format and values expected
+- **x-aws-idp-class-prompt**: A description identifying this as an example of the document class (used for classification)
+- **x-aws-idp-attributes-prompt**: The expected attribute extraction results showing the exact JSON format and values expected
 - **name**: A unique identifier for the example (for reference and debugging)
-- **imagePath**: Path to example document image(s) - supports single files, local directories, or S3 prefixes
+- **x-aws-idp-image-path**: Path to example document image(s) - supports single files, local directories, or S3 prefixes
 
 #### Image Path Options
 
-The `imagePath` field now supports multiple formats for maximum flexibility:
+The `x-aws-idp-image-path` field now supports multiple formats for maximum flexibility:
 
 **Single Image File (Original functionality)**:
 
 ```yaml
-imagePath: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images (New)**:
 
 ```yaml
-imagePath: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
 ```
 
 **S3 Prefix with Multiple Images (New)**:
 
 ```yaml
-imagePath: "s3://my-config-bucket/few-shot-examples/letter/"
+x-aws-idp-image-path: "s3://my-config-bucket/few-shot-examples/letter/"
 ```
 
 **Direct S3 Image URI**:
 
 ```yaml
-imagePath: "s3://my-config-bucket/few-shot-examples/letter/example1.jpg"
+x-aws-idp-image-path: "s3://my-config-bucket/few-shot-examples/letter/example1.jpg"
 ```
 
 When pointing to a directory or S3 prefix, the system automatically:
@@ -223,7 +223,7 @@ When pointing to a directory or S3 prefix, the system automatically:
 The system uses these environment variables for resolving relative paths:
 
 - **`CONFIGURATION_BUCKET`**: S3 bucket name for configuration files
-  - Used when `imagePath` doesn't start with `s3://`
+  - Used when `x-aws-idp-image-path` doesn't start with `s3://`
   - The path is treated as a key within this bucket
 
 - **`ROOT_DIR`**: Root directory for local file resolution
@@ -231,6 +231,21 @@ The system uses these environment variables for resolving relative paths:
   - The path is treated as relative to this directory
 
 ### Task Prompt Integration
+
+All three shipped extraction prompt variants in
+`config/system_defaults/base-extraction.yaml` (`task_prompt`,
+`task_prompt_extraction_with_confidence`,
+`task_prompt_extraction_with_confidence_topk`) already include
+`{FEW_SHOT_EXAMPLES}` ahead of `<<CACHEPOINT>>`, so a class that defines
+`x-aws-idp-examples` gets them with no prompt edit; classes without examples
+render the section empty (no content items added). A config that supplies its
+**own** extraction `task_prompt` must include the placeholder itself — exactly
+once, since `_build_prompt_content` splits on it and ignores it otherwise.
+
+Example fields are read under either the `x-aws-idp-*` names or the legacy
+camelCase names (`x-aws-idp-class-prompt` / `x-aws-idp-attributes-prompt` / `x-aws-idp-image-path`). Unreadable
+example images log a warning and the example is sent as text-only rather than
+failing the section.
 
 To use few-shot examples, your task prompt must include the `{FEW_SHOT_EXAMPLES}` placeholder:
 
@@ -282,7 +297,7 @@ When creating few-shot examples for extraction:
 
 ```yaml
 # Good example - shows all attributes with realistic values
-attributesPrompt: |
+x-aws-idp-attributes-prompt: |
   expected attributes are:
       "invoice_number": "INV-2024-001",
       "invoice_date": "01/15/2024",
@@ -293,7 +308,7 @@ attributesPrompt: |
       "po_number": "PO-789456"
 
 # Avoid incomplete examples
-attributesPrompt: |
+x-aws-idp-attributes-prompt: |
   expected attributes are:
       "invoice_number": "INV-2024-001"
       # Missing other important attributes
@@ -302,7 +317,7 @@ attributesPrompt: |
 #### 2. Handle Null Values Explicitly
 
 ```yaml
-attributesPrompt: |
+x-aws-idp-attributes-prompt: |
   expected attributes are:
       "sender_name": "John Smith",
       "cc": null,  # Explicitly show when fields are not present
@@ -322,14 +337,14 @@ attributesPrompt: |
 
 ```yaml
 # Consistent JSON format across all examples
-attributesPrompt: |
+x-aws-idp-attributes-prompt: |
   expected attributes are:
       "field1": "value1",
       "field2": "value2",
       "field3": null
 
 # Avoid inconsistent formatting
-attributesPrompt: |
+x-aws-idp-attributes-prompt: |
   field1: value1
   field2 = "value2"
   field3: (empty)
@@ -341,11 +356,11 @@ When using directories or S3 prefixes with multiple images:
 
 ```yaml
 # Good: Use descriptive, ordered filenames
-imagePath: "examples/letters/"
+x-aws-idp-image-path: "examples/letters/"
 # Contents: 001_formal_letter.jpg, 002_informal_letter.png, 003_business_letter.jpg
 
 # Good: Group related examples together
-imagePath: "s3://config-bucket/examples/invoices/"
+x-aws-idp-image-path: "s3://config-bucket/examples/invoices/"
 # Contents: invoice_simple.jpg, invoice_complex.png, invoice_international.jpg
 ```
 
@@ -413,9 +428,9 @@ classes:
       - name: date_sent
         description: "The date and time when the email was sent..."
     examples:
-      - classPrompt: "This is an example of the class 'email'"
+      - x-aws-idp-class-prompt: "This is an example of the class 'email'"
         name: "Email1"
-        attributesPrompt: |
+        x-aws-idp-attributes-prompt: |
           expected attributes are: 
              "from_address": "Kelahan, Ben",
              "to_address": "TI New York: 'TI Minnesota",
@@ -427,7 +442,7 @@ classes:
              "priority": null,
              "thread_id": null,
              "message_id": null
-        imagePath: "config_library/unified/few_shot_example/example-images/email1.jpg"
+        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/email1.jpg"
 
 extraction:
   task_prompt: |
@@ -505,7 +520,7 @@ Common issues and solutions:
 
 3. **Inconsistent Extraction Results**:
    - Review example quality and ensure they're representative
-   - Check that `attributesPrompt` format matches expected output
+   - Check that `x-aws-idp-attributes-prompt` format matches expected output
    - Ensure examples cover the range of variations in your documents
 
 4. **Poor Performance**:
@@ -1248,7 +1263,7 @@ Use these metrics to:
 - ✅ Few-shot example support for improved accuracy and consistency
 - ✅ Class-specific example filtering for targeted extraction guidance
 - ✅ Multimodal example support with document images
-- ✅ Enhanced imagePath support for multiple images from directories and S3 prefixes
+- ✅ Enhanced x-aws-idp-image-path support for multiple images from directories and S3 prefixes
 - ✅ Agentic extraction with tool-based structured output
 - ✅ Deterministic table parsing tool for robust tabular data extraction
 - 🔲 Dynamic few-shot example selection based on document similarity

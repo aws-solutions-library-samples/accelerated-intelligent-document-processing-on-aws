@@ -53,7 +53,26 @@ type FeatureEntitlement {
   expiresAt: AWSDateTime
   customerIdentifier: String
   productCode: String
-  source: String!      # "marketplace" | "simulator" | "none"
+  # How the host arrived at the verdict — NOT the catalog's oss|marketplace.
+  # "marketplace-live" | "simulated" | "advisory" | "auto" | "oss" | "none".
+  # Only "marketplace-live" represents a real subscription check.
+  source: String!
+  # Which AUTHORITY the host checked this extension against, per-extension:
+  # "none" | "simulated" | "marketplace-live". Answers "who did you ask?", where
+  # `source` answers "what did they say, and can you trust it?".
+  licenseMode: String
+  # What the INSTALLED extension declares it enforces (propagated through
+  # registerFeature at install). Null before install, or for an extension
+  # installed before the field existed.
+  declaredLicenseMode: String
+  # What the HOST catalog declares it should check. Null for a catalog entry
+  # published before the field existed.
+  catalogLicenseMode: String
+  # True when the two disagree — e.g. the catalog says `simulated` but the
+  # extension enforces `marketplace-live`, so a simulator-backed "subscription
+  # active" would be one the extension ignores. The host explains it rather than
+  # blocking: the extension's own gate is already the answer.
+  licenseModeMismatch: Boolean
   # Populated by subscribeFeature — the AWS Marketplace (or simulator) URL the
   # UI must redirect the admin to in order to accept terms and complete the
   # subscription. Null on all other resolvers.
@@ -90,6 +109,11 @@ input RegisterFeatureInput {
   installedBy: String
   productCode: String
   marketplaceListingUrl: String
+  # Which authority the extension itself enforces against ("none" | "simulated" |
+  # "marketplace-live"), baked from its manifest at publish time. Persisted on the
+  # install row so the host can check the authority the extension actually
+  # honours, and report a mismatch when its catalog disagrees.
+  licenseMode: String
 }
 
 # NOTE: This file is a REFERENCE SNAPSHOT only. The source of truth lives

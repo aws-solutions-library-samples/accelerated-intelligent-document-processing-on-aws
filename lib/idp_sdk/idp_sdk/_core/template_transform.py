@@ -103,6 +103,7 @@ class HeadlessTemplateTransformer:
             "AuthorGroup",
             "ViewerGroup",
             "ReviewerGroup",
+            "AnnotatorGroup",
             "AdminUserToGroupAttachment",
             "GetDomain",
             "CognitoUserPoolEmailDomainVerifyFunction",

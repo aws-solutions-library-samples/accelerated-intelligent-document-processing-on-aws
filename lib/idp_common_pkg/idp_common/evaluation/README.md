@@ -46,6 +46,78 @@ Bulk evaluation surfaces the standard calibration metrics:
 
 These are computed in the aggregation Lambda via Stickler's `BulkStructuredModelEvaluator` (see `patterns/unified/src/test_execution_aggregation_function/index.py`).
 
+### Confidence→accuracy curve and the review-effort estimator
+
+`confidence_curve.py` and `curve_store.py` implement the engine behind Test
+Studio's "how many documents must I review?" estimate. They answer it from a
+measured `P(correct | confidence)` curve rather than a fixed heuristic.
+
+**Import-safety note.** Both modules depend only on the standard library and
+boto3 — deliberately, because the Lambdas that use them (the test-set resolver,
+the HITL review function) run on the shared base layer, which excludes the
+`[evaluation]` extra and its ~50MB of Stickler dependencies. For the same reason
+`evaluation/__init__.py` resolves `EvaluationService`, `SticklerConfigMapper` and
+`LLMComparator` **lazily** via a module-level `__getattr__`; importing them
+eagerly made every module in the package un-importable without the extra.
+Accessing a Stickler-backed name without it installed raises an error naming the
+extra rather than an opaque `ModuleNotFoundError` at cold start.
+
+**The curve** is a reliability table: per-confidence-bin counts of
+`(observations, correct)`. Chosen over a fitted model (e.g. isotonic regression)
+because it is explainable, ~230 bytes serialized, and additive — folding in new
+observations is two counter increments per bin, which lets `CurveStore` use
+DynamoDB `ADD` and stay correct when several reviewers finish at once. The bin
+edges match Stickler's `ECEMetric`, so its output folds in without rebinning.
+
+**Three observation sources**, in increasing fidelity:
+
+| Source | Where it is recorded | Covers |
+|---|---|---|
+| Prior | `CurveStore.get_global_prior()` | Cross-set fallback for a cold start |
+| Human review | `complete_section_review` → `record_curve_observations` | Low-confidence range (review is worst-first) |
+| Scoring run | aggregation Lambda → `add_ece_bins` | The full range, including high confidence |
+
+A field a reviewer *changed* is an incorrect observation; one they *left alone* is
+correct. `observations_from_baseline_review` derives those pairs by diffing the
+drafted label against the saved one — which is why the review Lambda must read
+the previous baseline **before** overwriting it.
+
+Curves are keyed by `(test set, config version)` since confidence semantics shift
+across models and prompts, with fallback to the set aggregate and then the global
+prior.
+
+**Safety.** `estimate_for_target` never returns a bare number. It reports an
+`EstimateConfidence` state (`prior` / `partially-measured` / `measured` /
+`unreliable`), a `CalibrationHealth` block, and a docs-to-review *range* that
+widens when the curve is prior-driven. Two failure modes are detected explicitly
+because either would let the estimator certify an inaccurate set:
+
+- **Overconfident** (wrong *and* confident) — errors hide in the high-confidence
+  zone worst-first review never visits. Detected from ECE plus a high-confidence
+  accuracy gap; mitigated by `audit_sample_size`, a random sample of that zone.
+- **Degenerate** (confidence barely varies) — no signal to rank by. **ECE does not
+  catch this**: a single populated bin is trivially well-calibrated, so bin
+  coverage is tracked as an independent signal.
+
+Either sets `estimateConfidence="unreliable"` and `recommendReviewAll=True`.
+
+**Quality tiers.** `quality_tier()` derives a `QualityTier` (`gold` / `silver` /
+`bronze` / `unrated`) from the estimated accuracy *and* how it was obtained: 99%
+computed from a cross-set prior says nothing about these labels, so only a curve
+measured on this set can earn `gold`. An unreliable curve is `unrated` rather than
+graded, since no accuracy claim is defensible when confidence cannot rank
+correctness.
+
+The tier is deliberately a derived value, not a settable field — it must be
+earnable and losable rather than assertable. Note that the UI leads with the
+estimated accuracy and treats the tier name as shorthand: "gold data" carries a
+specific connotation for customers, and a badge alone reads as a certification.
+
+The effort model is a flat heuristic (fields × per-field seconds + sections ×
+per-section seconds), measured from the test set where possible. It does not model
+field complexity or annotator speed; per-annotator timings from claim→complete
+durations would be the next refinement.
+
 ## Features
 
 - Compares document extraction results with expected (ground truth) results
@@ -287,6 +359,25 @@ The evaluation calculates the following metrics:
   - Measures what proportion of the extracted information is incorrect
 
 These metrics are calculated at both the attribute level (per field), section level (per document class), and document level (overall performance).
+
+### Failure and exclusion flags in section metrics
+
+A section's `metrics` dict can also carry non-numeric state that distinguishes
+*not scored* from *scored zero*. Consumers of `results.json` should branch on
+these before reading the numbers:
+
+| Key | Meaning |
+|-----|---------|
+| `evaluation_skipped: True` | Nothing to score (class has no extractable fields, or is excluded from processing). `weighted_overall_score` is `None` and the section is dropped from the document weighted mean and confusion-matrix rollup. |
+| `evaluation_failed: True` | Evaluation was attempted and failed. Metrics are zeroed and **do** count against document-level aggregates. |
+| `failure_type: str` | Set alongside `evaluation_failed`; names the cause — `missing_schema_configuration`, `empty_nested_object`, `extraction_parsing_failed`, `baseline_data_validation_error`, `schema_configuration_error`, `unexpected_error`. |
+| `skipped_field_count: int` | Some fields were dropped from scoring after per-field validation errors; the rest were scored normally. |
+
+`DocumentEvaluationResult.to_markdown` keys the failure block's "How to fix"
+guidance on `failure_type`, and renders none when it is absent (results written
+before the field existed) rather than guessing — advice for the wrong cause is
+worse than no advice. When adding a new failure branch, set `failure_type` and
+add a matching case in `_failure_remediation`.
 
 ## Visual Reporting
 

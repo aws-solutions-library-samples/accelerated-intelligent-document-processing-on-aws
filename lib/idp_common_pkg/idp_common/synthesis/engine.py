@@ -70,6 +70,39 @@ class SynthesisJob:
 
 
 @dataclass
+class SynthesisUsage:
+    """What one run actually consumed.
+
+    Recorded because a cost or duration estimate is only as good as the runs it
+    was calibrated on, and none of this is recoverable after the fact: the
+    generator reports it per document and nothing else persists it.
+
+    ``attempts`` counts pipeline node executions, which rise with the critic
+    threshold — a document rejected and re-rendered costs another pass. That is
+    the dominant source of cost variance between runs.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    attempts: int = 0
+    docs_measured: int = 0
+    scores: List[int] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "inputTokens": self.input_tokens,
+            "outputTokens": self.output_tokens,
+            "totalTokens": self.total_tokens,
+            "attempts": self.attempts,
+            "docsMeasured": self.docs_measured,
+            "meanScore": (
+                round(sum(self.scores) / len(self.scores), 2) if self.scores else None
+            ),
+        }
+
+
+@dataclass
 class SynthesisResult:
     """Outputs of a synthesis run."""
 
@@ -78,6 +111,7 @@ class SynthesisResult:
     docs_completed: int = 0
     docs_requested: int = 0
     error: Optional[str] = None
+    usage: Optional[SynthesisUsage] = None
 
 
 def _import_generator():
@@ -138,6 +172,24 @@ def _seed_model_key(model_id: str) -> str:
     return model_id
 
 
+def _seed_node_timeout_s() -> int:
+    """Per-stage timeout for the generation pipeline."""
+    return int(os.environ.get("SEED_NODE_TIMEOUT_S", str(3 * 3600)))
+
+
+def _seed_pipeline_timeout_s() -> int:
+    """Whole-pipeline timeout, always strictly greater than the per-stage one.
+
+    These two are easy to misorder, and the failure is silent: a pipeline timeout
+    at or below the stage timeout means a stage can never use the budget it was
+    given, so raising the stage timeout appears to do nothing. Held at twice the
+    stage timeout unless overridden higher.
+    """
+    node_s = _seed_node_timeout_s()
+    configured = int(os.environ.get("SEED_PIPELINE_TIMEOUT_S", str(2 * node_s)))
+    return max(configured, node_s * 2)
+
+
 def _raise_seed_node_timeout() -> None:
     """Raise SEED's per-node timeout default (600s) for long high-quality runs.
 
@@ -147,10 +199,18 @@ def _raise_seed_node_timeout() -> None:
     Generator API does not expose the knob, so adjust the function's default —
     ``batch.py`` holds a reference to the same function object, so this covers
     the fan-out path too. Our runtime watchdog (just under the ~8h AgentCore
-    session ceiling) remains the terminal backstop. Tunable via
-    SEED_NODE_TIMEOUT_S; skipped gracefully if SEED's signature changes.
+    session ceiling) remains the terminal backstop. Skipped gracefully if SEED's
+    signature changes.
+
+    The default is 3h, not 1h. The cap applies per *stage*, and one stage renders
+    a whole batch, so its cost scales with count x quality x augmentation rather
+    than with a single document: a 49-document high-quality augmented run spent
+    over an hour in doc_loop and was killed with every document lost. Prefer
+    raising this over silently truncating a run. Tunable via
+    SEED_NODE_TIMEOUT_S, which the generator extension exposes as a stack
+    parameter.
     """
-    timeout_s = int(os.environ.get("SEED_NODE_TIMEOUT_S", "3600"))
+    timeout_s = _seed_node_timeout_s()
     try:
         import inspect
 
@@ -216,14 +276,17 @@ def synthesize(
         output_dir=batch_out,
         augment=job.augment,
         session=boto3.Session(),
-        timeout=int(os.environ.get("SEED_PIPELINE_TIMEOUT_S", str(3 * 3600))),
+        timeout=_seed_pipeline_timeout_s(),
     )
 
+    usage = SynthesisUsage()
+
     # SEED fires on_document(index, total, GeneratedDoc) as each result lands;
-    # map it onto our 5-80% progress band.
-    def _on_document(index: int, total: int, _doc: Any) -> None:
+    # map it onto our 5-80% progress band and accumulate what the document cost.
+    def _on_document(index: int, total: int, doc: Any) -> None:
         pct = 5.0 + 75.0 * (index / max(total, 1))
         _report(pct, f"Generated {index}/{total} document(s)")
+        _accumulate_usage(usage, doc)
 
     result = generator.generate_batch(
         job.schema_dir,
@@ -242,16 +305,46 @@ def synthesize(
             docs_completed=0,
             docs_requested=job.count,
             error="Generator produced no successful documents",
+            # Failed runs still burned tokens; excluding them would bias any
+            # estimate calibrated on this data toward optimism.
+            usage=usage,
         )
 
     packet_dir = _shape_batch_to_packet(documents, job)
     _report(95.0, "Test-set packet layout written")
+    logger.info(
+        "synthesis usage: %s tokens over %s document(s), %s pipeline attempts",
+        usage.total_tokens,
+        usage.docs_measured,
+        usage.attempts,
+    )
     return SynthesisResult(
         success=True,
         packet_dir=packet_dir,
         docs_completed=succeeded,
         docs_requested=job.count,
+        usage=usage,
     )
+
+
+def _accumulate_usage(usage: SynthesisUsage, doc: Any) -> None:
+    """Fold one GeneratedDoc's reported cost into the run total.
+
+    Best-effort and defensive: the generator is a third-party package, so a
+    renamed field must degrade the estimate rather than fail the run.
+    """
+    try:
+        tokens = getattr(doc, "token_usage", None) or {}
+        usage.input_tokens += int(tokens.get("inputTokens", 0) or 0)
+        usage.output_tokens += int(tokens.get("outputTokens", 0) or 0)
+        usage.total_tokens += int(tokens.get("totalTokens", 0) or 0)
+        usage.attempts += len(getattr(doc, "execution_order", None) or [])
+        score = getattr(doc, "score", None)
+        if isinstance(score, int):
+            usage.scores.append(score)
+        usage.docs_measured += 1
+    except Exception as e:  # noqa: BLE001 - usage is telemetry, never load-bearing
+        logger.debug("Could not read usage from generated document: %s", e)
 
 
 def _shape_batch_to_packet(documents: List[Any], job: SynthesisJob) -> str:

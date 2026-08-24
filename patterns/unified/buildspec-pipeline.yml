@@ -30,6 +30,10 @@ phases:
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')
           echo "Building ${func_name} from ${func_path}..."
+          EXTRA_ARGS=""
+          if [ "$func_var" = "FUNCTION_rule_validation" ] || [ "$func_var" = "FUNCTION_rule_validation_orchestration" ]; then
+            EXTRA_ARGS="--build-arg INSTALL_Z3=true"
+          fi
           DOCKER_PLATFORM="linux/${LAMBDA_ARCHITECTURE:-arm64}"
           if [ "$LAMBDA_ARCHITECTURE" = "x86_64" ]; then
             DOCKER_PLATFORM="linux/amd64"
@@ -39,6 +43,7 @@ phases:
             -f Dockerfile.optimized \
             --build-arg FUNCTION_PATH="${func_path}" \
             --build-arg BASE_IMAGE_SUFFIX="${LAMBDA_ARCHITECTURE:-arm64}" \
+            ${EXTRA_ARGS} \
             --tag "${ECR_URI}:${func_name}-${IMAGE_VERSION}" \
             --provenance=false \
             --push \

@@ -685,8 +685,12 @@ class SaveReportingData:
             "false_discovery_rate": eval_result.get("overall_metrics", {}).get(
                 "false_discovery_rate", 0.0
             ),
+            # Preserve None for documents whose sections were all no-ops
+            # (no extractable schema). Athena / parquet float64 columns treat
+            # this as NULL, so downstream queries can filter with IS NOT NULL
+            # instead of accidentally averaging a 0.0 for excluded docs.
             "weighted_overall_score": eval_result.get("overall_metrics", {}).get(
-                "weighted_overall_score", 0.0
+                "weighted_overall_score"
             ),
             "execution_time": eval_result.get("execution_time", 0.0),
             # Doc split classification metrics (None if not available for backward compatibility)
@@ -761,8 +765,11 @@ class SaveReportingData:
                 "false_discovery_rate": section_result.get("metrics", {}).get(
                     "false_discovery_rate", 0.0
                 ),
+                # Sections excluded from scoring (no extractable schema) carry
+                # ``None`` — keep it as SQL NULL so per-section rollups don't
+                # average in a fake 0.0.
                 "weighted_overall_score": section_result.get("metrics", {}).get(
-                    "weighted_overall_score", 0.0
+                    "weighted_overall_score"
                 ),
                 "evaluation_date": evaluation_date,  # Use document's initial_event_time
                 "config_version": document.config_version or "default",

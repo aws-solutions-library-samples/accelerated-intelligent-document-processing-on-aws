@@ -35,17 +35,37 @@ logger = logging.getLogger(__name__)
 _dynamodb = boto3.resource("dynamodb")
 
 _VALID_DISCOVERY_STATUSES = {
-    "PENDING", "IN_PROGRESS", "COMPLETED", "FAILED",
-    "OPTIMIZATION_IN_PROGRESS", "OPTIMIZATION_COMPLETED", "OPTIMIZATION_FAILED",
-    "QUEUED", "PREPARING", "EMBEDDING", "CLUSTERING", "ANALYZING",
+    "PENDING",
+    "IN_PROGRESS",
+    "COMPLETED",
+    "FAILED",
+    "OPTIMIZATION_IN_PROGRESS",
+    "OPTIMIZATION_COMPLETED",
+    "OPTIMIZATION_FAILED",
+    "QUEUED",
+    "PREPARING",
+    "EMBEDDING",
+    "CLUSTERING",
+    "ANALYZING",
 }
-_DISCOVERY_TERMINAL = {"COMPLETED", "FAILED", "OPTIMIZATION_COMPLETED", "OPTIMIZATION_FAILED"}
+_DISCOVERY_TERMINAL = {
+    "COMPLETED",
+    "FAILED",
+    "OPTIMIZATION_COMPLETED",
+    "OPTIMIZATION_FAILED",
+}
 _AGENT_TERMINAL = {"COMPLETED", "FAILED"}
 
 # Optional discovery-status update fields -> attribute name (VTL parity).
 _DISCOVERY_OPTIONAL_FIELDS = [
-    "errorMessage", "discoveredClassName", "statusMessage", "jobType",
-    "currentStep", "totalDocuments", "clustersFound", "discoveredClasses",
+    "errorMessage",
+    "discoveredClassName",
+    "statusMessage",
+    "jobType",
+    "currentStep",
+    "totalDocuments",
+    "clustersFound",
+    "discoveredClasses",
     "reflectionReport",
 ]
 
@@ -128,7 +148,9 @@ def _enforce_rbac(field: str, event: Dict[str, Any]) -> None:
     if not (set(required).intersection(groups)):
         logger.warning(
             "Forbidden: caller (groups=%s) attempted %s (requires %s)",
-            groups, field, sorted(required),
+            groups,
+            field,
+            sorted(required),
         )
         raise PermissionError(
             f"Unauthorized: {field} requires one of {sorted(required)}"
@@ -175,9 +197,7 @@ def _agent_table():
 def _get_document(event: Dict[str, Any]) -> Any:
     """GetItem PK="doc#<ObjectKey>", SK="none" — returns the raw item (VTL parity)."""
     object_key = event["arguments"]["ObjectKey"]
-    resp = _tracking_table().get_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"}
-    )
+    resp = _tracking_table().get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
     return _to_native(resp.get("Item"))
 
 
@@ -199,7 +219,9 @@ def _list_documents_date_hour(event: Dict[str, Any]) -> Dict[str, Any]:
     )
     return {
         "Documents": _to_native(resp.get("Items", [])),
-        "nextToken": resp.get("LastEvaluatedKey") and str(resp["LastEvaluatedKey"]) or None,
+        "nextToken": resp.get("LastEvaluatedKey")
+        and str(resp["LastEvaluatedKey"])
+        or None,
     }
 
 
@@ -221,7 +243,9 @@ def _list_documents_date_shard(event: Dict[str, Any]) -> Dict[str, Any]:
     )
     return {
         "Documents": _to_native(resp.get("Items", [])),
-        "nextToken": resp.get("LastEvaluatedKey") and str(resp["LastEvaluatedKey"]) or None,
+        "nextToken": resp.get("LastEvaluatedKey")
+        and str(resp["LastEvaluatedKey"])
+        or None,
     }
 
 
@@ -232,7 +256,9 @@ def _list_discovery_jobs(_event: Dict[str, Any]) -> Dict[str, Any]:
     resp = _discovery_table().scan(Limit=50)
     return {
         "DiscoveryJobs": _to_native(resp.get("Items", [])),
-        "nextToken": resp.get("LastEvaluatedKey") and str(resp["LastEvaluatedKey"]) or None,
+        "nextToken": resp.get("LastEvaluatedKey")
+        and str(resp["LastEvaluatedKey"])
+        or None,
     }
 
 
@@ -323,7 +349,9 @@ def _list_agent_jobs(event: Dict[str, Any]) -> Dict[str, Any]:
         it.pop("agent_messages", None)
     return {
         "items": _to_native(items),
-        "nextToken": resp.get("LastEvaluatedKey") and str(resp["LastEvaluatedKey"]) or None,
+        "nextToken": resp.get("LastEvaluatedKey")
+        and str(resp["LastEvaluatedKey"])
+        or None,
     }
 
 

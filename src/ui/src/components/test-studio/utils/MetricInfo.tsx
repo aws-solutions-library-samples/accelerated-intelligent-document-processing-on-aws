@@ -30,6 +30,7 @@ interface MetricInfoProps {
     | 'Avg Confidence'
     | 'Avg Accuracy'
     | 'Avg Weighted Score'
+    | 'Excluded Docs'
     | 'Coverage Ratio'
     | 'Correctly Split With Order'
     | 'Split Accuracy Without Order'
@@ -135,6 +136,10 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
   'Avg Weighted Score': {
     description:
       'Average Weighted Overall Score - mean weighted score across all documents, where each document score is weighted by field importance',
+  },
+  'Excluded Docs': {
+    description:
+      'Documents excluded from scoring because every section was classified into a class with no extractable schema (either no attributes defined in the config, or the class was auto-classified but never configured). These docs are not included in the histogram, the lowest-scores table, or the run-level average — nothing was extracted and nothing was expected to be extracted, so a 0.000 score would misrepresent extraction quality.',
   },
   'Coverage Ratio': {
     description:

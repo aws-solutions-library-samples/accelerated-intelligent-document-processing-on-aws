@@ -49,18 +49,41 @@ Two feature kinds are supported, distinguished by the catalog manifest's
     quick-create link.
 
   - **Marketplace features** (`source="marketplace"`) — the template lives in a
-    PRIVATE seller bucket (GetObject-only, no public read). This resolver first
-    verifies the caller's AWS Marketplace entitlement via GetEntitlements; only
-    when ACTIVE does it mint a short-lived presigned GetObject URL for the
-    seller-bucket template and feed that into the CFN quick-create URL. An
-    unentitled caller gets an explicit error (the UI routes them to Subscribe).
+    seller bucket whose objects are PUBLIC-READ, and the catalog entry maps each
+    supported region to an EXPLICIT bucket + version-free template key. This
+    resolver looks the caller's region up in that map and FAILS CLOSED with
+    `FeatureNotAvailableInRegionError` when it is absent. The launch URL is a
+    bare S3 HTTPS URL, exactly like the OSS path.
+
+    Two things about this deserve to be stated plainly, because both are easy to
+    "tidy up" back into bugs:
+
+    1. **The bucket is never derived.** We do not concatenate a basename with
+       ``AWS::Region``. S3 bucket names are global and guessable, so a derived
+       name in a region we don't publish to could resolve to a bucket somebody
+       else owns — and we would hand the customer a CloudFormation template we
+       did not write. Look up, or fail.
+
+    2. **There is no presign, and that is not a downgrade.** Marketplace
+       artifacts *must* be public-read: the registered Quick Launch template URL
+       is fetched by AWS Seller Ops during listing review and by CloudFormation
+       in an arbitrary buyer account, and the Lambda code zips are fetched from
+       the buyer's account at deploy time. A presigned URL never covered either,
+       so it protected nothing while adding a failure mode (expiry mid-way
+       through the CFN "Update stack" wizard → an opaque 403).
+
+    Consequently this resolver performs **no entitlement check of its own**. There
+    is nothing here to protect by re-checking, and `checkFeatureEntitlement` is
+    the single host-side authority — it already decides whether the UI offers
+    Launch at all. A second gate here denied every genuinely subscribed customer
+    (see the comment at the marketplace branch below). The commercial gate is the
+    Marketplace subscription plus the extension's own runtime entitlement check.
 
 Environment:
     ARTIFACT_REGION            Region for the bare OSS template URL (defaults to AWS_REGION)
     CONFIGURATION_BUCKET        Stack's ConfigurationBucket (holds catalog.json)
     CATALOG_KEY                 Catalog key (default config_library/catalog.json)
     DEFAULT_CUSTOMER_IDENTIFIER Marketplace customer id fallback (no request header)
-    PRESIGN_TTL_SECONDS         Lifetime of the seller-bucket presigned URL (default 3600)
     MAIN_STACK_NAME            This IDP stack's name (passed to the feature stack as a parameter)
     INSTALLED_FEATURES_TABLE   DynamoDB table name (for looking up existing installs when updating)
     ADMIN_GROUP                Cognito group name for admins (default "Admin")
@@ -70,11 +93,10 @@ Environment:
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger()
@@ -89,7 +111,6 @@ _ARTIFACT_REGION = os.environ.get(
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
 _CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
 _DEFAULT_CUSTOMER_IDENTIFIER = os.environ.get("DEFAULT_CUSTOMER_IDENTIFIER", "")
-_PRESIGN_TTL_SECONDS = int(os.environ.get("PRESIGN_TTL_SECONDS", "3600"))
 _MAIN_STACK_NAME = os.environ.get("MAIN_STACK_NAME", "")
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
 _ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
@@ -101,26 +122,6 @@ _dynamodb = boto3.resource("dynamodb")
 # stack lives — feature stacks live alongside it). DescribeStacks is used to
 # resolve an existing stack's full ARN for the update URL form.
 _cfn = boto3.client("cloudformation")
-# Marketplace entitlement client. boto3 picks up the simulator endpoint from
-# AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE when set (mirrors
-# check_feature_entitlement). Short timeouts so a stalled cold start fails fast.
-_entitlement_client = None
-_ENTITLEMENT_CONFIG = Config(
-    connect_timeout=5, read_timeout=5, retries={"max_attempts": 3, "mode": "standard"}
-)
-
-
-def _entitlement():
-    global _entitlement_client
-    if _entitlement_client is None:
-        _entitlement_client = boto3.client(
-            "marketplace-entitlement", config=_ENTITLEMENT_CONFIG
-        )
-    return _entitlement_client
-
-
-class NotEntitledError(Exception):
-    """Raised when a marketplace feature is requested without an ACTIVE entitlement."""
 
 
 def _read_catalog_entry(feature_id: str) -> Optional[Dict[str, Any]]:
@@ -159,45 +160,80 @@ def _customer_identifier(event: Dict[str, Any]) -> Optional[str]:
     return _DEFAULT_CUSTOMER_IDENTIFIER or None
 
 
-def _has_active_entitlement(product_code: str, customer_identifier: str) -> bool:
-    """Return True iff GetEntitlements reports an active (or no-expiry) entitlement."""
-    from datetime import datetime, timezone
-
-    try:
-        resp = _entitlement().get_entitlements(
-            ProductCode=product_code,
-            Filter={"CUSTOMER_IDENTIFIER": [customer_identifier]},
-        )
-    except (ClientError, BotoCoreError) as exc:
-        logger.warning("GetEntitlements failed for %s: %s", product_code, exc)
-        return False
-    now = datetime.now(timezone.utc)
-    for ent in resp.get("Entitlements", []) or []:
-        exp = ent.get("ExpirationDate")
-        if exp is None:
-            return True
-        if isinstance(exp, datetime):
-            exp_dt = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
-            if exp_dt > now:
-                return True
-    return False
+class FeatureNotAvailableInRegionError(Exception):
+    """Raised when a marketplace feature has no artifacts in the caller's region."""
 
 
-def _presign_seller_template(
-    seller_bucket: str, seller_region: str, template_key: str
-) -> str:
-    """Mint a short-lived presigned GetObject URL for a seller-bucket template.
+def _resolve_region_artifacts(
+    catalog_entry: Dict[str, Any], region: str
+) -> Dict[str, str]:
+    """Resolve {sellerBucket, templateKey} for `region` from a catalog entry.
 
-    The seller bucket is GetObject-only (no public read), so the CFN console
-    fetches the template via this presigned URL. TTL is bounded by
-    PRESIGN_TTL_SECONDS; the admin must launch within that window.
+    Catalog schema 1.1 carries an explicit ``regions`` map. We look the region
+    up and raise ``FeatureNotAvailableInRegionError`` when it is missing. We do
+    NOT synthesize a bucket name from a basename plus the region: S3 bucket
+    names are global and guessable, so a synthesized name in a region we don't
+    publish to could belong to somebody else, and the customer would be sent to
+    a CloudFormation template we did not author. Fail closed instead.
+
+    Legacy schema 1.0 entries (flat ``sellerBucket`` + ``sellerBucketRegion`` +
+    ``templateKey``) are honored as a deprecated fallback, but ONLY when their
+    ``sellerBucketRegion`` matches the caller's region — the old resolver used
+    that bucket in every region regardless, which is precisely the wrong-region
+    deploy bug schema 1.1 fixes.
     """
-    client = boto3.client("s3", region_name=seller_region or _ARTIFACT_REGION)
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": seller_bucket, "Key": template_key},
-        ExpiresIn=_PRESIGN_TTL_SECONDS,
+    available = _available_regions(catalog_entry)
+    regions = catalog_entry.get("regions")
+    if isinstance(regions, dict):
+        spec = regions.get(region)
+        if isinstance(spec, dict):
+            bucket = (spec.get("sellerBucket") or "").strip()
+            key = (spec.get("templateKey") or "").strip().lstrip("/")
+            if bucket and key:
+                return {"sellerBucket": bucket, "templateKey": key}
+
+    # Deprecated flat schema — accepted only for its own declared region.
+    legacy_bucket = (catalog_entry.get("sellerBucket") or "").strip()
+    legacy_region = (catalog_entry.get("sellerBucketRegion") or "").strip()
+    legacy_key = (catalog_entry.get("templateKey") or "").strip().lstrip("/")
+    if legacy_bucket and legacy_key and legacy_region == region:
+        logger.warning(
+            "Feature %r uses the deprecated flat sellerBucket/sellerBucketRegion "
+            "catalog schema; migrate it to a 'regions' map.",
+            catalog_entry.get("featureId"),
+        )
+        return {"sellerBucket": legacy_bucket, "templateKey": legacy_key}
+
+    where = ", ".join(available) if available else "no regions"
+    raise FeatureNotAvailableInRegionError(
+        f"{catalog_entry.get('displayName') or catalog_entry.get('featureId')} is "
+        f"not available in {region}. Supported regions: {where}."
     )
+
+
+def _available_regions(catalog_entry: Dict[str, Any]) -> List[str]:
+    """Sorted list of regions a marketplace feature publishes artifacts to.
+
+    Reads the schema 1.1 ``regions`` map, falling back to the deprecated flat
+    ``sellerBucketRegion``. Shared with `list_catalog_features`' availability
+    flags so the UI and this resolver can never disagree about where a feature
+    can be installed.
+    """
+    regions = catalog_entry.get("regions")
+    if isinstance(regions, dict):
+        found = sorted(
+            str(r)
+            for r, spec in regions.items()
+            if isinstance(spec, dict)
+            and (spec.get("sellerBucket") or "").strip()
+            and (spec.get("templateKey") or "").strip()
+        )
+        if found:
+            return found
+    legacy_region = (catalog_entry.get("sellerBucketRegion") or "").strip()
+    if legacy_region and (catalog_entry.get("sellerBucket") or "").strip():
+        return [legacy_region]
+    return []
 
 
 class AuthorizationError(Exception):
@@ -300,6 +336,16 @@ def _describe_stack_arn(stack_name: str) -> Optional[str]:
     return stack.get("StackId")
 
 
+def _s3_https_url(bucket: str, region: str, key: str) -> str:
+    """Bare virtual-hosted-style S3 HTTPS URL for a template object.
+
+    Used by BOTH the OSS and marketplace paths — marketplace artifacts are
+    public-read (see the module docstring), so they need no presign and the two
+    paths produce the same kind of URL.
+    """
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{key.lstrip('/')}"
+
+
 def _oss_template_https_url(bucket: str, key_prefix: str) -> str:
     """Bare virtual-hosted-style S3 URL for an OSS feature template.
 
@@ -311,7 +357,7 @@ def _oss_template_https_url(bucket: str, key_prefix: str) -> str:
     release, private for a self-publish — no presign; cf. marketplace, whose
     private seller bucket always requires one).
     """
-    return f"https://{bucket}.s3.{_ARTIFACT_REGION}.amazonaws.com/{key_prefix}/template.yaml"
+    return _s3_https_url(bucket, _ARTIFACT_REGION, f"{key_prefix}/template.yaml")
 
 
 def _build_create_url(
@@ -434,31 +480,62 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     source = catalog_entry.get("source") or "oss"
 
     if source == "marketplace":
-        # Gate the template behind a live Marketplace entitlement. The seller
-        # bucket is private (GetObject-only), so we presign the template read
-        # ONLY after confirming the caller is entitled.
+        # Resolve the artifacts for THIS region from the catalog's explicit
+        # `regions` map — never derived. Raises FeatureNotAvailableInRegionError
+        # when the feature isn't published here, which the UI renders as
+        # "not available in <region>" rather than a broken Launch button.
+        stack_region = os.environ.get("AWS_REGION", _ARTIFACT_REGION)
+        artifacts = _resolve_region_artifacts(catalog_entry, stack_region)
+        seller_bucket = artifacts["sellerBucket"]
+        template_key = artifacts["templateKey"]
+
         product_code = catalog_entry.get("productCode") or ""
-        seller_bucket = catalog_entry.get("sellerBucket") or ""
-        seller_region = catalog_entry.get("sellerBucketRegion") or ""
-        template_key = catalog_entry.get("templateKey") or ""
-        version = args.get("version") or catalog_entry.get("latestVersion") or ""
-        if not (product_code and seller_bucket and template_key and version):
+        if not (product_code and seller_bucket and template_key):
             raise RuntimeError(
                 f"Marketplace feature {feature_id!r} catalog entry is incomplete "
-                f"(need productCode, sellerBucket, templateKey, latestVersion)"
+                f"(need productCode and a regions entry with sellerBucket + "
+                f"templateKey)"
             )
-        customer_identifier = _customer_identifier(event)
-        if not customer_identifier or not _has_active_entitlement(
-            product_code, customer_identifier
-        ):
-            raise NotEntitledError(
-                f"No active AWS Marketplace entitlement for {feature_id!r}; "
-                f"subscribe via the Marketplace listing first."
-            )
+        # `version` is informational on this path. The template URL is
+        # version-free and the version is baked into the published template, so
+        # an empty/stale catalog `latestVersion` must NOT block a launch — that
+        # coupling is exactly what the runtime latest.json lookup removes.
+        version = args.get("version") or catalog_entry.get("latestVersion") or ""
+
+        # NO entitlement gate here — deliberately, and this is a removal.
+        #
+        # There used to be an "advisory" one, and it denied EVERY genuinely
+        # subscribed customer on the production path. Two independent reasons,
+        # either sufficient:
+        #
+        #   1. It required a CustomerIdentifier from a request header or
+        #      DEFAULT_CUSTOMER_IDENTIFIER, neither of which exists on a
+        #      real-Marketplace stack — so it raised before making any API call.
+        #   2. It asked seller-side `GetEntitlements`, which from a buyer account
+        #      returns HTTP 200 with an empty list forever for a usage-based SaaS
+        #      listing. That is the finding this platform's live path was rebuilt
+        #      around; a fail-closed gate on it denies every real customer while
+        #      looking healthy against the simulator.
+        #
+        # `checkFeatureEntitlement` is the single host-side authority. It resolves
+        # the feature's own `licenseMode` and, for `marketplace-live`, asks the
+        # buyer-side Agreement API against real AWS — and the UI only offers
+        # Launch/Update when it answered ACTIVE. A second gate here, implemented
+        # differently, could only ever agree with it by coincidence; when it
+        # disagreed the customer saw "Subscription active" on the page and
+        # "no entitlement" on the button, which is precisely the contradiction
+        # this platform has been unpicking.
+        #
+        # Nothing is protected by re-checking: the template and code zips are
+        # public-read by necessity (see the module docstring), so this was never a
+        # confidentiality boundary. The commercial gate is the Marketplace
+        # subscription plus the extension's own runtime entitlement check, in the
+        # seller's account, which is the only place it can be enforced.
         manifest = None
-        template_url = _presign_seller_template(
-            seller_bucket, seller_region, template_key
-        )
+        # Bare public S3 URL — no presign. A presigned URL could never have
+        # covered the objects CloudFormation fetches from the buyer's account
+        # anyway, and its expiry broke long-running Update wizard sessions.
+        template_url = _s3_https_url(seller_bucket, stack_region, template_key)
         # Same convention as OSS: `templateKey` is the VERSION-FREE
         # `<seller-base>/template.yaml`; its directory is the version-free
         # extension base the feature stack self-locates versioned artifacts

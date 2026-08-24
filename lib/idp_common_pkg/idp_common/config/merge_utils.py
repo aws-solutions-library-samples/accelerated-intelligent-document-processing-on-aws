@@ -19,7 +19,10 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from idp_common.bedrock.model_utils import get_model_max_output_tokens
+from idp_common.bedrock.model_utils import (
+    get_model_max_output_tokens,
+    resolve_model_id_from_arn,
+)
 
 # Use importlib.resources for Python 3.9+
 if sys.version_info >= (3, 9):
@@ -711,6 +714,15 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
     Validate Bedrock model IDs against pricing.yaml.
 
     Checks that model IDs in config are valid and recognized.
+
+    A model may be named by ARN rather than by bare model ID — GovCloud
+    requires an account-scoped inference-profile ARN, and provisioned-throughput
+    or application-inference-profile deployments are ARN-only everywhere. ARNs
+    are reduced to the model ID they name before the catalog lookup. An ARN that
+    still does not match (an opaque application-inference-profile UUID, say)
+    yields a warning rather than an error: its underlying model cannot be
+    determined without a Bedrock API call, so it is unverifiable, not wrong.
+    A bare model ID that does not match remains an error — that is a typo.
     """
     valid_models = _load_valid_bedrock_models()
     if not valid_models:
@@ -733,13 +745,23 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if not model_id:
             continue
 
-        if model_id not in valid_models:
-            result["valid"] = False
-            result["errors"].append(
-                f"{section}.{field_name} has invalid model ID: {model_id}. "
-                f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
-                f"Check config_library/pricing.yaml for valid model IDs."
+        if resolve_model_id_from_arn(model_id) in valid_models:
+            continue
+
+        if model_id.startswith("arn:"):
+            result["warnings"].append(
+                f"{section}.{field_name} names a Bedrock ARN that does not resolve to a "
+                f"known model ID: {model_id}. Cost reporting needs a matching entry in "
+                f"the pricing configuration (config_library/pricing.yaml)."
             )
+            continue
+
+        result["valid"] = False
+        result["errors"].append(
+            f"{section}.{field_name} has invalid model ID: {model_id}. "
+            f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
+            f"Check config_library/pricing.yaml for valid model IDs."
+        )
 
 
 def _validate_agentic_openai(

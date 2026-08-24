@@ -5,6 +5,10 @@
       "MULTI_CLASS",
       "PACKET_SPLITTING"
     ],
+    "DocumentView": [
+      "PRODUCTION",
+      "TEST"
+    ],
     "FeatureEntitlementState": [
       "NONE",
       "ACTIVE",
@@ -229,6 +233,17 @@
         }
       ]
     },
+    "clearDraftLabels": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "compareDocumentVersions": {
       "args": [
         {
@@ -343,6 +358,13 @@
           "elem_non_null": false,
           "is_list": true,
           "name": "allowedConfigVersions",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedTestSets",
           "non_null": false,
           "type": "String"
         }
@@ -465,6 +487,53 @@
         }
       ]
     },
+    "estimateReviewEffort": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "targetAccuracy",
+          "non_null": false,
+          "type": "Float"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "configVersion",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "generateDraftLabels": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "GenerateDraftLabelsInput"
+        }
+      ]
+    },
+    "generateRuleJson": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "ruleDescription",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "getAgentChatMessages": {
       "args": [
         {
@@ -484,6 +553,31 @@
           "name": "jobId",
           "non_null": true,
           "type": "ID"
+        }
+      ]
+    },
+    "getAnnotationQueue": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "includeCompleted",
+          "non_null": false,
+          "type": "Boolean"
         }
       ]
     },
@@ -566,6 +660,13 @@
           "name": "endDateTime",
           "non_null": false,
           "type": "AWSDateTime"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "view",
+          "non_null": false,
+          "type": "DocumentView"
         }
       ]
     },
@@ -582,6 +683,24 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "runId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "getDraftLabelJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
           "non_null": true,
           "type": "String"
         }
@@ -765,6 +884,17 @@
         }
       ]
     },
+    "getTestSetVersions": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "getTestSets": {
       "args": []
     },
@@ -899,6 +1029,13 @@
           "name": "nextToken",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "view",
+          "non_null": false,
+          "type": "DocumentView"
         }
       ]
     },
@@ -1055,6 +1192,17 @@
         }
       ]
     },
+    "publishTestSetVersion": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "PublishTestSetVersionInput"
+        }
+      ]
+    },
     "queryKnowledgeBase": {
       "args": [
         {
@@ -1070,6 +1218,17 @@
           "name": "sessionId",
           "non_null": false,
           "type": "String"
+        }
+      ]
+    },
+    "reextractTestSetDocument": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "ReextractTestSetDocumentInput"
         }
       ]
     },
@@ -1106,6 +1265,24 @@
         }
       ]
     },
+    "removeDocumentsFromTestSet": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "fileNames",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "removeFeatureConfigPreset": {
       "args": [
         {
@@ -1131,6 +1308,17 @@
           "is_list": false,
           "name": "version",
           "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "resetTestSetLabels": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
           "type": "String"
         }
       ]
@@ -1262,6 +1450,17 @@
           "name": "isProcessing",
           "non_null": false,
           "type": "Boolean"
+        }
+      ]
+    },
+    "sendTestRunToReview": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testRunId",
+          "non_null": true,
+          "type": "String"
         }
       ]
     },
@@ -1785,6 +1984,13 @@
           "name": "allowedConfigVersions",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedTestSets",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2139,6 +2345,29 @@
         "type": "String"
       }
     ],
+    "GenerateDraftLabelsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configVersion",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      }
+    ],
     "ModifiedPageInput": [
       {
         "elem_non_null": false,
@@ -2287,6 +2516,66 @@
         "type": "String"
       }
     ],
+    "PublishTestSetVersionInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "label",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "notes",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "setAsActiveReference",
+        "non_null": false,
+        "type": "Boolean"
+      }
+    ],
+    "ReextractTestSetDocumentInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "objectKey",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configVersion",
+        "non_null": false,
+        "type": "String"
+      }
+    ],
     "RegisterFeatureHooksInput": [
       {
         "elem_non_null": false,
@@ -2394,6 +2683,13 @@
         "name": "marketplaceListingUrl",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "licenseMode",
+        "non_null": false,
+        "type": "String"
       }
     ],
     "SectionInput": [
@@ -2475,6 +2771,20 @@
         "name": "configVersion",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "draftLabeling",
+        "non_null": false,
+        "type": "Boolean"
       }
     ],
     "TestSetDocumentsUploadInput": [

@@ -35,6 +35,18 @@ ui:
 # marketplace:                  # Uncomment and fill in once you have a Marketplace listing
 #   productCode: <your AWS Marketplace product code>
 #   listingUrl: https://aws.amazon.com/marketplace/pp/prodview-XYZ
+#   # Which authority THIS EXTENSION enforces its subscription against:
+#   #   none              enforce nothing (the default when omitted)
+#   #   simulated         the marketplace simulator — while you develop
+#   #   marketplace-live  real AWS Marketplace — once you are listed
+#   # Baked into your template at publish time and forwarded to the host at
+#   # install, so the host checks the SAME authority you do instead of whatever
+#   # the stack happens to be pointed at, and flags it when its catalog
+#   # disagrees. The default is `none` deliberately — an unrecognised value must
+#   # never lock a paying customer out of something they bought. (The host's
+#   # catalog default is the opposite, `marketplace-live`, so IT never
+#   # over-claims verification. See docs/feature-platform.md.)
+#   licenseMode: marketplace-live
 
 # pipelineHooks:                # Optional: run a Lambda at a processing extension point.
 #   postExtraction: MyHookFunction   # hookPoint -> logical Lambda resource name in template.yaml.

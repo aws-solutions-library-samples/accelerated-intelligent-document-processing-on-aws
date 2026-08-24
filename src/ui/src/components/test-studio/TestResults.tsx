@@ -21,6 +21,7 @@ import {
   ExpandableSection,
   RadioGroup,
   Pagination,
+  Popover,
   TextFilter,
   CollectionPreferences,
 } from '@cloudscape-design/components';
@@ -34,6 +35,7 @@ import TestStudioHeader from './TestStudioHeader';
 import useAppContext from '../../contexts/app';
 import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
+import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -43,10 +45,11 @@ import {
   parseFieldMetrics,
   parseConfusionMatrix,
   parseConfidenceMetrics,
-  parseWeightedOverallScores,
+  parseWeightedOverallScoresFinite,
   parseTestRunConfig,
 } from '../../graphql/awsjson-parsers';
 import type { GradedPacketMetrics } from '../../graphql/awsjson-types';
+import type { TestRunInput } from '../../graphql/generated/schema-types';
 import type { SelectProps } from '@cloudscape-design/components';
 
 const client = generateClient();
@@ -351,6 +354,10 @@ const ComprehensiveBreakdown = ({
           const [fieldMetricsVisibleColumns, setFieldMetricsVisibleColumns] = React.useState([
             'fieldName',
             'accuracy',
+            // Directly after accuracy: a per-field accuracy measured on 3 observations
+            // and one measured on 300 read identically without them.
+            'observations',
+            'accuracyMargin',
             'precision',
             'recall',
             ...(hasConfidenceData ? ['auroc', 'ecab30', 'ece', 'brier'] : []),
@@ -362,12 +369,22 @@ const ComprehensiveBreakdown = ({
 
           // Build hierarchical structure with confidence data
           const allItems = Object.entries(fieldMetrics).map(([fieldName, metrics]) => {
-            const m = metrics as { tp?: number; fp?: number; tn?: number; fn?: number };
+            const m = metrics as {
+              tp?: number;
+              fp?: number;
+              tn?: number;
+              fn?: number;
+              accuracy_observations?: number;
+              accuracy_margin?: number;
+              accuracy_low?: number;
+              accuracy_high?: number;
+            };
             const tp = m.tp ?? 0;
             const fp = m.fp ?? 0;
             const tn = m.tn ?? 0;
             const fn = m.fn ?? 0;
             const total = tp + fp + tn + fn;
+            const interval = accuracyIntervalForField(m);
 
             // Extract field-level confidence metrics (if available)
             // Backend aggregates confidence to match field_metrics keys (pattern-based)
@@ -394,6 +411,14 @@ const ComprehensiveBreakdown = ({
               tn,
               fn,
               accuracy: total > 0 ? ((tp + tn) / total).toFixed(3) : 'N/A',
+              observations: interval ? interval.observations : 0,
+              accuracyMargin: formatMargin(interval),
+              // Sorting must key on the number: the displayed value is formatted, and
+              // "±10.2" sorts before "±5.9" as a string. The accuracy column gets away
+              // with a string because toFixed(3) is fixed-width; margins are not.
+              accuracyMarginValue: interval ? interval.margin : -1,
+              accuracyBounds: formatBounds(interval),
+              lowEvidence: isLowEvidence(interval),
               precision: tp + fp > 0 ? (tp / (tp + fp)).toFixed(3) : 'N/A',
               recall: tp + fn > 0 ? (tp / (tp + fn)).toFixed(3) : 'N/A',
               auroc: auroc !== null && auroc !== undefined ? auroc.toFixed(3) : 'N/A',
@@ -511,6 +536,46 @@ const ComprehensiveBreakdown = ({
               cell: (item: (typeof displayItems)[0]) => item.accuracy,
               sortingField: 'accuracy',
               minWidth: 150,
+            },
+            {
+              id: 'observations',
+              header: 'Observations',
+              cell: (item: (typeof displayItems)[0]) => (item.observations > 0 ? item.observations : '—'),
+              sortingField: 'observations',
+              minWidth: 120,
+            },
+            {
+              id: 'accuracyMargin',
+              header: '95% margin',
+              cell: (item: (typeof displayItems)[0]) =>
+                item.observations > 0 ? (
+                  <Popover
+                    dismissButton={false}
+                    position="top"
+                    size="small"
+                    triggerType="text"
+                    content={
+                      <SpaceBetween size="xxs">
+                        <Box variant="small">95% confidence interval: {item.accuracyBounds}</Box>
+                        <Box variant="small" color="text-body-secondary">
+                          Measured on {item.observations} observation(s). Sampling uncertainty only — it does not account for errors in the
+                          ground truth itself, or for observations that repeat within one document.
+                        </Box>
+                      </SpaceBetween>
+                    }
+                  >
+                    {/* Not colour alone: a subdued margin is a real statement about
+                        evidence, so it carries text too. */}
+                    <Box variant="span" color={item.lowEvidence ? 'text-status-inactive' : undefined}>
+                      {item.accuracyMargin}
+                      {item.lowEvidence ? ' (low n)' : ''}
+                    </Box>
+                  </Popover>
+                ) : (
+                  '—'
+                ),
+              sortingField: 'accuracyMarginValue',
+              minWidth: 130,
             },
             {
               id: 'precision',
@@ -695,6 +760,8 @@ const ComprehensiveBreakdown = ({
                               options: [
                                 { id: 'fieldName', label: 'Field Name', editable: false },
                                 { id: 'accuracy', label: 'Accuracy' },
+                                { id: 'observations', label: 'Observations' },
+                                { id: 'accuracyMargin', label: '95% margin' },
                                 { id: 'precision', label: 'Precision' },
                                 { id: 'recall', label: 'Recall' },
                                 ...(hasConfidenceData
@@ -1034,11 +1101,14 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
 
   const hasAccuracyData = results.overallAccuracy !== null && results.overallAccuracy !== undefined;
 
-  // Calculate average weighted overall score
+  // Calculate average weighted overall score. ``parseWeightedOverallScoresFinite``
+  // drops documents whose weighted score isn't a finite number — the
+  // aggregation Lambda already omits excluded (no-op) docs, but this also
+  // guards against any stray null/NaN in older cached payloads so the mean
+  // isn't pulled down by a synthetic 0.0.
   const averageWeightedScore = (() => {
     if (!results.weightedOverallScores) return null;
-    const scores = parseWeightedOverallScores(results.weightedOverallScores as string);
-    const values = Object.values(scores) as number[];
+    const values = Object.values(parseWeightedOverallScoresFinite(results.weightedOverallScores as string));
     return values.length > 0 ? values.reduce((sum, score) => sum + score, 0) / values.length : null;
   })();
 
@@ -1194,7 +1264,11 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
     setReRunLoading(true);
 
     try {
-      const input: { testSetId: string; context?: string; numberOfFiles?: number; configVersion?: string } = {
+      // Use the generated input type rather than a hand-written structural copy:
+      // a locally-declared shape stops matching whenever the schema gains a
+      // field, and the mismatch surfaces as `startTestRun does not exist on
+      // type {}` at the call site rather than as an error here.
+      const input: TestRunInput = {
         testSetId: testSetId as string,
         ...(reRunContext && { context: reRunContext }),
         ...(reRunNumberOfFiles.trim() && { numberOfFiles: parseInt(reRunNumberOfFiles.trim(), 10) }),
@@ -1349,6 +1423,20 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             </Box>
             <Box fontSize="heading-l">{averageWeightedScore !== null ? averageWeightedScore.toFixed(3) : 'N/A'}</Box>
           </Box>
+          {/* Excluded Docs KPI — surfaced only when a run has no-op documents
+              (class has no extractable schema). Hidden on the happy path so
+              the KPI row stays lean for the common case; visible with a
+              count + info icon whenever the excluded set is non-empty so the
+              drop from filesCount is explicit. */}
+          {Number(results.excludedDocumentCount ?? 0) > 0 && (
+            <Box>
+              <Box variant="awsui-key-label">
+                Excluded Docs
+                <MetricInfo metric="Excluded Docs" />
+              </Box>
+              <Box fontSize="heading-l">{Number(results.excludedDocumentCount)}</Box>
+            </Box>
+          )}
           <Box>
             <Box variant="awsui-key-label">Duration</Box>
             <Box fontSize="heading-l">
@@ -1387,6 +1475,22 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
                     placeholder="Select chart type"
                   />
                 }
+                description={(() => {
+                  // Chart-header subtitle: "N documents · X scored · Y excluded".
+                  // Total-only ("N documents") when nothing is excluded, so the
+                  // subtitle still gives useful context on the happy path without
+                  // shouting about an exclusion condition that doesn't exist.
+                  const scored = results.weightedOverallScores
+                    ? Object.keys(parseWeightedOverallScoresFinite(results.weightedOverallScores as string)).length
+                    : 0;
+                  const excluded = Number(results.excludedDocumentCount ?? 0);
+                  const total = scored + excluded;
+                  if (total === 0) return undefined;
+                  if (excluded === 0) {
+                    return `${total} document${total === 1 ? '' : 's'}`;
+                  }
+                  return `${total} documents · ${scored} scored · ${excluded} excluded`;
+                })()}
               >
                 Weighted Overall Score Distribution ({String(results.testRunId)})
               </Header>
@@ -1394,10 +1498,13 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           >
             {(() => {
               const generateChartData = () => {
+                // ``parseWeightedOverallScoresFinite`` drops excluded / null / NaN
+                // entries — otherwise ``null < 0.1`` in JS silently lands them
+                // in the 0.0-0.1 bucket.
                 const scores =
                   typeof results.weightedOverallScores === 'string'
-                    ? parseWeightedOverallScores(results.weightedOverallScores)
-                    : results.weightedOverallScores;
+                    ? parseWeightedOverallScoresFinite(results.weightedOverallScores)
+                    : parseWeightedOverallScoresFinite(results.weightedOverallScores);
 
                 // Create score range buckets
                 const buckets: Record<string, { count: number; docs: RangeDoc[] }> = {
@@ -1413,8 +1520,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
                   '0.9-1.0': { count: 0, docs: [] },
                 };
 
-                // Count documents and collect IDs in each bucket
-                Object.entries(scores as Record<string, number>).forEach(([docId, score]) => {
+                Object.entries(scores).forEach(([docId, score]) => {
                   let bucket;
                   if (score < 0.1) bucket = '0.0-0.1';
                   else if (score < 0.2) bucket = '0.1-0.2';
@@ -1574,12 +1680,15 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             }
           >
             {(() => {
+              // ``parseWeightedOverallScoresFinite`` drops excluded / null / NaN
+              // entries so a stray null can't sort to the front and render
+              // as "null.toFixed(3)".
               const scores =
                 typeof results.weightedOverallScores === 'string'
-                  ? parseWeightedOverallScores(results.weightedOverallScores)
-                  : results.weightedOverallScores;
+                  ? parseWeightedOverallScoresFinite(results.weightedOverallScores)
+                  : parseWeightedOverallScoresFinite(results.weightedOverallScores);
 
-              const sortedDocs = Object.entries(scores as Record<string, number>)
+              const sortedDocs = Object.entries(scores)
                 .map(([docId, score]) => ({ docId, score }))
                 .sort((a, b) => a.score - b.score)
                 .slice(0, Number(lowestScoreCount.value));

@@ -139,3 +139,40 @@ class TestUploadPacketToTestSet:
         assert baseline_key == (
             "my-test-set/baseline/abc123_packet_001.pdf/sections/1/result.json"
         )
+
+    def test_writes_synthetic_source_marker(self, tmp_path):
+        root = str(tmp_path)
+        _make_packet(root, "packet_001.pdf", [SECTION])
+        docs = packet_io.read_packet(root)
+        s3 = Mock()
+        packet_io.upload_packet_to_test_set(
+            docs, "my-test-set", "test-set-bucket", s3_client=s3
+        )
+        # A '.source' marker with body 'synthetic' must be written so the API's
+        # test-set discovery can tag generated sets as synthetic.
+        marker_calls = [
+            c
+            for c in s3.put_object.call_args_list
+            if c.kwargs.get("Key") == "my-test-set/.source"
+        ]
+        assert len(marker_calls) == 1
+        assert marker_calls[0].kwargs["Body"] == b"synthetic"
+
+    def test_uploads_pdf_with_an_explicit_content_type(self, tmp_path):
+        """Regression: upload_file defaults to binary/octet-stream.
+
+        A browser handed octet-stream downloads the file instead of rendering it,
+        so "View source document" silently became a download for every generated
+        test set while zip-uploaded sets worked.
+        """
+        root = str(tmp_path)
+        _make_packet(root, "packet_001.pdf", [SECTION])
+        docs = packet_io.read_packet(root)
+        s3 = Mock()
+
+        packet_io.upload_packet_to_test_set(
+            docs, "my-test-set", "test-set-bucket", s3_client=s3
+        )
+
+        extra = s3.upload_file.call_args.kwargs.get("ExtraArgs") or {}
+        assert extra.get("ContentType") == "application/pdf"

@@ -6,6 +6,7 @@
 import json
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -163,3 +164,61 @@ class TestDocumentClassFromSchemaDir:
         empty = tmp_path / "empty"
         empty.mkdir()
         assert engine._document_class_from_schema_dir(str(empty)) == "Document"
+
+
+@pytest.mark.unit
+class TestSynthesisUsage:
+    """The generator reports per-document cost; nothing else persists it."""
+
+    def _doc(self, inp, out, attempts, score=8):
+        return SimpleNamespace(
+            token_usage={
+                "inputTokens": inp,
+                "outputTokens": out,
+                "totalTokens": inp + out,
+            },
+            execution_order=["node"] * attempts,
+            score=score,
+        )
+
+    def test_accumulates_tokens_attempts_and_scores(self):
+        usage = engine.SynthesisUsage()
+        engine._accumulate_usage(usage, self._doc(1000, 200, 4, score=7))
+        engine._accumulate_usage(usage, self._doc(1500, 300, 6, score=9))
+
+        assert usage.input_tokens == 2500
+        assert usage.output_tokens == 500
+        assert usage.total_tokens == 3000
+        # Attempts are the dominant cost variance: a rejected document re-renders.
+        assert usage.attempts == 10
+        assert usage.docs_measured == 2
+        assert usage.as_dict()["meanScore"] == 8.0
+
+    def test_a_renamed_generator_field_does_not_fail_the_run(self):
+        """Usage is telemetry. The generator is third-party, so a shape change must
+        degrade the estimate rather than break generation."""
+        usage = engine.SynthesisUsage()
+        engine._accumulate_usage(usage, SimpleNamespace())  # no token_usage at all
+        engine._accumulate_usage(usage, object())
+
+        assert usage.total_tokens == 0
+
+    def test_as_dict_is_dynamodb_safe(self):
+        """DynamoDB rejects float, so the persisted shape must not contain one."""
+        usage = engine.SynthesisUsage()
+        engine._accumulate_usage(usage, self._doc(10, 5, 1, score=7))
+        engine._accumulate_usage(usage, self._doc(10, 5, 1, score=8))
+
+        assert isinstance(usage.as_dict()["meanScore"], float)
+        # ...which is why the writers coerce via _decimalize before put_item.
+        assert all(
+            not isinstance(v, float)
+            for k, v in usage.as_dict().items()
+            if k != "meanScore"
+        )
+
+    def test_no_scores_reports_none_not_zero(self):
+        """A mean of nothing is unknown, not 0 — 0 would read as a failing set."""
+        usage = engine.SynthesisUsage()
+        engine._accumulate_usage(usage, self._doc(10, 5, 1, score=None))
+        assert usage.as_dict()["meanScore"] is None

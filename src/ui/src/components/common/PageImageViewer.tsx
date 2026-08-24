@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, memo, useCallback, useImperativeHandle } from 'react';
 import { Box, Spinner, Button } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import generateS3PresignedUrl from './generate-s3-presigned-url';
@@ -209,6 +209,10 @@ interface BoundingBoxOverlay {
   label?: string;
 }
 
+export interface PageImageViewerHandle {
+  zoomToField: (geometry: BoundingBoxGeometry) => void;
+}
+
 interface PageImageViewerProps {
   pageIds?: string[];
   documentPages?: DocumentPage[];
@@ -218,6 +222,11 @@ interface PageImageViewerProps {
   height?: string;
   showControls?: boolean;
   boundingBoxes?: BoundingBoxOverlay[];
+  /**
+   * Optional handle exposing `zoomToField`, so a caller can bind zooming to its
+   * own gesture (human review uses double-click) instead of to every highlight.
+   */
+  zoomHandle?: React.Ref<PageImageViewerHandle>;
 }
 
 const PageImageViewer = ({
@@ -229,6 +238,7 @@ const PageImageViewer = ({
   height = '700px',
   showControls = true,
   boundingBoxes = [],
+  zoomHandle,
 }: PageImageViewerProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
   // Pin page images to the selected run's object versions when viewing history.
@@ -392,54 +402,53 @@ const PageImageViewer = ({
     }
   }, [currentPage, pageIds, onPageChange]);
 
-  // Public method to zoom to a specific field
+  /**
+   * Zoom to a field and centre it.
+   *
+   * Measured from the element's LAYOUT box (offsetWidth/offsetLeft), not
+   * getBoundingClientRect(): the rect reports the already-transformed box, so
+   * feeding it back in folds the current zoom and pan into the next calculation
+   * and the image walks off toward a corner on each call.
+   *
+   * The image is scaled about its centre, so a point sitting `d` px from that
+   * centre unzoomed sits `d * zoom` px from it once scaled — hence the single
+   * multiplication by targetZoom below. `panOffset` is in screen px (the render
+   * divides it back out by the zoom inside translate()).
+   */
   const zoomToField = useCallback((geometry: BoundingBoxGeometry) => {
-    if (geometry && imageRef.current && imageContainerRef.current) {
-      const targetZoom = 2.0;
-      setZoomLevel(targetZoom);
+    const bbox = geometry?.boundingBox;
+    if (!bbox || !imageRef.current || !imageContainerRef.current) return;
 
-      setTimeout(() => {
-        if (imageRef.current && imageContainerRef.current) {
-          const img = imageRef.current;
-          const container = imageContainerRef.current;
-          const imgRect = img.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
+    const targetZoom = 2.0;
+    setZoomLevel(targetZoom);
 
-          const imageWidth = img.width || img.naturalWidth;
-          const imageHeight = img.height || img.naturalHeight;
-          const offsetX = imgRect.left - containerRect.left;
-          const offsetY = imgRect.top - containerRect.top;
+    // Deferred one frame: the layout box is stable, but the browser has not yet
+    // applied the new zoom, and reading mid-transition yields a torn value.
+    requestAnimationFrame(() => {
+      const img = imageRef.current;
+      const container = imageContainerRef.current;
+      if (!img || !container) return;
 
-          const bbox = geometry.boundingBox;
+      const w = img.offsetWidth;
+      const h = img.offsetHeight;
+      if (!w || !h) return;
 
-          if (bbox) {
-            const { left, top, width, height: bboxHeight } = bbox;
-            const fieldCenterX = (left + width / 2) * imageWidth + offsetX;
-            const fieldCenterY = (top + bboxHeight / 2) * imageHeight + offsetY;
-            const viewportCenterX = containerRect.width / 2;
-            const viewportCenterY = containerRect.height / 2;
-            const imageCenterX = offsetX + imageWidth / 2;
-            const imageCenterY = offsetY + imageHeight / 2;
-            const relativeX = fieldCenterX - imageCenterX;
-            const relativeY = fieldCenterY - imageCenterY;
-            const scaledRelativeX = relativeX * targetZoom;
-            const scaledRelativeY = relativeY * targetZoom;
-            const requiredPanX = viewportCenterX - (imageCenterX + scaledRelativeX);
-            const requiredPanY = viewportCenterY - (imageCenterY + scaledRelativeY);
+      const centreX = img.offsetLeft + w / 2;
+      const centreY = img.offsetTop + h / 2;
+      const fieldU = bbox.left + bbox.width / 2;
+      const fieldV = bbox.top + bbox.height / 2;
 
-            setPanOffset({ x: requiredPanX, y: requiredPanY });
-          }
-        }
-      }, 100);
-    }
+      setPanOffset({
+        x: container.clientWidth / 2 - centreX - (fieldU - 0.5) * w * targetZoom,
+        y: container.clientHeight / 2 - centreY - (fieldV - 0.5) * h * targetZoom,
+      });
+    });
   }, []);
 
-  // Expose zoomToField method
-  useEffect(() => {
-    if (imageContainerRef.current) {
-      (imageContainerRef.current as unknown as Record<string, unknown>).zoomToField = zoomToField;
-    }
-  }, [zoomToField]);
+  // Exposed imperatively rather than fired from an effect on activeFieldGeometry:
+  // highlighting a field and zooming to it are separate gestures (single- vs
+  // double-click), and an effect keyed on the geometry cannot tell them apart.
+  useImperativeHandle(zoomHandle, () => ({ zoomToField }), [zoomToField]);
 
   const fallbackImage =
     'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6' +

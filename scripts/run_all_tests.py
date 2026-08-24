@@ -50,6 +50,12 @@ PRUNE_DIR_MARKERS = (
     "/idp_common/agents/testing/",
 )
 
+# Generated files that are never source tests. `make srt-scan` nbconverts every
+# notebook to "<nb>-converted.py" (gitignored); notebooks named test_*.ipynb
+# therefore leave behind test_*-converted.py artifacts that would otherwise make
+# notebooks/ look like an unregistered test root.
+PRUNE_FILE_SUFFIXES = ("-converted.py",)
+
 # --- Registry 1: roots RUN in the fast (non-integration) gate -----------------
 # Each entry is a path relative to the repo root. They are run as independent
 # `pytest -m "not integration" <root>` invocations. Verified green headless.
@@ -59,6 +65,11 @@ RUN_ROOTS = [
     "lib/idp_sdk/tests",
     "lib/idp_feature_sdk/tests",
     "feature-platform/main-stack-extensions/tests",
+    # Seller entitlement service (Marketplace signing/entitlement). Already run
+    # explicitly by `make test-packages-cicd`, so it is verified green headless;
+    # registering it here keeps `make test` from hard-erroring on an
+    # unclassified directory, which blocked the whole gate.
+    "feature-platform/seller-entitlement-service/tests",
     # ConfBench Test Set extension. test_planner.py self-skips unless
     # huggingface_hub + pyarrow are installed (ingest/planner.py imports both at
     # module scope); the other three modules run unconditionally. Install
@@ -143,6 +154,8 @@ def discover_test_roots() -> set[str]:
     for path in REPO_ROOT.rglob("test_*.py"):
         posix = "/" + path.as_posix().replace(REPO_ROOT.as_posix() + "/", "")
         if any(marker in posix for marker in PRUNE_DIR_MARKERS):
+            continue
+        if path.name.endswith(PRUNE_FILE_SUFFIXES):
             continue
         rel_dir = path.parent.relative_to(REPO_ROOT).as_posix()
         roots.add(rel_dir)

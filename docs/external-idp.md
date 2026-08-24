@@ -6,6 +6,13 @@ title: "External Identity Provider (Federation)"
 
 This guide covers how to configure an external SAML or OIDC identity provider to federate authentication through Amazon Cognito for the GenAI IDP solution. Federated users sign in through their organization's identity provider and are automatically mapped to Cognito groups (Admin, Author, Reviewer, Viewer) based on group claims from the IdP.
 
+> **Note — the `Annotator` role is not mappable from an external IdP.** There is no
+> `ExternalIdPAnnotatorGroupName` parameter, so a federated user cannot be placed in
+> the `Annotator` group by a group claim. Annotators must be created through User
+> Management (or added to the Cognito group directly), which is also where their
+> `allowedTestSets` scope is assigned — see [rbac.md](rbac.md). A federated user can
+> still be added to `Annotator` manually after their first sign-in.
+
 ## Overview
 
 The GenAI IDP solution supports optional federation with external identity providers including:

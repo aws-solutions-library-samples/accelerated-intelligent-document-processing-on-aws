@@ -221,3 +221,25 @@ class TestTestRunnerActiveVersion:
         table = _PagedScanTable(rows)
         monkeypatch.setattr(test_runner.dynamodb, "Table", lambda name: table)
         assert test_runner._capture_config("ConfigTable") == {}
+
+    def test_active_version_is_named_not_just_captured(self, test_runner, monkeypatch):
+        """The run must record WHICH version it captured, not only its body.
+
+        `configVersion` is optional on startTestRun and the UI defaults to "Active
+        configuration", so a run's ConfigVersion was left unset on the ordinary
+        path. Anything comparing one run's config to another's then silently does
+        nothing — including the guard that refuses to score a config against the
+        labels that same config drafted.
+        """
+        table = _PagedScanTable(_config_rows(active_at=33, total=35))
+        monkeypatch.setattr(test_runner.dynamodb, "Table", lambda name: table)
+        assert test_runner._active_config_version("ConfigTable") == "v33"
+
+    def test_active_version_is_none_when_nothing_is_active(
+        self, test_runner, monkeypatch
+    ):
+        rows = [{"Configuration": f"Config#v{i}", "IsActive": False} for i in range(35)]
+        monkeypatch.setattr(
+            test_runner.dynamodb, "Table", lambda name: _PagedScanTable(rows)
+        )
+        assert test_runner._active_config_version("ConfigTable") is None

@@ -509,6 +509,27 @@ class TestOcrService:
             combo = service._feature_combo()
             assert combo == "-Signatures"
 
+    def test_feature_combo_shipped_default_meters_as_tables_only(self):
+        """The shipped default (TABLES+LAYOUT+SIGNATURES) meters as Tables alone.
+
+        LAYOUT and SIGNATURES are free alongside TABLES, so neither may add a
+        priced component — this is what makes SIGNATURES-by-default cost-neutral.
+        """
+        with patch("boto3.client"):
+            service = OcrService(enhanced_features=["TABLES", "LAYOUT", "SIGNATURES"])
+            assert service._feature_combo() == "-Tables"
+
+    def test_feature_combo_signatures_free_with_forms_or_layout(self):
+        """SIGNATURES adds no priced component to any other feature either."""
+        with patch("boto3.client"):
+            for features, expected in (
+                (["FORMS", "SIGNATURES"], "-Forms"),
+                (["LAYOUT", "SIGNATURES"], "-Layout"),
+                (["TABLES", "FORMS", "SIGNATURES"], "-Tables+Forms"),
+            ):
+                service = OcrService(enhanced_features=features)
+                assert service._feature_combo() == expected, features
+
     @patch("boto3.client")
     @patch("idp_common.s3.write_content")
     def test_process_single_page_textract(
@@ -1329,3 +1350,286 @@ class TestBuildPageData:
         assert len(page_data["lines"]) == 2
         assert page_data["lines"][0]["confidence"] == 99.0
         assert page_data["lines"][0]["geometry"] is None
+
+
+@pytest.mark.unit
+class TestSignatureDetections:
+    """Textract SIGNATURES output must survive into every downstream artifact.
+
+    A SIGNATURE block has confidence and geometry but no text, so every
+    LINE-oriented consumer dropped it: it was absent from pageData.json (no UI
+    box, no confidence shown) and from textConfidence.json (so the confidence
+    prompt never saw it), and in the page text it appeared only as a bare,
+    unpositioned "[SIGNATURE]" token that a real signature and a 10%-confidence
+    smudge share.
+    """
+
+    SIGNATURE_BLOCK = {
+        "BlockType": "SIGNATURE",
+        "Id": "sig-1",
+        "Confidence": 11.0227,
+        "Geometry": {
+            "BoundingBox": {
+                "Left": 0.5717,
+                "Top": 0.8781,
+                "Width": 0.0368,
+                "Height": 0.0218,
+            },
+            "Polygon": [{"X": 0.5717, "Y": 0.8781}],
+        },
+    }
+
+    LINE_BLOCK = {
+        "BlockType": "LINE",
+        "Id": "line-1",
+        "Text": "Signature of taxpayer",
+        "Confidence": 99.9,
+        "TextType": "PRINTED",
+        "Geometry": {
+            "BoundingBox": {"Left": 0.07, "Top": 0.87, "Width": 0.11, "Height": 0.01}
+        },
+    }
+
+    @pytest.fixture
+    def service(self):
+        with patch("boto3.client"):
+            return OcrService(region="us-east-1", enhanced_features=["SIGNATURES"])
+
+    def test_extract_signature_detections(self):
+        signatures = OcrService._extract_signature_detections(
+            [self.LINE_BLOCK, self.SIGNATURE_BLOCK]
+        )
+
+        assert len(signatures) == 1
+        assert signatures[0]["id"] == "sig-1"
+        assert signatures[0]["confidence"] == 11.0  # rounded to 1dp
+        assert signatures[0]["geometry"]["boundingBox"] == {
+            "left": 0.5717,
+            "top": 0.8781,
+            "width": 0.0368,
+            "height": 0.0218,
+        }
+
+    def test_extract_signature_detections_tolerates_sparse_blocks(self):
+        signatures = OcrService._extract_signature_detections(
+            [
+                "not-a-dict",
+                {"BlockType": "SIGNATURE"},  # no Id, Confidence or Geometry
+            ]
+        )
+
+        assert signatures == [{"id": "sig2", "confidence": None, "geometry": None}]
+
+    def test_summary_reports_confidence_and_position(self):
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK])
+        )
+
+        assert "confidence=11.0 (very low)" in summary
+        # Position is stated in the left/right, upper/lower terms field
+        # descriptions use — raw normalized coordinates were measurably unusable:
+        # both models read left=0.572 as "the first (left) signature box".
+        assert "right half, lower area" in summary
+        assert "x=59%" in summary
+        # An explicit total, so a consumer weighing two signature fields can tell
+        # that only one region was detected.
+        assert "flagged 1 region on this page" in summary
+        # The inline token's placement must be flagged as non-evidential.
+        assert "placed by reading order" in summary
+        # Must NOT be a markdown table: page text is scanned by the agentic
+        # table parser, which would otherwise treat this as a document table.
+        assert "|" not in summary
+
+    def test_summary_omits_surrounding_text(self):
+        """Naming the text around a detection measured WORSE — see the docstring.
+
+        An earlier version reported ``at: "Signature of taxpayer"`` alongside each
+        detection. Naming a signature label beside the mark biases the model toward
+        true: on the issue-#634 document the entry without it passed 9/9 and with it
+        2/5. This pins the decision so it is not silently reverted.
+        """
+        label = {
+            "BlockType": "LINE",
+            "Id": "label-right",
+            "Text": "Signature of taxpayer",
+            "Confidence": 99.9,
+            "Geometry": {
+                "BoundingBox": {
+                    "Left": 0.498,
+                    "Top": 0.872,
+                    "Width": 0.121,
+                    "Height": 0.011,
+                }
+            },
+        }
+
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([label, self.SIGNATURE_BLOCK])
+        )
+
+        assert "nearest text" not in summary
+        assert "Signature of taxpayer" not in summary
+        # The position is what disambiguates the cell.
+        assert "right half, lower area" in summary
+
+    def test_summary_reports_position_for_a_lone_detection(self):
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK])
+        )
+
+        assert "right half, lower area" in summary
+
+    @pytest.mark.parametrize(
+        "left,top,expected",
+        [
+            (0.05, 0.05, "left half, upper area"),
+            (0.10, 0.50, "left half, middle area"),
+            (0.10, 0.90, "left half, lower area"),
+            (0.80, 0.90, "right half, lower area"),
+        ],
+    )
+    def test_position_wording(self, left, top, expected):
+        box = {"left": left, "top": top, "width": 0.02, "height": 0.02}
+
+        assert expected in OcrService._describe_signature_position(box)
+
+    @pytest.mark.parametrize(
+        "confidence,band",
+        [(11.0, "very low"), (40.0, "low"), (60.0, "moderate"), (99.0, "high")],
+    )
+    def test_confidence_bands(self, confidence, band):
+        block = {**self.SIGNATURE_BLOCK, "Confidence": confidence}
+
+        summary = OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([block])
+        )
+
+        assert f"({band})" in summary
+
+    def test_summary_is_empty_without_detections(self):
+        assert OcrService._format_signature_summary([]) == ""
+
+    def test_page_data_carries_signatures(self, service):
+        raw = {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}
+
+        page_data = service._build_page_data(raw, "Signature of taxpayer", "textract")
+
+        assert page_data["signaturesAvailable"] is True
+        assert len(page_data["signatures"]) == 1
+        assert page_data["signatures"][0]["confidence"] == 11.0
+        # Signatures stay OUT of `lines` — they have no text, and the geometry
+        # grounder matches extracted values against line text.
+        assert [line["text"] for line in page_data["lines"]] == [
+            "Signature of taxpayer"
+        ]
+
+    def test_page_data_without_signatures(self, service):
+        page_data = service._build_page_data(
+            {"Blocks": [self.LINE_BLOCK]}, "Signature of taxpayer", "textract"
+        )
+
+        assert page_data["signaturesAvailable"] is False
+        assert page_data["signatures"] == []
+
+    def test_page_data_geometry_available_from_signature_alone(self, service):
+        """A page whose only geometry is a signature box still reports geometry."""
+        line_without_geometry = {
+            "BlockType": "LINE",
+            "Id": "line-2",
+            "Text": "text only",
+            "Confidence": 99.0,
+        }
+
+        page_data = service._build_page_data(
+            {"Blocks": [line_without_geometry, self.SIGNATURE_BLOCK]},
+            "text only",
+            "textract",
+        )
+
+        assert page_data["geometryAvailable"] is True
+
+    def test_text_confidence_data_includes_signatures(self, service):
+        result = service._generate_text_confidence_data(
+            {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}
+        )
+
+        text = result["text"]
+        # The LINE table is unchanged...
+        assert "| Signature of taxpayer | 99.9 |" in text
+        # ...and the signature detection is appended with its confidence.
+        assert "OCR signature detections" in text
+        assert "confidence=11.0" in text
+
+    def test_text_confidence_data_unchanged_without_signatures(self, service):
+        result = service._generate_text_confidence_data({"Blocks": [self.LINE_BLOCK]})
+
+        assert "signature detections" not in result["text"]
+        assert result["text"].endswith("| Signature of taxpayer | 99.9 |")
+
+    def test_parsed_page_text_appends_summary(self, service):
+        """The summary rides along with the parsed page text (extraction prompt)."""
+        # Patch the module attribute (not `...response_parser.parse`): the service
+        # does `from textractor.parsers import response_parser`, which resolves via
+        # getattr on `textractor.parsers`. When textractor isn't installed that
+        # parent is a MagicMock, so patching the deeper dotted path targets a
+        # different object and never takes effect.
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
+                "Signature of taxpayer\n[SIGNATURE]"
+            )
+            result = service._parse_textract_response(
+                {"Blocks": [self.LINE_BLOCK, self.SIGNATURE_BLOCK]}, page_id=2
+            )
+
+        text = result["text"]
+        assert text.startswith("Signature of taxpayer\n[SIGNATURE]")
+        assert "OCR signature detections" in text
+        assert "confidence=11.0 (very low)" in text
+        assert "right half, lower area" in text
+
+    def test_parsed_page_text_unchanged_without_signatures(self, service):
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
+                "Signature of taxpayer"
+            )
+            result = service._parse_textract_response(
+                {"Blocks": [self.LINE_BLOCK]}, page_id=2
+            )
+
+        assert result["text"] == "Signature of taxpayer"
+
+
+@pytest.mark.unit
+class TestShippedOcrFeatureDefaults:
+    """Guard the shipped ocr.features default.
+
+    SIGNATURES is in the default set because signature presence is a common
+    extraction target and the feature is free in this combination — per the Textract
+    pricing page, "Signatures feature is included free of cost with any combination
+    of Forms, Tables, Queries, and Layout" (AWS emits no usage type at all for a
+    feature that is free in combination). If TABLES/FORMS/LAYOUT were ever dropped
+    from the defaults while SIGNATURES stayed, SIGNATURES would start being billed
+    at ~$0.0035/page — hence the paired assertion.
+    """
+
+    def test_default_features_include_tables_layout_signatures(self):
+        from idp_common.config.merge_utils import load_system_defaults
+
+        defaults = load_system_defaults("pattern-2")
+        names = [f["name"] for f in defaults["ocr"]["features"]]
+
+        assert names == ["TABLES", "LAYOUT", "SIGNATURES"], names
+
+    def test_signatures_default_is_never_billed_alone(self):
+        """SIGNATURES in the defaults must be accompanied by a paying feature."""
+        from idp_common.config.merge_utils import load_system_defaults
+
+        names = {
+            f["name"] for f in load_system_defaults("pattern-2")["ocr"]["features"]
+        }
+
+        if "SIGNATURES" in names:
+            assert names & {"TABLES", "FORMS", "LAYOUT"}, (
+                "SIGNATURES is only free in combination; on its own it is billed "
+                "at ~$0.0035/page"
+            )

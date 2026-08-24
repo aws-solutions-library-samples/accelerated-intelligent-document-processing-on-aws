@@ -21,6 +21,7 @@ sqs_client = boto3.client("sqs")
 
 TRACKING_TABLE_NAME = os.environ.get("TRACKING_TABLE_NAME", "")
 OUTPUT_BUCKET = os.environ.get("OUTPUT_BUCKET", "")
+TEST_SET_BUCKET = os.environ.get("TEST_SET_BUCKET", "")
 
 
 def handler(event, context):
@@ -42,35 +43,44 @@ def handler(event, context):
         user_groups = [user_groups]
     is_admin = "Admin" in user_groups
 
-    # Defense-in-depth RBAC: all HITL review operations are Admin+Reviewer. The
-    # schema enforces this via @aws_cognito_user_pools(cognito_groups), but we
-    # also gate it server-side so a Viewer/Author can never reach these
-    # operations even if the schema directive is missing or misconfigured (e.g.
-    # the prior @aws_auth directive, which AppSync silently ignores on a
-    # multi-auth API).
-    if not ({"Admin", "Reviewer"}.intersection(user_groups)):
+    # Defense-in-depth RBAC: HITL review operations are Admin+Reviewer, plus
+    # Annotator for test-set ground-truth annotation. The schema enforces this via
+    # @aws_cognito_user_pools(cognito_groups), but we also gate it server-side so
+    # a Viewer/Author can never reach these operations even if the schema
+    # directive is missing or misconfigured (e.g. the prior @aws_auth directive,
+    # which AppSync silently ignores on a multi-auth API).
+    #
+    # Annotator group membership only reaches the operation; _assert_annotator_scope
+    # then narrows it to documents in the caller's allowedTestSets.
+    if not ({"Admin", "Reviewer", "Annotator"}.intersection(user_groups)):
         logger.warning(
             f"Forbidden: caller {user_email} (groups={user_groups}) "
             f"attempted HITL operation '{field_name}'"
         )
         raise ValueError(
-            "Unauthorized: review operations require Admin or Reviewer group"
+            "Unauthorized: review operations require Admin, Reviewer or Annotator group"
         )
 
     if field_name == "claimReview":
         if not object_key:
             raise ValueError("objectKey is required")
+        _assert_annotator_scope(event, object_key)
         return claim_review(object_key, username, user_email)
 
     if field_name == "releaseReview":
         if not object_key:
             raise ValueError("objectKey is required")
+        _assert_annotator_scope(event, object_key)
         return release_review(object_key, username, user_email, is_admin)
 
     if field_name == "skipAllSectionsReview":
+        # Not available to Annotator: skipping marks a document reviewed without
+        # looking at it, which is the set owner's decision.
         is_reviewer = "Reviewer" in user_groups
         if not is_admin and not is_reviewer:
-            raise ValueError("Only administrators and reviewers can skip sections review")
+            raise ValueError(
+                "Only administrators and reviewers can skip sections review"
+            )
         if not object_key:
             raise ValueError("objectKey is required")
         return skip_all_sections_review(object_key, username, user_email)
@@ -78,9 +88,53 @@ def handler(event, context):
     if not object_key or not section_id:
         raise ValueError("objectKey and sectionId are required")
 
+    _assert_annotator_scope(event, object_key)
     return complete_section_review(
         object_key, section_id, edited_data, username, user_email
     )
+
+
+def _assert_annotator_scope(event, object_key):
+    """Verify a scoped Annotator may touch this document's test set.
+
+    A review document carries its originating ``TestSetId``, which is checked
+    against the caller's allowedTestSets. A document with no test set is production
+    HITL work and is refused.
+
+    Only Admin and Author are exempt — the same set ``testset_scope`` treats as
+    unscoped. Exempting Reviewer as well turned object scope *off* for anyone holding
+    both groups instead of intersecting the two, so the two enforcement layers
+    disagreed: the library refuses such a caller, this Lambda waved them through.
+    Since annotators are assigned by hand in Cognito (there is no external-IdP
+    mapping for the role), holding both is an easy mistake to make.
+    """
+    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    if "Annotator" not in groups or {"Admin", "Author"}.intersection(groups):
+        return
+
+    from idp_common.testset_scope import (
+        TestSetAccessDenied,
+        assert_can_access_test_set,
+    )
+
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    doc = (
+        table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item") or {}
+    )
+    test_set_id = doc.get("TestSetId")
+    if not test_set_id:
+        logger.warning(
+            f"Forbidden: annotator attempted review of non-test-set document "
+            f"{object_key}"
+        )
+        raise ValueError("Unauthorized: annotators may only review test-set documents")
+    try:
+        assert_can_access_test_set(event, test_set_id)
+    except TestSetAccessDenied as e:
+        # ValueError is what the dispatcher maps to an authorization failure.
+        raise ValueError(str(e)) from e
 
 
 def complete_section_review(
@@ -92,9 +146,9 @@ def complete_section_review(
     )
 
     # Load document using document service
-    document_service = create_document_service(mode='dynamodb')
+    document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
-    
+
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
@@ -122,11 +176,22 @@ def complete_section_review(
                 f"'{object_key}' has no output URI to write to"
             )
         save_edited_data_to_s3(section_output_uri, edited_data)
+        write_correction_to_test_set_baseline(
+            object_key, section_id, edited_data, username, user_email
+        )
+    else:
+        # Confirming labels unchanged is still a review: it is a human asserting
+        # the extraction is correct, which is exactly what a golden dataset
+        # records. Without this the baseline kept its draft-machine tag, so the
+        # test set showed "Awaiting review" after every document had been
+        # confirmed, a later labeling run could overwrite the confirmation, and
+        # the confidence curve never learned that those fields were right.
+        confirm_test_set_baseline_reviewed(object_key, section_id, username, user_email)
 
     # Get current pending and completed sections from document model
     pending = set(document.hitl_sections_pending or [])
     completed = set(document.hitl_sections_completed or [])
-    
+
     # Get skipped from DynamoDB (not in document model)
     table = dynamodb.Table(TRACKING_TABLE_NAME)
     response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
@@ -135,7 +200,9 @@ def complete_section_review(
 
     # If HITLSectionsPending was never initialized, initialize it from all sections
     if not pending and not completed and not skipped:
-        all_section_ids = {section.section_id for section in document.sections if section.section_id}
+        all_section_ids = {
+            section.section_id for section in document.sections if section.section_id
+        }
         pending = all_section_ids - {section_id}
         logger.info(f"Initialized HITLSectionsPending from sections: {pending}")
 
@@ -158,7 +225,7 @@ def complete_section_review(
     document.hitl_status = new_hitl_status
     document.hitl_sections_pending = list(pending)
     document.hitl_sections_completed = list(completed)
-    
+
     # Update via document service
     document_service.update_document(document)
     logger.info(
@@ -178,7 +245,7 @@ def complete_section_review(
 
     update_expr = "SET HITLReviewHistory = :history"
     expr_values = {":history": review_history}
-    
+
     if all_completed:
         update_expr += ", HITLCompleted = :hitlCompleted"
         expr_values[":hitlCompleted"] = True
@@ -190,7 +257,9 @@ def complete_section_review(
         ExpressionAttributeValues=expr_values,
     )
 
-    logger.info(f"Section {section_id} marked complete. Remaining: {len(pending)}. All done: {all_completed}")
+    logger.info(
+        f"Section {section_id} marked complete. Remaining: {len(pending)}. All done: {all_completed}"
+    )
 
     # If all sections are completed, trigger reprocessing for summarization/evaluation
     if all_completed:
@@ -237,59 +306,283 @@ def save_edited_data_to_s3(s3_uri, edited_data):
         raise
 
 
+def write_correction_to_test_set_baseline(
+    object_key, section_id, edited_data, username="", user_email=""
+):
+    """Persist a HITL correction to the owning test set's baseline (ground truth).
+
+    A test-set review document is keyed ``{test_run_id}/{filename}`` and carries
+    ``TestSetId``; the baseline it maps to is
+    ``{test_set_id}/baseline/{filename}/sections/{section_id}/result.json``. Writing
+    there, and not only to the document's own output, is what makes a review
+    reusable as versionable ground truth. Best-effort: a document outside a test
+    set, or a failed write, must not fail the review.
+    """
+    if not TEST_SET_BUCKET:
+        return
+    try:
+        table = dynamodb.Table(TRACKING_TABLE_NAME)
+        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
+            "Item", {}
+        )
+        test_set_id = doc.get("TestSetId")
+        if not test_set_id:
+            return  # Not a test-set review document — nothing to do.
+
+        # object_key is "{test_run_id}/{filename}"; the baseline is keyed by filename.
+        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
+        baseline_key = (
+            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
+        )
+        data = json.loads(edited_data) if isinstance(edited_data, str) else edited_data
+
+        # Read the label being replaced before overwriting it: the diff against
+        # what the reviewer saved is the only evidence of whether the model was
+        # right, and the write destroys it.
+        previous = _read_json(TEST_SET_BUCKET, baseline_key)
+
+        # Marks the label human-reviewed so draft labeling leaves it alone; the
+        # harvester only replaces labels tagged draft-machine.
+        if isinstance(data, dict):
+            data["labelSource"] = "reviewed-human"
+            append_edit_history(previous, data, username, user_email)
+
+        s3_client.put_object(
+            Bucket=TEST_SET_BUCKET,
+            Key=baseline_key,
+            Body=json.dumps(data, indent=2),
+            ContentType="application/json",
+        )
+        logger.info(
+            f"Wrote HITL correction to test-set baseline "
+            f"s3://{TEST_SET_BUCKET}/{baseline_key}"
+        )
+
+        record_curve_observations(test_set_id, previous, data)
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break the review
+        logger.error(
+            f"Failed to write correction to test-set baseline for {object_key}: {e}"
+        )
+
+
+def confirm_test_set_baseline_reviewed(
+    object_key, section_id, username="", user_email=""
+):
+    """Tag a baseline human-reviewed when the reviewer changed nothing.
+
+    "The labels are correct" is a verdict, not the absence of one: every field
+    keeps its predicted value, and a human has asserted those values are right.
+    The baseline is rewritten in place so it carries ``reviewed-human``, gains a
+    revision entry, and feeds the curve observations that all say "the model was
+    correct" — the high-confidence evidence review otherwise never produces.
+
+    Best-effort, and a no-op outside a test set or when no baseline exists yet.
+    """
+    if not TEST_SET_BUCKET:
+        return
+    try:
+        table = dynamodb.Table(TRACKING_TABLE_NAME)
+        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
+            "Item", {}
+        )
+        test_set_id = doc.get("TestSetId")
+        if not test_set_id:
+            return
+
+        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
+        baseline_key = (
+            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
+        )
+        existing = _read_json(TEST_SET_BUCKET, baseline_key)
+        if not isinstance(existing, dict):
+            logger.info(
+                f"No baseline to confirm at s3://{TEST_SET_BUCKET}/{baseline_key}"
+            )
+            return
+        if existing.get("labelSource") == "reviewed-human":
+            return  # Already confirmed; nothing to record.
+
+        # Reuse the correction path with the values unchanged: confirming asserts
+        # the current values ARE the ground truth, so the same provenance stamp,
+        # revision entry and curve observations apply.
+        write_correction_to_test_set_baseline(
+            object_key, section_id, existing, username, user_email
+        )
+    except Exception as e:  # noqa: BLE001 — must not break the review
+        logger.error(f"Failed to confirm test-set baseline for {object_key}: {e}")
+
+
+# Caps the trail on a repeatedly reviewed label; the newest entries are kept.
+MAX_EDIT_HISTORY_ENTRIES = 50
+
+
+def append_edit_history(previous, saved, username, user_email):
+    """Record who changed what, in the label itself.
+
+    The ground-truth viewer reads provenance from ``_editHistory`` inside the
+    label JSON, so a review recorded only in DynamoDB (HITLReviewHistory) is
+    invisible to it. The field-level diff is taken against the label being
+    replaced, which is already in hand for the curve observation.
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "editedBy": username or "unknown",
+        "editedByEmail": user_email or "",
+        "source": "annotation-review",
+    }
+    diffs = _field_diffs(previous, saved)
+    if diffs:
+        entry["baselineEdits"] = {
+            "changedFields": list(diffs.keys()),
+            "changeCount": len(diffs),
+            "diffs": diffs,
+        }
+
+    # The trail is server-owned: seed it from the stored label, since a client that
+    # does not round-trip _editHistory would otherwise erase every prior entry.
+    # Taking the longer of the two also stops a client from truncating it.
+    stored = (previous or {}).get("_editHistory")
+    incoming = saved.get("_editHistory")
+    history = stored if isinstance(stored, list) else []
+    if isinstance(incoming, list) and len(incoming) > len(history):
+        history = incoming
+    saved["_editHistory"] = [*history, entry][-MAX_EDIT_HISTORY_ENTRIES:]
+
+
+def _field_diffs(previous, saved):
+    """Field path → {originalValue, newValue} for every value the review changed.
+
+    Uses the same flattening as the curve, so "changed" means the same thing to
+    the audit trail and to the calibration signal.
+    """
+    if not previous:
+        return {}
+    try:
+        from idp_common.evaluation.curve_store import _flatten_values
+
+        before = _flatten_values(previous.get("inference_result") or {})
+        after = _flatten_values(saved.get("inference_result") or {})
+    except Exception as e:  # noqa: BLE001 — provenance must not fail the save
+        logger.warning(f"Could not diff review changes: {e}")
+        return {}
+
+    diffs = {}
+    for path in set(before) | set(after):
+        original = before.get(path)
+        new = after.get(path)
+        if original != new:
+            diffs[path] = {"originalValue": original, "newValue": new}
+    return diffs
+
+
+def _read_json(bucket, key):
+    """Read a JSON object from S3, or None if absent/unreadable."""
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        return json.loads(body)
+    except Exception:  # noqa: BLE001 — absence is normal (first review of a doc)
+        return None
+
+
+def record_curve_observations(test_set_id, previous, saved):
+    """Record confidence→accuracy observations from this review.
+
+    A field the reviewer left alone was predicted correctly; a changed one was not.
+    Paired with the model's claimed confidence, that is the ``(confidence, correct)``
+    observation the review-effort estimator's curve is built from. Best-effort: the
+    curve is an optimization and must never fail a reviewer's save.
+    """
+    if not previous:
+        return  # No prior prediction, so there is no verdict to record.
+    try:
+        from idp_common.evaluation.curve_store import (
+            CurveStore,
+            observations_from_baseline_review,
+        )
+
+        observations = observations_from_baseline_review(previous, saved)
+        if not observations:
+            return
+
+        table = dynamodb.Table(TRACKING_TABLE_NAME)
+        # Key the curve by the config that produced these labels; a later config
+        # change must not inherit a curve measured under different confidence
+        # semantics.
+        config_version = (previous.get("metadata") or {}).get("config_version")
+        accepted = CurveStore(table).add_observations(
+            test_set_id,
+            observations,
+            config_version=config_version,
+            source="review",
+        )
+        logger.info(
+            f"Recorded {accepted} confidence-curve observation(s) for test set "
+            f"{test_set_id} from review"
+        )
+    except Exception as e:  # noqa: BLE001 — never break a review over the curve
+        logger.warning(
+            f"Could not record confidence-curve observations for {test_set_id}: {e}"
+        )
+
+
 def trigger_reprocessing(object_key):
     """Trigger reprocessing via SQS queue after HITL completion.
-    
+
     Uses the same pattern as processChanges - sends document to queue,
     workflow runs with intelligent skip logic (OCR/Classification/Extraction/Assessment
     are skipped since data exists), only Summarization and Evaluation re-run.
     """
     try:
         # Load document from DynamoDB
-        dynamodb_service = create_document_service(mode='dynamodb')
+        dynamodb_service = create_document_service(mode="dynamodb")
         document = dynamodb_service.get_document(object_key)
-        
+
         if not document:
             logger.error(f"Document {object_key} not found for reprocessing")
             return
-        
+
         # Set bucket names from environment
-        document.input_bucket = os.environ.get('INPUT_BUCKET')
-        document.output_bucket = os.environ.get('OUTPUT_BUCKET')
-        
+        document.input_bucket = os.environ.get("INPUT_BUCKET")
+        document.output_bucket = os.environ.get("OUTPUT_BUCKET")
+
         # Reset status for reprocessing
         document.status = Status.QUEUED
         document.start_time = None
         document.completion_time = None
         document.workflow_execution_arn = None
-        
+
         # Compress and send to queue (same pattern as processChanges)
-        working_bucket = os.environ.get('WORKING_BUCKET')
+        working_bucket = os.environ.get("WORKING_BUCKET")
         if working_bucket:
-            sqs_message = document.serialize_document(working_bucket, "hitl_complete", logger)
+            sqs_message = document.serialize_document(
+                working_bucket, "hitl_complete", logger
+            )
         else:
             sqs_message = document.to_dict()
-        
-        queue_url = os.environ.get('QUEUE_URL')
+
+        queue_url = os.environ.get("QUEUE_URL")
         if queue_url:
             sqs_client.send_message(
-                QueueUrl=queue_url,
-                MessageBody=json.dumps(sqs_message, default=str)
+                QueueUrl=queue_url, MessageBody=json.dumps(sqs_message, default=str)
             )
-            logger.info(f"Queued document {object_key} for reprocessing after HITL completion")
+            logger.info(
+                f"Queued document {object_key} for reprocessing after HITL completion"
+            )
         else:
             logger.warning("QUEUE_URL not configured, skipping reprocessing trigger")
-            
+
     except Exception as e:
         logger.error(f"Failed to trigger reprocessing for {object_key}: {str(e)}")
 
 
 def skip_all_sections_review(object_key, username="", user_email=""):
     """Skip all pending section reviews and mark document as complete (Admin only)."""
-    logger.info(f"Skipping all sections review for document {object_key} by admin {username}")
+    logger.info(
+        f"Skipping all sections review for document {object_key} by admin {username}"
+    )
 
     # Load document using document service to verify it exists
-    document_service = create_document_service(mode='dynamodb')
+    document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
 
     if not document:
@@ -304,7 +597,9 @@ def skip_all_sections_review(object_key, username="", user_email=""):
     existing_skipped = set(doc.get("HITLSectionsSkipped", []) or [])
 
     # Get all section IDs from the document
-    all_section_ids = {section.section_id for section in document.sections if section.section_id}
+    all_section_ids = {
+        section.section_id for section in document.sections if section.section_id
+    }
 
     # Sections to skip = all sections that are not already completed
     sections_to_skip = all_section_ids - completed - existing_skipped
@@ -336,7 +631,9 @@ def skip_all_sections_review(object_key, username="", user_email=""):
         },
     )
 
-    logger.info(f"All sections skipped for document {object_key}. Skipped: {all_skipped}, Completed: {list(completed)}")
+    logger.info(
+        f"All sections skipped for document {object_key}. Skipped: {all_skipped}, Completed: {list(completed)}"
+    )
 
     # Skipping all reviews resolves every pending section, so the document is now
     # fully reviewed — exactly like completing the final section via
@@ -358,9 +655,9 @@ def claim_review(object_key, username="", user_email=""):
     logger.info(f"Claiming review for document {object_key} by {username}")
 
     # Load document using document service to verify it exists
-    document_service = create_document_service(mode='dynamodb')
+    document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
-    
+
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
@@ -372,19 +669,41 @@ def claim_review(object_key, username="", user_email=""):
     if current_owner and current_owner != username:
         raise ValueError(f"Document is already claimed by {current_owner}")
 
-    # Update Review Status and review owner directly in DynamoDB
-    # This avoids re-serializing metering data which could cause issues
-    table.update_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression="SET HITLStatus = :status, HITLReviewOwner = :owner, HITLReviewOwnerEmail = :email",
-        ExpressionAttributeValues={
-            ":status": "InProgress",
-            ":owner": username,
-            ":email": user_email,
-        },
-    )
+    # Conditional, so the claim is exclusive rather than advisory. The read above
+    # cannot be: two annotators clicking Claim at the same moment both pass it and
+    # both write, and the collaborative queue is exactly the feature that depends
+    # on only one winning. Updating in place (rather than via the document model)
+    # also avoids re-serializing metering data.
+    try:
+        table.update_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"},
+            UpdateExpression="SET HITLStatus = :status, HITLReviewOwner = :owner, HITLReviewOwnerEmail = :email",
+            ConditionExpression=(
+                "attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
+                "OR HITLReviewOwner = :empty"
+            ),
+            ExpressionAttributeValues={
+                ":status": "InProgress",
+                ":owner": username,
+                ":email": user_email,
+                ":empty": "",
+            },
+        )
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        # Lost the race. Re-read so the message names the actual winner, and phrase
+        # it the way the read-path check does — the UI matches on "already claimed"
+        # to skip to the next document instead of dead-ending.
+        current = (
+            table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
+            or {}
+        )
+        winner = current.get("HITLReviewOwner") or "another reviewer"
+        logger.info(f"Claim race lost on {object_key}: already claimed by {winner}")
+        raise ValueError(f"Document is already claimed by {winner}") from None
 
-    logger.info(f"Review claimed for document {object_key} by {username}, HITLStatus set to InProgress")
+    logger.info(
+        f"Review claimed for document {object_key} by {username}, HITLStatus set to InProgress"
+    )
     return build_document_response(object_key)
 
 
@@ -393,9 +712,9 @@ def release_review(object_key, username="", user_email="", is_admin=False):
     logger.info(f"Releasing review for document {object_key} by {username}")
 
     # Load document using document service to verify it exists
-    document_service = create_document_service(mode='dynamodb')
+    document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
-    
+
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
@@ -415,13 +734,16 @@ def release_review(object_key, username="", user_email="", is_admin=False):
         ExpressionAttributeValues={":status": "Review Pending", ":pending": "true"},
     )
 
-    logger.info(f"Review released for document {object_key}, HITLStatus set to Review Pending")
+    logger.info(
+        f"Review released for document {object_key}, HITLStatus set to Review Pending"
+    )
     return build_document_response(object_key)
 
 
 def _convert_decimals(obj):
     """Recursively convert Decimal values to int/float for JSON serialization."""
     from decimal import Decimal
+
     if isinstance(obj, Decimal):
         return int(obj) if obj % 1 == 0 else float(obj)
     elif isinstance(obj, dict):

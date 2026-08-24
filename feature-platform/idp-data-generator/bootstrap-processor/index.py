@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 import uuid
+from decimal import Decimal
 
 import boto3
 
@@ -44,8 +45,26 @@ def _class_id(class_dict: dict) -> str:
     )
 
 
+def _decimalize(value):
+    """DynamoDB has no float type, so coerce numerics on the way in."""
+    if isinstance(value, float):
+        return Decimal(str(round(value, 4)))
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    return value
+
+
 def _status(
-    job_id, status, message=None, error=None, config_version=None, test_set_id=None
+    job_id,
+    status,
+    message=None,
+    error=None,
+    config_version=None,
+    test_set_id=None,
+    usage=None,
+    run_config=None,
 ):
     """Record job status in the feature's own tracking table.
 
@@ -56,6 +75,16 @@ def _status(
     if not (BOOTSTRAP_TRACKING_TABLE and job_id):
         return
     attrs = {"status": status}
+    # Seed the heartbeat here, not only from the runtime. The processor writes
+    # IN_PROGRESS and then invokes the runtime, so everything between those two
+    # points — an image pull that fails, an OOM during import — leaves a job that the
+    # reaper skips, because "no heartbeat" is deliberately treated as "predates this
+    # release" rather than "dead". Seeding it means a job that never gets a container
+    # is still reapable, and keeps the absent case meaning only what it says.
+    if status == "IN_PROGRESS":
+        import datetime as _dt
+
+        attrs["heartbeatAt"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     if message is not None:
         attrs["statusMessage"] = message
     if error is not None:
@@ -64,6 +93,17 @@ def _status(
         attrs["configVersion"] = config_version
     if test_set_id is not None:
         attrs["testSetId"] = test_set_id
+    # Tokens, pipeline attempts and mean critic score for the run. Recorded so a
+    # cost or duration estimate can be calibrated on observed runs instead of
+    # constants; none of it is recoverable once the run ends.
+    if usage is not None:
+        attrs["usage"] = _decimalize(usage)
+    # The inputs that drive cost — threshold gates critic acceptance, so it
+    # determines how many render passes a document takes, and augmentation adds
+    # local processing time. Without them a completed run is an uninterpretable
+    # data point.
+    if run_config is not None:
+        attrs["runConfig"] = _decimalize(run_config)
     expr = "SET " + ", ".join(f"#{k} = :{k}" for k in attrs)
     try:
         _ddb.Table(BOOTSTRAP_TRACKING_TABLE).update_item(
@@ -95,6 +135,11 @@ def _register_test_set(
     )
     names = {
         "#status": "status",
+        # When the status was last written, so the host can tell a long-running
+        # generation from an abandoned one. GENERATING is cleared by the runtime; if
+        # the runtime dies — or the extension is uninstalled — nothing else ever
+        # would, and the set shows a spinner in Test Studio permanently.
+        "#statusUpdatedAt": "statusUpdatedAt",
         "#itemType": "ItemType",
         "#id": "id",
         "#name": "name",
@@ -112,6 +157,7 @@ def _register_test_set(
     }
     set_clauses = [
         "#status = :status",
+        "#statusUpdatedAt = :createdAt",
         "#itemType = :itemType",
         "#id = :id",
         "#name = if_not_exists(#name, :name)",

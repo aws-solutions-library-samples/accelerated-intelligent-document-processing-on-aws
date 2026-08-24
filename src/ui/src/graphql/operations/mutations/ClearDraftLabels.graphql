@@ -1,0 +1,10 @@
+mutation ClearDraftLabels($testSetId: String!) {
+  clearDraftLabels(testSetId: $testSetId) {
+    id
+    name
+    fileCount
+    status
+    createdAt
+    lastAddResult
+  }
+}

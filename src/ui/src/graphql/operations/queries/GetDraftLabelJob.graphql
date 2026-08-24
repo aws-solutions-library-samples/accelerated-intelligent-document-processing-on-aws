@@ -1,0 +1,14 @@
+query GetDraftLabelJob($testSetId: String!, $jobId: String!) {
+  getDraftLabelJob(testSetId: $testSetId, jobId: $jobId) {
+    jobId
+    testSetId
+    status
+    total
+    labeled
+    configVersion
+    error
+    createdAt
+    completedAt
+    skippedAlreadyLabeled
+  }
+}

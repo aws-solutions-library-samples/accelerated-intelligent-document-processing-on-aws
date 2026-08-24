@@ -56,6 +56,7 @@ class FactExtractionResponse:
     rule: str
     extracted_facts: List[Dict[str, str]] = field(default_factory=list)
     extraction_summary: str = ""
+    z3_parameters: Optional[Dict[str, Any]] = field(default=None)
 
     def __init__(self, **kwargs):
         """Custom init to enforce validation."""
@@ -64,6 +65,7 @@ class FactExtractionResponse:
             "rule",
             "extracted_facts",
             "extraction_summary",
+            "z3_parameters",
         }
 
         # Check for extra fields
@@ -76,6 +78,7 @@ class FactExtractionResponse:
         self.rule = kwargs.get("rule")
         self.extracted_facts = kwargs.get("extracted_facts", [])
         self.extraction_summary = kwargs.get("extraction_summary", "")
+        self.z3_parameters = kwargs.get("z3_parameters")
 
         # Call post_init for validation
         self.__post_init__()

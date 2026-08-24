@@ -171,6 +171,7 @@ const TestSetDocumentDetail = (): React.JSX.Element => {
                     sections={doc.sections}
                     isReadOnly={!canWrite}
                     onSaved={handleSaved}
+                    testSetId={testSetId}
                   />
                 )}
               </SpaceBetween>

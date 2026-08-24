@@ -71,6 +71,9 @@ class TestTestRunnerRBAC:
             patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
             patch.object(test_runner_index, "_capture_config") as mock_capture_config,
             patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
                 test_runner_index, "_store_test_run_metadata"
             ) as _mock_store_metadata,
             patch.object(test_runner_index.sqs, "send_message") as mock_sqs,
@@ -114,6 +117,9 @@ class TestTestRunnerRBAC:
         with (
             patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
             patch.object(test_runner_index, "_capture_config") as mock_capture_config,
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
             patch.object(
                 test_runner_index, "_store_test_run_metadata"
             ) as _mock_store_metadata,
@@ -174,6 +180,9 @@ class TestTestRunnerRBAC:
             patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
             patch.object(test_runner_index, "_capture_config") as mock_capture_config,
             patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
                 test_runner_index, "_store_test_run_metadata"
             ) as _mock_store_metadata,
             patch.object(test_runner_index.sqs, "send_message") as mock_sqs,
@@ -218,6 +227,9 @@ class TestTestRunnerRBAC:
             patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
             patch.object(test_runner_index, "_capture_config") as mock_capture_config,
             patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
                 test_runner_index, "_store_test_run_metadata"
             ) as _mock_store_metadata,
             patch.object(test_runner_index.sqs, "send_message") as mock_sqs,
@@ -252,3 +264,147 @@ class TestTestRunnerRBAC:
             assert "testRunId" in result
             assert result["status"] == "QUEUED"
             mock_sqs.assert_called_once()
+
+    @patch.dict(
+        os.environ,
+        {
+            "TRACKING_TABLE": "test-table",
+            "CONFIG_TABLE": "test-config-table",
+            "FILE_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+        },
+    )
+    def test_pins_test_set_active_reference_into_run(self):
+        """The test set's activeReference is passed through as test_set_version."""
+        with (
+            patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
+            patch.object(test_runner_index, "_capture_config") as mock_capture_config,
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
+                test_runner_index, "_store_test_run_metadata"
+            ) as mock_store_metadata,
+            patch.object(test_runner_index.sqs, "send_message"),
+            patch("datetime.datetime") as mock_datetime,
+        ):
+            mock_get_test_set.return_value = {
+                "name": "Test-Set",
+                "fileCount": 3,
+                "activeReference": 2,
+            }
+            mock_capture_config.return_value = {"Config": {}}
+            mock_datetime.utcnow.return_value.strftime.return_value = "20260611-120000"
+
+            event = {
+                "arguments": {"input": {"testSetId": "ts1"}},
+                "identity": _ADMIN_IDENTITY,
+            }
+            test_runner_index.handler(event, {})
+
+            # test_set_version is the last positional arg to _store_test_run_metadata
+            args, _ = mock_store_metadata.call_args
+            assert args[-1] == 2
+
+    @patch.dict(
+        os.environ,
+        {
+            "TRACKING_TABLE": "test-table",
+            "CONFIG_TABLE": "test-config-table",
+            "FILE_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+        },
+    )
+    def test_unpublished_test_set_pins_no_version(self):
+        """A test set never published pins test_set_version=None."""
+        with (
+            patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
+            patch.object(test_runner_index, "_capture_config") as mock_capture_config,
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
+                test_runner_index, "_store_test_run_metadata"
+            ) as mock_store_metadata,
+            patch.object(test_runner_index.sqs, "send_message"),
+            patch("datetime.datetime") as mock_datetime,
+        ):
+            mock_get_test_set.return_value = {"name": "Test-Set", "fileCount": 3}
+            mock_capture_config.return_value = {"Config": {}}
+            mock_datetime.utcnow.return_value.strftime.return_value = "20260611-120000"
+
+            event = {
+                "arguments": {"input": {"testSetId": "ts1"}},
+                "identity": _ADMIN_IDENTITY,
+            }
+            test_runner_index.handler(event, {})
+
+            args, _ = mock_store_metadata.call_args
+            assert args[-1] is None
+
+    # -- send_test_run_to_review (on-demand HITL trigger) -----------------
+
+    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    def test_send_test_run_to_review_queues_docs_with_alerts(self):
+        """Docs with confidence alerts are flipped to PendingReview; clean ones skipped."""
+        from unittest.mock import MagicMock
+
+        table = MagicMock()
+        # run metadata with two files
+        run_item = {"TestSetId": "ts1", "Files": ["a.pdf", "b.pdf"]}
+        doc_a = {"ConfidenceAlertCount": 3, "HITLStatus": ""}  # should queue
+        doc_b = {"ConfidenceAlertCount": 0, "HITLStatus": ""}  # no alerts -> skip
+
+        def _get_item(Key):
+            sk_pk = Key["PK"]
+            if sk_pk == "testrun#run-1":
+                return {"Item": run_item}
+            if sk_pk == "doc#run-1/a.pdf":
+                return {"Item": doc_a}
+            if sk_pk == "doc#run-1/b.pdf":
+                return {"Item": doc_b}
+            return {}
+
+        table.get_item.side_effect = _get_item
+        with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
+            result = test_runner_index.send_test_run_to_review({"testRunId": "run-1"})
+
+        assert result["queuedCount"] == 1
+        assert result["skippedCount"] == 1
+        assert result["testSetId"] == "ts1"
+        # exactly one doc updated, and it's a.pdf -> PendingReview + TestSetId
+        assert table.update_item.call_count == 1
+        upd = table.update_item.call_args.kwargs
+        assert upd["Key"]["PK"] == "doc#run-1/a.pdf"
+        assert upd["ExpressionAttributeValues"][":s"] == "PendingReview"
+        assert upd["ExpressionAttributeValues"][":tsid"] == "ts1"
+
+    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    def test_send_test_run_to_review_skips_completed(self):
+        """Already-reviewed docs are not re-queued."""
+        from unittest.mock import MagicMock
+
+        table = MagicMock()
+        run_item = {"TestSetId": "ts1", "Files": ["done.pdf"]}
+        doc = {"ConfidenceAlertCount": 5, "HITLStatus": "Review Completed"}
+
+        def _get_item(Key):
+            if Key["PK"] == "testrun#run-2":
+                return {"Item": run_item}
+            return {"Item": doc}
+
+        table.get_item.side_effect = _get_item
+        with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
+            result = test_runner_index.send_test_run_to_review({"testRunId": "run-2"})
+
+        assert result["queuedCount"] == 0
+        assert result["skippedCount"] == 1
+        assert table.update_item.call_count == 0
+
+    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    def test_send_test_run_to_review_missing_run_raises(self):
+        from unittest.mock import MagicMock
+
+        table = MagicMock()
+        table.get_item.return_value = {}
+        with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
+            with pytest.raises(ValueError, match="Test run 'ghost' not found"):
+                test_runner_index.send_test_run_to_review({"testRunId": "ghost"})

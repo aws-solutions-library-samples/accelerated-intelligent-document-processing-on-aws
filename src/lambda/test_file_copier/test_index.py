@@ -197,3 +197,82 @@ class TestFileCap:
 
             (_, _, files_written), _ = update_track.call_args
             assert len(files_written) == 20  # no cap applied
+
+
+@pytest.mark.unit
+class TestDraftLabelingSkipsBaselines:
+    """A draft-labeling run PRODUCES ground truth, so it must not be scored.
+
+    Staging the current baseline makes the evaluation step compare the new
+    extraction against a stale copy of itself. Observed live: a re-run with
+    corrected settings reported accuracy 0.47 by scoring its single merged
+    section against one section of the previous run's output — and because
+    aggregation records confidence-curve observations for any run carrying a
+    TestSetId, that meaningless verdict fed the review estimator's calibration.
+    """
+
+    def test_draft_labeling_run_does_not_stage_baselines(self, caplog):
+        index = import_index()
+        inputs = ["a.pdf", "b.pdf"]
+        baselines = ["a.pdf/result.json", "b.pdf/result.json"]
+
+        with (
+            patch.object(index, "_list_test_set_files") as list_files,
+            patch.object(index, "_copy_files_to_bucket") as copy_files,
+            patch.object(index, "_update_tracking_in_progress"),
+            patch.object(index, "_update_test_run_status"),
+        ):
+            list_files.side_effect = [inputs, baselines]
+            copy_files.side_effect = lambda *a, **kw: list(a[4])
+
+            body = {
+                "testRunId": "run-draft",
+                "testSetId": "my-test-set",
+                "trackingTable": "tracking",
+                "purpose": "draft-labeling",
+            }
+            with caplog.at_level("INFO", logger=index.logger.name):
+                index.handler({"Records": [{"body": json.dumps(body)}]}, None)
+
+            # Inputs are copied; baselines are not. One call, not two.
+            assert copy_files.call_count == 1, (
+                "baseline copy must be skipped for a draft-labeling run"
+            )
+            assert copy_files.call_args_list[0].args[2] == "input-bucket"
+            assert any(
+                "not staging baselines" in r.message for r in caplog.records
+            ), "the skip should be logged so it is not silently surprising"
+
+    def test_scoring_run_still_stages_baselines(self):
+        """The default path is unchanged — a scoring run needs its baseline."""
+        index = import_index()
+        inputs = ["a.pdf"]
+        baselines = ["a.pdf/result.json"]
+
+        with (
+            patch.object(index, "_list_test_set_files") as list_files,
+            patch.object(index, "_copy_files_to_bucket") as copy_files,
+            patch.object(index, "_update_tracking_in_progress"),
+            patch.object(index, "_update_test_run_status"),
+        ):
+            list_files.side_effect = [inputs, baselines]
+            copy_files.side_effect = lambda *a, **kw: list(a[4])
+
+            index.handler(_make_event(), None)
+
+            assert copy_files.call_count == 2
+            assert copy_files.call_args_list[1].args[2] == "baseline-bucket"
+
+    def test_absent_purpose_defaults_to_scoring(self):
+        """Messages enqueued before `purpose` existed must keep working."""
+        index = import_index()
+        with (
+            patch.object(index, "_list_test_set_files") as list_files,
+            patch.object(index, "_copy_files_to_bucket") as copy_files,
+            patch.object(index, "_update_tracking_in_progress"),
+            patch.object(index, "_update_test_run_status"),
+        ):
+            list_files.side_effect = [["a.pdf"], ["a.pdf/result.json"]]
+            copy_files.side_effect = lambda *a, **kw: list(a[4])
+            index.handler(_make_event(), None)
+            assert copy_files.call_count == 2

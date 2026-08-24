@@ -62,6 +62,12 @@ extraction:
   top_k: "5"
   system_prompt: >-
     You are a document assistant. Respond only with JSON. Never make up data, only provide data found in the document being provided.
+  # {FEW_SHOT_EXAMPLES} is present in every shipped extraction prompt so that a
+  # class which defines x-aws-idp-examples has them used WITHOUT also having to
+  # edit the prompt (examples defined but never sent is a silent, hard-to-notice
+  # failure). It is a no-op for classes with no examples: the section renders
+  # empty and nothing is added to the request. Examples sit before <<CACHEPOINT>>
+  # because they are static per class and therefore cacheable.
   task_prompt: >-
     <background>
     You are an expert in document analysis and information extraction. 
@@ -110,6 +116,10 @@ extraction:
     <attributes>
     {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}
     </attributes>
+
+    <few-shot-examples>
+    {FEW_SHOT_EXAMPLES}
+    </few-shot-examples>
 
     <<CACHEPOINT>>
 
@@ -181,6 +191,10 @@ extraction:
     <attributes>
     {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}
     </attributes>
+
+    <few-shot-examples>
+    {FEW_SHOT_EXAMPLES}
+    </few-shot-examples>
 
     <confidence-assessment>
     Record your confidence in EVERY extracted value, mirroring the extraction
@@ -268,6 +282,7 @@ extraction:
     descriptions, then output only those attributes, using the provided
     descriptions as guidance for finding the correct values.
     <attributes> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} </attributes>
+    <few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
     <<CACHEPOINT>>
     <document_image> {DOCUMENT_IMAGE} </document_image>
     <document-text> {DOCUMENT_TEXT} </document-text>

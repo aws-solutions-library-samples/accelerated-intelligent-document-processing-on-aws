@@ -38,6 +38,10 @@ https://github.com/user-attachments/assets/0bf14b62-99dc-4538-a015-d8b89fa2f1f0
 **Key Features:**
 - Built-in review portal within the GenAI-IDP Web UI
 - Role-based access control with Admin and Reviewer personas
+- `Annotator` can also reach `claimReview`, `releaseReview` and
+  `completeSectionReview`, but only for documents belonging to a test set in its
+  `allowedTestSets` — production review documents (those with no `TestSetId`) are
+  refused. `skipAllSectionsReview` stays Admin/Reviewer. See [rbac.md](rbac.md).
 - Review ownership model - reviewers claim documents before editing
 - Section-by-section review workflow
 - Visual editor for viewing and correcting extracted data

@@ -9,6 +9,8 @@ import time
 
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
+from pydantic import ValidationError
+
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.constants import (
     CONFIG_TYPE_CONFIG,
@@ -19,8 +21,6 @@ from idp_common.config.constants import (
 )
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-
-from pydantic import ValidationError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -34,6 +34,9 @@ _dynamodb = boto3.resource("dynamodb")
 # User scope cache (TTL-based, per Lambda container)
 _user_scope_cache = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
+
+# Lazy-initialized RuleTranslator (reused across requests within same container)
+_rule_translator = None
 
 
 def _get_caller_info(event):
@@ -69,6 +72,7 @@ _OPERATION_REQUIRED_GROUPS = {
     # Admin + Author writes
     "updateConfiguration": {"Admin", "Author"},
     "setActiveVersion": {"Admin", "Author"},
+    "generateRuleJson": {"Admin", "Author"},
     # Admin + Author + Viewer reads (everything except Reviewer)
     "getConfigVersions": {"Admin", "Author", "Viewer"},
     "getConfigVersion": {"Admin", "Author", "Viewer"},
@@ -137,7 +141,7 @@ def validate_version_name(name):
     """
     if not name or not isinstance(name, str):
         return False
-    return re.match(r'^[a-zA-Z0-9._-]+$', name) and len(name) <= 50
+    return re.match(r"^[a-zA-Z0-9._-]+$", name) and len(name) <= 50
 
 
 def validate_description(description):
@@ -188,7 +192,9 @@ def handler(event, context):
     allowed_versions = None
     if not caller["is_admin"]:
         allowed_versions = _get_user_allowed_config_versions(caller["email"])
-        logger.info(f"Config scope for {caller['email']}: {allowed_versions or 'unrestricted'}")
+        logger.info(
+            f"Config scope for {caller['email']}: {allowed_versions or 'unrestricted'}"
+        )
 
     try:
         if operation == "getConfigVersions":
@@ -196,7 +202,11 @@ def handler(event, context):
         elif operation == "getConfigVersion":
             version_name = event["arguments"].get("versionName")
             # Enforce scope on getConfigVersion
-            if allowed_versions and version_name and version_name not in allowed_versions:
+            if (
+                allowed_versions
+                and version_name
+                and version_name not in allowed_versions
+            ):
                 return {
                     "success": False,
                     "error": {
@@ -252,11 +262,19 @@ def handler(event, context):
             # The updateConfiguration mutation allows Admin+Author at the schema level,
             # but saveAsVersion and saveAsDefault flags require Admin role.
             if custom_config:
-                config_data = json.loads(custom_config) if isinstance(custom_config, str) else custom_config
+                config_data = (
+                    json.loads(custom_config)
+                    if isinstance(custom_config, str)
+                    else custom_config
+                )
                 is_save_as_version = config_data.get("saveAsVersion", False)
                 is_save_as_default = config_data.get("saveAsDefault", False)
-                if (is_save_as_version or is_save_as_default) and not caller["is_admin"]:
-                    operation_name = "Save as Version" if is_save_as_version else "Save as Default"
+                if (is_save_as_version or is_save_as_default) and not caller[
+                    "is_admin"
+                ]:
+                    operation_name = (
+                        "Save as Version" if is_save_as_version else "Save as Default"
+                    )
                     return {
                         "success": False,
                         "error": {
@@ -264,7 +282,9 @@ def handler(event, context):
                             "message": f"Access denied: '{operation_name}' is an Admin-only operation",
                         },
                     }
-            success = manager.handle_update_custom_configuration(custom_config, version, description)
+            success = manager.handle_update_custom_configuration(
+                custom_config, version, description
+            )
             return {
                 "success": success,
                 "message": "Configuration updated successfully"
@@ -323,6 +343,26 @@ def handler(event, context):
             return handle_list_config_library(event["arguments"])
         elif operation == "getConfigurationLibraryFile":
             return handle_get_config_library_file(event["arguments"])
+        elif operation == "generateRuleJson":
+            args = event["arguments"]
+            rule_description = args.get("ruleDescription")
+            if not rule_description or not rule_description.strip():
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "ValidationError",
+                        "message": "ruleDescription is required and cannot be empty",
+                    },
+                }
+            if len(rule_description) > 2000:
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "ValidationError",
+                        "message": "ruleDescription cannot exceed 2000 characters",
+                    },
+                }
+            return handle_generate_rule_json(rule_description.strip())
         else:
             raise Exception(f"Unsupported operation: {operation}")
     except ValidationError as e:
@@ -377,18 +417,18 @@ def handle_get_configuration(manager, version: str):
     """
     Handle the getConfiguration GraphQL query
     Returns Schema and version configuration items.
-    
+
     DESIGN PATTERN (CRITICAL):
     - Default: Full stack baseline (Pydantic validated)
     - Version: SPARSE DELTAS ONLY (raw from DynamoDB, NO Pydantic defaults!)
     - Frontend merges Default + Version for display
     - Runtime uses get_merged_configuration() for processing
-    
+
     This design allows:
     - Stack upgrades to safely update Default without losing user customizations
     - Empty Version = all defaults (clean reset)
     - User customizations survive stack updates
-    
+
     ANTI-PATTERNS TO AVOID:
     - DO NOT auto-copy default → version when version is empty
     - DO NOT use Pydantic validation on version (fills in defaults)
@@ -415,16 +455,17 @@ def handle_get_configuration(manager, version: str):
 
         if not version:
             raise ValueError("version is missing")
-        
-        
+
         # Get Version configuration as RAW dict (NO Pydantic defaults!)
         # This is critical for the sparse delta pattern to work correctly
         version_dict = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-        
+
         # If version dict doesn't exist or is empty, return empty dict
         # DO NOT auto-copy Default → Custom (this breaks the delta pattern)
         if not version_dict:
-            logger.info("Custom config is empty or not found - returning empty dict (expected behavior)")
+            logger.info(
+                "Custom config is empty or not found - returning empty dict (expected behavior)"
+            )
             version_dict = {}
 
         # Return all configurations as dicts (GraphQL requires JSON-serializable)
@@ -507,12 +548,14 @@ def handle_list_config_library(args):
                     # Skip this config if no config file exists
                     continue
 
-            items.append({
-                "name": config_name,
-                "hasReadme": has_readme,
-                "path": config_dir,
-                "configFileType": config_file_type
-            })
+            items.append(
+                {
+                    "name": config_name,
+                    "hasReadme": has_readme,
+                    "path": config_dir,
+                    "configFileType": config_file_type,
+                }
+            )
 
         if not items:
             logger.info(f"No configurations found for pattern: {pattern}")
@@ -1000,17 +1043,16 @@ def handle_get_config_versions(manager, allowed_versions=None):
     """
     try:
         versions = manager.list_config_versions()
-        
+
         # Filter by user's allowed config versions if scope is set
         if allowed_versions:
             versions = [v for v in versions if v.get("versionName") in allowed_versions]
-            logger.info(f"Filtered config versions by scope: {len(versions)} versions returned")
-        
-        return {
-            "success": True,
-            "versions": versions
-        }
-        
+            logger.info(
+                f"Filtered config versions by scope: {len(versions)} versions returned"
+            )
+
+        return {"success": True, "versions": versions}
+
     except Exception as e:
         logger.error(f"Error in getConfigVersions: {str(e)}")
         return {
@@ -1026,7 +1068,7 @@ def handle_set_active_version(manager, version):
     """
     Handle the setActiveVersion GraphQL mutation
     Sets a specific version as active and deactivates others.
-    
+
     BDA Auto-Sync: If the version has use_bda=True and a linked BDA project,
     auto-syncs the config to BDA on activation to ensure it's current.
     If use_bda=True but no BDA project exists, auto-creates one.
@@ -1040,7 +1082,7 @@ def handle_set_active_version(manager, version):
                     "message": "versionId is required",
                 },
             }
-        
+
         # Check if the version exists
         config = manager.get_configuration("Config", version)
         if not config:
@@ -1051,35 +1093,44 @@ def handle_set_active_version(manager, version):
                     "message": f"Configuration version '{version}' not found",
                 },
             }
-        
+
         # Set the version as active
         manager.activate_version(version)
-        
+
         # BDA Auto-Sync on activation: if use_bda is enabled, ensure BDA project is synced
         bda_message = ""
         try:
-            config_dict = config.model_dump(mode="python") if hasattr(config, 'model_dump') else {}
+            config_dict = (
+                config.model_dump(mode="python")
+                if hasattr(config, "model_dump")
+                else {}
+            )
             use_bda = config_dict.get("use_bda", False)
-            
+
             if use_bda:
                 bda_arn = manager.get_bda_project_arn(version)
                 if bda_arn:
-                    # Has linked project — mark as needing sync (actual sync happens via UI or next sync call)
-                    bda_sync_status = manager.get_bda_project_arn(version)  # Check current status
-                    logger.info(f"Version {version} activated with BDA project {bda_arn}")
+                    # Has linked project — log for visibility
+                    logger.info(
+                        f"Version {version} activated with BDA project {bda_arn}"
+                    )
                     bda_message = f" BDA project linked: {bda_arn}"
                 else:
                     # No BDA project — note this for the user
-                    logger.info(f"Version {version} activated with use_bda=True but no BDA project linked")
+                    logger.info(
+                        f"Version {version} activated with use_bda=True but no BDA project linked"
+                    )
                     bda_message = " Note: BDA is enabled but no project is linked. Use 'Sync to BDA' to create one."
         except Exception as bda_e:
-            logger.warning(f"BDA check during activation failed (non-blocking): {bda_e}")
-        
+            logger.warning(
+                f"BDA check during activation failed (non-blocking): {bda_e}"
+            )
+
         return {
             "success": True,
             "message": f"Configuration version {version} set as active.{bda_message}",
         }
-        
+
     except Exception as e:
         logger.error(f"Error in setActiveVersion: {str(e)}")
         return {
@@ -1089,13 +1140,13 @@ def handle_set_active_version(manager, version):
                 "message": f"Failed to set active version: {str(e)}",
             },
         }
-    
+
 
 def handle_delete_config_version(manager, version, delete_bda_project=True):
     """
     Handle the deleteConfigVersion GraphQL mutation.
     Deletes a specific configuration version and optionally its linked BDA project.
-    
+
     Args:
         manager: ConfigurationManager instance
         version: Version name to delete
@@ -1110,7 +1161,7 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
                     "message": "versionId is required",
                 },
             }
-        
+
         # Prevent deletion of system default version
         if version == "default":
             return {
@@ -1120,11 +1171,11 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
                     "message": "Cannot delete system default version",
                 },
             }
-        
+
         # Prevent deletion of stack-managed versions
         try:
             existing_config = manager.get_configuration("Config", version)
-            if existing_config and getattr(existing_config, 'managed', False):
+            if existing_config and getattr(existing_config, "managed", False):
                 return {
                     "success": False,
                     "error": {
@@ -1134,7 +1185,7 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
                 }
         except Exception as e:
             logger.warning(f"Error checking managed status for version {version}: {e}")
-        
+
         # Check for linked BDA project and optionally delete it
         bda_cleanup_message = ""
         if delete_bda_project:
@@ -1146,24 +1197,31 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
                         from idp_common.bda.bda_blueprint_service import (
                             BdaBlueprintService,
                         )
-                        bda_service = BdaBlueprintService(dataAutomationProjectArn=bda_arn)
+
+                        bda_service = BdaBlueprintService(
+                            dataAutomationProjectArn=bda_arn
+                        )
                         bda_service.delete_project(bda_arn)
                         bda_cleanup_message = f" Linked BDA project deleted: {bda_arn}"
                         logger.info(f"Successfully deleted BDA project: {bda_arn}")
                     except Exception as bda_e:
-                        logger.warning(f"Failed to delete BDA project {bda_arn}: {bda_e}")
-                        bda_cleanup_message = f" Warning: Failed to delete linked BDA project: {bda_arn}"
+                        logger.warning(
+                            f"Failed to delete BDA project {bda_arn}: {bda_e}"
+                        )
+                        bda_cleanup_message = (
+                            f" Warning: Failed to delete linked BDA project: {bda_arn}"
+                        )
             except Exception as e:
                 logger.warning(f"Error checking BDA project for version {version}: {e}")
-        
+
         # Delete the version
         manager.delete_configuration("Config", version)
-        
+
         return {
             "success": True,
             "message": f"Configuration version {version} deleted successfully.{bda_cleanup_message}",
         }
-        
+
     except Exception as e:
         logger.error(f"Error in deleteConfigVersion: {str(e)}")
         return {
@@ -1171,5 +1229,74 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
             "error": {
                 "type": "Error",
                 "message": f"Failed to delete configuration version: {str(e)}",
+            },
+        }
+
+
+def handle_generate_rule_json(rule_description: str):
+    """
+    Handle the generateRuleJson GraphQL mutation.
+
+    Calls the Z3 RuleTranslator to convert a natural language rule description
+    into a structured RuleJSON object (SMT-LIB constraints, typed parameters).
+
+    The generated RuleJSON is returned to the UI for review and is then stored
+    inline in the config under x-aws-idp-rule-json by the frontend when the
+    user saves.
+
+    Note on metering: This is a config-authoring operation (not per-document
+    processing), so Bedrock token usage is logged but not merged into
+    document.metering. Per-document Z3 calls (fact extraction + value
+    extraction) go through idp_common.bedrock and ARE metered.
+
+    Args:
+        rule_description: Natural language rule text (e.g., "coverage_amount
+            divided by annual_income must be less than or equal to 20")
+
+    Returns:
+        {success: True, ruleJson: "{...}"} on success
+        {success: False, error: {...}} on failure
+    """
+    try:
+        logger.info(f"Generating RuleJSON for rule: '{rule_description[:80]}...'")
+
+        from idp_common.rule_validation.z3.rule_translator import RuleTranslator
+
+        # Reuse a module-level translator instance across requests
+        global _rule_translator  # noqa: PLW0603
+        if _rule_translator is None:
+            _rule_translator = RuleTranslator()
+        translator = _rule_translator
+
+        # Translate the natural language rule to RuleJSON.
+        # Pass empty data_example since we don't have sample data at config time.
+        # This produces a Workflow B rule (no path_mappings, LLM extraction at runtime).
+        rule_json = translator.translate_rule(
+            natural_language_rule=rule_description,
+            data_example={},
+            extract_paths=False,
+        )
+
+        # Convert to dict for JSON serialization
+        rule_json_dict = rule_json.to_dict()
+
+        logger.info(
+            f"Successfully generated RuleJSON with "
+            f"{len(rule_json_dict.get('parameters', []))} parameters and "
+            f"{len(rule_json_dict.get('constraints', []))} constraints"
+        )
+
+        return {
+            "success": True,
+            "ruleJson": json.dumps(rule_json_dict),
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating RuleJSON: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "error": {
+                "type": "TranslationError",
+                "message": f"Failed to generate RuleJSON: {str(e)}",
             },
         }

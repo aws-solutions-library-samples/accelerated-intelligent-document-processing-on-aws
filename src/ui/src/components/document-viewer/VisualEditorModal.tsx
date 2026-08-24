@@ -4,7 +4,7 @@
 /* eslint-disable prettier/prettier */
  
 
-import React, { useState, useEffect, useRef, memo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Modal,
   Box,
@@ -19,176 +19,28 @@ import {
 } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
-import { useDocumentVersion } from '../../contexts/document-version';
 import useUserRole from '../../hooks/use-user-role';
 import { getFileContents, uploadDocument, completeSectionReview } from '../../graphql/generated';
 import FormFieldRenderer from './FormFieldRenderer';
 import JSONEditorTab from './JSONEditorTab';
 import type { BoxProps } from '@cloudscape-design/components';
+import PageImageViewer from '../common/PageImageViewer';
+import type { PageImageViewerHandle } from '../common/PageImageViewer';
 import EditHistoryTab from './EditHistoryTab';
+import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
+import { extractClassificationIndex } from '../common/classification-comparison-utils';
 import ProcessingReportTab from './ProcessingReportTab';
-
-// Extended Box props to allow native HTML attributes that Cloudscape passes through at runtime
-type ExtendedBoxProps = BoxProps & React.HTMLAttributes<HTMLDivElement>;
-const ExtBox = Box as React.ComponentType<ExtendedBoxProps>;
-
-interface BoundingBoxDimensions {
-  width?: number;
-  height?: number;
-  transformedWidth?: number;
-  transformedHeight?: number;
-  transformedOffsetX?: number;
-  transformedOffsetY?: number;
-}
-
 
 const client = generateClient();
 
 const logger = new ConsoleLogger('VisualEditorModal');
 
-// Memoized component to render a bounding box on an image
-interface BoundingBoxProps {
-  box: Record<string, unknown> | null;
-  page: string;
-  currentPage: string;
-  imageRef: React.RefObject<HTMLImageElement | null>;
-  zoomLevel?: number;
-  panOffset?: { x: number; y: number };
-}
-const BoundingBox = memo(({ box, page, currentPage, imageRef, zoomLevel = 1, panOffset = { x: 0, y: 0 } }: BoundingBoxProps) => {
-  const [dimensions, setDimensions] = useState<BoundingBoxDimensions>({ width: 0, height: 0 });
+// Extended Box props to allow native HTML attributes that Cloudscape passes through at runtime
+type ExtendedBoxProps = BoxProps & React.HTMLAttributes<HTMLDivElement>;
+const ExtBox = Box as React.ComponentType<ExtendedBoxProps>;
 
-  useEffect(() => {
-    if (imageRef.current && page === currentPage) {
-      const updateDimensions = () => {
-        const img = imageRef.current;
-        if (!img || !img.parentElement) return;
-        const rect = img.getBoundingClientRect();
-        const containerRect = img.parentElement.getBoundingClientRect();
-
-        // Get the actual displayed dimensions and position after all transforms
-        const transformedWidth = rect.width;
-        const transformedHeight = rect.height;
-        const transformedOffsetX = rect.left - containerRect.left;
-        const transformedOffsetY = rect.top - containerRect.top;
-
-        setDimensions({
-          transformedWidth,
-          transformedHeight,
-          transformedOffsetX,
-          transformedOffsetY,
-        });
-
-        logger.debug('VisualEditorModal - BoundingBox dimensions updated:', {
-          imageWidth: img.width,
-          imageHeight: img.height,
-          naturalWidth: img.naturalWidth,
-          naturalHeight: img.naturalHeight,
-          offsetX: rect.left - containerRect.left,
-          offsetY: rect.top - containerRect.top,
-          imageRect: rect,
-          containerRect,
-        });
-      };
-
-      // Update dimensions when image loads
-      if (imageRef.current.complete && imageRef.current.naturalWidth > 0) {
-        updateDimensions();
-      } else {
-        imageRef.current.addEventListener('load', updateDimensions);
-      }
-
-      return () => {
-        if (imageRef.current) {
-          imageRef.current.removeEventListener('load', updateDimensions);
-        }
-      };
-    }
-    return undefined;
-  }, [imageRef, page, currentPage]);
-
-  // Update dimensions when zoom or pan changes
-  useEffect(() => {
-    if (imageRef.current && page === currentPage) {
-      const updateDimensions = () => {
-        const img = imageRef.current;
-        if (!img || !img.parentElement) return;
-        const rect = img.getBoundingClientRect();
-        const containerRect = img.parentElement.getBoundingClientRect();
-
-        // Get the actual displayed dimensions and position after all transforms
-        const transformedWidth = rect.width;
-        const transformedHeight = rect.height;
-        const transformedOffsetX = rect.left - containerRect.left;
-        const transformedOffsetY = rect.top - containerRect.top;
-
-        setDimensions({
-          transformedWidth,
-          transformedHeight,
-          transformedOffsetX,
-          transformedOffsetY,
-        });
-      };
-      // Delay to allow transforms to complete
-      const timeoutId = setTimeout(updateDimensions, 150);
-      // Ensure accuracy after reset
-      const secondTimeoutId = setTimeout(updateDimensions, 300);
-      return () => {
-        clearTimeout(timeoutId);
-        clearTimeout(secondTimeoutId);
-      };
-    }
-    return undefined;
-  }, [zoomLevel, panOffset, imageRef, page, currentPage]);
-
-  if (page !== currentPage || !box || !dimensions.transformedWidth) {
-    return null;
-  }
-
-  // Calculate position based on image dimensions with proper zoom and pan handling
-  if (!box.boundingBox) {
-    return null;
-  }
-
-  const padding = 5;
-  const bbox = box.boundingBox as { left: number; top: number; width: number; height: number };
-
-  // Calculate position and size directly on the transformed image
-  const finalLeft = bbox.left * (dimensions.transformedWidth ?? 0) + (dimensions.transformedOffsetX ?? 0) - padding;
-  const finalTop = bbox.top * (dimensions.transformedHeight ?? 0) + (dimensions.transformedOffsetY ?? 0) - padding;
-  const finalWidth = bbox.width * (dimensions.transformedWidth ?? 0) + padding * 2;
-  const finalHeight = bbox.height * (dimensions.transformedHeight ?? 0) + padding * 2;
-
-  // Position the bounding box directly without additional transforms
-  const style = {
-    position: 'absolute',
-    left: `${finalLeft}px`,
-    top: `${finalTop}px`,
-    width: `${finalWidth}px`,
-    height: `${finalHeight}px`,
-    border: '2px solid red',
-    pointerEvents: 'none',
-    zIndex: 10,
-    transition: 'all 0.1s ease-out',
-  };
-
-  logger.debug('VisualEditorModal - BoundingBox style calculated:', {
-    bbox,
-    dimensions,
-    finalLeft,
-    finalTop,
-    finalWidth,
-    finalHeight,
-    style,
-  });
-
-  return <div style={style as React.CSSProperties} />;
-});
-
-BoundingBox.displayName = 'BoundingBox';
 
 
 interface VisualEditorModalProps {
@@ -215,20 +67,14 @@ const VisualEditorModal = ({
   currentSectionIndex = 0,
   onNavigateToSection,
 }: VisualEditorModalProps) => {
-  const { currentCredentials, user } = useAppContext();
+  const { user } = useAppContext();
   const { settings } = useSettingsContext();
   // Role flags from the Cognito token (reliable regardless of how the modal was
   // opened). Reviewers (Admin/Reviewer) cannot call uploadDocument (Admin/Author
   // only), so their edits must be saved via completeSectionReview — see handleSaveChanges.
   const { canWrite, canReview } = useUserRole();
-  // Pin page-image previews to the selected run when viewing a past version.
-  const { versionIdForUri, runId: viewingRunId } = useDocumentVersion();
-  const [pageImages, setPageImages] = useState<Record<string, string>>({});
-  const [loadingImages, setLoadingImages] = useState(true);
   const [currentPage, setCurrentPage] = useState<string | number | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [localJsonData, setLocalJsonData] = useState<Record<string, unknown> | null>(jsonData);
   // Evaluation comparison state
   const [baselineData, setBaselineData] = useState<Record<string, unknown> | null>(null);
@@ -253,11 +99,6 @@ const VisualEditorModal = ({
   // Tab navigation state
   const [activeTabId, setActiveTabId] = useState('visual');
 
-  // Drag-to-pan state
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-
-  const imageRef = useRef<HTMLImageElement | null>(null);
 
   // Toggle collapse handler
   const handleToggleCollapse = (pathKey: string) => {
@@ -319,13 +160,22 @@ const VisualEditorModal = ({
 
     setCollapsedPaths(allPaths);
   };
-  const imageContainerRef = useRef<HTMLDivElement | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewerRef = useRef<PageImageViewerHandle | null>(null);
 
   // Check if baseline is available - check multiple possible paths
   const sectionDocItem = sectionData?.documentItem as Record<string, unknown> | undefined;
   const evaluationStatus = sectionDocItem?.evaluationStatus || sectionDocItem?.EvaluationStatus;
   const isBaselineAvailable = evaluationStatus === 'BASELINE_AVAILABLE' || evaluationStatus === 'COMPLETED';
+
+  // Per-page ground-truth classes for this document, from the same results.json
+  // the field-level comparison already uses — so the class comparison costs no
+  // extra request.
+  const classificationIndex = useMemo(() => extractClassificationIndex(evaluationResults), [evaluationResults]);
+  const sectionPageNumbers = useMemo(
+    () => ((sectionData?.PageIds as Array<string | number> | undefined) ?? []).map((pageId) => Number(pageId)).filter((n) => !Number.isNaN(n)),
+    [sectionData?.PageIds],
+  );
 
   // Construct baseline URI from output URI
   const constructBaselineUri = (outputUri: string | undefined) => {
@@ -876,142 +726,36 @@ const VisualEditorModal = ({
 
   // Extract inference results and page IDs from local data for immediate UI updates
   const inferenceResult = localJsonData?.inference_result || localJsonData?.inferenceResult || localJsonData;
-  const pageIds = (sectionData?.PageIds as Array<string | number>) || [];
+  // Both feed PageImageViewer's image-load effect, so a fresh array identity on
+  // every render would re-run the presigning loop continuously. `sectionData` is
+  // rebuilt inline by its parent each render, hence keying on the PageIds content
+  // rather than the object identity.
+  const pageIdsKey = JSON.stringify(sectionData?.PageIds ?? []);
+  const pageIds = useMemo(
+    () => (sectionData?.PageIds as Array<string | number>) || [],
+    [pageIdsKey],
+  );
+  const documentPagesForViewer = useMemo(
+    () =>
+      pageIds.map((pageId: string | number) => ({
+        Id: String(pageId),
+        // Pages hang off the DOCUMENT, not the section — the section only names
+        // its page ids.
+        ImageUri: (sectionDocItem?.pages as Record<string, unknown>[] | undefined)?.find((p) => String(p.Id) === String(pageId))
+          ?.ImageUri as string | undefined,
+      })),
+    [pageIds, sectionDocItem?.pages],
+  );
+  const pageIdStrings = useMemo(() => pageIds.map(String), [pageIds]);
 
-  // Load page images - only when modal opens or when core data changes
+  // Reset per-document view state when the modal closes. Image loading belongs to
+  // PageImageViewer, which presigns and caches per page id.
   useEffect(() => {
     if (!visible) {
-      // Reset state when modal closes
-      setPageImages({});
       setCurrentPage(null);
       setActiveFieldGeometry(null);
-      return;
     }
-
-    const loadImages = async () => {
-      if (!pageIds || pageIds.length === 0) {
-        setLoadingImages(false);
-        return;
-      }
-
-      setLoadingImages(true);
-
-      try {
-        const documentPages = (sectionDocItem?.pages as Record<string, unknown>[]) || [];
-        logger.debug('VisualEditorModal - Loading images for pageIds:', pageIds);
-
-        const images: Record<string, string> = {};
-
-        await Promise.all(
-          pageIds.map(async (pageId: unknown) => {
-            // Find the page in the document's pages array by matching the Id
-            const page = documentPages.find((p: Record<string, unknown>) => p.Id === pageId);
-
-            if (page?.ImageUri) {
-              try {
-                logger.debug(`VisualEditorModal - generating presigned URL for page ${pageId}`);
-                const url = await generateS3PresignedUrl(page.ImageUri as string, currentCredentials as Record<string, unknown>, {
-                  versionId: versionIdForUri(page.ImageUri as string),
-                });
-                images[String(pageId)] = url;
-              } catch (err) {
-                logger.error(`Error generating presigned URL for page ${pageId}:`, err);
-              }
-            }
-          }),
-        );
-
-        logger.debug('VisualEditorModal - Successfully loaded images for', Object.keys(images).length, 'pages');
-
-        setPageImages(images);
-
-        // Set the first page as current if not already set
-        if (!currentPage && pageIds.length > 0) {
-          setCurrentPage(pageIds[0]);
-        }
-      } catch (err) {
-        logger.error('Error loading page images:', err);
-      } finally {
-        setLoadingImages(false);
-      }
-    };
-
-    loadImages();
-    // Only reload images when modal opens or when pageIds/sectionData changes, not when switching pages
-  }, [visible, pageIds, sectionDocItem?.pages, currentCredentials, viewingRunId]);
-
-  // Zoom controls
-  const handleZoomIn = () => {
-    setZoomLevel((prev) => Math.min(prev * 1.25, 4));
-  };
-
-  const handleZoomOut = () => {
-    setZoomLevel((prev) => Math.max(prev / 1.25, 0.25));
-  };
-
-  // Pan controls
-  const panStep = 50;
-
-  const handlePanLeft = () => {
-    setPanOffset((prev) => ({ ...prev, x: prev.x + panStep }));
-  };
-
-  const handlePanRight = () => {
-    setPanOffset((prev) => ({ ...prev, x: prev.x - panStep }));
-  };
-
-  const handlePanUp = () => {
-    setPanOffset((prev) => ({ ...prev, y: prev.y + panStep }));
-  };
-
-  const handlePanDown = () => {
-    setPanOffset((prev) => ({ ...prev, y: prev.y - panStep }));
-  };
-
-  const handleResetView = () => {
-    setZoomLevel(1);
-    setPanOffset({ x: 0, y: 0 });
-  };
-
-  // Handle mouse wheel for zoom (no modifier key needed)
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoomLevel((prev) => Math.min(Math.max(prev * delta, 0.25), 4));
-  };
-
-  // Handle drag-to-pan - mouse down starts drag
-  const handleMouseDown = (e: React.MouseEvent) => {
-    // Only pan when zoomed in
-    if (zoomLevel <= 1) return;
-
-    // Prevent default to avoid text selection
-    e.preventDefault();
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
-  };
-
-  // Handle drag-to-pan - mouse move updates pan offset
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-
-    e.preventDefault();
-    const newX = e.clientX - dragStart.x;
-    const newY = e.clientY - dragStart.y;
-    setPanOffset({ x: newX, y: newY });
-  };
-
-  // Handle drag-to-pan - mouse up ends drag
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  // Handle mouse leave - end drag if mouse leaves the container
-  const handleMouseLeave = () => {
-    if (isDragging) {
-      setIsDragging(false);
-    }
-  };
+  }, [visible]);
 
   // Handle field focus - update active field geometry and switch to the correct page
   // This function is intentionally kept lightweight and independent of debounced operations
@@ -1043,169 +787,23 @@ const VisualEditorModal = ({
     }, 0);
   };
 
-  // Handle field double-click - zoom to 200% and center on field
+  /**
+   * Double-click zooms; single-click only highlights. Zooming is requested
+   * explicitly on the viewer rather than driven by the active geometry, so
+   * clicking through fields outlines them in place instead of moving the page.
+   */
   const handleFieldDoubleClick = (geometry: Record<string, unknown> | null) => {
-    logger.debug('VisualEditorModal - handleFieldDoubleClick called with geometry:', geometry);
-
-    if (geometry && imageRef.current && imageContainerRef.current) {
-      // First switch to the correct page if needed
-      if (geometry.page !== undefined && pageIds.length > 0) {
-        const pageIndex = (geometry.page as number) - 1;
-        if (pageIndex >= 0 && pageIndex < pageIds.length) {
-          const targetPageId = pageIds[pageIndex];
-          if (targetPageId !== currentPage) {
-            setCurrentPage(targetPageId);
-          }
-        }
+    if (!geometry) return;
+    if (geometry.page !== undefined && pageIds.length > 0) {
+      const pageIndex = (geometry.page as number) - 1;
+      if (pageIndex >= 0 && pageIndex < pageIds.length && pageIds[pageIndex] !== currentPage) {
+        setCurrentPage(pageIds[pageIndex]);
       }
-
-      // Set zoom to 200%
-      const targetZoom = 2.0;
-      setZoomLevel(targetZoom);
-
-      // Calculate pan offset to center the field
-      setTimeout(() => {
-        if (imageRef.current && imageContainerRef.current) {
-          const img = imageRef.current;
-          const container = imageContainerRef.current;
-
-          // Get image and container dimensions
-          const imgRect = img.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-
-          const imageWidth = img.width || img.naturalWidth;
-          const imageHeight = img.height || img.naturalHeight;
-          const offsetX = imgRect.left - containerRect.left;
-          const offsetY = imgRect.top - containerRect.top;
-
-          // Get bounding box coordinates
-          const bbox = geometry?.boundingBox as { left: number; top: number; width: number; height: number } | undefined;
-
-          if (bbox) {
-            const { left, top, width, height } = bbox;
-
-            // Calculate field center in image coordinates
-            const fieldCenterX = (left + width / 2) * imageWidth + offsetX;
-            const fieldCenterY = (top + height / 2) * imageHeight + offsetY;
-
-            // Calculate viewport center
-            const viewportCenterX = containerRect.width / 2;
-            const viewportCenterY = containerRect.height / 2;
-
-            // Calculate image center
-            const imageCenterX = offsetX + imageWidth / 2;
-            const imageCenterY = offsetY + imageHeight / 2;
-
-            // Calculate relative position of field center from image center
-            const relativeX = fieldCenterX - imageCenterX;
-            const relativeY = fieldCenterY - imageCenterY;
-
-            // At 200% zoom, calculate where the field center will be
-            const scaledRelativeX = relativeX * targetZoom;
-            const scaledRelativeY = relativeY * targetZoom;
-
-            // Calculate required pan offset to center the field in viewport
-            const requiredPanX = viewportCenterX - (imageCenterX + scaledRelativeX);
-            const requiredPanY = viewportCenterY - (imageCenterY + scaledRelativeY);
-
-            logger.debug('VisualEditorModal - Auto-centering calculation:', {
-              fieldCenterX,
-              fieldCenterY,
-              viewportCenterX,
-              viewportCenterY,
-              imageCenterX,
-              imageCenterY,
-              relativeX,
-              relativeY,
-              scaledRelativeX,
-              scaledRelativeY,
-              requiredPanX,
-              requiredPanY,
-            });
-
-            setPanOffset({ x: requiredPanX, y: requiredPanY });
-          }
-        }
-      }, 100); // Small delay to allow zoom to take effect
-
-      // Also set the active geometry for bounding box display
-      setActiveFieldGeometry(geometry);
     }
+    setActiveFieldGeometry(geometry);
+    // After the page switch has rendered, so the viewer measures the right image.
+    requestAnimationFrame(() => viewerRef.current?.zoomToField(geometry as never));
   };
-
-  // Create carousel items from page images
-  const carouselItems = pageIds.map((pageId: unknown) => ({
-    id: pageId,
-    content: (
-      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-      <div
-        ref={pageId === currentPage ? imageContainerRef : null}
-        style={{
-          position: 'relative',
-          width: '100%',
-          height: '450px', // Fixed height for consistent container size across all sections
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          overflow: 'hidden',
-          cursor: isDragging ? 'grabbing' : zoomLevel > 1 ? 'grab' : 'default',
-          backgroundColor: '#f5f5f5', // Light background to show container bounds
-          userSelect: 'none', // Prevent text selection during drag
-          outline: 'none', // Remove focus outline for cleaner look
-        }}
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeave}
-      >
-        {pageImages[String(pageId)] ? (
-          <>
-            <img
-              ref={pageId === currentPage ? imageRef : null}
-              src={pageImages[String(pageId)]}
-              alt={`Page ${pageId}`}
-              style={{
-                maxWidth: '100%',
-                maxHeight: '100%', // Constrain to container height
-                width: 'auto',
-                height: 'auto',
-                objectFit: 'contain',
-                transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
-                transformOrigin: 'center center',
-                transition: 'transform 0.1s ease-out',
-              }}
-              onError={(e) => {
-                logger.error(`Error loading image for page ${pageId}:`, e);
-                // Fallback image for error state
-                const fallbackImage =
-                  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6' +
-                  'Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2Yw' +
-                  'ZjBmMCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjAi' +
-                  'IHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM5OTkiPkltYWdlIGxvYWQgZXJyb3I8L3RleHQ+PC9zdmc+';
-                (e.target as HTMLImageElement).src = fallbackImage;
-              }}
-            />
-            {activeFieldGeometry && (
-              <BoundingBox
-                box={activeFieldGeometry}
-                page={String(currentPage)}
-                currentPage={String(currentPage)}
-                imageRef={imageRef}
-                zoomLevel={zoomLevel}
-                panOffset={panOffset}
-              />
-            )}
-          </>
-        ) : (
-          <ExtBox padding="xl" textAlign="center">
-            <Spinner />
-            <div>Loading image...</div>
-          </ExtBox>
-        )}
-      </div>
-    ),
-  }));
 
   // Handle unsaved changes modal actions
   const _handleDiscardAndClose = () => {
@@ -1371,7 +969,9 @@ const VisualEditorModal = ({
                   width: '100%',
                 }}
               >
-                {/* Left side - Page images carousel - Fixed height, non-scrollable */}
+                {/* Left side - Page images. Uses the shared PageImageViewer, which
+                    owns page navigation, zoom, pan and bounding-box overlay, so this
+                    editor and the annotation editor share one image pane. */}
                 <div
                   style={{
                     width: '50%',
@@ -1384,230 +984,35 @@ const VisualEditorModal = ({
                     overflow: 'hidden',
                   }}
                 >
-                  <Container header={<Header variant="h3">Document Pages ({pageIds.length})</Header>}>
-                    <div style={{ height: '550px', display: 'flex', flexDirection: 'column' }}>
-                      {(() => {
-                        if (loadingImages) {
-                          return (
-                            <ExtBox padding="xl" textAlign="center">
-                              <Spinner />
-                              <div>Loading page images...</div>
-                            </ExtBox>
-                          );
-                        }
-                        if (carouselItems.length > 0) {
-                          return (
-                            <SpaceBetween size="xs">
-                              {/* Image display area */}
-                              <ExtBox style={{ position: 'relative', overflow: 'hidden', height: '450px', minHeight: '300px' }}>
-                                {/* Display current page */}
-                                {carouselItems.find((item: { id: unknown; content: React.ReactNode }) => item.id === currentPage)?.content}
-
-                                {/* Simple navigation arrows */}
-                                <ExtBox
-                                  style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    position: 'absolute',
-                                    width: '100%',
-                                    top: '50%',
-                                    transform: 'translateY(-50%)',
-                                    pointerEvents: 'none',
-                                  }}
-                                >
-                                  <Button
-                                    iconName="angle-left"
-                                    variant="icon"
-                                    onClick={() => {
-                                      const currentIndex = pageIds.indexOf(currentPage as string | number);
-                                      if (currentIndex > 0) {
-                                        setCurrentPage(pageIds[currentIndex - 1]);
-                                        setActiveFieldGeometry(null);
-                                      }
-                                    }}
-                                    disabled={pageIds.indexOf(currentPage as string | number) === 0}
-                                  />
-                                  <Button
-                                    iconName="angle-right"
-                                    variant="icon"
-                                    onClick={() => {
-                                      const currentIndex = pageIds.indexOf(currentPage as string | number);
-                                      if (currentIndex < pageIds.length - 1) {
-                                        setCurrentPage(pageIds[currentIndex + 1]);
-                                        setActiveFieldGeometry(null);
-                                      }
-                                    }}
-                                    disabled={pageIds.indexOf(currentPage as string | number) === pageIds.length - 1}
-                                  />
-                                </ExtBox>
-                              </ExtBox>
-
-                              {/* Controls area - outside of image area in normal flow */}
-                              <ExtBox
-                                style={{
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  alignItems: 'center',
-                                  gap: '8px',
-                                  padding: '8px 0',
-                                }}
-                              >
-                                {/* Page indicator */}
-                                <ExtBox
-                                  style={{
-                                    backgroundColor: 'rgba(240, 240, 240, 0.9)',
-                                    padding: '4px 12px',
-                                    borderRadius: '4px',
-                                  }}
-                                >
-                                  Page {pageIds.indexOf(currentPage as string | number) + 1} of {pageIds.length}
-                                </ExtBox>
-
-                                {/* Zoom and Pan Controls */}
-                                <ExtBox
-                                  style={{
-                                    backgroundColor: 'rgba(240, 240, 240, 0.9)',
-                                    padding: '6px 12px',
-                                    borderRadius: '4px',
-                                    boxShadow: '0 1px 4px rgba(0, 0, 0, 0.1)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    fontSize: '12px',
-                                  }}
-                                >
-                                  <span style={{ fontWeight: 'bold' }}>Zoom:</span>
-                                  <span
-                                    onClick={handleZoomOut}
-                                    onKeyDown={(e) => e.key === 'Enter' && handleZoomOut()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel <= 0.25 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel <= 0.25 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      fontWeight: 'bold',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Zoom Out"
-                                  >
-                                    −
-                                  </span>
-                                  <span style={{ fontSize: '12px', minWidth: '30px', textAlign: 'center' }}>
-                                    {Math.round(zoomLevel * 100)}%
-                                  </span>
-                                  <span
-                                    onClick={handleZoomIn}
-                                    onKeyDown={(e) => e.key === 'Enter' && handleZoomIn()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel >= 4 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel >= 4 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      fontWeight: 'bold',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Zoom In"
-                                  >
-                                    +
-                                  </span>
-                                  <span style={{ fontWeight: 'bold', marginLeft: '8px' }}>Pan:</span>
-                                  <span
-                                    onClick={handlePanLeft}
-                                    onKeyDown={(e) => e.key === 'Enter' && handlePanLeft()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel <= 1 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel <= 1 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Pan Left"
-                                  >
-                                    ←
-                                  </span>
-                                  <span
-                                    onClick={handlePanRight}
-                                    onKeyDown={(e) => e.key === 'Enter' && handlePanRight()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel <= 1 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel <= 1 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Pan Right"
-                                  >
-                                    →
-                                  </span>
-                                  <span
-                                    onClick={handlePanUp}
-                                    onKeyDown={(e) => e.key === 'Enter' && handlePanUp()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel <= 1 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel <= 1 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Pan Up"
-                                  >
-                                    ↑
-                                  </span>
-                                  <span
-                                    onClick={handlePanDown}
-                                    onKeyDown={(e) => e.key === 'Enter' && handlePanDown()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: zoomLevel <= 1 ? 'not-allowed' : 'pointer',
-                                      opacity: zoomLevel <= 1 ? 0.5 : 1,
-                                      fontSize: '14px',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                    }}
-                                    title="Pan Down"
-                                  >
-                                    ↓
-                                  </span>
-                                  <span
-                                    onClick={handleResetView}
-                                    onKeyDown={(e) => e.key === 'Enter' && handleResetView()}
-                                    role="button"
-                                    tabIndex={0}
-                                    style={{
-                                      cursor: 'pointer',
-                                      fontSize: '12px',
-                                      userSelect: 'none',
-                                      padding: '2px 4px',
-                                      marginLeft: '4px',
-                                    }}
-                                    title="Reset View"
-                                  >
-                                    ⟲
-                                  </span>
-                                </ExtBox>
-                              </ExtBox>
-                            </SpaceBetween>
-                          );
-                        }
-                        return (
-                          <ExtBox padding="xl" textAlign="center">
-                            No page images available
-                          </ExtBox>
-                        );
-                      })()}
+                  {/* A plain bordered box rather than Cloudscape Container: the
+                      viewer needs a definite height to place its control strip, and
+                      Container's auto-height content box does not pass one down —
+                      a fixed height here overflowed the row on shorter viewports and
+                      clipped the zoom controls. */}
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      border: '1px solid #c6c6cd',
+                      borderRadius: '16px',
+                      padding: '12px',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <Header variant="h3">Document Pages ({pageIds.length})</Header>
+                    <div style={{ flex: 1, minHeight: 0 }}>
+                      <PageImageViewer
+                        pageIds={pageIdStrings}
+                        documentPages={documentPagesForViewer}
+                        activeFieldGeometry={activeFieldGeometry as never}
+                        onPageChange={(pageId) => setCurrentPage(pageId)}
+                        height="100%"
+                        zoomHandle={viewerRef}
+                      />
                     </div>
-                  </Container>
+                  </div>
                 </div>
 
                 {/* Right side - Form fields - Independently scrollable */}
@@ -1690,11 +1095,30 @@ const VisualEditorModal = ({
                       }}
                     >
                       <ExtBox style={{ minHeight: 'fit-content' }}>
+                        {/* Read-only is the default here; without this the greyed
+                            inputs read as broken rather than as a mode. */}
+                        {isReadOnly && (
+                          <Box variant="small" color="text-body-secondary" padding={{ bottom: 'xs' }}>
+                            Viewing extracted values. To change them, close this and use <b>Edit mode</b> on the section.
+                          </Box>
+                        )}
                         {showEvaluation && baselineData && (
-                          <Alert type="info" header="Evaluation Comparison Mode">
-                            Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
-                            and reasons.
-                          </Alert>
+                          <>
+                            {/* The section's own class, compared first: every
+                                field below was extracted against this class's
+                                schema, so a class mismatch explains the field
+                                mismatches rather than adding to them. */}
+                            <SectionClassEvaluation
+                              index={classificationIndex}
+                              pageNumbers={sectionPageNumbers}
+                              predictedClass={(localJsonData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                              baselineClass={(localBaselineData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                            />
+                            <Alert type="info" header="Evaluation Comparison Mode">
+                              Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
+                              and reasons.
+                            </Alert>
+                          </>
                         )}
                         {inferenceResult ? (
                           <FormFieldRenderer

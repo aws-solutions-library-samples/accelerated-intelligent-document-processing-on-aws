@@ -2123,6 +2123,46 @@ class RuleValidationOrchestratorConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
+class Z3RuleTranslatorConfig(BaseModel):
+    """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
+
+    model: str = Field(
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        max_length=256,
+        description="Bedrock model ID for rule translation",
+    )
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=4096, gt=0)
+    system_prompt: str = Field(
+        default="", description="System prompt for rule translation"
+    )
+    task_prompt: str = Field(
+        default="", description="Task prompt template for rule translation"
+    )
+    few_shot_examples: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Few-shot examples for rule translation [{rule, data_example, output}]",
+    )
+
+
+class Z3ValueExtractionConfig(BaseModel):
+    """Z3 engine: extracts parameter values from data"""
+
+    model: str = Field(
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        max_length=256,
+        description="Bedrock model ID for value extraction",
+    )
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=2048, gt=0)
+    system_prompt: str = Field(
+        default="", description="System prompt for value extraction"
+    )
+    task_prompt: str = Field(
+        default="", description="Task prompt template for value extraction"
+    )
+
+
 class RuleValidationConfig(BaseModel):
     """Rule validation configuration"""
 
@@ -2157,12 +2197,29 @@ class RuleValidationConfig(BaseModel):
         default_factory=list,
         description="Pipeline hooks invoked after rule validation (Feature Platform)",
     )
+    z3_rule_translator: Optional[Z3RuleTranslatorConfig] = Field(
+        default=None,
+        description="Z3 rule translator config (notebook/standalone use only — the deployed pipeline "
+        "uses the packaged translator_config.yaml via handle_generate_rule_json instead).",
+    )
+    z3_value_extraction: Optional[Z3ValueExtractionConfig] = Field(
+        default=None,
+        description="Z3 value extraction config (notebook/standalone use only — the deployed pipeline "
+        "uses orchestrator._extract_z3_values_from_facts with fact_extraction settings instead).",
+    )
+    z3_timeout_ms: int = Field(
+        default=5000,
+        gt=0,
+        le=300000,
+        description="Z3 solver timeout in milliseconds. Must be between 1 and 300000.",
+    )
 
     @field_validator(
         "semaphore",
         "max_chunk_size",
         "token_size",
         "overlap_percentage",
+        "z3_timeout_ms",
         mode="before",
     )
     @classmethod
@@ -2612,6 +2669,40 @@ class IDPConfig(BaseModel):
         default_factory=list,
         description="Policy class definitions for rule validation (JSON Schema). Also receives rule classes extracted by Policy Discovery.",
     )
+
+    @field_validator("policy_classes", mode="after")
+    @classmethod
+    def validate_policy_classes_engine_field(
+        cls, v: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Validate x-aws-idp-validation-engine values in policy classes.
+
+        Ensures that when the engine field is present on a rule property,
+        its value is one of the accepted values ("llm" or "z3", case-sensitive).
+        If the field is absent, that's fine (defaults to "llm" at runtime).
+        """
+        from idp_common.config.schema_constants import (
+            VALID_VALIDATION_ENGINES,
+            X_AWS_IDP_VALIDATION_ENGINE,
+        )
+
+        for policy_class in v:
+            rule_properties = policy_class.get("rule_properties", {})
+            if not isinstance(rule_properties, dict):
+                continue
+            for prop_name, prop_value in rule_properties.items():
+                if not isinstance(prop_value, dict):
+                    continue
+                if X_AWS_IDP_VALIDATION_ENGINE in prop_value:
+                    engine_value = prop_value[X_AWS_IDP_VALIDATION_ENGINE]
+                    if engine_value not in VALID_VALIDATION_ENGINES:
+                        raise ValueError(
+                            f"Invalid validation engine '{engine_value}' for rule "
+                            f"property '{prop_name}'. "
+                            f"Accepted values are: {sorted(VALID_VALIDATION_ENGINES)}"
+                        )
+        return v
+
     discovery: DiscoveryConfig = Field(
         default_factory=DiscoveryConfig, description="Discovery configuration"
     )

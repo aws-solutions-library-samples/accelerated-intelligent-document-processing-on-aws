@@ -90,6 +90,9 @@ def test_lists_features_sorted_by_display_name(
         "marketplaceListingUrl": None,
         "artifactBucket": None,
         "artifactPrefix": None,
+        # OSS features ship with the host, so they are never region-scoped.
+        "availableInRegion": True,
+        "availableRegions": [],
     }
 
 
@@ -214,3 +217,121 @@ def test_missing_features_list_returns_empty(
     mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
     result = mod.handler(make_appsync_event("listCatalogFeatures"), None)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Region availability (catalog schema 1.1). Marketplace extensions are
+# region-scoped because `sam package` bakes a region-specific s3:// CodeUri into
+# the published template; the UI needs to know before it offers a Subscribe CTA.
+# ---------------------------------------------------------------------------
+
+_MP_KEY = "artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml"
+
+
+def _mp_entry(regions: dict) -> dict:
+    return {
+        "featureId": "idp-auto-optimizer",
+        "displayName": "Auto Optimizer",
+        "latestVersion": "0.1.0",
+        "source": "marketplace",
+        "productCode": "q0k0s3zuuga46hle6fecx547",
+        "marketplaceListingUrl": "https://aws.amazon.com/marketplace/pp/prodview-x",
+        "regions": regions,
+    }
+
+
+def _three_regions() -> dict:
+    return {
+        r: {"sellerBucket": f"aws-ml-blog-{r}", "templateKey": _MP_KEY}
+        for r in ("us-west-2", "us-east-1", "eu-central-1")
+    }
+
+
+def test_marketplace_available_in_host_region(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    _put_catalog(configuration_bucket, [_mp_entry(_three_regions())])
+    monkeypatch.setenv("HOST_REGION", "eu-central-1")
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is True
+    assert feature["availableRegions"] == ["eu-central-1", "us-east-1", "us-west-2"]
+
+
+def test_marketplace_unavailable_in_host_region(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    """The whole point: eu-west-2 isn't published, so the UI must not offer it."""
+    _put_catalog(configuration_bucket, [_mp_entry(_three_regions())])
+    monkeypatch.setenv("HOST_REGION", "eu-west-2")
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is False
+    # Still reports where it IS available so the admin isn't left guessing.
+    assert "us-east-1" in feature["availableRegions"]
+
+
+def test_marketplace_legacy_flat_schema_region(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    """Deprecated flat sellerBucketRegion is treated as a single-region map."""
+    entry = _mp_entry({})
+    entry.update(
+        {
+            "sellerBucket": "legacy-seller-bucket",
+            "sellerBucketRegion": "us-east-1",
+            "templateKey": _MP_KEY,
+        }
+    )
+    _put_catalog(configuration_bucket, [entry])
+    monkeypatch.setenv("HOST_REGION", "us-east-1")
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is True
+    assert feature["availableRegions"] == ["us-east-1"]
+
+
+def test_marketplace_no_region_mapping_is_unavailable(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    _put_catalog(configuration_bucket, [_mp_entry({})])
+    monkeypatch.setenv("HOST_REGION", "us-east-1")
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is False
+    assert feature["availableRegions"] == []
+
+
+def test_unknown_host_region_does_not_claim_unavailability(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    """With no resolvable region we must not assert an unavailability we can't
+    substantiate — let getFeatureLaunchUrl be the one to fail closed."""
+    _put_catalog(configuration_bucket, [_mp_entry(_three_regions())])
+    monkeypatch.setenv("HOST_REGION", "")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is True
+
+
+def test_half_specified_region_entry_ignored(
+    monkeypatch, configuration_bucket, load_lambda
+):
+    """A region with a bucket but no templateKey isn't installable there."""
+    _put_catalog(
+        configuration_bucket,
+        [
+            _mp_entry(
+                {
+                    "us-east-1": {"sellerBucket": "b"},  # no templateKey
+                    "us-west-2": {"sellerBucket": "b2", "templateKey": _MP_KEY},
+                }
+            )
+        ],
+    )
+    monkeypatch.setenv("HOST_REGION", "us-east-1")
+    mod = _preload(monkeypatch, load_lambda, configuration_bucket=configuration_bucket)
+    (feature,) = mod.handler(make_appsync_event("listCatalogFeatures"), None)
+    assert feature["availableInRegion"] is False
+    assert feature["availableRegions"] == ["us-west-2"]

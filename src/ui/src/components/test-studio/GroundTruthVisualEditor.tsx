@@ -18,18 +18,41 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Alert, Box, Button, FormField, Header, Input, SegmentedControl, SpaceBetween, Spinner, Tabs } from '@cloudscape-design/components';
+import {
+  Alert,
+  Badge,
+  Box,
+  Button,
+  FormField,
+  Header,
+  Input,
+  Select,
+  SegmentedControl,
+  SpaceBetween,
+  Spinner,
+  Tabs,
+} from '@cloudscape-design/components';
+import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getFilePresignedUrl, uploadDocument } from '../../graphql/generated';
+import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
+import useConfiguration from '../../hooks/use-configuration';
+import { getConfigClassOptions } from '../common/config-class-options';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
+import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import useTestDocPages from '../../hooks/use-test-doc-pages';
+import { renderLabelSource } from './TestSetDetail';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
+
+const REEXTRACT_POLL_MS = 3000;
+// A re-extract is a full extraction + assessment pass, so the budget is generous;
+// timing out early would report failure on a run that is about to succeed.
+const REEXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface TestSetDocumentSectionRef {
   sectionId: string;
@@ -44,6 +67,24 @@ interface GroundTruthVisualEditorProps {
   isReadOnly: boolean;
   /** Called after a successful save (e.g. to show a flash message). */
   onSaved?: (baselineKey: string) => void;
+  /**
+   * Optional replacement for how a save is persisted.
+   *
+   * The default writes the baseline object straight to S3 via a presigned POST,
+   * which bypasses the HITL review API: no lock claim, no `reviewed-human` tag, no
+   * confidence-curve observation. Callers that need those supply this to route
+   * saves through `completeSectionReview` instead.
+   */
+  onSave?: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
+  /** Label for the save button. */
+  saveButtonText?: string;
+  /** Called after a re-extract completes, so the caller can refresh its queue. */
+  onReextracted?: () => void;
+  /**
+   * Owning test set. Required only to offer re-extraction after a class
+   * correction, since reextractTestSetDocument is keyed on the set.
+   */
+  testSetId?: string;
 }
 
 const getSectionLabel = (sectionId: string, data: Record<string, unknown> | null): string => {
@@ -58,6 +99,10 @@ const GroundTruthVisualEditor = ({
   sections,
   isReadOnly,
   onSaved,
+  onSave,
+  saveButtonText,
+  onReextracted,
+  testSetId,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
   const { user } = useAppContext();
   const { pages, isLoading: pagesLoading, error: pagesError, previewUnavailable } = useTestDocPages(bucket, inputKey);
@@ -70,7 +115,15 @@ const GroundTruthVisualEditor = ({
   const [error, setError] = useState<string | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
+  const [filterMode, setFilterMode] = useState<SelectProps.Option>({ label: 'Show all fields', value: 'none' });
   const [activeTabId, setActiveTabId] = useState('visual');
+  const [isReextracting, setIsReextracting] = useState(false);
+  const [reextractNote, setReextractNote] = useState<string | null>(null);
+  // The class the loaded baseline was extracted under; differing from the current
+  // selection is what says the fields no longer match the class.
+  const [savedClassType, setSavedClassType] = useState<string | undefined>(undefined);
+  // Forces a baseline re-read after a re-extract rewrites it: the key is unchanged.
+  const [reloadToken, setReloadToken] = useState(0);
 
   const selectedSection = sections.find((s) => s.sectionId === selectedSectionId) ?? sections[0];
 
@@ -106,8 +159,11 @@ const GroundTruthVisualEditor = ({
         if (!s3Response.ok) throw new Error(`S3 fetch failed: ${s3Response.status}`);
         const text = await s3Response.text();
         if (cancelled) return;
-        setLocalData(JSON.parse(text));
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        setLocalData(parsed);
         setOriginalJson(text);
+        setSavedClassType((parsed.document_class as Record<string, unknown> | undefined)?.type as string | undefined);
+        setReextractNote(null);
       } catch (err) {
         logger.error('Error loading baseline:', err);
         if (!cancelled) setError(`Failed to load ground truth: ${(err as Error).message}`);
@@ -119,7 +175,7 @@ const GroundTruthVisualEditor = ({
     return () => {
       cancelled = true;
     };
-  }, [bucket, selectedSection?.baselineKey]);
+  }, [bucket, selectedSection?.baselineKey, reloadToken]);
 
   const hasChanges = useMemo(() => {
     if (!localData || originalJson === null) return false;
@@ -158,6 +214,22 @@ const GroundTruthVisualEditor = ({
 
   const documentClassType = (localData?.document_class as Record<string, unknown> | undefined)?.type as string | undefined;
 
+  // Classes come from the config version stamped on the baseline, not the
+  // deployment's active config, which may have moved on since the labels were
+  // written.
+  const baselineConfigVersion =
+    ((localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined) || 'default';
+  const { mergedConfig } = useConfiguration(baselineConfigVersion);
+  const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
+  // A class the config no longer lists stays selectable; otherwise a document whose
+  // class was since renamed would silently blank the field.
+  const classOptionsWithCurrent = useMemo(() => {
+    if (!documentClassType || classOptions.some((o) => o.value === documentClassType)) return classOptions;
+    return [{ label: documentClassType, value: documentClassType, description: 'Not defined in this config version' }, ...classOptions];
+  }, [classOptions, documentClassType]);
+  const classChanged = Boolean(savedClassType) && documentClassType !== savedClassType;
+  const editHistoryCount = Array.isArray(localData?._editHistory) ? (localData._editHistory as unknown[]).length : 0;
+
   const updateInferenceResult = (newValue: Record<string, unknown>) => {
     if (isReadOnly || !localData) return;
     const updated = { ...localData };
@@ -177,14 +249,83 @@ const GroundTruthVisualEditor = ({
     setLocalData({ ...localData, document_class: docClass });
   };
 
+  /**
+   * Re-run extraction under the corrected class, then reload the new labels.
+   *
+   * Blocks until the labels are replaced rather than returning once the job is
+   * queued, because the fields on screen are wrong until then. Labels are
+   * harvested on read, so this poll loop is what drives the write-back; it is not
+   * merely observing.
+   */
+  const handleReextract = async () => {
+    if (!documentClassType || !testSetId) return;
+    setIsReextracting(true);
+    setError(null);
+    setReextractNote(null);
+    try {
+      const started = await client.graphql({
+        query: reextractTestSetDocument,
+        variables: {
+          input: { testSetId, objectKey, documentClass: documentClassType, configVersion: baselineConfigVersion },
+        },
+      });
+      const job = started.data?.reextractTestSetDocument;
+      if (!job?.jobId) throw new Error('No job returned');
+
+      const deadline = Date.now() + REEXTRACT_TIMEOUT_MS;
+      let status = job.status;
+      while (status === 'RUNNING' && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, REEXTRACT_POLL_MS));
+        const polled = await client.graphql({
+          query: getDraftLabelJob,
+          variables: { testSetId, jobId: job.jobId },
+        });
+        status = polled.data?.getDraftLabelJob?.status ?? status;
+        if (status === 'FAILED') {
+          throw new Error(polled.data?.getDraftLabelJob?.error || 'Re-extraction failed');
+        }
+      }
+      if (status === 'RUNNING') {
+        // Not an error: the job is still running and the harvest is idempotent.
+        setReextractNote(
+          'Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.',
+        );
+        return;
+      }
+
+      setReloadToken((token) => token + 1);
+      setReextractNote(`Re-extracted as ${documentClassType}.`);
+      if (onReextracted) onReextracted();
+    } catch (err) {
+      logger.error('Re-extraction failed:', err);
+      setError(`Could not re-extract this document: ${(err as Error).message}`);
+    } finally {
+      setIsReextracting(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!selectedSection || !localData) return;
     setIsSaving(true);
     setError(null);
     try {
-      // Append an edit-history entry (same provenance convention as
-      // VisualEditorModal) so GT edits are auditable in the file itself.
       const dataToSave: Record<string, unknown> = { ...localData };
+      const fullPath = selectedSection.baselineKey;
+
+      // No client-side _editHistory entry on this path: the review API writes one
+      // server-side with token-derived identity and a field-level diff, so appending
+      // here would double-record every review with the weaker entry.
+      if (onSave) {
+        await onSave(selectedSection.sectionId, dataToSave);
+        setLocalData(dataToSave);
+        setOriginalJson(JSON.stringify(dataToSave, null, 2));
+        logger.info('Saved ground truth via caller-supplied handler for', fullPath);
+        if (onSaved) onSaved(fullPath);
+        return;
+      }
+
+      // Direct-to-S3 path: nothing server-side records provenance, so the editor
+      // writes its own entry (same convention as VisualEditorModal).
       const editHistory = (dataToSave._editHistory as unknown[]) || [];
       editHistory.push({
         timestamp: new Date().toISOString(),
@@ -194,7 +335,6 @@ const GroundTruthVisualEditor = ({
       dataToSave._editHistory = editHistory;
       const editedContent = JSON.stringify(dataToSave, null, 2);
 
-      const fullPath = selectedSection.baselineKey;
       const fileName = fullPath.split('/').pop() ?? fullPath;
       const prefix = fullPath.substring(0, fullPath.lastIndexOf('/'));
 
@@ -271,7 +411,7 @@ const GroundTruthVisualEditor = ({
                 Discard changes
               </Button>
               <Button variant="primary" onClick={handleSave} loading={isSaving} disabled={!hasChanges}>
-                Save changes
+                {saveButtonText ?? 'Save changes'}
               </Button>
             </SpaceBetween>
           )
@@ -279,6 +419,20 @@ const GroundTruthVisualEditor = ({
       >
         Ground truth — {objectKey}
       </Header>
+
+      {/* Provenance is shown where the label is edited, so a machine draft cannot
+          be mistaken on screen for confirmed work. */}
+      {localData && (
+        <SpaceBetween direction="horizontal" size="xs">
+          {renderLabelSource(localData.labelSource as string | undefined)}
+          {baselineConfigVersion !== 'default' && <Badge color="grey">Config: {baselineConfigVersion}</Badge>}
+          {editHistoryCount > 0 && (
+            <Box fontSize="body-s" color="text-body-secondary">
+              {editHistoryCount} revision{editHistoryCount === 1 ? '' : 's'} — see Revision History
+            </Box>
+          )}
+        </SpaceBetween>
+      )}
 
       {sections.length > 1 && (
         <SegmentedControl
@@ -331,12 +485,71 @@ const GroundTruthVisualEditor = ({
                   content: (
                     <SpaceBetween size="s">
                       {documentClassType !== undefined && (
-                        <FormField label="Document class" description="Expected classification for this section">
-                          <Input
-                            value={documentClassType ?? ''}
-                            onChange={({ detail }) => updateDocumentClass(detail.value)}
-                            disabled={isReadOnly}
-                          />
+                        <FormField
+                          label="Class label"
+                          description={
+                            classOptions.length > 0
+                              ? 'What this section is classified as, from this config version. Distinct from the extraction labels below.'
+                              : 'What this section is classified as. Distinct from the extraction labels below.'
+                          }
+                        >
+                          <SpaceBetween size="xs">
+                            {/* Constrained to the config's classes: a class with no
+                                schema cannot be extracted against, so the correction
+                                could never take effect. Free text only when no
+                                config resolves. */}
+                            {classOptions.length > 0 ? (
+                              <Select
+                                selectedOption={
+                                  documentClassType
+                                    ? (classOptionsWithCurrent.find((o) => o.value === documentClassType) ?? {
+                                        label: documentClassType,
+                                        value: documentClassType,
+                                      })
+                                    : null
+                                }
+                                onChange={({ detail }) => updateDocumentClass(detail.selectedOption.value ?? '')}
+                                options={classOptionsWithCurrent}
+                                disabled={isReadOnly || isReextracting}
+                                placeholder="Choose a document class"
+                              />
+                            ) : (
+                              <Input
+                                value={documentClassType ?? ''}
+                                onChange={({ detail }) => updateDocumentClass(detail.value)}
+                                disabled={isReadOnly}
+                              />
+                            )}
+                            {/* Correcting the class is only half the fix: the fields
+                                were extracted against the previous schema and only a
+                                re-extract replaces them. */}
+                            {classChanged && testSetId && (
+                              <Alert
+                                type="info"
+                                header="Fields still reflect the previous class"
+                                action={
+                                  <Button onClick={handleReextract} loading={isReextracting} disabled={isReadOnly}>
+                                    Change class &amp; re-extract
+                                  </Button>
+                                }
+                              >
+                                These fields were extracted as <b>{savedClassType}</b>. Re-extract to replace them with ones the{' '}
+                                <b>{documentClassType}</b> schema produces.
+                                {localData?.labelSource === 'reviewed-human'
+                                  ? ' This document was already marked reviewed; re-extracting discards those confirmed values.'
+                                  : localData?.labelSource === 'draft-machine'
+                                    ? ' The current draft labels for this document are replaced.'
+                                    : ' The class is corrected, but this document has authored ground truth, so its field values are kept.'}
+                              </Alert>
+                            )}
+                            {classChanged && !testSetId && (
+                              <Alert type="warning">
+                                The class will be saved, but this document has no processing run to re-extract from, so its fields will
+                                still reflect the previous class.
+                              </Alert>
+                            )}
+                            {reextractNote && <Alert type="success">{reextractNote}</Alert>}
+                          </SpaceBetween>
                         </FormField>
                       )}
                       {splitPageIndices !== undefined && (
@@ -345,19 +558,32 @@ const GroundTruthVisualEditor = ({
                         </FormField>
                       )}
                       {inferenceResult ? (
-                        <FormFieldRenderer
-                          fieldKey="Document Data"
-                          value={inferenceResult}
-                          onChange={updateInferenceResult}
-                          isReadOnly={isReadOnly}
-                          onFieldFocus={handleFieldFocus}
-                          onFieldDoubleClick={handleFieldFocus}
-                          path={[]}
-                          explainabilityInfo={explainabilityInfo}
-                          collapsedPaths={collapsedPaths}
-                          onToggleCollapse={handleToggleCollapse}
-                          displayPath={[]}
-                        />
+                        <>
+                          <FormField label="Fields to show">
+                            <Select
+                              selectedOption={filterMode}
+                              onChange={({ detail }) => setFilterMode(detail.selectedOption)}
+                              options={[
+                                { label: 'Show all fields', value: 'none' },
+                                { label: 'Confidence alerts only', value: 'confidence-alerts' },
+                              ]}
+                            />
+                          </FormField>
+                          <FormFieldRenderer
+                            fieldKey="Document Data"
+                            value={inferenceResult}
+                            onChange={updateInferenceResult}
+                            isReadOnly={isReadOnly}
+                            onFieldFocus={handleFieldFocus}
+                            onFieldDoubleClick={handleFieldFocus}
+                            path={[]}
+                            explainabilityInfo={explainabilityInfo}
+                            collapsedPaths={collapsedPaths}
+                            onToggleCollapse={handleToggleCollapse}
+                            filterMode={filterMode.value}
+                            displayPath={[]}
+                          />
+                        </>
                       ) : (
                         <Alert type="warning">This baseline has no inference_result — use the JSON editor tab.</Alert>
                       )}
@@ -378,6 +604,11 @@ const GroundTruthVisualEditor = ({
                       loadingEvaluation={false}
                     />
                   ),
+                },
+                {
+                  id: 'history',
+                  label: 'Revision History',
+                  content: <EditHistoryTab predictionData={localData} baselineData={null} />,
                 },
               ]}
             />

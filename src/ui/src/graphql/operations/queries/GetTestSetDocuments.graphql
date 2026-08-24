@@ -9,7 +9,13 @@ query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, 
         sectionId
         baselineKey
       }
+      labelSource
+      minConfidence
+      confidenceThreshold
+      alertCount
+      fieldCount
     }
     nextToken
+    activeLabelJobId
   }
 }

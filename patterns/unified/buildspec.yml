@@ -40,6 +40,9 @@ phases:
           if [ "$func_var" = "FUNCTION_mlflow_logger" ]; then
             EXTRA_ARGS="--build-arg INSTALL_GIT=true"
           fi
+          if [ "$func_var" = "FUNCTION_rule_validation" ] || [ "$func_var" = "FUNCTION_rule_validation_orchestration" ]; then
+            EXTRA_ARGS="${EXTRA_ARGS} --build-arg INSTALL_Z3=true"
+          fi
           DOCKER_PLATFORM="linux/${LAMBDA_ARCHITECTURE:-arm64}"
           # Map Lambda architecture names to Docker platform names
           if [ "$LAMBDA_ARCHITECTURE" = "x86_64" ]; then

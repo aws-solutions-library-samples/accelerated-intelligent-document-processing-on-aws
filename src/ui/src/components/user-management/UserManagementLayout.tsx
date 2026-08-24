@@ -31,6 +31,7 @@ import {
   createUser as createUserMutation,
   deleteUser as deleteUserMutation,
   updateUser as updateUserMutation,
+  getTestSets,
 } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 
@@ -43,6 +44,7 @@ interface User {
   status?: string;
   createdAt?: string;
   allowedConfigVersions?: (string | null)[] | null;
+  allowedTestSets?: (string | null)[] | null;
 }
 
 const UserManagementLayout = (): React.JSX.Element => {
@@ -60,6 +62,10 @@ const UserManagementLayout = (): React.JSX.Element => {
   const [persona, setPersona] = useState('Reviewer');
   const [selectedConfigVersions, setSelectedConfigVersions] = useState<readonly { label: string; value: string }[]>([]);
   const [editScopeVersions, setEditScopeVersions] = useState<readonly { label: string; value: string }[]>([]);
+  // Test-set scope for Annotators — a separate axis from config-version scope.
+  const [selectedTestSets, setSelectedTestSets] = useState<readonly { label: string; value: string }[]>([]);
+  const [editScopeTestSets, setEditScopeTestSets] = useState<readonly { label: string; value: string }[]>([]);
+  const [testSetOptions, setTestSetOptions] = useState<{ label: string; value: string }[]>([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [emailError, setEmailError] = useState('');
@@ -78,6 +84,11 @@ const UserManagementLayout = (): React.JSX.Element => {
     { label: 'Admin', value: 'Admin', description: 'Full access to all operations including user management' },
     { label: 'Author', value: 'Author', description: 'Read + write access to documents, configuration, tests, discovery' },
     { label: 'Reviewer', value: 'Reviewer', description: 'HITL review operations with filtered document visibility' },
+    {
+      label: 'Annotator',
+      value: 'Annotator',
+      description: 'Ground-truth annotation of assigned test sets only — cannot see other sets or run configurations',
+    },
     { label: 'Viewer', value: 'Viewer', description: 'Read-only access to documents, configuration, and agent chat' },
   ];
 
@@ -114,6 +125,25 @@ const UserManagementLayout = (): React.JSX.Element => {
     setEmail(detail.value);
     setEmailError(validateEmail(detail.value));
   };
+
+  /**
+   * Test sets available to assign as an Annotator's scope. Loaded when the
+   * create/edit modal opens rather than on mount, since only the Annotator persona
+   * needs it.
+   */
+  const loadTestSets = useCallback(async () => {
+    if (!awsConfig) return;
+    try {
+      const client = generateClient();
+      const result = await client.graphql({ query: getTestSets });
+      const sets = (result.data?.getTestSets ?? []) as Array<{ id?: string | null; name?: string | null } | null>;
+      setTestSetOptions(
+        sets.filter((t): t is { id: string; name?: string | null } => Boolean(t?.id)).map((t) => ({ label: t.name || t.id, value: t.id })),
+      );
+    } catch (err) {
+      logger.warn('Could not load test sets for annotator scope:', err);
+    }
+  }, [awsConfig]);
 
   const loadUsers = useCallback(
     async (showRefreshing = false) => {
@@ -160,6 +190,13 @@ const UserManagementLayout = (): React.JSX.Element => {
       return;
     }
 
+    // An Annotator with no assigned test set is denied every set by the server's
+    // scope check, so the account could do nothing. Fail before the invite email.
+    if (persona === 'Annotator' && selectedTestSets.length === 0) {
+      setError('Assign at least one test set — an annotator with no assigned set cannot access anything');
+      return;
+    }
+
     if (!awsConfig) {
       setError('Configuration not ready');
       return;
@@ -172,10 +209,11 @@ const UserManagementLayout = (): React.JSX.Element => {
     try {
       const client = generateClient();
       const allowedConfigVersions = selectedConfigVersions.length > 0 ? selectedConfigVersions.map((opt) => opt.value) : undefined;
-      logger.debug('Creating user:', { email, persona, allowedConfigVersions });
+      const allowedTestSets = selectedTestSets.length > 0 ? selectedTestSets.map((opt) => opt.value) : undefined;
+      logger.debug('Creating user:', { email, persona, allowedConfigVersions, allowedTestSets });
       await client.graphql({
         query: createUserMutation,
-        variables: { email, persona, allowedConfigVersions },
+        variables: { email, persona, allowedConfigVersions, allowedTestSets },
       });
 
       logger.debug('User created successfully');
@@ -184,6 +222,7 @@ const UserManagementLayout = (): React.JSX.Element => {
       setEmail('');
       setPersona('Reviewer');
       setSelectedConfigVersions([]);
+      setSelectedTestSets([]);
       await loadUsers();
     } catch (err) {
       logger.error('Failed to create user:', err);
@@ -203,12 +242,20 @@ const UserManagementLayout = (): React.JSX.Element => {
         value: v,
       })),
     );
+    const currentTestSets = user.allowedTestSets?.filter((v): v is string => v !== null) || [];
+    setEditScopeTestSets(currentTestSets.map((v) => ({ label: v, value: v })));
     setShowEditScopeModal(true);
     fetchVersions();
+    if (user.persona === 'Annotator') loadTestSets();
   };
 
   const saveEditScope = async () => {
     if (!editingUser || !awsConfig) return;
+
+    if (editingUser.persona === 'Annotator' && editScopeTestSets.length === 0) {
+      setError('Assign at least one test set — an annotator with no assigned set cannot access anything');
+      return;
+    }
 
     setLoading(true);
     setError('');
@@ -217,10 +264,17 @@ const UserManagementLayout = (): React.JSX.Element => {
     try {
       const client = generateClient();
       const allowedConfigVersions = editScopeVersions.length > 0 ? editScopeVersions.map((opt) => opt.value) : null;
-      logger.debug('Updating user scope:', { userId: editingUser.userId, allowedConfigVersions });
+      // Only send the test-set axis for Annotators: the resolver treats an
+      // argument's *presence* as "change this axis", so sending null for a
+      // non-annotator would clear a scope that was never shown.
+      const variables: Record<string, unknown> = { userId: editingUser.userId, allowedConfigVersions };
+      if (editingUser.persona === 'Annotator') {
+        variables.allowedTestSets = editScopeTestSets.length > 0 ? editScopeTestSets.map((opt) => opt.value) : null;
+      }
+      logger.debug('Updating user scope:', variables);
       await client.graphql({
         query: updateUserMutation,
-        variables: { userId: editingUser.userId, allowedConfigVersions },
+        variables,
       });
 
       logger.debug('User scope updated successfully');
@@ -228,6 +282,7 @@ const UserManagementLayout = (): React.JSX.Element => {
       setShowEditScopeModal(false);
       setEditingUser(null);
       setEditScopeVersions([]);
+      setEditScopeTestSets([]);
       await loadUsers();
     } catch (err) {
       logger.error('Failed to update user scope:', err);
@@ -282,6 +337,7 @@ const UserManagementLayout = (): React.JSX.Element => {
   const handleCreateModalOpen = () => {
     setShowCreateModal(true);
     fetchVersions();
+    loadTestSets();
   };
 
   const handleEditScopeModalClose = () => {
@@ -365,6 +421,34 @@ const UserManagementLayout = (): React.JSX.Element => {
       id: 'allowedConfigVersions',
       header: 'Config Version Scope',
       cell: (item: User) => formatConfigVersions(item.allowedConfigVersions),
+    },
+    {
+      id: 'allowedTestSets',
+      header: 'Test Set Scope',
+      cell: (item: User) => {
+        // Only meaningful for Annotators; for every other role the axis is unused,
+        // and rendering "All test sets" would wrongly imply they can annotate.
+        if (item.persona !== 'Annotator') {
+          return (
+            <Box color="text-body-secondary">
+              <em>—</em>
+            </Box>
+          );
+        }
+        const sets = (item.allowedTestSets ?? []).filter((v): v is string => v !== null);
+        if (sets.length === 0) {
+          return <StatusIndicator type="warning">None assigned</StatusIndicator>;
+        }
+        return (
+          <SpaceBetween direction="horizontal" size="xxs">
+            {sets.map((t) => (
+              <Badge key={t} color="green">
+                {t}
+              </Badge>
+            ))}
+          </SpaceBetween>
+        );
+      },
     },
     {
       id: 'status',
@@ -511,6 +595,25 @@ const UserManagementLayout = (): React.JSX.Element => {
                   tokenLimit={3}
                 />
               </FormField>
+              {/* Required rather than optional: an annotator with no assigned set is
+                  denied every set by the server, so the account could do nothing. */}
+              {persona === 'Annotator' && (
+                <FormField
+                  label="Assigned test sets"
+                  description="The test set(s) this annotator may open and annotate. They will not see any other test set."
+                  errorText={selectedTestSets.length === 0 ? 'An annotator must be assigned at least one test set' : ''}
+                >
+                  <Multiselect
+                    selectedOptions={selectedTestSets}
+                    onChange={({ detail }) => setSelectedTestSets(detail.selectedOptions as { label: string; value: string }[])}
+                    options={testSetOptions}
+                    placeholder="Choose test sets"
+                    filteringType="auto"
+                    tokenLimit={3}
+                    empty="No test sets found"
+                  />
+                </FormField>
+              )}
             </SpaceBetween>
           </Form>
         </Modal>
@@ -519,7 +622,7 @@ const UserManagementLayout = (): React.JSX.Element => {
         <Modal
           visible={showEditScopeModal}
           onDismiss={handleEditScopeModalClose}
-          header={`Edit Config Version Scope — ${editingUser?.email ?? ''}`}
+          header={`Edit access scope — ${editingUser?.email ?? ''}`}
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
@@ -548,6 +651,23 @@ const UserManagementLayout = (): React.JSX.Element => {
                   tokenLimit={3}
                 />
               </FormField>
+              {editingUser?.persona === 'Annotator' && (
+                <FormField
+                  label="Assigned test sets"
+                  description="Test sets this annotator may open. Clearing this revokes access to every set — it does not grant access to all of them."
+                  errorText={editScopeTestSets.length === 0 ? 'Clearing this leaves the annotator unable to access anything' : ''}
+                >
+                  <Multiselect
+                    selectedOptions={editScopeTestSets}
+                    onChange={({ detail }) => setEditScopeTestSets(detail.selectedOptions as { label: string; value: string }[])}
+                    options={testSetOptions}
+                    placeholder="Choose test sets"
+                    filteringType="auto"
+                    tokenLimit={3}
+                    empty="No test sets found"
+                  />
+                </FormField>
+              )}
             </SpaceBetween>
           </Form>
         </Modal>

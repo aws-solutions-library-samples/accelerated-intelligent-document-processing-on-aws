@@ -950,12 +950,38 @@ Parameters:
     Type: String
     Default: ''
     Description: >-
-      (Optional) Endpoint URL of a marketplace-simulator (e.g.
-      https://simulator.example.com) or a real AWS Marketplace API. Leave
-      blank (default) for auto-subscribe mode — no entitlement checks, every
-      catalog feature is installable. Set it to bolt entitlement checks onto
-      a running stack with no rebuild; deploy the standalone simulator from
-      the feature-extensions distribution and point this at its endpoint.
+      (Optional) Base URL of a marketplace-simulator (e.g.
+      https://simulator.example.com), used to redirect an admin to the
+      simulated buyer console AND as the endpoint override for the emulated
+      AWS Marketplace APIs. Leave blank (default) to talk to real AWS
+      Marketplace. Deploy the standalone simulator from the feature-extensions
+      distribution and point this at its endpoint; it can be set on a running
+      stack with no rebuild. Which API the host calls is controlled separately
+      by FeaturePlatformSubscriptionMode, so a simulator can back either the
+      buyer-side Agreement API ('marketplace-live') or the seller-side
+      Entitlement API ('marketplace').
+
+  FeaturePlatformSubscriptionMode:
+    Type: String
+    Default: 'marketplace-live'
+    AllowedValues: ['marketplace-live', 'marketplace', 'auto']
+    Description: >-
+      How the host checks AWS Marketplace subscriptions for paid extensions.
+      This is the single source of truth — it is NOT inferred from whether
+      FeaturePlatformSimulatorEndpoint is set, so either mode can be pointed at
+      a simulator for development. 'marketplace-live' (default) queries the
+      BUYER-side AWS Marketplace Agreement API (SearchAgreements) for an active
+      agreement on the extension's product; this is the production path.
+      'marketplace' queries the SELLER-side Entitlement API (GetEntitlements) —
+      useful only against a simulator, because from a buyer account the real
+      GetEntitlements returns an empty list rather than an error (it is
+      seller-side, and usage-based SaaS listings have no entitlement records at
+      all). 'auto' skips the check and treats every catalog extension as
+      subscribed. In every mode OSS extensions install directly and each paid
+      extension enforces its own runtime entitlement check — this host-side
+      check is advisory, and it deliberately degrades to allow (not deny) if the
+      API is unreachable, so a permissions gap can't lock a paying customer out
+      of an extension they bought.
 
   FeaturePlatformDefaultCustomerIdentifier:
     Type: String
@@ -1136,6 +1162,16 @@ Conditions:
   DocumentSectionsCrawlerScheduleEnabled:
     !Not [ !Equals [ !Ref DocumentSectionsCrawlerFrequency, "Manual" ] ]
   HasPermissionsBoundary: !Not [ !Equals [ !Ref PermissionsBoundaryArn, "" ] ]
+  # GovCloud-only trust-policy statements are gated on this so that a commercial
+  # deployment renders a trust policy with no GovCloud principals in it. That is
+  # not cosmetic: an IAM role's AssumeRolePolicyDocument can only be changed on
+  # an existing role via iam:UpdateAssumeRolePolicy, so shipping a
+  # partition-specific principal unconditionally rewrites the document on every
+  # other partition's next stack UPDATE. Deployments using a CloudFormation
+  # service role (or permissions boundary) that lacks that action then fail and
+  # wedge in UPDATE_ROLLBACK_FAILED — the rollback needs the same action, so it
+  # cannot self-recover. See issue #632.
+  IsGovCloudPartition: !Equals [ !Ref "AWS::Partition", "aws-us-gov" ]
   HasCustomConfigPath: !Not [ !Equals [ !Ref CustomConfigPath, "" ] ]
   # When the LWA layer ARN is left blank, construct the region/partition default.
   HasLambdaWebAdapterLayerArn:
@@ -1219,15 +1255,13 @@ Conditions:
   # the same time as the FeaturePlatformStack's identically-named export
   # (which would fail with "Export already exported by stack ...").
   IsFeaturePlatformDisabled: !Equals [ !Ref EnableFeaturePlatform, 'false' ]
-  # Auto-subscribe mode: feature platform is on but no external Marketplace /
-  # simulator endpoint is configured. The entitlement Lambda short-circuits to
-  # ACTIVE so every catalog feature is treated as subscribed and the UI goes
-  # straight to the Install prompt. Setting FeaturePlatformSimulatorEndpoint
-  # switches the platform into marketplace mode with real entitlement checks.
-  IsAutoSubscribeMode:
-    !And
-      - !Condition IsFeaturePlatformEnabled
-      - !Equals [ !Ref FeaturePlatformSimulatorEndpoint, '' ]
+  # NB: there is deliberately no "IsAutoSubscribeMode" condition inferring the
+  # subscription mode from whether FeaturePlatformSimulatorEndpoint is set.
+  # Inferring it coupled two independent choices — WHICH API to call and WHERE
+  # to send it — and made the production path ('marketplace-live') unreachable
+  # whenever a simulator endpoint was configured, so the buyer-side Agreement
+  # check could not be exercised in development. FeaturePlatformSubscriptionMode
+  # is now the single source of truth and is passed through verbatim.
 
 Metadata:
   cfn-lint:
@@ -1370,6 +1404,7 @@ Metadata:
         Parameters:
           - EnableFeaturePlatform
           - FeaturePlatformSimulatorEndpoint
+          - FeaturePlatformSubscriptionMode
           - FeaturePlatformDefaultCustomerIdentifier
           - DefaultFeatureId
           - ConsoleTitle
@@ -1389,6 +1424,8 @@ Metadata:
         default: "Enable Feature Platform"
       FeaturePlatformSimulatorEndpoint:
         default: "Marketplace/Simulator Endpoint (optional — auto-subscribe if blank)"
+      FeaturePlatformSubscriptionMode:
+        default: "Marketplace Subscription Check (live Agreement API, or skip)"
       FeaturePlatformDefaultCustomerIdentifier:
         default: "Marketplace Customer Identifier (optional)"
       DefaultFeatureId:
@@ -2937,17 +2974,15 @@ Resources:
         # Region of the artifacts bucket (= this stack's region), used to build
         # the bare OSS feature template URL in getFeatureLaunchUrl.
         ArtifactRegion: !Ref AWS::Region
-        # The endpoint the entitlement Lambda targets. Blank in auto-subscribe
-        # mode (the Lambda short-circuits to ACTIVE). Set it to a simulator or
-        # real Marketplace endpoint to enable entitlement checks.
+        # Simulator base URL: the buyer-console redirect target AND the endpoint
+        # override for the emulated AWS Marketplace APIs. Blank = real AWS.
         SimulatorEntitlementEndpoint: !Ref FeaturePlatformSimulatorEndpoint
-        # 'auto' short-circuits the entitlement Lambda to ACTIVE for every
-        # feature (no endpoint, no Marketplace call). 'marketplace' targets a
-        # real or admin-supplied Marketplace/simulator endpoint.
-        SubscriptionMode: !If
-          - IsAutoSubscribeMode
-          - 'auto'
-          - 'marketplace'
+        # The mode is passed through verbatim — it is NOT inferred from whether
+        # an endpoint is set. Inferring it made the production path
+        # ('marketplace-live') unreachable whenever a simulator endpoint was
+        # configured, so the buyer-side Agreement check could never be exercised
+        # against a simulator. Decoupling them is what makes it developable.
+        SubscriptionMode: !Ref FeaturePlatformSubscriptionMode
         DefaultCustomerIdentifier: !Ref FeaturePlatformDefaultCustomerIdentifier
         AdminGroupName: 'Admin'
         # ConfigurationTable is shared between the main stack's pipeline and
@@ -4902,6 +4937,14 @@ Resources:
               - FilesCount
               - Status
               - CompletedAt
+              # NOTE: do NOT add attributes here on an existing stack. DynamoDB
+              # rejects any GSI change other than throughput/Contributor Insights
+              # with "Cannot update GSI's properties other than Provisioned
+              # Throughput", which fails the whole stack update. Submission
+              # provenance is therefore carried by the ItemType *key* rather than a
+              # projected attribute — see idp_common.dynamodb.service. (Same reason
+              # VersionCount is deliberately absent; see the Document type in
+              # schema.graphql.)
       TimeToLiveSpecification:
         AttributeName: ExpiresAfter
         Enabled: true
@@ -5042,8 +5085,12 @@ Resources:
       TrackingTableName: !Ref TrackingTable
       BackfillStateMachineArn: !Ref BackfillStateMachine
       TotalSegments: "10"
-      # Force re-evaluation on each stack update (bumped for ConfidenceAlertCount=0 repair)
-      BackfillVersion: "3.0"
+      # MUST be bumped by any change that needs the backfill to re-run.
+      # CloudFormation only sends an Update to a custom resource when one of its
+      # properties changes, so leaving this alone means the trigger is never
+      # invoked and the new backfill silently does not happen on upgrades.
+      # 4.0: retype pre-existing test-run documents to ItemType=test-document.
+      BackfillVersion: "4.0"
 
   ##############################################################################
   # DynamoDB table and initialization function for workflow concurrency counter
@@ -9051,6 +9098,18 @@ Resources:
         # intrinsics), list one statement per known principal — only the
         # one matching the deploy region's actual federated caller is ever
         # exercised by STS; the others are inert.
+        #
+        # The GovCloud statements ARE inert for STS at runtime, but they are NOT
+        # inert at deploy time: they are part of the trust-policy document, so
+        # listing them unconditionally made a commercial stack UPDATE rewrite the
+        # document and call iam:UpdateAssumeRolePolicy. Under a CFN service role
+        # or permissions boundary without that action the update fails and the
+        # stack wedges in UPDATE_ROLLBACK_FAILED (issue #632). They are therefore
+        # gated on IsGovCloudPartition, which makes the rendered commercial
+        # document byte-identical to the pre-GovCloud one (no diff -> no
+        # UpdateAssumeRolePolicy call). Both statements stay present on GovCloud:
+        # the principal is per-region, and gating them on region instead would
+        # churn the trust policy of already-deployed GovCloud stacks for no gain.
         Statement:
           - Effect: Allow
             Principal:
@@ -9062,26 +9121,32 @@ Resources:
                 "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
               "ForAnyValue:StringLike":
                 "cognito-identity.amazonaws.com:amr": authenticated
-          - Effect: Allow
-            Principal:
-              Federated: cognito-identity-us-gov.amazonaws.com
-            Action:
-              - sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "cognito-identity-us-gov.amazonaws.com:aud": !Ref IdentityPool
-              "ForAnyValue:StringLike":
-                "cognito-identity-us-gov.amazonaws.com:amr": authenticated
-          - Effect: Allow
-            Principal:
-              Federated: cognito-identity.us-gov-east-1.amazonaws.com
-            Action:
-              - sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "cognito-identity.us-gov-east-1.amazonaws.com:aud": !Ref IdentityPool
-              "ForAnyValue:StringLike":
-                "cognito-identity.us-gov-east-1.amazonaws.com:amr": authenticated
+          - !If
+            - IsGovCloudPartition
+            - Effect: Allow
+              Principal:
+                Federated: cognito-identity-us-gov.amazonaws.com
+              Action:
+                - sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "cognito-identity-us-gov.amazonaws.com:aud": !Ref IdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity-us-gov.amazonaws.com:amr": authenticated
+            - !Ref "AWS::NoValue"
+          - !If
+            - IsGovCloudPartition
+            - Effect: Allow
+              Principal:
+                Federated: cognito-identity.us-gov-east-1.amazonaws.com
+              Action:
+                - sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "cognito-identity.us-gov-east-1.amazonaws.com:aud": !Ref IdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.us-gov-east-1.amazonaws.com:amr": authenticated
+            - !Ref "AWS::NoValue"
       PermissionsBoundary:
         !If [
           HasPermissionsBoundary,
@@ -9199,12 +9264,24 @@ Resources:
       Precedence: 2
       UserPoolId: !Ref UserPool
 
+  AnnotatorGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      Description: >-
+        Ground-truth Annotators for Test Studio. Least-privilege: scoped by the
+        user's allowedTestSets to the test set(s) they were onboarded for, and
+        can only read and annotate those documents — not list other test sets,
+        run configurations, or publish versions.
+      GroupName: Annotator
+      Precedence: 3
+      UserPoolId: !Ref UserPool
+
   ViewerGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
       Description: Viewers - read-only access to documents and configuration
       GroupName: Viewer
-      Precedence: 3
+      Precedence: 4
       UserPoolId: !Ref UserPool
 
   AdminUserToGroupAttachment:
@@ -10818,6 +10895,7 @@ Resources:
           ADMIN_GROUP: !Ref AdminGroup
           AUTHOR_GROUP: !Ref AuthorGroup
           REVIEWER_GROUP: !Ref ReviewerGroup
+          ANNOTATOR_GROUP: !Ref AnnotatorGroup
           VIEWER_GROUP: !Ref ViewerGroup
           USERS_TABLE_NAME: !Ref UsersTable
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
@@ -10933,7 +11011,14 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucket
           INPUT_BUCKET: !Ref InputBucket
           WORKING_BUCKET: !Ref WorkingBucket
+          # Test-set HITL: when a reviewed doc belongs to a test set, corrected
+          # labels are also written back to the test set's baseline so a later
+          # publishTestSetVersion captures the human annotations as ground truth.
+          TEST_SET_BUCKET: !Ref TestSetBucket
           QUEUE_URL: !Ref DocumentQueue
+          # Annotator scope: review operations verify the document's test set is
+          # in the caller's allowedTestSets, which is stored on the user record.
+          USERS_TABLE_NAME: !Ref UsersTable
       LoggingConfig:
         LogGroup: !Ref CompleteSectionReviewFunctionLogGroup
       Policies:
@@ -10943,8 +11028,21 @@ Resources:
             BucketName: !Ref OutputBucket
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucket
+        - S3CrudPolicy:
+            BucketName: !Ref TestSetBucket
         - SQSSendMessagePolicy:
             QueueName: !GetAtt DocumentQueue.QueueName
+        # Read-only on UsersTable + EmailIndex to resolve the caller's
+        # allowedTestSets. An Annotator whose scope cannot be resolved is denied,
+        # so a missing grant blocks annotation rather than widening access.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !Sub "${UsersTable.Arn}/index/*"
         - Statement:
             - Effect: Allow
               Action:

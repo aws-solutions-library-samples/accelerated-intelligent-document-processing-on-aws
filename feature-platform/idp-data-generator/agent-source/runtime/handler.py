@@ -23,6 +23,9 @@ import os
 import shutil
 import tempfile
 import threading
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -116,6 +119,13 @@ def _run_job(payload):
             job_id,
             "COMPLETED",
             f"{uploaded} document(s) in test set {test_set_id}",
+            usage=result.usage.as_dict() if result.usage else None,
+            run_config={
+                "docCount": count,
+                "threshold": threshold,
+                "augment": augment,
+                "modelId": model_id,
+            },
         )
         _update_test_set(test_set_id, "COMPLETED", file_count=total or uploaded)
     except Exception as e:
@@ -151,23 +161,34 @@ def invoke(payload, context=None):
     timeout_s = _GENERATION_TIMEOUT_S
 
     def _worker():
-        job_thread = threading.Thread(target=_run_job, args=(payload,), daemon=True)
-        job_thread.start()
-        job_thread.join(timeout_s)
-        if job_thread.is_alive():
-            logger.error(
-                "Synthesis job %s exceeded %ds; marking FAILED and abandoning "
-                "the wedged worker thread.",
-                job_id,
-                timeout_s,
-            )
-            _post_status(
-                payload,
-                job_id,
-                "FAILED",
-                f"Generation timed out after {timeout_s}s",
-            )
-        app.complete_async_task(task_id)
+        # Pulses while the job runs so a stage that completes no documents still
+        # proves the runtime is alive. This is the only signal that survives the
+        # container itself dying: the watchdog below runs *inside* the runtime, so a
+        # container killed mid-stage leaves the job IN_PROGRESS with nothing left to
+        # fail it — the UI then shows "busy" forever. Anything reconciling from
+        # outside keys on heartbeatAt going stale.
+        stop_heartbeat = threading.Event()
+        _start_heartbeat(payload, job_id, stop_heartbeat)
+        try:
+            job_thread = threading.Thread(target=_run_job, args=(payload,), daemon=True)
+            job_thread.start()
+            job_thread.join(timeout_s)
+            if job_thread.is_alive():
+                logger.error(
+                    "Synthesis job %s exceeded %ds; marking FAILED and abandoning "
+                    "the wedged worker thread.",
+                    job_id,
+                    timeout_s,
+                )
+                _post_status(
+                    payload,
+                    job_id,
+                    "FAILED",
+                    f"Generation timed out after {timeout_s}s",
+                )
+        finally:
+            stop_heartbeat.set()
+            app.complete_async_task(task_id)
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -224,18 +245,109 @@ def _update_test_set(test_set_id, status, file_count=None):
         logger.warning("Failed to update test set %s", test_set_id, exc_info=True)
 
 
-def _post_status(payload, job_id, status, message):
+def _decimalize(value):
+    """DynamoDB has no float type, so coerce numerics on the way in."""
+    if isinstance(value, float):
+        return Decimal(str(round(value, 4)))
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    return value
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _start_heartbeat(payload, job_id, stop_event, interval_s=None):
+    """Pulse the job record while generation runs.
+
+    Progress is reported per completed document, so a long stage that finishes none —
+    augmentation on a batch, most obviously — looks identical to a dead runtime. The
+    in-runtime watchdog cannot cover that case either: it dies with the container. A
+    heartbeat is what lets something outside decide the run is gone.
+    """
+    if interval_s is None:
+        interval_s = int(os.environ.get("HEARTBEAT_INTERVAL_S", "60"))
+
+    started = time.monotonic()
+
+    def _pulse():
+        failures = 0
+        table_name = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
+        if not (table_name and job_id):
+            return
+        table = boto3.resource("dynamodb").Table(table_name)
+        while not stop_event.wait(interval_s):
+            elapsed_min = int((time.monotonic() - started) / 60)
+            try:
+                # Only ever touches the heartbeat fields, and only while still running,
+                # so it can never resurrect or overwrite a terminal status.
+                #
+                # elapsedMinutes rides along because a percentage alone is ambiguous:
+                # "5% Starting generation" looked identical at one minute and at
+                # sixty-eight, which is what made a dead runtime hard to spot.
+                table.update_item(
+                    Key={"jobId": job_id},
+                    UpdateExpression=("SET heartbeatAt = :h, elapsedMinutes = :m"),
+                    ConditionExpression="#s = :running",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":h": _now_iso(),
+                        ":m": elapsed_min,
+                        ":running": "IN_PROGRESS",
+                    },
+                )
+                failures = 0
+            except Exception:  # noqa: BLE001 — a heartbeat must never fail a run
+                failures += 1
+                # Escalate rather than staying at debug. Sustained heartbeat failures
+                # are not cosmetic: past the reaper's window the job is failed, and
+                # then the real COMPLETED is refused by the "not already FAILED"
+                # condition on the status write — so a healthy run with generated
+                # documents reports that its runtime died. Silent at debug, that is
+                # undiagnosable.
+                if failures in (3, 10) or failures % 30 == 0:
+                    logger.warning(
+                        "heartbeat write has failed %d consecutive time(s) for %s; "
+                        "if this continues the job will be reaped as dead despite "
+                        "the run being healthy",
+                        failures,
+                        job_id,
+                        exc_info=True,
+                    )
+                else:
+                    logger.debug("heartbeat write failed for %s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_pulse, name="heartbeat", daemon=True)
+    thread.start()
+    return thread
+
+
+def _post_status(payload, job_id, status, message, usage=None, run_config=None):
     # The processor invokes this runtime asynchronously and returns, so the
     # runtime writes terminal status to BootstrapTrackingTable itself. Best-effort.
     logger.info("synthesis job %s: %s — %s", job_id, status, message)
     table_name = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
     if not (table_name and job_id):
         return
-    attrs = {"status": status}
+    # Every write carries a heartbeat. Without one, "job has not changed in an hour"
+    # cannot distinguish a healthy-but-slow stage from a runtime that died: progress
+    # only advances as documents COMPLETE, and augmentation can take an hour with no
+    # document finishing. Reconciliation outside the runtime keys on this.
+    attrs = {"status": status, "heartbeatAt": _now_iso()}
     if message:
         attrs["statusMessage"] = message
     if status == "FAILED" and message:
         attrs["errorMessage"] = message
+    # Tokens, pipeline attempts and mean critic score, plus the inputs that drive
+    # them. Recorded so a cost/duration estimate can be calibrated on observed
+    # runs rather than constants; unrecoverable once the run ends.
+    if usage is not None:
+        attrs["usage"] = _decimalize(usage)
+    if run_config is not None:
+        attrs["runConfig"] = _decimalize(run_config)
     kwargs = {
         "Key": {"jobId": job_id},
         "UpdateExpression": "SET " + ", ".join(f"#{k} = :{k}" for k in attrs),

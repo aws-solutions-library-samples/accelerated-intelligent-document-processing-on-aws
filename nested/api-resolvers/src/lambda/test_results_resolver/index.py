@@ -182,9 +182,12 @@ def handler(event, context):
     if is_api_invoke and not ({"Admin", "Author"}.intersection(groups)):
         logger.warning(
             "Forbidden: caller (groups=%s) attempted %s (requires Admin/Author)",
-            groups, field_name,
+            groups,
+            field_name,
         )
-        raise PermissionError(f"Unauthorized: {field_name} requires Admin or Author group")
+        raise PermissionError(
+            f"Unauthorized: {field_name} requires Admin or Author group"
+        )
 
     if field_name == "getTestRuns":
         args = event.get("arguments", {})
@@ -405,6 +408,14 @@ def handle_cache_update_request(event, context):
                 "gradedPacketMetrics": aggregated_metrics.get(
                     "graded_packet_metrics", {}
                 ),
+                # Documents whose sections all had no extractable schema were
+                # dropped from ``weighted_overall_scores`` upstream; expose the
+                # count so the UI can render "N excluded" next to the
+                # histogram instead of leaving the drop from filesCount
+                # unexplained.
+                "excludedDocumentCount": aggregated_metrics.get(
+                    "excluded_document_count", 0
+                ),
                 "totalCost": aggregated_metrics.get("total_cost", 0),
                 "costBreakdown": aggregated_metrics.get("cost_breakdown", {}),
             }
@@ -509,7 +520,7 @@ def _count_completed_documents(table, test_run_id, files):
 
     completed_count = 0
     table_name = table.table_name
-    dynamodb_client = boto3.client('dynamodb')
+    dynamodb_client = boto3.client("dynamodb")
 
     # Build object keys
     object_keys = [f"{test_run_id}/{file_name}" for file_name in files]
@@ -517,28 +528,26 @@ def _count_completed_documents(table, test_run_id, files):
     # DynamoDB batch_get_item supports up to 100 keys per batch
     batch_size = 100
     for i in range(0, len(object_keys), batch_size):
-        batch = object_keys[i:i + batch_size]
-        keys = [{'PK': {'S': f"doc#{key}"}, 'SK': {'S': 'none'}} for key in batch]
+        batch = object_keys[i : i + batch_size]
+        keys = [{"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}} for key in batch]
 
         try:
             response = dynamodb_client.batch_get_item(
-                RequestItems={
-                    table_name: {
-                        'Keys': keys
-                    }
-                }
+                RequestItems={table_name: {"Keys": keys}}
             )
 
             # Count completed evaluations
-            for item in response.get('Responses', {}).get(table_name, []):
-                eval_status = item.get('EvaluationStatus', {}).get('S', '').upper()
-                if eval_status == 'COMPLETED':
+            for item in response.get("Responses", {}).get(table_name, []):
+                eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
+                if eval_status == "COMPLETED":
                     completed_count += 1
 
             # Handle unprocessed keys (throttling, etc.)
-            unprocessed = response.get('UnprocessedKeys', {}).get(table_name, {})
+            unprocessed = response.get("UnprocessedKeys", {}).get(table_name, {})
             if unprocessed:
-                logger.warning(f"Batch get had {len(unprocessed.get('Keys', []))} unprocessed keys")
+                logger.warning(
+                    f"Batch get had {len(unprocessed.get('Keys', []))} unprocessed keys"
+                )
 
         except Exception as e:
             logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
@@ -605,6 +614,7 @@ def get_test_results(test_run_id):
             or "confusionMatrix" not in cached_metrics
             or "fieldMetrics" not in cached_metrics
             or "gradedPacketMetrics" not in cached_metrics
+            or "excludedDocumentCount" not in cached_metrics
             or isinstance(cached_scores, list)
         ):
             logger.info(
@@ -628,8 +638,12 @@ def get_test_results(test_run_id):
         if current_status == "ABORTED" and not completed_files_counted:
             files = metadata.get("Files", [])
             if files:
-                completed_files_count = _count_completed_documents(table, test_run_id, files)
-                logger.info(f"Counted {completed_files_count} completed documents for aborted test run {test_run_id}")
+                completed_files_count = _count_completed_documents(
+                    table, test_run_id, files
+                )
+                logger.info(
+                    f"Counted {completed_files_count} completed documents for aborted test run {test_run_id}"
+                )
 
                 # Persist the count and flag to database
                 try:
@@ -638,12 +652,16 @@ def get_test_results(test_run_id):
                         UpdateExpression="SET CompletedFiles = :completed_files, CompletedFilesCounted = :counted",
                         ExpressionAttributeValues={
                             ":completed_files": completed_files_count,
-                            ":counted": True
-                        }
+                            ":counted": True,
+                        },
                     )
-                    logger.info(f"Updated CompletedFiles to {completed_files_count} and set CompletedFilesCounted=True for test run {test_run_id}")
+                    logger.info(
+                        f"Updated CompletedFiles to {completed_files_count} and set CompletedFilesCounted=True for test run {test_run_id}"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to update CompletedFiles for {test_run_id}: {str(e)}")
+                    logger.warning(
+                        f"Failed to update CompletedFiles for {test_run_id}: {str(e)}"
+                    )
 
         # Use cached metrics but get dynamic fields from current metadata.
         # Keys absent from an older cache default to {} / 0, which every
@@ -657,9 +675,7 @@ def get_test_results(test_run_id):
             "completedFiles": completed_files_count,
             "failedFiles": metadata.get("FailedFiles", 0),
             "overallAccuracy": cached_metrics.get("overallAccuracy"),
-            "weightedOverallScores": cached_metrics.get(
-                "weightedOverallScores", {}
-            ),
+            "weightedOverallScores": cached_metrics.get("weightedOverallScores", {}),
             "averageConfidence": cached_metrics.get("averageConfidence"),
             "confidenceMetrics": cached_metrics.get("confidenceMetrics"),
             "accuracyBreakdown": cached_metrics.get("accuracyBreakdown", {}),
@@ -669,12 +685,14 @@ def get_test_results(test_run_id):
                 "splitClassificationMetrics", {}
             ),
             "gradedPacketMetrics": cached_metrics.get("gradedPacketMetrics", {}),
+            "excludedDocumentCount": cached_metrics.get("excludedDocumentCount", 0),
             "totalCost": cached_metrics.get("totalCost", 0),
             "costBreakdown": cached_metrics.get("costBreakdown", {}),
             "createdAt": _format_datetime(metadata.get("CreatedAt")),
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "configVersion": metadata.get("ConfigVersion"),
+            "testSetVersion": metadata.get("TestSetVersion"),
             "config": _get_test_run_config(test_run_id),
         }
     else:
@@ -717,6 +735,7 @@ def get_test_results(test_run_id):
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "configVersion": metadata.get("ConfigVersion"),
+            "testSetVersion": metadata.get("TestSetVersion"),
         }
 
 
@@ -824,6 +843,7 @@ def _build_test_run_list(items):
                 "completedAt": _format_datetime(item.get("CompletedAt")),
                 "context": item.get("Context"),
                 "configVersion": item.get("ConfigVersion"),
+                "testSetVersion": item.get("TestSetVersion"),
             }
         )
 
@@ -1119,8 +1139,7 @@ def _athena_supplements(test_run_id):
         cost_data = _get_cost_data_from_athena(test_run_id)
     except Exception as e:
         logger.warning(
-            f"Athena cost data unavailable for {test_run_id}; "
-            f"reporting zero cost: {e}"
+            f"Athena cost data unavailable for {test_run_id}; reporting zero cost: {e}"
         )
         cost_data = {"total_cost": 0, "cost_breakdown": {}}
 
@@ -1483,11 +1502,27 @@ def _get_evaluation_metrics_from_athena(test_run_id):
 
     # Calculate split accuracies from summed counts
     # Athena returns None for SUM() on empty result sets, so default to 0
-    total_pages = result.get("total_pages") if result.get("total_pages") is not None else 0
-    total_splits = result.get("total_splits") if result.get("total_splits") is not None else 0
-    correctly_classified_pages = result.get("correctly_classified_pages") if result.get("correctly_classified_pages") is not None else 0
-    correctly_split_without_order = result.get("correctly_split_without_order") if result.get("correctly_split_without_order") is not None else 0
-    correctly_split_with_order = result.get("correctly_split_with_order") if result.get("correctly_split_with_order") is not None else 0
+    total_pages = (
+        result.get("total_pages") if result.get("total_pages") is not None else 0
+    )
+    total_splits = (
+        result.get("total_splits") if result.get("total_splits") is not None else 0
+    )
+    correctly_classified_pages = (
+        result.get("correctly_classified_pages")
+        if result.get("correctly_classified_pages") is not None
+        else 0
+    )
+    correctly_split_without_order = (
+        result.get("correctly_split_without_order")
+        if result.get("correctly_split_without_order") is not None
+        else 0
+    )
+    correctly_split_with_order = (
+        result.get("correctly_split_with_order")
+        if result.get("correctly_split_with_order") is not None
+        else 0
+    )
 
     page_level_accuracy = (
         correctly_classified_pages / total_pages if total_pages > 0 else None
@@ -1530,17 +1565,20 @@ def _get_cost_data_from_athena(test_run_id):
     # Convert to date partition format: YYYY-MM-DD
     # NOTE: Test runs spanning midnight UTC may have documents in next day's partition.
     # We query both run_date and run_date+1 to catch cross-midnight documents.
-    date_match = re.search(r'-(\d{4})(\d{2})(\d{2})-', test_run_id)
+    date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
         from datetime import datetime, timedelta
+
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
         next_date = run_date + timedelta(days=1)
-        date_str = run_date.strftime('%Y-%m-%d')
-        next_date_str = next_date.strftime('%Y-%m-%d')
+        date_str = run_date.strftime("%Y-%m-%d")
+        next_date_str = next_date.strftime("%Y-%m-%d")
         date_filter = f"AND date IN ('{date_str}', '{next_date_str}')"
-        logger.info(f"Using date filter for cost query: date IN ('{date_str}', '{next_date_str}')")
+        logger.info(
+            f"Using date filter for cost query: date IN ('{date_str}', '{next_date_str}')"
+        )
 
     query = f"""
     SELECT
@@ -1570,7 +1608,11 @@ def _get_cost_data_from_athena(test_run_id):
         unit = result["unit"]
         total_value = result["total_value"]
         unit_cost = result["unit_cost"]
-        estimated_cost = result["total_estimated_cost"] if result["total_estimated_cost"] is not None else 0
+        estimated_cost = (
+            result["total_estimated_cost"]
+            if result["total_estimated_cost"] is not None
+            else 0
+        )
 
         if context not in cost_breakdown:
             cost_breakdown[context] = {}

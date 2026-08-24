@@ -24,6 +24,7 @@ Item Type Mapping (from PK prefix):
 import json
 import logging
 import os
+import re
 import time
 
 import boto3
@@ -107,12 +108,14 @@ def lambda_handler(event, context):
         "Segment": segment,
         "TotalSegments": total_segments,
         # Fetch attributes needed for ItemType, HITL status, and ConfidenceAlertCount backfill
-        "ProjectionExpression": "PK, SK, #it, HITLTriggered, HITLCompleted, HITLStatus, HITLPendingReview, InitialEventTime, ConfidenceAlertCount, Sections",
+        "ProjectionExpression": "PK, SK, #it, HITLTriggered, HITLCompleted, HITLStatus, HITLPendingReview, InitialEventTime, ConfidenceAlertCount, Sections, SubmissionSource, TestSetId",
         "ExpressionAttributeNames": {"#it": "ItemType"},
     }
 
     if exclusive_start_key:
         scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
+
+    run_exists = _test_run_verifier(table)
 
     while True:
         # Check if we're approaching Lambda timeout
@@ -147,7 +150,7 @@ def lambda_handler(event, context):
             pk = item.get("PK", "")
             
             # Determine what updates are needed
-            updates = _determine_updates(item, pk)
+            updates = _determine_updates(item, pk, run_exists)
             
             if not updates:
                 stats["skipped"] += 1
@@ -182,7 +185,53 @@ def lambda_handler(event, context):
     return stats
 
 
-def _determine_updates(item, pk):
+_TEST_RUN_KEY_RE = re.compile(r"^doc#([^/]+-\d{8}-\d{6})/")
+
+
+def _looks_like_test_run_document(pk, item, run_exists=None):
+    """True when this document item was submitted by a test run.
+
+    SubmissionSource/TestSetId are definitive when present. For documents stored
+    before those were recorded, the only signal is key shape
+    ("<testSetId>-<YYYYMMDD>-<HHMMSS>/", written by the test file copier) — and a
+    real upload can share it, since nothing stops a customer from organising a
+    bucket into timestamped folders. Retyping one hides it from the Document List
+    entirely, which is worse than leaving a legacy test document visible there, so
+    the shape alone is not enough: ``run_exists`` must confirm the prefix names an
+    actual test run. Without a verifier the document is left as it is.
+    """
+    if item.get("SubmissionSource") or item.get("TestSetId"):
+        return True
+    match = _TEST_RUN_KEY_RE.match(pk)
+    if not match or run_exists is None:
+        return False
+    return bool(run_exists(match.group(1)))
+
+
+def _test_run_verifier(table):
+    """Confirm a run id has a test-run record, memoised across the segment.
+
+    One run covers many documents, so this is a handful of reads per scan rather
+    than one per item.
+    """
+    seen = {}
+
+    def exists(run_id):
+        if run_id not in seen:
+            try:
+                seen[run_id] = "Item" in table.get_item(
+                    Key={"PK": f"testrun#{run_id}", "SK": "metadata"},
+                    ProjectionExpression="PK",
+                )
+            except ClientError as e:
+                logger.warning(f"Could not verify test run '{run_id}': {e}")
+                seen[run_id] = False
+        return seen[run_id]
+
+    return exists
+
+
+def _determine_updates(item, pk, run_exists=None):
     """
     Determine which attributes need to be set on this item.
     Returns a dict of {attribute_name: value} or empty dict if no updates needed.
@@ -196,6 +245,12 @@ def _determine_updates(item, pk):
                 updates["ItemType"] = item_type
                 break
         # If PK doesn't match any known prefix (e.g., list#, agent#), skip ItemType
+
+    # 1b. Retype test-run submissions: without this they carry ItemType="document"
+    # and show up in the Document List alongside real uploads.
+    if item.get("ItemType") == "document" or updates.get("ItemType") == "document":
+        if _looks_like_test_run_document(pk, item, run_exists):
+            updates["ItemType"] = "test-document"
 
     # 2. Check if HITLPendingReview needs to be set (only for documents)
     if pk.startswith("doc#") and "HITLPendingReview" not in item:
@@ -286,6 +341,14 @@ def _apply_update(table, pk, sk, updates):
                 f"(attribute_not_exists(#attr{i}) OR #attr{i} = :zero)"
             )
             expr_values[":zero"] = 0
+        elif attr_name == "ItemType" and attr_value == "test-document":
+            # Retyping deliberately overwrites an existing "document" value, so
+            # attribute_not_exists alone would reject it. Still idempotent: the
+            # condition fails once the value is already "test-document".
+            condition_parts.append(
+                f"(attribute_not_exists(#attr{i}) OR #attr{i} = :legacy_doc_type)"
+            )
+            expr_values[":legacy_doc_type"] = "document"
         else:
             condition_parts.append(f"attribute_not_exists(#attr{i})")
     condition_expression = " OR ".join(condition_parts)
@@ -377,8 +440,25 @@ def handler(event, context):
         sample_item = items[0]
         has_item_type = "ItemType" in sample_item
         has_confidence_count = "ConfidenceAlertCount" in sample_item
-        if has_item_type and has_confidence_count:
-            logger.info(f"Sample item already has ItemType and ConfidenceAlertCount - backfill likely complete")
+
+        # A one-item sample can only answer "is an attribute missing?", never "is
+        # an attribute's VALUE now wrong?". The retype pass is the second kind: a
+        # legacy test-run document already carries ItemType="document", so it looks
+        # complete here while being exactly the row that needs rewriting — and the
+        # stacks holding those rows are precisely the ones that ran an earlier
+        # backfill and would be skipped. So a changed BackfillVersion starts the
+        # run unconditionally; the sample only short-circuits when this resource's
+        # properties are unchanged (a no-op stack update re-invoking Create).
+        version = str(event["ResourceProperties"].get("BackfillVersion", ""))
+        old_version = str(
+            (event.get("OldResourceProperties") or {}).get("BackfillVersion", "")
+        )
+        version_changed = version != old_version
+        if has_item_type and has_confidence_count and not version_changed:
+            logger.info(
+                "Sample item already has ItemType and ConfidenceAlertCount and "
+                f"BackfillVersion is unchanged ({version}) - nothing to do"
+            )
             _send_cfn_response(
                 event, context, "SUCCESS",
                 {"BackfillStatus": "ALREADY_DONE", "Reason": "All GSI attributes present"},
@@ -386,7 +466,11 @@ def handler(event, context):
             )
             return
         
-        logger.info(f"Backfill needed: ItemType={'present' if has_item_type else 'MISSING'}, ConfidenceAlertCount={'present' if has_confidence_count else 'MISSING'}")
+        logger.info(
+            f"Backfill needed: ItemType={'present' if has_item_type else 'MISSING'}, "
+            f"ConfidenceAlertCount={'present' if has_confidence_count else 'MISSING'}, "
+            f"BackfillVersion={old_version or '(none)'} -> {version}"
+        )
 
         # Start the backfill state machine
         sfn_client = boto3.client("stepfunctions")

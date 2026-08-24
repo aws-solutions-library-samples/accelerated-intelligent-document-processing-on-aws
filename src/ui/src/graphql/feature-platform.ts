@@ -27,6 +27,8 @@ export const LIST_CATALOG_FEATURES = /* GraphQL */ `
       source
       productCode
       marketplaceListingUrl
+      availableInRegion
+      availableRegions
     }
   }
 `;
@@ -60,6 +62,10 @@ export const CHECK_FEATURE_ENTITLEMENT = /* GraphQL */ `
       customerIdentifier
       productCode
       source
+      licenseMode
+      declaredLicenseMode
+      catalogLicenseMode
+      licenseModeMismatch
     }
   }
 `;

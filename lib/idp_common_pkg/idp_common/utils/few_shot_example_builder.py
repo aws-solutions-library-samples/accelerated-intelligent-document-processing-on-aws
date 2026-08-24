@@ -4,11 +4,38 @@ from typing import Any, Dict, List
 
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
+    LEGACY_ATTRIBUTES_PROMPT,
+    LEGACY_CLASS_PROMPT,
+    LEGACY_IMAGE_PATH,
+    X_AWS_IDP_ATTRIBUTES_PROMPT,
+    X_AWS_IDP_CLASS_PROMPT,
     X_AWS_IDP_CLASSIFICATION,
     X_AWS_IDP_EXAMPLES,
+    X_AWS_IDP_IMAGE_PATH,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _example_field(example: Dict[str, Any], *keys: str) -> Any:
+    """
+    Read the first present key from a few-shot example.
+
+    Example entries carry their fields under either the ``x-aws-idp-*`` names
+    (what `docs/few-shot-examples.md` documents, and what a hand-authored or
+    migrated v0.6 config uses) or the legacy camelCase names (what the UI's
+    schema editor writes and what `config_library` presets contain). Both forms
+    are accepted so examples are never silently ignored because of which spelling
+    the config happens to use.
+
+    Returns:
+        The first non-None value found, or None.
+    """
+    for key in keys:
+        value = example.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 def _get_image_files_from_path(image_path: str) -> List[str]:
@@ -89,7 +116,9 @@ def build_few_shot_examples_content(config: IDPConfig) -> List[Dict[str, Any]]:
         # Examples are stored directly on the schema object
         examples = schema.get(X_AWS_IDP_EXAMPLES, [])
         for example in examples:
-            class_prompt = example.get("classPrompt")
+            class_prompt = _example_field(
+                example, X_AWS_IDP_CLASS_PROMPT, LEGACY_CLASS_PROMPT
+            )
 
             # Only process this example if it has a non-empty class_prompt
             if not class_prompt or not class_prompt.strip():
@@ -100,7 +129,9 @@ def build_few_shot_examples_content(config: IDPConfig) -> List[Dict[str, Any]]:
 
             content.append({"text": class_prompt})
 
-            image_path = example.get("imagePath")
+            image_path = _example_field(
+                example, X_AWS_IDP_IMAGE_PATH, LEGACY_IMAGE_PATH
+            )
             if image_path:
                 try:
                     # Load image content from the path
@@ -133,8 +164,16 @@ def build_few_shot_examples_content(config: IDPConfig) -> List[Dict[str, Any]]:
                             continue
 
                 except Exception as e:
-                    raise ValueError(
-                        f"Failed to load example images from {image_path}: {e}"
+                    # Degrade to a text-only example rather than failing the whole
+                    # inference. An example's imagePath can easily be unreachable
+                    # (config copied between accounts/partitions, bucket deleted,
+                    # missing s3:GetObject), and a prompt that merely *offers* the
+                    # {FEW_SHOT_EXAMPLES} placeholder must not turn that into a
+                    # failed document. Per-file failures already warn-and-continue
+                    # inside the loop; this covers listing/resolution failures.
+                    logger.warning(
+                        f"Failed to load example images from {image_path}: {e} — "
+                        f"using example '{example.get('name')}' without images"
                     )
 
     return content
@@ -160,7 +199,9 @@ def build_few_shot_extraction_examples_content(
 
     for example in examples:
         # For extraction, use attributesPrompt instead of classPrompt
-        attributes_prompt = example.get("attributesPrompt")
+        attributes_prompt = _example_field(
+            example, X_AWS_IDP_ATTRIBUTES_PROMPT, LEGACY_ATTRIBUTES_PROMPT
+        )
 
         # Only process this example if it has a non-empty attributesPrompt
         if not attributes_prompt or not attributes_prompt.strip():
@@ -171,7 +212,7 @@ def build_few_shot_extraction_examples_content(
 
         content.append({"text": attributes_prompt})
 
-        image_path = example.get("imagePath")
+        image_path = _example_field(example, X_AWS_IDP_IMAGE_PATH, LEGACY_IMAGE_PATH)
         if image_path:
             try:
                 # Get list of image files from the path (supports directories/prefixes)
@@ -200,8 +241,11 @@ def build_few_shot_extraction_examples_content(
                         continue
 
             except Exception as e:
-                raise ValueError(
-                    f"Failed to load example images from {image_path}: {e}"
+                # Degrade to a text-only example rather than failing extraction —
+                # see the matching comment in build_few_shot_examples_content.
+                logger.warning(
+                    f"Failed to load example images from {image_path}: {e} — "
+                    f"using example '{example.get('name')}' without images"
                 )
 
     return content

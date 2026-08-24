@@ -5,10 +5,15 @@ query GetTestSets {
     description
     filePattern
     fileCount
+    source
+    latestVersion
+    activeReference
+    labelState
+    labelJobId
+    labelJobStatus
     status
     createdAt
     error
-    lastAddResult
     documentClassType
     configVersion
   }

@@ -26,6 +26,9 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
+import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
+import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
+import { getConfigClassOptions } from '../common/config-class-options';
 import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
@@ -84,14 +87,33 @@ interface SectionsPanelProps {
   documentItem?: DocumentItem;
   mergedConfig?: Record<string, unknown> | null;
   onDocumentUpdate?: (updater: (prev: Record<string, unknown>) => Record<string, unknown>) => void;
+  /**
+   * Ground-truth-vs-predicted classification for this document, loaded once by
+   * the document page. Empty (the default) when there is no ground truth, in
+   * which case no class is annotated.
+   */
+  classificationIndex?: ClassificationIndex;
 }
 
 // Cell renderer components
 const IdCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.Id}</span>;
 
 // Render the class name, annotated with a "Skipped" badge when the section's
-// classification was marked x-aws-idp-exclude-from-processing=true in config.
-const ClassCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+// classification was marked x-aws-idp-exclude-from-processing=true in config,
+// and with a mismatch alert when ground truth expects a different class.
+const ClassCell = ({
+  item,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
+}: {
+  item: SectionItem;
+  classificationIndex?: ClassificationIndex;
+}): React.JSX.Element => {
+  // An excluded section is not extracted, so comparing its class to ground
+  // truth would flag a section nobody scored.
+  const mismatch = item.Excluded ? null : (
+    <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
+  );
+
   if (item.Excluded) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
@@ -100,7 +122,13 @@ const ClassCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
       </SpaceBetween>
     );
   }
-  return <span>{item.Class}</span>;
+  if (!mismatch) return <span>{item.Class}</span>;
+  return (
+    <SpaceBetween direction="horizontal" size="xs">
+      <span>{item.Class}</span>
+      {mismatch}
+    </SpaceBetween>
+  );
 };
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
@@ -413,22 +441,30 @@ const EditableClassCell = ({
   validationErrors,
   updateSection,
   getAvailableClasses,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
 }: {
   item: SectionItem;
   validationErrors: Record<string, string[]>;
   updateSection: (id: string, field: string, value: string) => void;
   getAvailableClasses: () => { value: string; label: string; description?: string }[];
+  classificationIndex?: ClassificationIndex;
 }): React.JSX.Element => (
   <FormField errorText={validationErrors[item.Id]?.find((err) => err.includes('class'))}>
-    <Select
-      selectedOption={getAvailableClasses().find((option) => option.value === item.Class) || null}
-      onChange={({ detail }) => updateSection(item.Id, 'Class', detail.selectedOption.value ?? '')}
-      options={getAvailableClasses()}
-      placeholder="Select class/type"
-      invalid={validationErrors[item.Id]?.some((err) => err.includes('class'))}
-      filteringType="auto"
-      expandToViewport
-    />
+    <SpaceBetween size="xs">
+      <Select
+        selectedOption={getAvailableClasses().find((option) => option.value === item.Class) || null}
+        onChange={({ detail }) => updateSection(item.Id, 'Class', detail.selectedOption.value ?? '')}
+        options={getAvailableClasses()}
+        placeholder="Select class/type"
+        invalid={validationErrors[item.Id]?.some((err) => err.includes('class'))}
+        filteringType="auto"
+        expandToViewport
+      />
+      {/* Shown in edit mode too: this is where the class can actually be
+          corrected, so knowing what ground truth expects is most actionable
+          here. */}
+      <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
+    </SpaceBetween>
   </FormField>
 );
 
@@ -566,6 +602,7 @@ const createColumnDefinitions = (
   openViewerSectionIndex: number | null,
   setOpenViewerSectionIndex: (index: number | null) => void,
   onNavigateToSection: (index: number) => void,
+  classificationIndex: ClassificationIndex,
 ) => {
   // Get completed sections from documentItem
   const completedSections = documentItem?.hitlSectionsCompleted || [];
@@ -583,7 +620,7 @@ const createColumnDefinitions = (
     {
       id: 'class',
       header: 'Class/Type',
-      cell: (item: SectionItem) => <ClassCell item={item} />,
+      cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
       minWidth: 200,
       width: 200,
@@ -656,6 +693,7 @@ const createPattern1EditColumnDefinitions = (
   openViewerSectionIndex: number | null,
   setOpenViewerSectionIndex: (index: number | null) => void,
   onNavigateToSection: (index: number) => void,
+  classificationIndex: ClassificationIndex,
 ) => {
   // Get completed sections from documentItem
   const completedSections = documentItem?.hitlSectionsCompleted || [];
@@ -673,7 +711,7 @@ const createPattern1EditColumnDefinitions = (
     {
       id: 'class',
       header: 'Class/Type',
-      cell: (item: SectionItem) => <ClassCell item={item} />,
+      cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
       minWidth: 200,
       width: 200,
@@ -751,6 +789,7 @@ const createEditColumnDefinitions = (
   openViewerSectionIndex: number | null,
   setOpenViewerSectionIndex: (index: number | null) => void,
   onNavigateToSection: (index: number) => void,
+  classificationIndex: ClassificationIndex,
 ) => [
   {
     id: 'id',
@@ -769,6 +808,7 @@ const createEditColumnDefinitions = (
         validationErrors={validationErrors}
         updateSection={updateSection}
         getAvailableClasses={getAvailableClasses}
+        classificationIndex={classificationIndex}
       />
     ),
     minWidth: 200,
@@ -813,7 +853,14 @@ const createEditColumnDefinitions = (
   },
 ];
 
-const SectionsPanel = ({ sections, pages = [], documentItem, mergedConfig, onDocumentUpdate }: SectionsPanelProps): React.JSX.Element => {
+const SectionsPanel = ({
+  sections,
+  pages = [],
+  documentItem,
+  mergedConfig,
+  onDocumentUpdate,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
+}: SectionsPanelProps): React.JSX.Element => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
@@ -965,26 +1012,9 @@ const SectionsPanel = ({ sections, pages = [], documentItem, mergedConfig, onDoc
   }, [isEditMode, sections]);
 
   // Get available classes from the document's config version (passed in as
-  // `mergedConfig`). Each option surfaces the class description so users can
-  // pick the correct class without leaving the dropdown.
-  const getAvailableClasses = () => {
-    if (!configuration?.classes) return [];
-    return (configuration.classes as Record<string, unknown>[])
-      .map((cls: Record<string, unknown>) => {
-        // Support both JSON Schema and legacy formats
-        // JSON Schema: $id or x-aws-idp-document-type
-        // Legacy: name
-        const className = String(cls.$id || cls['x-aws-idp-document-type'] || cls.name || '');
-        const description = typeof cls.description === 'string' ? cls.description.trim() : '';
-
-        return {
-          label: className,
-          value: className,
-          description: description || undefined,
-        };
-      })
-      .filter((option) => option.value); // Remove any undefined entries
-  };
+  // `mergedConfig`). Shared with Test Studio's annotation editor, which offers
+  // the same correction against the same config.
+  const getAvailableClasses = () => getConfigClassOptions(configuration);
 
   // Generate next sequential section ID
   const getNextSectionId = () => {
@@ -1377,6 +1407,7 @@ const SectionsPanel = ({ sections, pages = [], documentItem, mergedConfig, onDoc
           openViewerSectionIndex,
           setOpenViewerSectionIndex,
           handleNavigateToSection,
+          classificationIndex,
         )
       : createEditColumnDefinitions(
           validationErrors,
@@ -1392,6 +1423,7 @@ const SectionsPanel = ({ sections, pages = [], documentItem, mergedConfig, onDoc
           openViewerSectionIndex,
           setOpenViewerSectionIndex,
           handleNavigateToSection,
+          classificationIndex,
         )
     : createColumnDefinitions(
         pages,
@@ -1404,6 +1436,7 @@ const SectionsPanel = ({ sections, pages = [], documentItem, mergedConfig, onDoc
         openViewerSectionIndex,
         setOpenViewerSectionIndex,
         handleNavigateToSection,
+        classificationIndex,
       );
 
   // Sort sections by their starting page ID for consistent display order.

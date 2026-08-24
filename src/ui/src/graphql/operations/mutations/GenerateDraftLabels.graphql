@@ -1,0 +1,14 @@
+mutation GenerateDraftLabels($input: GenerateDraftLabelsInput!) {
+  generateDraftLabels(input: $input) {
+    jobId
+    testSetId
+    status
+    total
+    labeled
+    configVersion
+    error
+    createdAt
+    completedAt
+    skippedAlreadyLabeled
+  }
+}

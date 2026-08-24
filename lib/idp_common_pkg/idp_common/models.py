@@ -369,6 +369,8 @@ class Document:
     metadata: Dict[str, Any] = field(default_factory=dict)
     trace_id: Optional[str] = None
     config_version: Optional[str] = None  # Configuration version to use for processing
+    submission_source: Optional[str] = None
+    test_set_id: Optional[str] = None
     evaluation_status: Optional[str] = None
     evaluation_report_uri: Optional[str] = None
     evaluation_results_uri: Optional[str] = None
@@ -436,6 +438,8 @@ class Document:
             "metering": self.metering,
             "trace_id": self.trace_id,
             "config_version": self.config_version,
+            "submission_source": self.submission_source,
+            "test_set_id": self.test_set_id,
             "confidence_alert_count": self.confidence_alert_count,
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
@@ -543,6 +547,8 @@ class Document:
             metering=data.get("metering", {}),
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
+            submission_source=data.get("submission_source"),
+            test_set_id=data.get("test_set_id"),
             errors=data.get("errors", []),
         )
 
@@ -645,6 +651,8 @@ class Document:
 
         # Read S3 metadata to get configuration version if available
         config_version = None
+        submission_source = None
+        test_set_id = None
         try:
             import boto3
 
@@ -657,6 +665,13 @@ class Document:
                 logger.info(f"Found config version in S3 metadata: {config_version}")
             else:
                 logger.info(f"No config-version found in metadata for {input_key}")
+            submission_source = metadata.get("submission-source")
+            test_set_id = metadata.get("test-set-id")
+            if submission_source:
+                logger.info(
+                    f"Document {input_key} submitted by {submission_source}"
+                    + (f" for test set {test_set_id}" if test_set_id else "")
+                )
         except Exception as e:
             logger.warning(f"Could not read S3 metadata for {input_key}: {e}")
 
@@ -668,6 +683,8 @@ class Document:
             initial_event_time=initial_event_time,
             status=Status.QUEUED,
             config_version=config_version,  # Add config version to document
+            submission_source=submission_source,
+            test_set_id=test_set_id,
         )
 
     def to_json(self) -> str:

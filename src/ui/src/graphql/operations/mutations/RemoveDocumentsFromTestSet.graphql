@@ -1,0 +1,10 @@
+mutation RemoveDocumentsFromTestSet($testSetId: String!, $fileNames: [String!]!) {
+  removeDocumentsFromTestSet(testSetId: $testSetId, fileNames: $fileNames) {
+    id
+    name
+    fileCount
+    status
+    createdAt
+    lastAddResult
+  }
+}

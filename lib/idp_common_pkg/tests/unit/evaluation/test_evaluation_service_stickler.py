@@ -1526,3 +1526,319 @@ def test_document_rollup_weight_does_not_double_count_fps():
         f"weighted_overall_score={actual_weighted!r} does not match expected "
         f"{expected_weighted!r} — FP double-counting regression?"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: sections whose class has no extractable schema must not be
+# scored as 0.0. They should be flagged ``evaluation_skipped=True`` and drop
+# out of the document- and run-level weighted means entirely. Previously such
+# sections dragged the weighted score to 0.0, producing the 0.0-0.1 histogram
+# spike users saw for test sets that mixed real classes with no-op classes
+# (OtherDocument / DeliveryNote where only Invoice had a schema).
+# ---------------------------------------------------------------------------
+
+
+def _invoice_only_config():
+    """Config used by the no-op-exclusion tests: only ``Invoice`` has a schema."""
+    return {
+        "classes": [
+            {
+                "$id": "invoice",
+                "x-aws-idp-document-type": "Invoice",
+                "type": "object",
+                "properties": {
+                    "invoice_number": {"type": "string"},
+                    "total_amount": {"type": "number"},
+                },
+            }
+        ]
+    }
+
+
+@pytest.mark.unit
+def test_evaluate_section_class_not_in_config_and_no_expected_is_skipped():
+    """A class absent from the config with no expected data is a scoring no-op.
+
+    Previously ``_get_stickler_model`` raised ``ValueError`` and the caller
+    returned a 0.0-scored ``SectionEvaluationResult``. That 0.0 dragged the
+    document-level weighted mean down for docs whose sections were all
+    non-invoice classes. The fix returns an ``evaluation_skipped`` stub with
+    ``weighted_overall_score=None`` so the aggregator drops the section from
+    the weighted mean entirely.
+    """
+    svc = EvaluationService(
+        region="us-east-1", config=_invoice_only_config(), max_workers=1
+    )
+    section = Section(section_id="1", classification="OtherDocument", page_ids=["1"])
+
+    result = svc.evaluate_section(
+        section=section,
+        expected_results={},
+        actual_results={},
+    )
+
+    assert result.metrics.get("evaluation_skipped") is True
+    assert result.metrics.get("weighted_overall_score") is None
+    assert result.metrics.get("exclusion_reason") == "no_extractable_schema"
+    # No attributes are surfaced — Stickler was never invoked.
+    assert result.attributes == []
+
+
+@pytest.mark.unit
+def test_evaluate_section_class_with_empty_properties_is_skipped():
+    """A class configured with zero properties is also a scoring no-op.
+
+    Some configs define a class name (so classification can label a page)
+    but leave the extractable attribute list empty. Comparing two empty
+    dicts through Stickler produces a garbage 0.0; skip instead.
+    """
+    config = {
+        "classes": [
+            {
+                "$id": "cover-sheet",
+                "x-aws-idp-document-type": "CoverSheet",
+                "type": "object",
+                "properties": {},
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="1", classification="CoverSheet", page_ids=["1"])
+
+    result = svc.evaluate_section(
+        section=section,
+        expected_results={},
+        actual_results={},
+    )
+
+    assert result.metrics.get("evaluation_skipped") is True
+    assert result.metrics.get("weighted_overall_score") is None
+
+
+@pytest.mark.unit
+def test_document_rollup_ignores_skipped_sections_and_weights_only_scored():
+    """Mixed doc: 1 scored Invoice section + 2 no-op sections.
+
+    Weighted mean should equal the Invoice section's score exactly — the
+    no-op sections neither contribute to the numerator nor the denominator.
+    Under the previous behavior each no-op section contributed 0.0 with
+    fn=1, pulling the average down and inflating false-negatives.
+    """
+    svc = EvaluationService(
+        region="us-east-1", config=_invoice_only_config(), max_workers=1
+    )
+
+    invoice_result = SectionEvaluationResult(
+        section_id="1",
+        document_class="Invoice",
+        attributes=[],
+        metrics={
+            "weighted_overall_score": 0.85,
+            "_stickler_counts": {"tp": 4, "fa": 0, "fd": 0, "fp": 0, "tn": 1, "fn": 1},
+        },
+    )
+    other_result = SectionEvaluationResult(
+        section_id="2",
+        document_class="OtherDocument",
+        attributes=[],
+        metrics={
+            "weighted_overall_score": None,
+            "evaluation_skipped": True,
+            "exclusion_reason": "no_extractable_schema",
+        },
+    )
+    delivery_result = SectionEvaluationResult(
+        section_id="3",
+        document_class="DeliveryNote",
+        attributes=[],
+        metrics={
+            "weighted_overall_score": None,
+            "evaluation_skipped": True,
+            "exclusion_reason": "no_extractable_schema",
+        },
+    )
+
+    doc = Document(
+        id="mixed-doc",
+        input_key="mixed.pdf",
+        input_bucket="in-bucket",
+        output_bucket="out-bucket",
+        status=Status.EXTRACTING,
+    )
+    doc.sections.append(
+        Section(section_id="1", classification="Invoice", page_ids=["1"])
+    )
+    doc.sections.append(
+        Section(section_id="2", classification="OtherDocument", page_ids=["2"])
+    )
+    doc.sections.append(
+        Section(section_id="3", classification="DeliveryNote", page_ids=["3"])
+    )
+
+    def fake_process_section(actual_section, _expected_section):
+        if actual_section.section_id == "1":
+            return invoice_result, {
+                "tp": 4,
+                "fp": 0,
+                "fn": 1,
+                "tn": 1,
+                "fp1": 0,
+                "fp2": 0,
+            }
+        if actual_section.section_id == "2":
+            return other_result, {
+                "tp": 0,
+                "fp": 0,
+                "fn": 0,
+                "tn": 0,
+                "fp1": 0,
+                "fp2": 0,
+            }
+        return delivery_result, {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "fp1": 0, "fp2": 0}
+
+    with patch.object(svc, "_process_section", side_effect=fake_process_section):
+        with patch("idp_common.s3.write_content"):
+            result = svc.evaluate_document(doc, doc, store_results=False)
+
+    weighted = result.evaluation_result.overall_metrics["weighted_overall_score"]
+    assert abs(weighted - 0.85) < 1e-9, (
+        f"weighted_overall_score={weighted!r} — skipped sections must not "
+        f"contribute to the weighted mean; expected 0.85 from Invoice alone."
+    )
+    # Excluded-flag is NOT set: at least one section was scored.
+    assert not result.evaluation_result.overall_metrics.get("evaluation_excluded")
+    assert result.evaluation_result.overall_metrics.get("skipped_section_count") == 2
+
+
+@pytest.mark.unit
+def test_document_rollup_all_sections_skipped_yields_none_score():
+    """Doc whose every section is a no-op → weighted score is ``None``, not 0.0.
+
+    Guarantees the Test Studio histogram / lowest-scores tables never see a
+    0.000 for these docs — the aggregation Lambda drops None entries out of
+    ``weightedOverallScores`` before the UI reads them.
+    """
+    svc = EvaluationService(
+        region="us-east-1", config=_invoice_only_config(), max_workers=1
+    )
+
+    other_result = SectionEvaluationResult(
+        section_id="1",
+        document_class="OtherDocument",
+        attributes=[],
+        metrics={
+            "weighted_overall_score": None,
+            "evaluation_skipped": True,
+            "exclusion_reason": "no_extractable_schema",
+        },
+    )
+    delivery_result = SectionEvaluationResult(
+        section_id="2",
+        document_class="DeliveryNote",
+        attributes=[],
+        metrics={
+            "weighted_overall_score": None,
+            "evaluation_skipped": True,
+            "exclusion_reason": "no_extractable_schema",
+        },
+    )
+
+    doc = Document(
+        id="all-noop-doc",
+        input_key="all-noop.pdf",
+        input_bucket="in-bucket",
+        output_bucket="out-bucket",
+        status=Status.EXTRACTING,
+    )
+    doc.sections.append(
+        Section(section_id="1", classification="OtherDocument", page_ids=["1"])
+    )
+    doc.sections.append(
+        Section(section_id="2", classification="DeliveryNote", page_ids=["2"])
+    )
+
+    def fake_process_section(actual_section, _expected_section):
+        if actual_section.section_id == "1":
+            return other_result, {
+                "tp": 0,
+                "fp": 0,
+                "fn": 0,
+                "tn": 0,
+                "fp1": 0,
+                "fp2": 0,
+            }
+        return delivery_result, {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "fp1": 0, "fp2": 0}
+
+    with patch.object(svc, "_process_section", side_effect=fake_process_section):
+        with patch("idp_common.s3.write_content"):
+            result = svc.evaluate_document(doc, doc, store_results=False)
+
+    overall = result.evaluation_result.overall_metrics
+    assert overall["weighted_overall_score"] is None, (
+        f"weighted_overall_score should be None for a fully-excluded doc, "
+        f"got {overall['weighted_overall_score']!r}"
+    )
+    assert overall.get("evaluation_excluded") is True
+    assert overall.get("exclusion_reason") == "no_extractable_schema"
+    assert overall.get("skipped_section_count") == 2
+
+
+@pytest.mark.unit
+def test_evaluate_section_class_not_in_config_but_expected_has_data_still_evaluates():
+    """A class missing from config *with* expected data still gets auto-inferred.
+
+    Guards against the exclusion check being too aggressive: when there IS
+    expected data for a missing class, the service can auto-infer a schema
+    and evaluate normally (existing behavior). The no-op path only kicks in
+    when there is literally nothing to compare.
+    """
+    svc = EvaluationService(
+        region="us-east-1", config=_invoice_only_config(), max_workers=1
+    )
+    section = Section(section_id="1", classification="Receipt", page_ids=["1"])
+
+    result = svc.evaluate_section(
+        section=section,
+        expected_results={"amount": 42.0},
+        actual_results={"amount": 42.0},
+    )
+
+    # NOT skipped — the schema was auto-inferred and evaluation ran.
+    assert not result.metrics.get("evaluation_skipped")
+
+
+@pytest.mark.unit
+def test_has_no_extractable_schema_helper():
+    """Direct coverage of ``_has_no_extractable_schema`` boolean matrix."""
+    svc = EvaluationService(
+        region="us-east-1", config=_invoice_only_config(), max_workers=1
+    )
+
+    # Class in config, has properties → NOT no-op
+    assert svc._has_no_extractable_schema("Invoice", expected_results={}) is False
+
+    # Class not in config, no expected data → no-op
+    assert svc._has_no_extractable_schema("OtherDocument", expected_results={}) is True
+    assert (
+        svc._has_no_extractable_schema("OtherDocument", expected_results=None) is True
+    )
+
+    # Class not in config, expected has data → NOT no-op (auto-infer path)
+    assert svc._has_no_extractable_schema("Receipt", expected_results={"a": 1}) is False
+
+    # Class in config with empty properties → no-op
+    svc_empty = EvaluationService(
+        region="us-east-1",
+        config={
+            "classes": [
+                {
+                    "$id": "cover",
+                    "x-aws-idp-document-type": "Cover",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        },
+        max_workers=1,
+    )
+    assert svc_empty._has_no_extractable_schema("Cover", expected_results={}) is True

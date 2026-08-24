@@ -18,7 +18,7 @@ import type { InputProps } from '@cloudscape-design/components';
 import { useSchemaDesigner } from '../../hooks/useSchemaDesigner';
 import { useSchemaValidation } from '../../hooks/useSchemaValidation';
 import { useDebounce } from '../../hooks/useDebounce';
-import { TYPE_OPTIONS, X_AWS_IDP_DOCUMENT_TYPE } from '../../constants/schemaConstants';
+import { TYPE_OPTIONS, X_AWS_IDP_DOCUMENT_TYPE, X_AWS_IDP_RULE_ID } from '../../constants/schemaConstants';
 import SchemaCanvas from './SchemaCanvas';
 import SchemaInspector from './SchemaInspector';
 import SchemaPreviewTabs from './SchemaPreviewTabs';
@@ -213,6 +213,32 @@ const SchemaBuilder = ({
       const updates: Record<string, unknown> = {};
       if (newAttributeDescription.trim()) {
         updates.description = newAttributeDescription.trim();
+      }
+
+      // Auto-generate rule_id for rule schemas from the attribute name
+      if (isRuleSchema) {
+        let ruleId = attrName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_|_$/g, '');
+        // Fallback if slug is empty (e.g. all-punctuation name)
+        if (!ruleId) {
+          ruleId = `rule_${Date.now()}`;
+        }
+        // Ensure uniqueness within the class
+        const selectedClass = classes.find((c) => c.id === selectedClassId);
+        if (selectedClass) {
+          const existingIds = new Set(
+            Object.values(selectedClass.attributes?.properties || {}).map((p: Record<string, unknown>) => p[X_AWS_IDP_RULE_ID] as string),
+          );
+          let suffix = 2;
+          const baseId = ruleId;
+          while (existingIds.has(ruleId)) {
+            ruleId = `${baseId}_${suffix}`;
+            suffix++;
+          }
+        }
+        updates[X_AWS_IDP_RULE_ID] = ruleId;
       }
 
       // If object or array and a reference class is selected, add $ref

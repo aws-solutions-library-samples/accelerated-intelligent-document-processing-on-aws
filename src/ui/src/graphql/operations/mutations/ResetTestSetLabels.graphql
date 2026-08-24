@@ -1,0 +1,10 @@
+mutation ResetTestSetLabels($testSetId: String!) {
+  resetTestSetLabels(testSetId: $testSetId) {
+    id
+    name
+    fileCount
+    status
+    createdAt
+    lastAddResult
+  }
+}

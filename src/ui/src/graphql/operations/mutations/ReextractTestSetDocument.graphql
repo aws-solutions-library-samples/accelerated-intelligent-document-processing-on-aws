@@ -1,0 +1,13 @@
+mutation ReextractTestSetDocument($input: ReextractTestSetDocumentInput!) {
+  reextractTestSetDocument(input: $input) {
+    jobId
+    testSetId
+    status
+    total
+    labeled
+    configVersion
+    error
+    createdAt
+    completedAt
+  }
+}

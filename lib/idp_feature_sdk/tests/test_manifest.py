@@ -216,3 +216,80 @@ def test_agent_source_requires_some_package_form(demo_feature_project: Path) -> 
     )
     with pytest.raises(ManifestError, match="is invalid"):
         load_manifest(demo_feature_project)
+
+
+# ---------------------------------------------------------------------------
+# marketplace.licenseMode — which authority the EXTENSION enforces against.
+#
+# These exist because the field shipped unreachable once already: the dataclass
+# read it and pack.py baked it into the template, but the JSON schema declares
+# `marketplace.additionalProperties: false` and did not list it, so validation
+# rejected every manifest that used it before the model ever saw it. Reader,
+# baker AND schema all have to agree, so the tests go through `load_manifest`
+# (which validates) rather than constructing MarketplaceSpec directly.
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest(root, license_mode_line=""):
+    from textwrap import dedent
+
+    (root / "feature.yaml").write_text(
+        dedent(f"""
+            featureId: demo-feature
+            displayName: Demo Feature
+            version: 1.2.3
+            template:
+              path: template.yaml
+              requiresMainStackName: true
+            ui:
+              bundlePath: feature-ui/dist/ui-bundle.js
+            marketplace:
+              productCode: prod-demo
+              listingUrl: https://aws.amazon.com/marketplace/pp/prodview-XYZ
+            {license_mode_line}
+        """).strip(),
+        encoding="utf-8",
+    )
+    # load_manifest also resolves template.path and the ui bundle on disk.
+    (root / "template.yaml").write_text("Resources: {}\n", encoding="utf-8")
+    bundle = root / "feature-ui" / "dist"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "ui-bundle.js").write_text("// stub\n", encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("mode", ["none", "simulated", "marketplace-live"])
+def test_license_mode_validates_and_reaches_the_model(tmp_path, mode):
+    """Every documented value must survive schema validation.
+
+    The schema is the gate: a value the schema rejects never reaches the
+    dataclass, however correctly the dataclass is written.
+    """
+    root = _write_manifest(tmp_path, f"  licenseMode: {mode}")
+    manifest = load_manifest(str(root))
+    assert manifest.marketplace.licenseMode == mode
+
+
+def test_license_mode_is_optional(tmp_path):
+    """Omitting it is the common case and must stay valid.
+
+    None (not "none") on the model, so a caller can tell "said nothing" from
+    "said check nothing"; pack.py is what turns absence into the `none` default.
+    """
+    root = _write_manifest(tmp_path)
+    manifest = load_manifest(str(root))
+    assert manifest.marketplace.licenseMode is None
+
+
+def test_unrecognised_license_mode_is_rejected_at_validate_time(tmp_path):
+    """A typo must fail the publish, not be silently dropped at install.
+
+    The host drops an unrecognised value from the registerFeature payload with a
+    warning, which is the right fail-safe there but far too late to be the only
+    check: by then the extension is deployed and the host is quietly using its
+    catalog default instead.
+    """
+    root = _write_manifest(tmp_path, "  licenseMode: marketplace_live")
+    with pytest.raises(ManifestError) as exc:
+        load_manifest(str(root))
+    assert "licenseMode" in str(exc.value)

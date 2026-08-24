@@ -145,15 +145,56 @@ Parameters:
 
   SubscriptionMode:
     Type: String
-    Default: 'marketplace'
-    AllowedValues: ['auto', 'simulator', 'marketplace']
-    Description: Sets the SIMULATOR_SOURCE_TAG env var on the entitlement
-      Lambdas. 'auto' short-circuits checkFeatureEntitlement to ACTIVE for
-      every feature (no Marketplace call) — used when the main stack
-      neither deploys the simulator nor is configured with a real
-      Marketplace endpoint. 'simulator' targets the auto-deployed
-      simulator EC2. 'marketplace' targets a real or admin-supplied
-      Marketplace endpoint.
+    # Matches the main stack's FeaturePlatformSubscriptionMode default. These
+    # deliberately agree: the main stack always passes a value down, so this
+    # default only applies to a standalone nested deploy — and there the safe
+    # landing place is the real check. It previously defaulted to 'marketplace',
+    # which silently lands on the seller-side API that cannot verify anything
+    # from a buyer account.
+    Default: 'marketplace-live'
+    # REDUCED TO A KILL SWITCH. This parameter used to do three jobs — pick the
+    # authority, name the reported source, and switch checks off — and only the
+    # last is genuinely stack-scoped. The authority is now declared PER EXTENSION
+    # (`licenseMode` in config_library/extensions-marketplace.yaml and in the
+    # extension's own template), because choosing it once for the whole stack made
+    # it impossible to host a listed product checked against real AWS Marketplace
+    # alongside in-development extensions checked against a simulator.
+    #
+    # Only 'auto' still has a live meaning: check nothing on this stack. The other
+    # three values are accepted for backward compatibility and are read solely as
+    # step 3 of the resolver's migration chain, for a catalog.json published
+    # before `licenseMode` existed. They are scheduled for removal — see
+    # CHANGELOG.
+    #
+    # This parameter cannot make the host claim a verified subscription. The
+    # reported entitlementSource is derived from the endpoint the resolver
+    # actually called for that feature, so a simulator-backed answer is always
+    # reported as 'simulated'. See _reported_source and _resolve_authority in
+    # lambdas/check_feature_entitlement/index.py.
+    AllowedValues: ['auto', 'simulator', 'marketplace', 'marketplace-live']
+    Description: Stack-wide KILL SWITCH for host-side subscription checks, via
+      the SIMULATOR_SOURCE_TAG env var. Set 'auto' to switch checks off
+      entirely — every catalog feature is treated as subscribed, no Marketplace
+      call is made, and the UI goes straight to the Install prompt (a dev escape
+      hatch; it reports entitlementSource='auto', which extensions treat as
+      unverified). The other values are DEPRECATED and no longer select which
+      API the host calls — that is now each extension's own `licenseMode`
+      declaration. They remain only so a stack whose catalog predates
+      `licenseMode` keeps behaving as it did.
+
+  MarketplaceAgreementRegion:
+    Type: String
+    Default: 'us-east-1'
+    Description: Region the AWS Marketplace Agreement API (SearchAgreements) is
+      called in for any extension whose licenseMode is 'marketplace-live'. In the 'aws'
+      partition the API exists ONLY in us-east-1 (verified against the SDK's
+      endpoint data) — setting this to the stack's own Region makes every
+      SearchAgreements call fail to connect and every entitlement degrade
+      permanently to 'advisory'. Leave it at the default unless AWS documents an
+      endpoint for your partition; the resolver logs a loud warning at cold
+      start if the value isn't a Region the Agreement API is published in.
+      Not constrained by AllowedValues so GovCloud/ISO partitions can still set
+      their own endpoint if one appears.
 
   DefaultCustomerIdentifier:
     Type: String
@@ -217,13 +258,16 @@ Parameters:
   SellerBucketObjectArns:
     Type: CommaDelimitedList
     Default: ''
-    Description: (Optional) Object-level S3 ARNs (each ending in /*) of private
-      AWS Marketplace seller buckets that hold closed-source feature templates,
-      e.g. the S3 object ARN of idp-seller-prod with a /* suffix.
-      getFeatureLaunchUrl presigns GetObject against these (after an entitlement
-      check) so the CFN console can fetch the template. Each seller bucket's own
-      bucket policy must also grant this stack's role s3:GetObject. Leave blank
-      for OSS-only stacks.
+    Description: >-
+      (Optional) Object-level S3 ARNs (each ending in /*) of PRIVATE extension
+      artifact buckets, e.g. an OSS extension self-published to your own bucket.
+      Grants this stack's role s3:GetObject so listInstalledFeatures can fall
+      back to a SIGNED read of latest.json for "Update available" badges when
+      the anonymous read is refused. Leave blank in the normal case — published
+      extension artifacts are public-read, so the unsigned read works and no
+      grant is needed. Not required for launching a Marketplace extension; its
+      template URL is a bare public S3 URL (there is no presign, see the
+      getFeatureLaunchUrl module docstring).
 
   LogLevel:
     Type: String
@@ -331,14 +375,16 @@ Resources:
           - !Ref AWS::NoValue
         - !If
           - HasSellerBuckets
-          - PolicyName: SellerBucketPresign
+          - PolicyName: PrivateExtensionArtifactRead
             PolicyDocument:
               Version: '2012-10-17'
               Statement:
-                # GetObject on private Marketplace seller buckets so
-                # get_feature_launch_url can presign the closed-source template
-                # for an entitled admin. The seller bucket's own bucket policy
-                # must also grant this role. GetObject-only — no ListBucket.
+                # GetObject on PRIVATE extension artifact buckets, so
+                # list_installed_features can fall back to a signed read of
+                # latest.json when the anonymous read is refused. Only needed for
+                # a self-published private bucket; published artifacts are
+                # public-read. The bucket's own policy must also grant this role.
+                # GetObject-only — no ListBucket.
                 - Effect: Allow
                   Action: s3:GetObject
                   Resource: !Ref SellerBucketObjectArns
@@ -347,9 +393,19 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # GetEntitlements: the simulator / endpoint-override path, and a
+              # secondary signal for SaaS *Contract* products.
+              # SearchAgreements: the BUYER-side subscription check used by
+              # SubscriptionMode=marketplace-live. Buyer-side by design — no
+              # License Manager service role required (ListReceivedLicenses
+              # fails with "Service role not found" until one is created, which
+              # we cannot require of a customer account). Neither action
+              # supports resource-level permissions.
               - Effect: Allow
                 Action:
                   - aws-marketplace:GetEntitlements
+                  - aws-marketplace:SearchAgreements
+                  - aws-marketplace:DescribeAgreement
                 Resource: '*'
         # `getFeatureLaunchUrl` calls cloudformation:DescribeStacks to resolve
         # an existing feature stack's ARN. The ARN is then embedded in a
@@ -484,10 +540,31 @@ Resources:
           # with subscribeFeature when no explicit CustomerIdentifier is present
           # (the simulator mints a random CustomerIdentifier per subscribe).
           DEFAULT_BUYER_ACCOUNT_ID: !Ref DefaultBuyerAccountId
+          # Kill switch only ('auto' = check nothing), plus step 3 of the
+          # resolver's migration chain for a catalog with no `licenseMode`.
           SIMULATOR_SOURCE_TAG: !Ref SubscriptionMode
-          AWS_ENDPOINT_URL_MARKETPLACE_ENTITLEMENT_SERVICE: !Ref SimulatorEntitlementEndpoint
+          # WHERE the simulator lives. Stack-scoped on purpose: the stack says
+          # where the simulator is, each extension's `licenseMode` says whether
+          # it uses it. Location is a property of the deployment; authority is a
+          # property of the extension.
+          #
+          # Deliberately NOT passed as AWS_ENDPOINT_URL_MARKETPLACE_* any more.
+          # Those variables are per-FUNCTION, so while boto3 read the endpoint
+          # from the environment this one Lambda could only ever be aimed at one
+          # authority — the simulator for every extension, or real AWS for every
+          # extension. That was not a stack-wide policy choice; it was what
+          # forced stack-wide behaviour. The resolver now passes endpoint_url
+          # explicitly per request, selected from the feature's own licenseMode,
+          # and pops the legacy variables at import so "no endpoint" genuinely
+          # means real AWS. Blank = no simulator on this stack.
+          MARKETPLACE_SIMULATOR_ENDPOINT: !Ref SimulatorEntitlementEndpoint
+          # AWS Marketplace lives in us-east-1; the buyer-side Agreement API used
+          # by licenseMode=marketplace-live is not available in every region.
+          MARKETPLACE_AGREEMENT_REGION: !Ref MarketplaceAgreementRegion
           # Catalog lookup: OSS features short-circuit to ACTIVE (install-direct,
-          # no entitlement). Mirrors GetFeatureLaunchUrlFunction.
+          # no entitlement), and marketplace features resolve productCode /
+          # productId from here when not yet installed. Mirrors
+          # GetFeatureLaunchUrlFunction.
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           CATALOG_KEY: !Ref CatalogKey
           LOG_LEVEL: !Ref LogLevel
@@ -508,8 +585,12 @@ Resources:
         Variables:
           SIMULATOR_ADMIN_ENDPOINT: !Ref SimulatorEntitlementEndpoint
           # productCode + marketplaceListingUrl come from the feature's
-          # InstalledFeatures row (baked from the manifest at install).
+          # InstalledFeatures row (baked from the manifest at install), falling
+          # back to catalog.json — which is the path that actually matters here,
+          # since Subscribe runs BEFORE the install row exists.
           INSTALLED_FEATURES_TABLE: !Ref InstalledFeaturesTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
+          CATALOG_KEY: !Ref CatalogKey
           FEATURE_OFFER_ID_MAP: !Ref FeatureOfferIdMap
           DEFAULT_CUSTOMER_IDENTIFIER: !Ref DefaultCustomerIdentifier
           DEFAULT_BUYER_ACCOUNT_ID: !Ref DefaultBuyerAccountId

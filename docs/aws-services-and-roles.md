@@ -50,6 +50,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon Cognito** | Manages user authentication and authorization | ✓ | ✓ |
 | **AWS AppSync** | Provides GraphQL API for the web UI | ✓ | ✓ |
 | **AWS WAF** | Protects web applications from web exploits (optional) | ✓ | ✓ |
+| **AWS Marketplace (Agreement / Catalog / Entitlement)** | Subscription checks for paid Feature Platform extensions. In the **host** stack, buyer-side `SearchAgreements`. In the optional **Seller Entitlement Service** (deployed separately, into a *seller* account), seller-side `SearchAgreements` + `ListEntities` | — | ✓ |
 
 ### Monitoring & Operations
 
@@ -181,6 +182,13 @@ The solution creates various IAM roles to run different components of the system
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
   * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working.
 
+* **Configuration Resolver Role** (API resolver Lambda for configuration CRUD + Z3 RuleJSON generation):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`
+  * `s3:GetObject` (configuration bucket)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`
+  * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
+  * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
+
 * **Cognito Authentication Role**:
   * `appsync:GraphQL`
   * `s3:GetObject` (for UI assets and buckets)
@@ -240,6 +248,14 @@ The solution creates various IAM roles to run different components of the system
   * `lambda:InvokeFunction` (MCP handler)
   * `bedrock-agentcore:InvokeAgentRuntime`
   * `logs:*`
+
+* **Seller Entitlement Service — Activation Role** (`feature-platform/seller-entitlement-service/`, deployed **standalone into an AWS Marketplace seller account**, *not* part of the main stack):
+  * `aws-marketplace:SearchAgreements`, `DescribeAgreement`, `GetAgreementTerms`, `GetEntitlements`, `ResolveCustomer` — seller-side entitlement reads. `Resource: "*"`: these actions do **not** support resource-level permissions. Read-only by design (no `BatchMeterUsage`/catalog writes), asserted by a static test.
+  * `kms:Sign` on the stack's own asymmetric `TokenSigningKey` only — **not** `GetPublicKey`, `PutKeyPolicy`, or `ScheduleKeyDeletion`, so a compromised function cannot re-point trust.
+  * `dynamodb:UpdateItem` on the stack's `ActivationsTable` only — write-only, so the function cannot read or delete the seller's customer roster.
+  * `logs:CreateLogStream`, `logs:PutLogEvents` (via `AWSLambdaBasicExecutionRole`).
+  * Accepts `PermissionsBoundaryArn` and attaches it when set.
+  * Deploying operator additionally needs `marketplace-catalog:ListEntities` for the ownership preflight, plus the usual CloudFormation/IAM/KMS/DynamoDB create permissions.
 
 > **Container-image Lambdas:** The pattern processing functions (OCR, classification, extraction, assessment, summarization, BDA, evaluation, rule validation, etc.) are deployed as **container images** from Amazon ECR. Each function's execution role therefore also includes `ecr:GetDownloadUrlForLayer`, `ecr:BatchGetImage`, and `ecr:BatchCheckLayerAvailability` (via a shared managed policy).
 

@@ -6,6 +6,8 @@ import { Routes, Route } from 'react-router-dom';
 import TestStudioLayout from '../components/test-studio/TestStudioLayout';
 import TestSetDetail from '../components/test-studio/TestSetDetail';
 import TestSetDocumentDetail from '../components/test-studio/TestSetDocumentDetail';
+import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
+import AnnotationQueueLanding from '../components/test-studio/AnnotationQueueLanding';
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 
 const TestStudioRoutes = (): React.JSX.Element => {
@@ -18,6 +20,27 @@ const TestStudioRoutes = (): React.JSX.Element => {
           <div>
             <GenAIIDPTopNavigation />
             <TestSetDocumentDetail />
+          </div>
+        }
+      />
+      {/* The scoped annotation queue — the landing page for an Annotator, and
+          reachable by an owner from the test set's detail page. Declared before
+          the bare sets/:testSetId route so "annotate" isn't swallowed as an id. */}
+      <Route
+        path="sets/:testSetId/annotate"
+        element={
+          <div>
+            <GenAIIDPTopNavigation />
+            <AnnotationWorkspace />
+          </div>
+        }
+      />
+      <Route
+        path="annotate"
+        element={
+          <div>
+            <GenAIIDPTopNavigation />
+            <AnnotationQueueLanding />
           </div>
         }
       />

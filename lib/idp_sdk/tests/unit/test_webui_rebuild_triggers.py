@@ -82,7 +82,13 @@ def _repo_root() -> Path:
 @pytest.fixture(scope="module")
 def template() -> dict:
     with open(_repo_root() / "template.yaml", "r", encoding="utf-8") as f:
-        return yaml.load(f, Loader=_CFNLoader)
+        # nosec B506 - _CFNLoader extends yaml.SafeLoader (see class definition
+        # above); it is NOT the default unsafe yaml.Loader, so no
+        # Python-object construction is possible. The only customization is a
+        # no-op multi-constructor for `!`-prefixed CloudFormation intrinsic
+        # tags that returns plain scalars/sequences/mappings. Input is this
+        # repo's own committed template.yaml, not untrusted user input.
+        return yaml.load(f, Loader=_CFNLoader)  # nosec B506
 
 
 # CodeBuild env vars that affect the *built artifact* but are not named VITE_*.

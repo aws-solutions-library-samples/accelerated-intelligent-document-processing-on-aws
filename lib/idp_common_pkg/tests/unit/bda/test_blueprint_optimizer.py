@@ -197,6 +197,24 @@ class TestCreateBlueprintForClass:
         assert "W-4" in bp_name
         assert "IDP-1" in bp_name
 
+    def test_blueprint_name_is_valid_for_a_class_id_with_a_space(
+        self, optimizer, mock_blueprint_creator
+    ):
+        """A class id with a space would otherwise fail CreateBlueprint here
+        too — this path composes its own name rather than reusing the sync
+        path's, so it needs the same sanitization."""
+        import re
+
+        optimizer._create_blueprint_for_class(
+            _make_class_schema(class_id="Task cards"), "default"
+        )
+
+        bp_name = mock_blueprint_creator.create_blueprint.call_args.kwargs[
+            "blueprint_name"
+        ]
+        assert re.match(r"^[a-zA-Z0-9_-]+$", bp_name), bp_name
+        assert "IDP-1-Task-cards-" in bp_name
+
     def test_does_not_mutate_original_schema(self, optimizer):
         """Original class_schema should not be modified (deepcopy used)."""
         schema = _make_class_schema(properties={"field": {"type": "string"}})

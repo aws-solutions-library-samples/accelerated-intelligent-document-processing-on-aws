@@ -5,7 +5,7 @@
 export interface FeatureContext {
   featureApiEndpoint: string | null;
   getAuthToken: () => Promise<string>;
-  subscriptionActive: boolean;
+  uiAccessAllowed: boolean;
   installedVersion: string;
 }
 

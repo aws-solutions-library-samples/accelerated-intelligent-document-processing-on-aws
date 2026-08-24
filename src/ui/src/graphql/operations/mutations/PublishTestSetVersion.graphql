@@ -1,0 +1,12 @@
+mutation PublishTestSetVersion($input: PublishTestSetVersionInput!) {
+  publishTestSetVersion(input: $input) {
+    testSetId
+    version
+    label
+    notes
+    fileCount
+    activeReference
+    createdAt
+    createdBy
+  }
+}

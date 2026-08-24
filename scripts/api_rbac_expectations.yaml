@@ -208,6 +208,11 @@ operations:
     scope_checked: true
     enforced_in: *cfg
     args: { versionName: "__nope__" }
+  generateRuleJson:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: *cfg
+    args: { ruleDescription: "" }
   deleteConfigVersion:
     groups: [Admin]
     kind: mutation
@@ -310,6 +315,13 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
     # schema: startTestRun(input: TestRunInput!) — wrapped input object
     args: { input: {} }
+  sendTestRunToReview:
+    groups: [Admin, Author]
+    kind: mutation
+    # Shares TestRunnerFunction with startTestRun; the resolver branches on
+    # fieldName after the Admin/Author group check.
+    enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
+    args: { testRunId: "__nope__" }
   getTestRun:
     groups: [Admin, Author]
     kind: read
@@ -343,14 +355,81 @@ operations:
     args: { testRunIds: ["__x__"] }
   getTestSets:
     groups: [Admin, Author]
+    # kind stays `read` — it takes no arguments and returns a list, which is what the
+    # driver needs to know. But it is not side-effect free: it repairs a stale
+    # labelState and fails test sets whose owning job has disappeared, both of which
+    # write to the tracking table. Running `make api-test` against a live stack can
+    # therefore reap a genuinely abandoned test set. That is the intended behaviour, not
+    # a test artefact, but it is worth knowing before pointing the harness at a stack
+    # someone is using.
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
   getTestSetDocuments:
+    # Annotator reads its scoped queue's documents; the resolver additionally
+    # enforces allowedTestSets per set.
+    groups: [Admin, Author, Annotator]
+    kind: read
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set" }
+  getAnnotationQueue:
+    groups: [Admin, Author, Annotator]
+    kind: read
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set" }
+  getTestSetVersions:
     groups: [Admin, Author]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
+  getDraftLabelJob:
+    groups: [Admin, Author]
+    kind: read
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }
+  estimateReviewEffort:
+    # Annotator reads it for their own queue's "what review is buying" panel; the
+    # resolver additionally enforces allowedTestSets per set.
+    groups: [Admin, Author, Annotator]
+    kind: read
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set" }
+  generateDraftLabels:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
+    args: { input: {} }
+  reextractTestSetDocument:
+    # Annotator corrects a misclassified document in their own set; the resolver
+    # additionally enforces allowedTestSets per set.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
+  resetTestSetLabels:
+    # Admin-only: discards human-reviewed labels, so an Author who can otherwise
+    # manage test sets cannot destroy the team's annotation work.
+    groups: [Admin]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set" }
+  clearDraftLabels:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set" }
+  publishTestSetVersion:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    # schema: publishTestSetVersion(input: PublishTestSetVersionInput!)
+    args: { input: {} }
+  removeDocumentsFromTestSet:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "__nope__", fileNames: ["__nope__"] }
   addTestSet:
     groups: [Admin, Author]
     kind: mutation
@@ -404,17 +483,23 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__x__", modifiedSections: [] }
   completeSectionReview:
-    groups: [Admin, Reviewer]
+    # Annotator annotates test-set ground truth; the resolver additionally
+    # requires the document's test set to be in their allowedTestSets.
+    groups: [Admin, Reviewer, Annotator]
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1" }
   claimReview:
-    groups: [Admin, Reviewer]
+    # Annotator annotates test-set ground truth; the resolver additionally
+    # requires the document's test set to be in their allowedTestSets.
+    groups: [Admin, Reviewer, Annotator]
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
   releaseReview:
-    groups: [Admin, Reviewer]
+    # Annotator annotates test-set ground truth; the resolver additionally
+    # requires the document's test set to be in their allowedTestSets.
+    groups: [Admin, Reviewer, Annotator]
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }

@@ -173,7 +173,7 @@ class TestAggregation:
             with patch.object(index, "_load_s3_json") as mock_load_s3:
                 mock_load_s3.return_value = mock_s3_results
 
-                results, scores, graded = index._load_comparison_results(
+                results, scores, graded, excluded = index._load_comparison_results(
                     "test-run-123", "test-table"
                 )
 
@@ -184,6 +184,8 @@ class TestAggregation:
                 assert scores["doc1.pdf"] == 0.95
                 # No doc_split_metrics in this fixture → empty graded map.
                 assert graded == {}
+                # No no-op sections in this fixture → empty excluded list.
+                assert excluded == []
 
     def test_load_comparison_results_skips_incomplete(self, mock_env):
         """Test that incomplete evaluations are skipped."""
@@ -204,13 +206,14 @@ class TestAggregation:
         with patch.object(index, "dynamodb") as mock_dynamodb:
             mock_dynamodb.Table.return_value = incomplete_table
 
-            results, scores, graded = index._load_comparison_results(
+            results, scores, graded, excluded = index._load_comparison_results(
                 "test-run-123", "test-table"
             )
 
             assert len(results) == 0
             assert len(scores) == 0
             assert graded == {}
+            assert excluded == []
 
     def test_empty_metrics(self, mock_env):
         """Test empty metrics structure."""
@@ -227,6 +230,10 @@ class TestAggregation:
         # resolver's DynamoDB write never misses the key (the stale-cache
         # guard in test_results_resolver keys on its presence).
         assert metrics["graded_packet_metrics"] == {}
+        # excluded_documents / excluded_document_count follow the same idiom
+        # so the UI never has to distinguish "field absent" from "0 excluded".
+        assert metrics["excluded_documents"] == []
+        assert metrics["excluded_document_count"] == 0
 
     def test_calculate_false_alarm_rate(self, mock_env):
         """Test false alarm rate calculation.
@@ -357,6 +364,76 @@ class TestAggregation:
         assert "rand_index" not in result["mean"]
         assert "avg_ordering_score" not in result["mean"]
 
+    def test_load_comparison_results_flags_docs_with_null_weighted_score(
+        self, mock_env
+    ):
+        """Docs whose sections are all no-ops emit ``weighted_overall_score: None``.
+
+        The aggregator must (a) exclude those docs from ``doc_weighted_scores``
+        so the UI histogram + lowest-scores tables don't render a synthetic
+        0.0 bar, and (b) still surface them via ``excluded_doc_keys`` so a
+        follow-up UI change can render an "N excluded" tile.
+        """
+        index = import_test_module()
+
+        table = MagicMock()
+        table.scan.return_value = {
+            "Items": [
+                {
+                    "PK": "doc#test-run-123#scored.pdf",
+                    "ObjectKey": "scored.pdf",
+                    "EvaluationStatus": "COMPLETED",
+                },
+                {
+                    "PK": "doc#test-run-123#noop.pdf",
+                    "ObjectKey": "noop.pdf",
+                    "EvaluationStatus": "COMPLETED",
+                },
+            ]
+        }
+
+        def fake_load(uri):
+            if "scored.pdf" in uri:
+                return {
+                    "overall_metrics": {"weighted_overall_score": 0.9},
+                    "section_results": [
+                        {"section_id": "1", "stickler_comparison_result": {"tp": 1}}
+                    ],
+                }
+            return {
+                "overall_metrics": {
+                    "weighted_overall_score": None,
+                    "evaluation_excluded": True,
+                    "exclusion_reason": "no_extractable_schema",
+                },
+                "section_results": [
+                    {
+                        "section_id": "1",
+                        # Excluded sections carry no stickler_comparison_result;
+                        # the metrics dict flags them evaluation_skipped.
+                        "metrics": {
+                            "evaluation_skipped": True,
+                            "weighted_overall_score": None,
+                        },
+                    }
+                ],
+            }
+
+        with patch.object(index, "dynamodb") as mock_dynamodb:
+            mock_dynamodb.Table.return_value = table
+            with patch.object(index, "_load_s3_json", side_effect=fake_load):
+                results, scores, _graded, excluded = index._load_comparison_results(
+                    "test-run-123", "test-table"
+                )
+
+        # Only the scored doc contributed a Stickler comparison result and a
+        # weighted score. The no-op doc is absent from ``doc_weighted_scores``
+        # and present in ``excluded_doc_keys``.
+        assert len(results) == 1
+        assert set(scores) == {"scored.pdf"}
+        assert scores["scored.pdf"] == 0.9
+        assert excluded == ["noop.pdf"]
+
     def test_load_comparison_results_reads_graded_packet_metrics(self, mock_env):
         """When ``doc_split_metrics`` is present in results.json, the graded
         packet fields flow into ``doc_graded_packet_scores`` keyed by doc.
@@ -396,7 +473,7 @@ class TestAggregation:
         with patch.object(index, "dynamodb") as mock_dynamodb:
             mock_dynamodb.Table.return_value = table
             with patch.object(index, "_load_s3_json", return_value=payload):
-                _, _, graded = index._load_comparison_results(
+                _, _, graded, _excluded = index._load_comparison_results(
                     "test-run-123", "test-table"
                 )
 
@@ -1009,3 +1086,281 @@ class TestBrierScoreKeyRename:
         }
         out = index._rename_brier_score_key(cm)
         assert out["overall"]["brier"] == {"value": 0.5}
+
+
+class TestConfidenceCurveRecording:
+    """`_record_confidence_curve` folds a scoring run into the review estimator.
+
+    A scoring run is the only source that measures the high-confidence range human
+    review never opens, so it is what lets an estimate call itself "measured" — and
+    what makes it dangerous when the run is not independent of the labels.
+    """
+
+    BINS = [{"bin_start": 0.9, "bin_end": 1.0, "count": 10, "accuracy": 0.99}]
+
+    def _run(self, index, items, result=None, jobs=None):
+        """Invoke the recorder against a fake table; return the CurveStore calls.
+
+        ``jobs`` are the set's labeljob# items, which is how the guard discovers
+        every config that drafted labels rather than only the newest.
+        """
+        recorded = []
+
+        class FakeTable:
+            def get_item(self, Key):  # noqa: N803 — boto3 kwarg name
+                item = items.get((Key["PK"], Key["SK"]))
+                return {"Item": item} if item else {}
+
+            def query(self, **kwargs):
+                return {"Items": list(jobs or [])}
+
+        class FakeStore:
+            def __init__(self, _table):
+                pass
+
+            def add_ece_bins(self, test_set_id, bins, config_version=None):
+                recorded.append((test_set_id, bins, config_version))
+                return len(bins)
+
+        payload = (
+            result
+            if result is not None
+            else {"confidence_metrics": {"overall": {"ece": {"bins": self.BINS}}}}
+        )
+        with (
+            patch.object(index.dynamodb, "Table", lambda _n: FakeTable()),
+            patch("idp_common.evaluation.curve_store.CurveStore", FakeStore),
+        ):
+            index._record_confidence_curve("run-2", "tracking", payload)
+        return recorded
+
+    def test_records_a_run_scored_against_reviewed_labels(self, mock_env):
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v2",
+                },
+                ("testset#ts1", "metadata"): {
+                    "labelState": "labeled",
+                    "labelJobId": "run-1",
+                },
+                ("testrun#run-1", "metadata"): {"ConfigVersion": "v1"},
+            },
+            jobs=[{"jobId": "run-1"}],
+        )
+        assert recorded == [("ts1", self.BINS, "v2")]
+
+    def test_refuses_a_run_scored_against_labels_its_own_config_drafted(self, mock_env):
+        """The self-comparison case: extraction reproduces its own draft.
+
+        Folding this in reports near-perfect accuracy for labels nobody checked —
+        "99% accuracy, measured on this test set" — which is the false confidence
+        the quality tiers exist to prevent.
+        """
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v1",
+                },
+                ("testset#ts1", "metadata"): {
+                    "labelState": "draft",
+                    "labelJobId": "run-1",
+                },
+                ("testrun#run-1", "metadata"): {"ConfigVersion": "v1"},
+            },
+            jobs=[{"jobId": "run-1"}],
+        )
+        assert recorded == []
+
+    def test_records_a_different_config_against_the_same_drafts(self, mock_env):
+        """Scoring config B against config A's drafts is a real measurement."""
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v2",
+                },
+                ("testset#ts1", "metadata"): {
+                    "labelState": "draft",
+                    "labelJobId": "run-1",
+                },
+                ("testrun#run-1", "metadata"): {"ConfigVersion": "v1"},
+            },
+            jobs=[{"jobId": "run-1"}],
+        )
+        assert recorded == [("ts1", self.BINS, "v2")]
+
+    def test_records_once_labels_have_been_reviewed(self, mock_env):
+        """Same config, but a human has confirmed the labels — no longer circular."""
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v1",
+                },
+                ("testset#ts1", "metadata"): {
+                    "labelState": "labeled",
+                    "labelJobId": "run-1",
+                },
+                ("testrun#run-1", "metadata"): {"ConfigVersion": "v1"},
+            },
+            jobs=[{"jobId": "run-1"}],
+        )
+        assert recorded == [("ts1", self.BINS, "v1")]
+
+    def test_a_non_test_set_run_records_nothing(self, mock_env):
+        index = import_test_module()
+        assert self._run(index, {("testrun#run-2", "metadata"): {}}) == []
+
+    def test_no_ece_bins_records_nothing(self, mock_env):
+        index = import_test_module()
+        assert self._run(index, {}, result={"confidence_metrics": {}}) == []
+
+    def test_a_store_failure_never_fails_aggregation(self, mock_env):
+        """The curve serves a different feature; the dashboard must still update."""
+        index = import_test_module()
+
+        class Boom:
+            def __init__(self, _t):
+                pass
+
+            def add_ece_bins(self, *a, **k):
+                raise RuntimeError("dynamo down")
+
+        class FakeTable:
+            def get_item(self, Key):  # noqa: N803
+                return {"Item": {"TestSetId": "ts1", "ConfigVersion": "v2"}}
+
+        with (
+            patch.object(index.dynamodb, "Table", lambda _n: FakeTable()),
+            patch("idp_common.evaluation.curve_store.CurveStore", Boom),
+        ):
+            index._record_confidence_curve(
+                "run-2",
+                "tracking",
+                {"confidence_metrics": {"overall": {"ece": {"bins": self.BINS}}}},
+            )
+
+    def test_a_reextract_under_another_config_does_not_un_gate_the_guard(
+        self, mock_env
+    ):
+        """The set's pointer names the newest job, which may be a one-doc re-extract.
+
+        Config v1 drafted the whole set; one document was later re-extracted under
+        v2, moving the pointer. Scoring v1 is still measuring v1 against its own
+        output for every other document, so it must stay refused.
+        """
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v1",
+                },
+                ("testset#ts1", "metadata"): {
+                    "labelState": "draft",
+                    "labelJobId": "run-reextract",
+                },
+                ("testrun#run-1", "metadata"): {"ConfigVersion": "v1"},
+                ("testrun#run-reextract", "metadata"): {"ConfigVersion": "v2"},
+            },
+            jobs=[{"jobId": "run-1"}, {"jobId": "run-reextract"}],
+        )
+        assert recorded == [], "v1 was folded in against labels v1 drafted"
+
+    def test_an_unreadable_job_list_fails_open(self, mock_env):
+        """A transient read error must not silently stop the estimator measuring.
+
+        Missing a refusal is recoverable (reset the curve); dropping every
+        observation is a feature that never leaves "prior".
+        """
+        index = import_test_module()
+        recorded = []
+
+        class FakeTable:
+            def get_item(self, Key):  # noqa: N803
+                return {
+                    "Item": {
+                        "TestSetId": "ts1",
+                        "ConfigVersion": "v1",
+                        "labelState": "draft",
+                    }
+                }
+
+            def query(self, **kwargs):
+                raise RuntimeError("dynamo down")
+
+        class FakeStore:
+            def __init__(self, _t):
+                pass
+
+            def add_ece_bins(self, test_set_id, bins, config_version=None):
+                recorded.append((test_set_id, config_version))
+                return len(bins)
+
+        with (
+            patch.object(index.dynamodb, "Table", lambda _n: FakeTable()),
+            patch("idp_common.evaluation.curve_store.CurveStore", FakeStore),
+        ):
+            index._record_confidence_curve(
+                "run-2",
+                "tracking",
+                {"confidence_metrics": {"overall": {"ece": {"bins": self.BINS}}}},
+            )
+        assert recorded == [("ts1", "v1")]
+
+
+class TestPerFieldAccuracyIntervals:
+    """Per-field accuracy carries its sample size and margin.
+
+    The point estimate alone cannot distinguish 100% on 3 observations from 100% on
+    300, which is how a broken field hides inside a healthy overall score.
+    """
+
+    def test_interval_is_attached_from_the_existing_counts(self, mock_env):
+        index = import_test_module()
+        fields = {
+            "invoice.total": {"tp": 90, "tn": 0, "fp": 5, "fn": 5, "cm_accuracy": 0.90},
+        }
+        out = index._with_accuracy_intervals(fields)
+        m = out["invoice.total"]
+        assert m["accuracy_observations"] == 100
+        # Same denominator accuracy itself uses, so the interval qualifies the
+        # number displayed beside it.
+        assert m["accuracy_low"] < 0.90 < m["accuracy_high"]
+        assert 0.05 < m["accuracy_margin"] < 0.07
+
+    def test_a_small_sample_gets_a_visibly_wider_margin(self, mock_env):
+        """The whole point: 9/10 and 900/1000 are both "90%"."""
+        index = import_test_module()
+        out = index._with_accuracy_intervals(
+            {
+                "few": {"tp": 9, "tn": 0, "fp": 0, "fn": 1},
+                "many": {"tp": 900, "tn": 0, "fp": 0, "fn": 100},
+            }
+        )
+        assert out["few"]["accuracy_margin"] > 5 * out["many"]["accuracy_margin"]
+        assert out["few"]["accuracy_high"] <= 1.0
+
+    def test_a_field_with_no_observations_gets_no_interval(self, mock_env):
+        """Absent, not 0% — which would read as "always wrong"."""
+        index = import_test_module()
+        out = index._with_accuracy_intervals({"never_seen": {"tp": 0, "fn": 0}})
+        assert "accuracy_observations" not in out["never_seen"]
+
+    def test_non_dict_entries_and_payloads_are_left_alone(self, mock_env):
+        index = import_test_module()
+        assert index._with_accuracy_intervals(None) == {}
+        out = index._with_accuracy_intervals({"weird": "not a dict"})
+        assert out["weird"] == "not a dict"

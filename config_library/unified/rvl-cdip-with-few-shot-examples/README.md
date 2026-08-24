@@ -21,8 +21,8 @@ This directory contains a comprehensive configuration example for the GenAI IDP 
 This configuration demonstrates the few-shot example prompting capability, where you can provide concrete examples of documents along with their expected classification and extraction outputs. The system uses these examples to better understand document patterns and improve accuracy.
 
 Key features:
-- **Few-shot classification examples**: Uses `classPrompt` with example images to improve document classification
-- **Few-shot extraction examples**: Uses `attributesPrompt` with example images to improve attribute extraction  
+- **Few-shot classification examples**: Uses `x-aws-idp-class-prompt` with example images to improve document classification
+- **Few-shot extraction examples**: Uses `x-aws-idp-attributes-prompt` with example images to improve attribute extraction  
 - **Class-specific examples**: Extraction examples are filtered by document class for targeted learning
 - **Multimodal examples**: Combines text prompts with actual document images
 
@@ -46,9 +46,9 @@ The configuration handles various business document types including:
 
 Examples are defined within each document class and contain:
 - **name**: Descriptive name for the example
-- **classPrompt**: Text used for classification few-shot prompting
-- **attributesPrompt**: Text used for extraction few-shot prompting with expected attribute values
-- **imagePath**: Path to the example document image
+- **x-aws-idp-class-prompt**: Text used for classification few-shot prompting
+- **x-aws-idp-attributes-prompt**: Text used for extraction few-shot prompting with expected attribute values
+- **x-aws-idp-image-path**: Path to the example document image
 
 Example structure:
 ```yaml
@@ -57,14 +57,14 @@ classes:
     description: "A formal written correspondence..."
     attributes: [...]
     examples:
-      - classPrompt: "This is an example of the class 'letter'"
+      - x-aws-idp-class-prompt: "This is an example of the class 'letter'"
         name: "Letter1"
-        attributesPrompt: |
+        x-aws-idp-attributes-prompt: |
           expected attributes are:
               "sender_name": "Will E. Clark",
               "sender_address": "206 Maple Street P.O. Box 1056 Murray Kentucky 42071-1056",
               ...
-        imagePath: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
 ```
 
 ### Classification Settings
@@ -101,14 +101,14 @@ Other classes (form, invoice, resume, etc.) are defined but don't have examples 
 
 1. When classifying a document, the system includes examples from ALL document classes
 2. Each example shows what a document of that class looks like
-3. Uses `classPrompt` text and document images from the examples
+3. Uses `x-aws-idp-class-prompt` text and document images from the examples
 4. Helps the model distinguish between different document types
 
 ### For Extraction  
 
 1. When extracting from a document of class X, the system includes examples ONLY from class X
 2. Each example shows the expected attribute extraction for that document type
-3. Uses `attributesPrompt` text and document images from the examples
+3. Uses `x-aws-idp-attributes-prompt` text and document images from the examples
 4. Provides concrete guidance on what attributes to extract and their expected format
 
 ### Path Resolution
@@ -117,7 +117,7 @@ The system supports flexible image path resolution:
 
 - **Local development**: Set `ROOT_DIR` environment variable to project root
 - **S3 deployment**: Set `CONFIGURATION_BUCKET` environment variable
-- **Direct S3 URIs**: Use full `s3://bucket/key` paths in imagePath
+- **Direct S3 URIs**: Use full `s3://bucket/key` paths in x-aws-idp-image-path
 
 ## How to Use
 
@@ -137,13 +137,13 @@ To add examples for existing classes:
 2. Add example entries to the class definition:
    ```yaml
    examples:
-     - classPrompt: "This is an example of the class 'your_class'"
+     - x-aws-idp-class-prompt: "This is an example of the class 'your_class'"
        name: "YourExample1" 
-       attributesPrompt: |
+       x-aws-idp-attributes-prompt: |
          expected attributes are:
              "attribute1": "example_value1",
              "attribute2": "example_value2"
-       imagePath: "config_library/unified/few_shot_example/example-images/your_example.jpg"
+       x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/your_example.jpg"
    ```
 
 ### 3. Create New Classes with Examples
@@ -151,7 +151,7 @@ To add examples for existing classes:
 1. Define a new class in the `classes` array
 2. Add attributes for the class
 3. Create example documents and add them to `example-images/`
-4. Add example definitions with both `classPrompt` and `attributesPrompt`
+4. Add example definitions with both `x-aws-idp-class-prompt` and `x-aws-idp-attributes-prompt`
 
 ## Testing the Configuration
 
@@ -183,7 +183,7 @@ Trade-offs:
 
 1. **Quality Examples**: Use clear, representative examples of each document type
 2. **Diverse Examples**: Include examples that cover edge cases and variations
-3. **Accurate Labels**: Ensure `attributesPrompt` values are correct and consistent
+3. **Accurate Labels**: Ensure `x-aws-idp-attributes-prompt` values are correct and consistent
 4. **Image Quality**: Use high-resolution, clear images for examples
 5. **Balanced Coverage**: Provide examples for your most important document classes
 

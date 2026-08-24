@@ -112,6 +112,23 @@ config_library/samples-manifest.json
 api-test-results/
 zap-reports/
 
+# Local scratch / capture artifacts — never committed. Some contain customer
+# references from live-stack captures and must never reach a fork or upstream.
+.playwright-mcp/
+proto-*.png
+proto2-*.png
+proto3-*.png
+live-*.png
+live-testsets-snapshot.md
+
 # draw.io editor backup files
 *.bkp
 .$*
+
+# Z3 development/test artifacts
+Dockerfile.z3-github
+docs/design/
+insurance-underwriting-demo/
+notebook/
+test_z3/
+*.whl

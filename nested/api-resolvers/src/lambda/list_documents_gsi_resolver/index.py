@@ -40,6 +40,13 @@ MAX_PAGE_SIZE = 200
 # GSI name
 TYPE_DATE_INDEX = "TypeDateIndex"
 
+# TypeDateIndex hash-key values; must match idp_common.dynamodb.service. Documents
+# submitted by Test Studio carry their own ItemType, so they never appear in the
+# production Document List. Auto Optimizer submissions are NOT tagged today — they
+# would need to stamp submission-source the way the test copier does.
+ITEM_TYPE_DOCUMENT = "document"
+ITEM_TYPE_TEST_DOCUMENT = "test-document"
+
 # HITL statuses that indicate a completed/skipped review
 COMPLETED_HITL_STATUSES = {"skipped", "reviewskipped", "completed", "reviewcompleted"}
 
@@ -139,6 +146,21 @@ def handler(event, context):
         raise ValueError(f"Unknown field: {field_name}")
 
 
+def _item_type_for_view(view):
+    """Which TypeDateIndex hash key to query for the requested view.
+
+    PRODUCTION (the default) lists ordinary uploads; TEST lists documents submitted
+    by Test Studio. The views are mutually exclusive by design;
+    there is no combined view.
+
+    Selecting on the index key rather than filtering a projected attribute keeps
+    pagination exact: DynamoDB applies FilterExpression after Limit, so a filtered
+    page of 50 can return a single row plus a nextToken, with no indication that
+    the rest were dropped.
+    """
+    return ITEM_TYPE_TEST_DOCUMENT if str(view or "").upper() == "TEST" else ITEM_TYPE_DOCUMENT
+
+
 def list_documents(event):
     """
     List documents using TypeDateIndex GSI with server-side pagination and RBAC filtering.
@@ -178,24 +200,25 @@ def list_documents(event):
         "ScanIndexForward": False,  # Newest first
     }
     
-    # Key condition: always filter by ItemType = "document"
+    # Key condition: the ItemType selects the view (production vs test-submitted).
+    item_type = _item_type_for_view(args.get("view"))
     if start_dt and end_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) &
             Key("InitialEventTime").between(start_dt, end_dt)
         )
     elif start_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) &
             Key("InitialEventTime").gte(start_dt)
         )
     elif end_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) &
             Key("InitialEventTime").lte(end_dt)
         )
     else:
-        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq("document")
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
     
     # RBAC: Server-side filtering for Reviewer-only users
     # Reviewer sees: HITL-pending documents (not completed/skipped) that are either
@@ -239,7 +262,8 @@ def list_documents(event):
         )
         query_kwargs["FilterExpression"] = filter_expr
         logger.info(f"Applied reviewer filter for user: {reviewer_id} / {reviewer_email}")
-    
+
+
     # Handle pagination token
     if next_token:
         try:
@@ -316,7 +340,9 @@ def get_document_count(event):
     table_name = os.environ["TRACKING_TABLE_NAME"]
     table = dynamodb.Table(table_name)
     
-    # Build GSI count query
+    # Build GSI count query. Must use the same view as listDocuments, or the
+    # header count would not match the rows on screen.
+    item_type = _item_type_for_view(args.get("view"))
     query_kwargs = {
         "IndexName": TYPE_DATE_INDEX,
         "Select": "COUNT",
@@ -324,21 +350,21 @@ def get_document_count(event):
     
     if start_dt and end_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) & 
             Key("InitialEventTime").between(start_dt, end_dt)
         )
     elif start_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) & 
             Key("InitialEventTime").gte(start_dt)
         )
     elif end_dt:
         query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq("document") & 
+            Key("ItemType").eq(item_type) & 
             Key("InitialEventTime").lte(end_dt)
         )
     else:
-        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq("document")
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
     
     logger.info(f"Counting documents: start={start_dt}, end={end_dt}")
     

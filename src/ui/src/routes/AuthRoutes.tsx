@@ -10,6 +10,7 @@ import { Spinner } from '@cloudscape-design/components';
 import { SettingsContext } from '../contexts/settings';
 import useParameterStore from '../hooks/use-parameter-store';
 import useAppContext from '../contexts/app';
+import useUserRole from '../hooks/use-user-role';
 
 import DocumentsRoutes from './DocumentsRoutes';
 import DocumentsQueryRoutes from './DocumentsQueryRoutes';
@@ -32,6 +33,7 @@ import {
   FEATURES_PATH_PREFIX,
   WELCOME_PATH,
   WELCOME_DISMISSED_KEY,
+  ANNOTATE_LANDING_PATH,
 } from './constants';
 
 const logger = new ConsoleLogger('AuthRoutes');
@@ -42,6 +44,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
+  const { isAnnotatorOnly } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -71,7 +74,16 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   } catch {
     /* ignore */
   }
-  const landingPath = defaultFeatureId ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}` : welcomeDismissed ? DEFAULT_PATH : WELCOME_PATH;
+  // An Annotator lands in their queue. The welcome page offers Quick Start, the
+  // tour (which ends at Quick Start), Configuration and Upload Document — none of
+  // which they are scoped to, so it would be a page of dead ends.
+  const landingPath = isAnnotatorOnly
+    ? ANNOTATE_LANDING_PATH
+    : defaultFeatureId
+      ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}`
+      : welcomeDismissed
+        ? DEFAULT_PATH
+        : WELCOME_PATH;
 
   if (!settingsLoaded) {
     return (

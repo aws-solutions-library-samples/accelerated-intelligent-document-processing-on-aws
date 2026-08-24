@@ -9,6 +9,7 @@ query GetTestRun($testRunId: String!) {
     failedFiles
     overallAccuracy
     weightedOverallScores
+    excludedDocumentCount
     averageConfidence
     confidenceMetrics
     accuracyBreakdown

@@ -34,10 +34,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-# Default retryable error codes (matched against ClientError codes and exception messages)
+# Default retryable error codes (matched against ClientError codes and exception
+# messages).
+#
+# Matching is CASE-INSENSITIVE: Bedrock's streaming APIs report the same condition
+# with a lower-cased first letter (ConverseStream raises
+# "internalServerException" where Converse raises "InternalServerException"), so a
+# case-sensitive set silently fails to retry transient streaming errors. List one
+# spelling per condition here; both decorators fold case before comparing.
 DEFAULT_RETRYABLE_ERRORS = {
     "ThrottlingException",
-    "throttlingException",
     "ModelThrottledException",  # Strands wrapper for throttling
     "ModelErrorException",
     "ValidationException",
@@ -45,7 +51,6 @@ DEFAULT_RETRYABLE_ERRORS = {
     "RequestLimitExceeded",
     "TooManyRequestsException",
     "ServiceUnavailableException",
-    "serviceUnavailableException",  # lowercase variant from EventStreamError
     "InternalServerException",  # Transient Bedrock server-side errors
     "InternalServerError",  # Variant of InternalServerException
     "RequestTimeout",
@@ -64,6 +69,9 @@ DEFAULT_RETRYABLE_ERRORS = {
     "Read timed out",
     "AWSHTTPSConnectionPool",
 }
+
+# Pre-folded for case-insensitive comparison.
+_DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRORS}
 
 # Default retryable exception types (caught by isinstance check)
 # Only include ModelThrottledException if strands is available
@@ -84,6 +92,8 @@ def async_exponential_backoff_retry[T, **P](
     # Use defaults if not provided
     if retryable_errors is None:
         retryable_errors = DEFAULT_RETRYABLE_ERRORS
+    # Fold case once per decoration rather than on every comparison.
+    retryable_lower = {err.lower() for err in retryable_errors}
     if retryable_exception_types is None:
         retryable_exception_types = DEFAULT_RETRYABLE_EXCEPTION_TYPES
 
@@ -129,7 +139,11 @@ def async_exponential_backoff_retry[T, **P](
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
-                    if error_code not in retryable_errors or attempt == max_retries - 1:
+                    if (
+                        error_code is None
+                        or error_code.lower() not in retryable_lower
+                        or attempt == max_retries - 1
+                    ):
                         raise
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
@@ -149,8 +163,10 @@ def async_exponential_backoff_retry[T, **P](
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
                     exception_str = str(e)
-                    is_retryable_name = exception_name in retryable_errors or any(
-                        err in exception_str for err in retryable_errors
+                    exception_str_lower = exception_str.lower()
+                    is_retryable_name = (
+                        exception_name.lower() in retryable_lower
+                        or any(err in exception_str_lower for err in retryable_lower)
                     )
 
                     if (
@@ -281,14 +297,13 @@ def exponential_backoff_retry[T, **P](
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
+                    # Shares DEFAULT_RETRYABLE_ERRORS with the async decorator so
+                    # both paths retry the same conditions; converse_stream is
+                    # wrapped here, so any streaming-only spelling omitted from
+                    # that set fails the caller on the first attempt.
                     if (
-                        error_code
-                        not in [
-                            "ThrottlingException",
-                            "throttlingException",
-                            "ModelErrorException",
-                            "ValidationException",
-                        ]
+                        error_code is None
+                        or error_code.lower() not in _DEFAULT_RETRYABLE_ERRORS_LOWER
                         or attempt == max_retries - 1
                     ):
                         raise

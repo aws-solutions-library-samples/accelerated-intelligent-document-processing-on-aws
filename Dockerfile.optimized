@@ -26,6 +26,7 @@ ENV UV_LINK_MODE=copy
 ARG FUNCTION_PATH
 ARG INSTALL_IDP_COMMON=true
 ARG INSTALL_GIT=false
+ARG INSTALL_Z3=false
 
 # Create working directory
 WORKDIR /build
@@ -36,10 +37,17 @@ COPY ${FUNCTION_PATH}/requirements.txt* /build/
 
 # Install all dependencies including idp_common_pkg in one step
 # Using mount from uv stage instead of COPY to avoid layer bloat
+# z3-solver is only installed when INSTALL_Z3=true (rule-validation function only)
+# For non-Z3 functions, we strip the [rule_validation] extra which pulls z3-solver
 RUN --mount=from=uv,source=/uv,target=/bin/uv \
   --mount=type=cache,target=/root/.cache/uv \
   if [ -f /build/requirements.txt ]; then \
   sed 's|^\.\./\.\.\(/\.\.\)\?/lib/idp_common_pkg|/tmp/idp_common_pkg|' /build/requirements.txt > /tmp/requirements.txt && \
+  if [ "$INSTALL_Z3" = "true" ]; then \
+    pip3 install --only-binary=z3-solver --target "${LAMBDA_TASK_ROOT}" "z3-solver==4.15.4.0" ; \
+  else \
+    sed -i -E 's/rule_validation,?//g; s/,]/]/g; s/\[,/[/g; s/\[\]//g' /tmp/requirements.txt ; \
+  fi && \
   uv pip install --python python3.12 --target "${LAMBDA_TASK_ROOT}" -r /tmp/requirements.txt && \
   rm /tmp/requirements.txt; \
   fi && \

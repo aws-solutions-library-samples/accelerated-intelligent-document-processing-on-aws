@@ -697,7 +697,7 @@ Resources:
       CodeUri: ./src/lambda/configuration_resolver
       Description: Lambda function to manage configuration through GraphQL API
       MemorySize: 512
-      Timeout: 60
+      Timeout: 120
 
       Layers:
         - !Ref IDPCommonBaseLayerArn
@@ -739,6 +739,14 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/*"
                 - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:blueprint/*"
+            # Bedrock InvokeModel for Z3 RuleJSON generation (translate natural language rules to SMT-LIB)
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*"
         # Read-only access on UsersTable + EmailIndex so the resolver can look up
         # the caller's allowedConfigVersions and enforce config-version scope.
         # Without this, the scope query fails with AccessDenied, is caught, and
@@ -2337,6 +2345,13 @@ Resources:
           INPUT_BUCKET: !Ref InputBucketName
           TEST_SET_BUCKET: !Ref TestSetBucketName
           TEST_SET_COPY_QUEUE_URL: !Ref TestSetFileCopyQueueUrl
+          # generateDraftLabels delegates run creation (config capture + version
+          # pinning) to the test runner rather than duplicating it.
+          TEST_RUNNER_FUNCTION_ARN: !GetAtt TestRunnerFunction.Arn
+          # getAnnotationQueue enforces per-user allowedTestSets scope, which is
+          # stored on the user record. Without this the scope lookup returns
+          # "unrestricted" and a scoped Annotator would be denied everything.
+          USERS_TABLE_NAME: !Ref UsersTableName
           BASELINE_BUCKET: !If
             - ShouldCreateEvaluationBaselineBucket
             - !Ref EvaluationBaselineBucketName
@@ -2358,6 +2373,11 @@ Resources:
               - !Ref EvaluationBaselineBucketName
         - SQSSendMessagePolicy:
             QueueName: !Ref TestSetFileCopyQueueName
+        # The draft-label harvester reads the pipeline's section extraction
+        # results (Sections[].OutputJSONUri) out of the output bucket and writes
+        # them into the test set's baseline/ prefix as draft labels.
+        - S3ReadPolicy:
+            BucketName: !Ref OutputBucketName
         - Statement:
             - Effect: Allow
               Action:
@@ -2367,6 +2387,26 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !Ref CustomerManagedEncryptionKeyArn
+        # generateDraftLabels invokes the test runner synchronously to start the
+        # labeling run.
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt TestRunnerFunction.Arn
+        # Read-only access on UsersTable + EmailIndex so the resolver can look up
+        # the caller's allowedTestSets and enforce per-test-set annotation scope.
+        # Unlike the config-version scope elsewhere, a failed lookup here denies a
+        # scoped Annotator rather than granting unrestricted access (an Annotator
+        # with no resolvable scope is refused), so a missing grant breaks the
+        # annotation queue loudly instead of silently widening access.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
   UploadResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

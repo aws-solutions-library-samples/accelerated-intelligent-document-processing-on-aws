@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -81,6 +82,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             f"avg_weighted_score={avg_weighted_score_str}"
         )
 
+        _record_confidence_curve(test_run_id, tracking_table_name, result)
+
         return {"statusCode": 200, "body": json.dumps(result)}
 
     except Exception as e:
@@ -89,6 +92,128 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "statusCode": 500,
             "body": json.dumps({"error": str(e), "metrics": _empty_metrics()}),
         }
+
+
+def _drafting_config_versions(table, test_set_id: str, exclude_run_id: str) -> set:
+    """Config versions that produced any of this set's draft labels.
+
+    Labeling-job items are per-run (SK ``labeljob#{runId}``) and the job id *is* a
+    test run id, so each one's run record carries the version the runner resolved —
+    no extra field to keep in sync. Returns an empty set if the jobs cannot be read,
+    which makes the caller's guard fail *open*: a curve that misses a refusal is
+    recoverable (reset and rebuild), whereas dropping every observation on a
+    transient read error would silently stop the estimator from ever measuring.
+    """
+    versions = set()
+    try:
+        start_key = None
+        for _ in range(20):
+            kwargs = {
+                "KeyConditionExpression": Key("PK").eq(f"testset#{test_set_id}")
+                & Key("SK").begins_with("labeljob#"),
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            page = table.query(**kwargs)
+            for job in page.get("Items") or []:
+                run_id = job.get("jobId")
+                if not run_id or run_id == exclude_run_id:
+                    continue
+                version = (
+                    table.get_item(
+                        Key={"PK": f"testrun#{run_id}", "SK": "metadata"}
+                    ).get("Item")
+                    or {}
+                ).get("ConfigVersion")
+                if version:
+                    versions.add(version)
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                break
+    except Exception as e:  # noqa: BLE001 — see docstring: guard fails open
+        logger.warning(f"Could not resolve drafting configs for {test_set_id}: {e}")
+    return versions
+
+
+def _record_confidence_curve(
+    test_run_id: str, tracking_table_name: str, result: Dict[str, Any]
+) -> None:
+    """Fold this scoring run's calibration into the test set's confidence curve.
+
+    A scoring run is the highest-fidelity source the review-effort estimator has:
+    it measures correctness across the *whole* confidence range, including the
+    high-confidence zone that worst-first human review never reaches. Only after
+    such a run can the estimate honestly report itself as "measured".
+
+    The ECE bins computed above already are the reliability table the curve
+    stores, so this reuses them rather than recomputing anything.
+
+    Best-effort: the curve is an optimization for a different feature, and
+    failing to update it must not fail the aggregation the dashboard depends on.
+    """
+    try:
+        bins = (
+            ((result or {}).get("confidence_metrics") or {})
+            .get("overall", {})
+            .get("ece", {})
+            .get("bins")
+        )
+        if not bins:
+            logger.info(
+                "No ECE bins in aggregation result; skipping confidence-curve update"
+            )
+            return
+
+        table = dynamodb.Table(tracking_table_name)
+        run = (
+            table.get_item(Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"}).get(
+                "Item"
+            )
+            or {}
+        )
+        test_set_id = run.get("TestSetId")
+        if not test_set_id:
+            return  # Not a test-set run — nothing to attribute the curve to.
+
+        # A run scored against labels the same config drafted measures the config
+        # against itself: extraction reproduces the drafted baseline almost exactly,
+        # the bins fold in as near-perfect accuracy, and the set can report "99%
+        # accuracy, measured on this test set" for labels no human ever checked.
+        # That is precisely the false confidence the quality tiers exist to prevent,
+        # so these observations are refused rather than recorded.
+        run_config = run.get("ConfigVersion")
+        test_set = (
+            table.get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}).get(
+                "Item"
+            )
+            or {}
+        )
+        # Every labeling job, not just the set's current pointer: a one-document
+        # re-extract repoints it, so reading only the newest job would let a run
+        # score the config that drafted the *other* 199 documents.
+        drafted_by = _drafting_config_versions(table, test_set_id, test_run_id)
+        if test_set.get("labelState") == "draft" and run_config in drafted_by:
+            logger.info(
+                f"Skipping confidence-curve update for {test_set_id}: run scored "
+                f"config '{run_config}' against labels that config drafted, which "
+                "would measure the config against itself"
+            )
+            return
+
+        from idp_common.evaluation.curve_store import CurveStore
+
+        accepted = CurveStore(table).add_ece_bins(
+            test_set_id, bins, config_version=run_config
+        )
+        logger.info(
+            f"Recorded {accepted} confidence-curve observation(s) for test set "
+            f"{test_set_id} from scoring run {test_run_id}"
+        )
+    except Exception as e:  # noqa: BLE001 — must not fail aggregation
+        logger.warning(
+            f"Could not update confidence curve for test run {test_run_id}: {e}",
+            exc_info=True,
+        )
 
 
 def aggregate_test_run_with_stickler(
@@ -105,9 +230,12 @@ def aggregate_test_run_with_stickler(
         Dictionary with aggregated metrics matching the existing format
     """
     # Load Stickler comparison results from S3
-    comparison_results, doc_weighted_scores, doc_graded_packet_scores = (
-        _load_comparison_results(test_run_id, tracking_table_name)
-    )
+    (
+        comparison_results,
+        doc_weighted_scores,
+        doc_graded_packet_scores,
+        excluded_doc_keys,
+    ) = _load_comparison_results(test_run_id, tracking_table_name)
 
     if not comparison_results:
         logger.warning(f"No comparison results found for test run: {test_run_id}")
@@ -120,6 +248,8 @@ def aggregate_test_run_with_stickler(
             empty["graded_packet_metrics"] = _aggregate_graded_packet_metrics(
                 doc_graded_packet_scores
             )
+        empty["excluded_documents"] = excluded_doc_keys
+        empty["excluded_document_count"] = len(excluded_doc_keys)
         return empty
 
     # Use Stickler's bulk aggregator
@@ -230,6 +360,8 @@ def aggregate_test_run_with_stickler(
         transformed["graded_packet_metrics"] = _aggregate_graded_packet_metrics(
             doc_graded_packet_scores
         )
+        transformed["excluded_documents"] = excluded_doc_keys
+        transformed["excluded_document_count"] = len(excluded_doc_keys)
         return transformed
 
     except Exception as e:
@@ -241,7 +373,12 @@ def aggregate_test_run_with_stickler(
 
 def _load_comparison_results(
     test_run_id: str, tracking_table_name: str
-) -> tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, Dict[str, float]]]:
+) -> tuple[
+    List[Dict[str, Any]],
+    Dict[str, float],
+    Dict[str, Dict[str, float]],
+    List[str],
+]:
     """
     Load all Stickler comparison results for documents in a test run.
 
@@ -250,20 +387,24 @@ def _load_comparison_results(
         tracking_table_name: DynamoDB tracking table name
 
     Returns:
-        Tuple of (comparison_results, doc_weighted_scores, doc_graded_packet_scores).
+        Tuple of
+        ``(comparison_results, doc_weighted_scores, doc_graded_packet_scores, excluded_doc_keys)``.
         ``doc_graded_packet_scores`` maps doc_key → the graded packet metrics
         dict (``{final_score, clustering_score, v_measure, rand_index,
         avg_ordering_score}``) computed per document by
         ``compute_graded_packet_metrics``. Docs written before R14 landed —
         and docs whose gt/pred pages never overlap so ``evaluate_packet``
         can't produce scores — are absent from the map.
+        ``excluded_doc_keys`` lists documents whose every section was a
+        scoring no-op (class has no extractable schema); they contribute no
+        weighted score and are surfaced to the UI as an "excluded" count.
     """
     table = dynamodb.Table(tracking_table_name)
     output_bucket = os.environ.get("OUTPUT_BUCKET")
 
     if not output_bucket:
         logger.error("OUTPUT_BUCKET environment variable not set")
-        return [], {}, {}
+        return [], {}, {}, []
 
     # Scan for all documents matching the test run prefix
     comparison_results = []
@@ -352,11 +493,18 @@ def _load_comparison_results(
                 if stickler_result:
                     doc_comparisons.append(stickler_result)
 
-            # Extract weighted score
+            # Extract weighted score. Docs whose sections were all no-ops
+            # (no extractable schema for the class) emit ``None`` for the
+            # document-level weighted score; the aggregator surfaces those as
+            # ``excluded`` so the UI can show a count tile instead of a
+            # spurious 0.0 bar in the histogram.
             weighted_score = None
+            excluded_from_scoring = False
             if section_results:
-                weighted_score = eval_data.get("overall_metrics", {}).get(
-                    "weighted_overall_score"
+                overall_metrics = eval_data.get("overall_metrics", {}) or {}
+                weighted_score = overall_metrics.get("weighted_overall_score")
+                excluded_from_scoring = bool(
+                    overall_metrics.get("evaluation_excluded") or weighted_score is None
                 )
 
             # R14 graded packet metrics (V-measure / Rand / ordering) computed
@@ -378,6 +526,7 @@ def _load_comparison_results(
                 "doc_key": doc_key,
                 "comparisons": doc_comparisons,
                 "weighted_score": weighted_score,
+                "excluded_from_scoring": excluded_from_scoring,
                 "graded_scores": graded_scores,
                 "success": True,
             }
@@ -386,6 +535,8 @@ def _load_comparison_results(
                 f"Failed to load evaluation results from {eval_results_uri}: {e}"
             )
             return {"doc_key": doc_key, "success": False}
+
+    excluded_doc_keys: List[str] = []
 
     # Execute parallel S3 loads
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -400,6 +551,11 @@ def _load_comparison_results(
                 comparison_results.extend(result["comparisons"])
                 if result["weighted_score"] is not None:
                     doc_weighted_scores[result["doc_key"]] = result["weighted_score"]
+                elif result.get("excluded_from_scoring"):
+                    # Doc had section results but every one was a no-op — keep
+                    # it visible as "excluded" so the UI can distinguish this
+                    # from a load failure.
+                    excluded_doc_keys.append(result["doc_key"])
                 if result.get("graded_scores"):
                     doc_graded_packet_scores[result["doc_key"]] = result[
                         "graded_scores"
@@ -415,7 +571,17 @@ def _load_comparison_results(
         f"Loaded graded packet metrics for {len(doc_graded_packet_scores)} documents "
         f"for test run {test_run_id}"
     )
-    return comparison_results, doc_weighted_scores, doc_graded_packet_scores
+    if excluded_doc_keys:
+        logger.info(
+            f"{len(excluded_doc_keys)} document(s) excluded from scoring for test "
+            f"run {test_run_id} (no extractable schema for any section)"
+        )
+    return (
+        comparison_results,
+        doc_weighted_scores,
+        doc_graded_packet_scores,
+        excluded_doc_keys,
+    )
 
 
 def _load_s3_json(s3_uri: str) -> Dict[str, Any]:
@@ -538,10 +704,47 @@ def _transform_stickler_metrics(
             "fa": metrics.get("fa", 0),
             "fd": metrics.get("fd", 0),
         },
-        "field_metrics": process_eval.field_metrics,
+        "field_metrics": _with_accuracy_intervals(process_eval.field_metrics),
         "document_count": process_eval.document_count,
         "total_time": process_eval.total_time,
     }
+
+
+def _with_accuracy_intervals(field_metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Attach sampling uncertainty to each field's accuracy.
+
+    A per-field accuracy is a proportion measured on however many observations that
+    field happened to get, and the point estimate alone cannot distinguish 100% on 3
+    from 100% on 300. Overall run accuracy firms up within roughly a hundred documents
+    because every document feeds it; a field appearing once per document gains one
+    observation per document, so a broken field can sit inside a healthy overall score.
+
+    Derived from the counts already present, so nothing new is measured or stored.
+    Fields with no observations get no interval rather than a zero-filled one — 0%
+    would read as "always wrong" for a field no document contained.
+    """
+    if not isinstance(field_metrics, dict):
+        return field_metrics or {}
+
+    try:
+        from idp_common.evaluation.intervals import (
+            accuracy_interval_from_confusion_matrix,
+        )
+    except ImportError as e:  # pragma: no cover — the extra is present in this Lambda
+        logger.warning(f"Accuracy intervals unavailable: {e}")
+        return field_metrics
+
+    for metrics in field_metrics.values():
+        if not isinstance(metrics, dict):
+            continue
+        interval = accuracy_interval_from_confusion_matrix(metrics)
+        if interval is None:
+            continue
+        metrics["accuracy_observations"] = interval.observations
+        metrics["accuracy_margin"] = interval.margin
+        metrics["accuracy_low"] = interval.low
+        metrics["accuracy_high"] = interval.high
+    return field_metrics
 
 
 def _aggregate_graded_packet_metrics(
@@ -763,7 +966,13 @@ def _rename_brier_score_key(
 
 
 def _empty_metrics() -> Dict[str, Any]:
-    """Return empty metrics structure."""
+    """Return empty metrics structure.
+
+    ``excluded_documents`` / ``excluded_document_count`` are seeded here (same
+    idiom as ``graded_packet_metrics``) so every return path emits the same
+    shape — the UI can distinguish "field absent" from "0 excluded" without a
+    presence check.
+    """
     return {
         "overall_accuracy": None,
         "weighted_overall_scores": {},
@@ -777,6 +986,8 @@ def _empty_metrics() -> Dict[str, Any]:
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},
+        "excluded_documents": [],
+        "excluded_document_count": 0,
         "document_count": 0,
         "total_time": 0,
     }

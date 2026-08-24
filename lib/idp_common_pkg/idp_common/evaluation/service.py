@@ -576,6 +576,57 @@ class EvaluationService:
             expected_data=expected_data,
         )
 
+    def _has_no_extractable_schema(
+        self,
+        document_class: str,
+        expected_results: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Return True if the section's class has no fields to evaluate.
+
+        A section is a scoring no-op when there is nothing to compare against:
+        the class is either absent from the schema config (and there is no
+        expected data to auto-infer from) or the class is configured with an
+        empty attribute list. Scoring these as ``0.0`` — the previous
+        behavior — drags document-level and run-level weighted averages down
+        even though no extraction failure occurred. Treat them as excluded so
+        the aggregation loop can omit them from the weighted mean.
+        """
+        cache_key = document_class.lower()
+        config = self.stickler_models.get(cache_key)
+        if config is None:
+            # No config — evaluatable only if expected data lets us auto-infer.
+            return not expected_results
+        schema = config.get("schema") or {}
+        properties = schema.get("properties") or {}
+        return len(properties) == 0
+
+    @staticmethod
+    def _build_excluded_section_result(
+        section: Section,
+        document_class: str,
+        exclusion_reason: str,
+        message: str,
+    ) -> SectionEvaluationResult:
+        """Build a stub ``SectionEvaluationResult`` for an excluded section.
+
+        The stub carries ``evaluation_skipped=True`` and ``weighted_overall_score=None``
+        in ``metrics`` so downstream aggregation can distinguish "no fields to
+        score" from a legitimate zero. Field names (``exclusion_reason`` /
+        ``message``) mirror the vocabulary used by ``section_exclusion.py`` so
+        the two exclusion paths share one namespace.
+        """
+        return SectionEvaluationResult(
+            section_id=section.section_id,
+            document_class=document_class,
+            attributes=[],
+            metrics={
+                "weighted_overall_score": None,
+                "evaluation_skipped": True,
+                "exclusion_reason": exclusion_reason,
+                "message": message,
+            },
+        )
+
     def _prepare_stickler_data(self, uri: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Load extraction results and confidence scores from S3.
@@ -1246,6 +1297,28 @@ class EvaluationService:
             f"Evaluating Section {section.section_id} - class: {class_name} using Stickler"
         )
 
+        # No-op detection: a section whose class has no extractable fields
+        # (missing from config with no expected data OR configured with an
+        # empty attribute list) has nothing to score. Emit a skipped-result
+        # stub so the document-level aggregator can exclude it from the
+        # weighted mean instead of counting a spurious 0.0.
+        if self._has_no_extractable_schema(class_name, expected_results):
+            logger.info(
+                "Section %s (class=%s) has no extractable schema — excluding "
+                "from scoring.",
+                section.section_id,
+                class_name,
+            )
+            return self._build_excluded_section_result(
+                section=section,
+                document_class=class_name,
+                exclusion_reason="no_extractable_schema",
+                message=(
+                    f"Class '{class_name}' has no attributes defined in the "
+                    f"evaluation schema; section excluded from scoring."
+                ),
+            )
+
         try:
             # Get Stickler model for this document class
             # Pass expected_results to enable auto-generation if needed
@@ -1442,6 +1515,7 @@ class EvaluationService:
                 field_match = re.search(r"Error in field '([^']+)'", error_message)
                 field_name = field_match.group(1) if field_match else "unknown"
 
+                failure_type = "empty_nested_object"
                 failure_reason = (
                     f"Schema error for document class '{class_name}': "
                     f"Nested object '{field_name}' has no properties defined. "
@@ -1449,6 +1523,7 @@ class EvaluationService:
                     f"Either add properties to '{field_name}' in your schema or remove it entirely."
                 )
             elif "No schema configuration found" in error_message:
+                failure_type = "missing_schema_configuration"
                 failure_reason = (
                     f"No schema configuration found for document class: {class_name}. "
                     f"Cannot evaluate without configuration or baseline data. "
@@ -1456,6 +1531,7 @@ class EvaluationService:
                 )
             else:
                 # Generic schema/configuration error
+                failure_type = "schema_configuration_error"
                 failure_reason = f"Schema configuration error for document class '{class_name}': {error_message}"
 
             return SectionEvaluationResult(
@@ -1481,6 +1557,9 @@ class EvaluationService:
                     "false_discovery_rate": 0.0,
                     "weighted_overall_score": 0.0,
                     "evaluation_failed": True,
+                    # Names the cause so the report can explain *this* failure
+                    # rather than assuming a missing configuration.
+                    "failure_type": failure_type,
                 },
             )
 
@@ -1494,12 +1573,14 @@ class EvaluationService:
             # Check if it's a Pydantic validation error
             error_type = type(e).__name__
             if "ValidationError" in error_type:
+                failure_type = "baseline_data_validation_error"
                 failure_reason = (
                     f"Data validation error: The baseline data format doesn't match the schema for document class '{class_name}'. "
                     f"This typically means the baseline data has different types than expected. "
                     f"Details: {str(e)}"
                 )
             else:
+                failure_type = "unexpected_error"
                 failure_reason = f"Unexpected error during evaluation: {str(e)}"
 
             return SectionEvaluationResult(
@@ -1525,6 +1606,7 @@ class EvaluationService:
                     "false_discovery_rate": 0.0,
                     "weighted_overall_score": 0.0,
                     "evaluation_failed": True,  # Flag to identify failed evaluations
+                    "failure_type": failure_type,
                 },
             )
 
@@ -1580,6 +1662,12 @@ class EvaluationService:
             "fp1": 0,  # -> Stickler `fa` (false alarm: predicted when absent)
             "fp2": 0,  # -> Stickler `fd` (false discovery: predicted wrong value)
         }
+
+        # Skipped no-op sections contribute no confusion-matrix counts —
+        # Stickler was never invoked, so tp/fp/fn/tn all stay at zero and the
+        # document-level rollup treats the section as absent from scoring.
+        if section_result.metrics.get("evaluation_skipped", False):
+            return section_result, metrics
 
         # Check if evaluation failed for this section
         if section_result.metrics.get("evaluation_failed", False):
@@ -1777,6 +1865,12 @@ class EvaluationService:
             total_field_weight = 0.0
             unweighted_score_sum = 0.0
             unweighted_score_count = 0
+            skipped_section_count = 0
+
+            # Map section_id → actual Section so the skipped-section branch
+            # can pull ``page_ids`` / ``classification`` for the excluded-
+            # sections table without re-scanning the document.
+            actual_sections_by_id = {s.section_id: s for s, _ in section_pairs}
 
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -1801,6 +1895,37 @@ class EvaluationService:
 
                         # Add to section results
                         section_results.append(result)
+
+                        # No-op sections (no extractable schema for the class)
+                        # contribute nothing to the document score — Stickler
+                        # was never run and their weighted score is intentionally
+                        # None. Skip the aggregation branch so a spurious 0.0
+                        # doesn't leak in, and record the section in
+                        # ``excluded_sections_info`` so the markdown report's
+                        # "Excluded Sections (Not Evaluated)" table renders it
+                        # alongside the x-aws-idp-exclude-from-processing path.
+                        if result.metrics.get("evaluation_skipped"):
+                            skipped_section_count += 1
+                            skipped_section = actual_sections_by_id.get(section_id)
+                            excluded_sections_info.append(
+                                {
+                                    "section_id": section_id,
+                                    "classification": (
+                                        skipped_section.classification
+                                        if skipped_section
+                                        else result.document_class
+                                    ),
+                                    "exclusion_reason": result.metrics.get(
+                                        "exclusion_reason", "no_extractable_schema"
+                                    ),
+                                    "page_ids": (
+                                        list(skipped_section.page_ids or [])
+                                        if skipped_section
+                                        else []
+                                    ),
+                                }
+                            )
+                            continue
 
                         # Update overall metrics
                         total_tp += metrics["tp"]
@@ -1875,13 +2000,29 @@ class EvaluationService:
             # Calculate document-level weighted overall score. R17: prefer
             # field-count-weighted mean; only fall back to unweighted mean when
             # no section reported counts (e.g. sections that failed evaluation).
+            # Documents whose every section was excluded from scoring (no
+            # extractable schema) get ``None`` so downstream UI / rollups can
+            # render them as "N/A — Excluded" instead of a misleading 0.0.
+            # ``skipped_section_count`` was maintained in the executor loop; no
+            # second pass over section_results.
+            all_sections_skipped = (
+                skipped_section_count > 0
+                and skipped_section_count == len(section_results)
+            )
             if total_field_weight > 0:
                 document_weighted_score = total_weighted_score / total_field_weight
             elif unweighted_score_count > 0:
                 document_weighted_score = unweighted_score_sum / unweighted_score_count
+            elif all_sections_skipped:
+                document_weighted_score = None
             else:
                 document_weighted_score = 0.0
             overall_metrics["weighted_overall_score"] = document_weighted_score
+            if all_sections_skipped:
+                overall_metrics["evaluation_excluded"] = True
+                overall_metrics["exclusion_reason"] = "no_extractable_schema"
+            if skipped_section_count:
+                overall_metrics["skipped_section_count"] = skipped_section_count
 
             execution_time = time.time() - start_time
 

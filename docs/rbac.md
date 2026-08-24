@@ -23,10 +23,51 @@ Four roles are defined as Cognito User Pool groups:
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
 | **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
+| **Annotator** | `Annotator` | Annotates ground truth for assigned test sets only. No access to the document list, configuration, or test sets outside its assignment. |
 
 ### Multi-Group Support
 
 Users can belong to multiple groups. Permissions are the **union** of all group permissions. For example, a user in both `Author` and `Reviewer` groups can both write documents and perform HITL reviews.
+
+## The Annotator Role
+
+`Annotator` exists so ground-truth labeling can be delegated to people who should
+not see the rest of the deployment. It is the only role whose access is granted
+per-object rather than per-feature: an Annotator with no `allowedTestSets` can do
+nothing at all.
+
+**What an Annotator can reach**
+
+| Operation | Purpose |
+|---|---|
+| `getAnnotationQueue` | Their worst-first review queue for one assigned set |
+| `getTestSetDocuments` | The documents and label state of an assigned set |
+| `estimateReviewEffort` | The "what your review is buying" panel in the workspace |
+| `reextractTestSetDocument` | Re-run extraction after correcting a document's class |
+| `claimReview` / `releaseReview` / `completeSectionReview` | Claim a document and save corrected labels |
+
+Everything else in Test Studio — creating sets, publishing versions, generating
+draft labels, resetting labels, deleting — stays Admin/Author. `skipAllSectionsReview`
+is deliberately excluded: marking a document reviewed without opening it is the set
+owner's decision, not an annotator's.
+
+**Two-layer enforcement.** Group membership only reaches the operation; every one
+of the above additionally asserts the target test set is in the caller's
+`allowedTestSets`. The check is centralized in
+`idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
+unreadable users record, a missing attribute, or an empty list all deny. Reaching a
+test-set operation is never the same as being allowed to see a given set.
+
+For the HITL operations the scope is resolved from the document rather than an
+argument: a review document carries the `TestSetId` it came from, and an Annotator
+attempting a document with no `TestSetId` (i.e. ordinary production review work) is
+refused outright.
+
+**Scope caching.** Lookups are cached briefly per Lambda container. The TTL is
+asymmetric on purpose: a populated scope is held for 5 minutes (bounding how long a
+revoked annotator keeps access), while an empty scope is held for only 10 seconds,
+so granting a new assignment takes effect almost immediately rather than leaving the
+user locked out for the full TTL.
 
 ## Permission Matrix
 
@@ -276,9 +317,10 @@ Admins can create users with any of the four roles via the User Management page.
 |-------|-------------|
 | `userId` | Unique identifier (UUID) |
 | `email` | User's email address (used as Cognito username) |
-| `persona` | Role: Admin, Author, Reviewer, or Viewer |
+| `persona` | Role: Admin, Author, Reviewer, Viewer, or Annotator |
 | `status` | User status (active) |
 | `allowedConfigVersions` | Optional list of config version names for scoping |
+| `allowedTestSets` | Optional list of test set ids an Annotator may read and annotate. A separate scope axis from `allowedConfigVersions`, not a replacement — a user may carry both. |
 | `createdAt` | Creation timestamp |
 
 ## Architecture
