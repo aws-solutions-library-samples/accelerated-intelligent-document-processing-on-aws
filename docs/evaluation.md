@@ -91,6 +91,7 @@ https://github.com/user-attachments/assets/0ff17f3e-1eb5-4883-9d6f-3d4e4e84cbea
     - [Evaluation Reports for Nested Structures](#evaluation-reports-for-nested-structures)
     - [Evaluation Metrics for Complex Documents](#evaluation-metrics-for-complex-documents)
   - [Document Split Classification Metrics](#document-split-classification-metrics)
+    - [Seeing which pages were misclassified (Web UI)](#seeing-which-pages-were-misclassified-web-ui)
     - [Overview](#overview)
     - [Three Types of Accuracy](#three-types-of-accuracy)
     - [Report Structure](#report-structure)
@@ -893,6 +894,37 @@ Predicted Section Y: Class=Receipt, Pages=[4, 3]  ❌ No match (wrong order)
 
 Result: 1/2 sections correct = 50% accuracy
 ```
+
+### Seeing which pages were misclassified (Web UI)
+
+The three accuracies above tell you *how much* classification went wrong. The
+**Classification vs Ground Truth** panel on a document's detail page tells you
+*where*: it appears whenever a document was evaluated against ground truth that
+carries section boundaries, directly above the Sections table.
+
+It shows:
+
+- The three summary accuracies, with the page counts behind them.
+- A **Pages** table — one row per page: its ground-truth class, the class this
+  run assigned, and whether they match.
+- A **Sections** table — each ground-truth section beside the predicted section
+  that matched it (with its page ranges), plus any **extra** predicted sections
+  that matched nothing, so an over-split shows both halves of the error rather
+  than only the missing ground-truth section. A section whose pages and class
+  are right but whose page order differs is flagged separately.
+- A **Mismatches only** toggle, on by default when there are mismatches (the
+  usual reason for opening this from a low-scoring document) and off when the
+  run was clean, so the table never looks empty for the wrong reason.
+
+Why this matters when reading scores: a misclassified page was extracted against
+the **wrong schema**, so its low extraction score is a symptom, not the cause.
+Fixing the classification first avoids tuning extraction prompts against a
+document the pipeline was never reading as the right type. The panel says so
+inline when a mismatch is present.
+
+Page numbers in the panel are 1-based, matching the page viewer. (Internally
+`page_indices` in `results.json` are 0-based — computed as
+`page_id - min(page_id)` — so the panel converts them.)
 
 ### Report Structure
 

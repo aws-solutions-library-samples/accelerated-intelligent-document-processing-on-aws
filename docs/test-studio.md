@@ -996,6 +996,14 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 - Export capabilities (JSON/CSV downloads include all metrics)
 - Integrated delete operations
 
+**Diagnosing a low-scoring document.** Opening a document from *Documents with
+Lowest Weighted Overall Scores* lands on its detail page, where the
+**Classification vs Ground Truth** panel shows, per page and per section, what
+the ground truth said the class was and what the run classified it as. Check
+this before reading the extraction scores: a misclassified page was extracted
+against the wrong schema, so its low score is a symptom rather than the cause.
+See [Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
+
 ### Bulk Aggregation with Stickler
 
 Test Studio uses Stickler's `BulkStructuredModelEvaluator` for accurate metric aggregation across multiple documents:

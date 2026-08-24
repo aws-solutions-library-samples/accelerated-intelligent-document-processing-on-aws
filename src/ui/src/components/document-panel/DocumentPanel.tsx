@@ -24,6 +24,7 @@ import './DocumentPanel.css';
 import DocumentViewers from '../document-viewers/DocumentViewers';
 import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
+import ClassificationComparisonPanel from '../classification-comparison';
 import ChatPanel from '../chat-panel';
 import useConfiguration from '../../hooks/use-configuration';
 import usePricing from '../../hooks/use-pricing';
@@ -998,6 +999,14 @@ export const DocumentPanel = ({
           evaluationReportUri={displayedItem.evaluationReportUri}
           summaryReportUri={displayedItem.summaryReportUri}
           ruleValidationResultUri={displayedItem.ruleValidationResultUri}
+          evaluationStatus={displayedItem.evaluationStatus}
+        />
+        {/* Ground truth vs predicted classification. Renders nothing unless the
+            document was evaluated against baseline sections, so it only appears
+            where there is something to compare. Placed above the sections table
+            because a class mismatch explains the extraction scores below it. */}
+        <ClassificationComparisonPanel
+          evaluationReportUri={displayedItem.evaluationReportUri}
           evaluationStatus={displayedItem.evaluationStatus}
         />
         <SectionsPanel
