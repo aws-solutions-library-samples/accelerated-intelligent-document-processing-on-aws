@@ -117,6 +117,52 @@ class TestClassificationHonoursIt:
 
         assert applied == "W2"
         assert [p.classification for p in doc.pages.values()] == ["W2", "W2"]
+        assert all(p.confidence == 1.0 for p in doc.pages.values())
+
+    def test_it_also_builds_the_section_covering_those_pages(self):
+        """The half that stamping pages alone misses, and that only a live run
+        exposed: the already-classified skip returns the document untouched, so a
+        document fresh from OCR reaches extraction with sections == [], produces
+        no fields at all, and the run "succeeds" having extracted nothing.
+        """
+        doc = self._doc_with_pages(forced="W2")
+        assert doc.sections == []
+
+        apply_forced_document_class(doc)
+
+        assert len(doc.sections) == 1
+        section = doc.sections[0]
+        assert section.section_id == "1"
+        assert section.classification == "W2"
+        assert section.page_ids == ["1", "2"]
+        assert section.confidence == 1.0
+
+    def test_one_section_covers_the_whole_document(self):
+        """A reviewer corrected the class of a *document*, not of one span of
+        pages — the same reading the classification service uses when section
+        splitting is disabled."""
+        doc = self._doc_with_pages(forced="W2")
+        doc.pages["3"] = Page(page_id="3")
+
+        apply_forced_document_class(doc)
+
+        assert len(doc.sections) == 1
+        assert doc.sections[0].page_ids == ["1", "2", "3"]
+
+    def test_it_replaces_sections_from_the_wrong_class(self):
+        """Re-extracting under a corrected class must not leave the previous
+        class's sections behind."""
+        from idp_common.models import Section
+
+        doc = self._doc_with_pages(forced="W2")
+        doc.sections = [
+            Section(section_id="1", classification="Bank-Statement", page_ids=["1"]),
+            Section(section_id="2", classification="Bank-Statement", page_ids=["2"]),
+        ]
+
+        apply_forced_document_class(doc)
+
+        assert [s.classification for s in doc.sections] == ["W2"]
 
     def test_it_overrides_an_existing_classification(self):
         """The heart of the fix. The reviewer's request means "the class you
@@ -130,13 +176,16 @@ class TestClassificationHonoursIt:
         assert all(p.classification == "W2" for p in doc.pages.values())
 
     def test_without_a_forced_class_nothing_is_touched(self):
-        """Every ordinary document must still be classified by the model."""
+        """Every ordinary document must still be classified by the model — and
+        must NOT get a section invented for it, which would make the real
+        classification step skip its own work."""
         doc = self._doc_with_pages(forced=None)
 
         applied = apply_forced_document_class(doc)
 
         assert applied is None
         assert all(p.classification is None for p in doc.pages.values())
+        assert doc.sections == []
 
     def test_an_existing_classification_survives_when_nothing_is_forced(self):
         doc = self._doc_with_pages(forced=None, existing="Bank-Statement")
