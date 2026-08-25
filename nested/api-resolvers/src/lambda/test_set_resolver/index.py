@@ -2138,7 +2138,6 @@ def remove_documents_from_test_set(args):
         s3_client, test_set_bucket, test_set_id, allow_unlabeled=True
     )
     new_count = validation.get("input_count", 0)
-    tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
     # Two REMOVEs in one UpdateItem:
     #  - lastAddResult is the ASYNCHRONOUS add flow's completion notice; this
     #    mutation is synchronous, so the caller sees the count in the response
@@ -2150,11 +2149,17 @@ def remove_documents_from_test_set(args):
     #    in, so we can't cheaply build a correct new signature here. Otherwise
     #    every remove would leave a stale signature that burns a wasted full
     #    validate + DDB write on the next poll.
-    tracking_table.update_item(
+    _get_tracking_table().update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         UpdateExpression="SET fileCount = :c REMOVE lastAddResult, contentSignature",
         ExpressionAttributeValues={":c": new_count},
     )
+    # Drop the warm-container memo so this container's next getTestSets
+    # doesn't short-circuit on the pre-remove signature. The signature-
+    # divergence check in _within_reconcile_ttl would catch this anyway
+    # (DDB row's contentSignature was just REMOVEd), but popping is cheap
+    # and explicit.
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(
         f"Removed {removed} document(s) from test set {test_set_id}; "
@@ -2649,6 +2654,17 @@ def get_test_sets():
         paginator = s3_client.get_paginator("list_objects_v2")
         page_iterator = paginator.paginate(Bucket=test_set_bucket, Delimiter="/")
 
+        # Per-request reconcile budget. Cold-container invocations pay 2
+        # paginated list_objects_v2 + 1 HeadObject per registered prefix
+        # before the warm-container memo kicks in, and this resolver runs
+        # under a 60 s timeout with 256 MB. Cap the work here the same way
+        # ``_reconcile_label_state`` caps its own probes (25 / 5 s) — the
+        # remainder is picked up by the next poll, which is what the memo
+        # is designed for. The listing paths do NOT skip on this budget;
+        # only the reconcile-vs-S3 probes are bounded.
+        reconcile_probes = 0
+        reconcile_deadline = time.monotonic() + RECONCILE_PROBE_BUDGET_SECONDS
+
         for page in page_iterator:
             # Check common prefixes (folders)
             for prefix_info in page.get("CommonPrefixes", []):
@@ -2661,6 +2677,16 @@ def get_test_sets():
                 # directly in S3 — no S3 notification fires for that, so this
                 # lazy scan is the only chance to refresh the DDB row.
                 if prefix in existing_test_sets:
+                    # Budget exhausted? Skip the reconcile — the row keeps its
+                    # last-known values on this response, and the next poll's
+                    # warm-container memo takes the fast path for anything we
+                    # already visited this pass.
+                    if (
+                        reconcile_probes >= MAX_RECONCILE_PROBES
+                        or time.monotonic() > reconcile_deadline
+                    ):
+                        continue
+                    reconcile_probes += 1
                     reconciled = _reconcile_test_set_tracking_entry(
                         s3_client,
                         test_set_bucket,
@@ -2792,6 +2818,12 @@ def get_test_sets():
                     {"PK": f"testset#{test_set_id}", "SK": "metadata"}
                 )
                 logger.info(f"Deleted orphaned test set from DynamoDB: {test_set_id}")
+
+                # Drop the warm-container memo entry — an id could be reused
+                # later (test-set names are user-chosen), and a stale entry
+                # from a deleted namesake would produce spurious signature
+                # matches on the new set.
+                _RECONCILE_MEMO.pop(test_set_id, None)
 
                 # Remove from result list
                 result = [item for item in result if item["id"] != test_set_id]
@@ -3580,6 +3612,16 @@ _RECONCILE_STATUSES = {"COMPLETED", "FAILED"}
 # ``baseline/`` prefix alone is three or more LIST pages.
 _RECONCILE_TTL_SECONDS = 30
 
+# Per-request cap on reconcile probes, mirroring the label-state probe
+# budget (MAX_LABEL_STATE_PROBES / LABEL_STATE_PROBE_BUDGET_SECONDS above).
+# Reconcile does the same 2 x list_objects_v2 + 1 x HeadObject per prefix
+# on a cold container; the resolver's Timeout is 60 s and MemorySize 256 MB.
+# Beyond this budget, the remainder of the prefixes are picked up by the
+# next getTestSets call (which finds them in the warm-container memo when
+# it comes back for them).
+MAX_RECONCILE_PROBES = 25
+RECONCILE_PROBE_BUDGET_SECONDS = 5
+
 # Warm-container memo of the last time each prefix went through a full reconcile
 # pass. Keyed by (region-agnostic) prefix → (last_signature, monotonic_time).
 # Deliberately in-process rather than on the DDB row: keying on ``updatedAt``
@@ -3628,9 +3670,7 @@ _tracking_table = None
 def _get_tracking_table():
     global _tracking_table
     if _tracking_table is None:
-        _tracking_table = boto3.resource("dynamodb").Table(
-            os.environ["TRACKING_TABLE"]
-        )
+        _tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
     return _tracking_table
 
 
@@ -3736,39 +3776,51 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         existing_label_state = existing_row.get("labelState")
         existing_source = existing_row.get("source")
 
-        # Distinguish "genuinely broken" from "inside the labeling lifecycle
-        # OR a stack-managed dataset". partial_pairing = the validator sees
-        # an input without a matching baseline. For a new folder that means
-        # a botched upload. For an existing row it can be:
-        #  - the draft-labeling harvester writing baselines one document per
-        #    poll (transient)
-        #  - ``clear_draft_labels`` keeping human labels and dropping drafts
-        #    (steady state)
-        #  - a stack- or extension-managed dataset (HuggingFace deployers,
-        #    ConfBench) where the finalizer records COMPLETED even with some
-        #    per-document failures — coverage is expected to be uneven and
-        #    the row doesn't participate in the UI labelState workflow
-        #    (labelState is left null).
-        # Also matches "Extra baseline files:" so deleting an input from a
-        # labelled set is treated the same way — the pairing is off but the
-        # row is not "broken" in the new-folder-discovery sense.
+        # Reconcile only ever sees rows that were previously registered, and
+        # partial input/baseline pairing is NEVER the "botched upload" signal
+        # on an already-registered row. That signal belongs to first-discovery
+        # (_create_test_set_tracking_entry) — by the time we get here, the
+        # folder has passed that check once. Partial pairing here is one of:
+        #  - draft-labeling harvest mid-run (per-poll baselines)
+        #  - clear_draft_labels leaving human labels + drop drafts (steady)
+        #  - direct-S3 add of an input on a labelled set (before its baseline)
+        #  - stack-managed dataset with per-doc processing failures
+        # None of these are FAILED conditions.
+        #
+        # We deliberately do NOT key this decision on labelState, because
+        # _reconcile_label_state (index.py:2595, ships from develop) runs
+        # earlier in the same get_test_sets call and CAN demote labelState
+        # to 'unlabeled' in-place on the item we receive. A softening keyed
+        # on labelState=='labeled' would then be defeated by that demoter
+        # — the exact interaction that produced the round-4 blocker.
+        # Keying on the validator's error class survives the demoter
+        # because it looks at S3, not at the row.
         error_message = validation.get("error") or ""
         partial_pairing = not validation["valid"] and (
             error_message.startswith("Missing baseline files for:")
             or error_message.startswith("Extra baseline files:")
         )
-        inside_labeling_lifecycle = existing_label_state in ("draft", "labeled")
-        is_stack_managed = existing_source not in _MARKER_OWNED_SOURCES
+        # The one remaining hard-fail: every input file has been deleted from
+        # S3 but the row survives. Truly broken; user should see it.
+        no_inputs = not validation["valid"] and error_message == "No input files found"
 
-        if partial_pairing and (inside_labeling_lifecycle or is_stack_managed):
+        if partial_pairing:
             # Refresh fileCount and signature only; leave status / labelState /
-            # error alone. Covers three cases at once (see above).
+            # error alone. Recovery direction (FAILED → COMPLETED when the
+            # pairing is fully restored) is handled by the else-branch below,
+            # which is entered whenever validation["valid"] is True.
             new_status = existing_row.get("status")
             new_error = existing_row.get("error")
             new_label_state = existing_label_state
+        elif no_inputs:
+            new_status = "FAILED"
+            new_error = error_message
+            new_label_state = "unlabeled"
         else:
-            new_status = "COMPLETED" if validation["valid"] else "FAILED"
-            new_error = validation.get("error")
+            # validation["valid"] is True — fully paired OR unlabeled-with-no-
+            # baselines (allow_unlabeled=True path). Both are healthy states.
+            new_status = "COMPLETED"
+            new_error = None
             # labelState transitions: 'unlabeled', 'draft' (machine labels
             # awaiting review), 'labeled' (uploaded or reviewed). The
             # validator only sees folder shape; a fully-paired folder could

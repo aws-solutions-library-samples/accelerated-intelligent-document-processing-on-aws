@@ -154,12 +154,34 @@ def _db_client_on(table):
             kwargs["ExclusiveStartKey"] = exclusive_start_key
         return table.query(**kwargs)
 
+    def _scan_all(filter_expression=None, expression_attribute_values=None, **_):
+        """Emulate DynamoDBClient.scan_all: page moto's Scan and apply the
+        filter server-side (moto supports FilterExpression). Only used by the
+        get_test_sets fallback when the GSI isn't present on the moto table."""
+        kwargs = {}
+        if filter_expression:
+            kwargs["FilterExpression"] = filter_expression
+        if expression_attribute_values:
+            kwargs["ExpressionAttributeValues"] = expression_attribute_values
+        items = []
+        last = None
+        while True:
+            if last is not None:
+                kwargs["ExclusiveStartKey"] = last
+            resp = table.scan(**kwargs)
+            items.extend(resp.get("Items", []))
+            last = resp.get("LastEvaluatedKey")
+            if not last:
+                break
+        return items
+
     return _MultiPatch(
         patch.object(test_set_index.db_client, "get_item", side_effect=_get_item),
         patch.object(test_set_index.db_client, "put_item", side_effect=_put_item),
         patch.object(test_set_index.db_client, "update_item", side_effect=_update_item),
         patch.object(test_set_index.db_client, "delete_item", side_effect=_delete_item),
         patch.object(test_set_index.db_client, "query", side_effect=_query),
+        patch.object(test_set_index.db_client, "scan_all", side_effect=_scan_all),
     )
 
 
@@ -3895,24 +3917,38 @@ class TestTestSetResolver:
         assert row["createdAt"] == "2026-01-01T00:00:00Z"
         assert "updatedAt" in row
 
-    def test_reconcile_flags_orphan_on_unlabeled_row(self, labeling_env):
-        """A row that has NOT entered the labeling lifecycle still hard-fails.
+    def test_reconcile_never_hard_fails_partial_pairing_on_registered_row(
+        self, labeling_env
+    ):
+        """Round-4 finding: partial pairing on an already-registered row is
+        NEVER the "botched upload" signal.
 
-        Regression test for the case that motivated the reconcile in the
-        first place: a fresh unlabeled set gets an orphan input, and the
-        row should FAIL loudly so the operator sees it in the UI.
+        The reviewer's probe: a labelled set has an input added via direct
+        S3, ``_reconcile_label_state`` (which runs earlier in the same
+        ``get_test_sets`` call) demotes labelState to 'unlabeled' in place,
+        and my previous softening — which keyed on
+        ``labelState in ('draft','labeled')`` — was defeated because the
+        in-memory row it inspected had already been demoted. Result was a
+        red FAILED banner on a set that is simply mid-labelling.
+
+        Fixed by keying the softening on the validator's error class
+        (``Missing baseline files for:...`` / ``Extra baseline files:...``),
+        which looks at S3 rather than at the (demote-able) labelState. This
+        test exercises the specific labelState=='unlabeled' shape that used
+        to hard-fail: no matter how the demotion happened, reconcile no
+        longer flips status to FAILED for partial pairing on a row that
+        exists.
         """
         table, s3 = labeling_env
 
         s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
-        # No baseline for a.pdf — this is a documents-only set.
         _seed_test_set(
             table,
             "ts1",
             name="ts1",
             status="COMPLETED",
             fileCount=1,
-            labelState="unlabeled",
+            labelState="unlabeled",  # e.g. after demotion by _reconcile_label_state
             source="uploaded",
             createdAt="2026-01-01T00:00:00Z",
             InitialEventTime="2026-01-01T00:00:00Z",
@@ -3934,14 +3970,50 @@ class TestTestSetResolver:
         result = test_set_index._reconcile_test_set_tracking_entry(
             s3, "test-set-bucket", "ts1", existing_row
         )
-        # Row was NOT in labelState draft/labeled, so partial pairing IS a
-        # hard fail — the operator should see FAILED in the UI.
+        # No FAILED, no error write — status and error stay put; only the
+        # observable delta (fileCount) is refreshed.
+        assert result is not None
+        assert result["status"] == "COMPLETED"
+        assert result.get("error") is None
+        assert result["fileCount"] == 2
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+        assert row["fileCount"] == 2
+        assert "error" not in row
+
+    def test_reconcile_hard_fails_when_all_inputs_deleted(self, labeling_env):
+        """The one hard-fail condition reconcile still emits.
+
+        ``No input files found`` is genuinely broken — every input file has
+        been deleted from S3 while the row survives. Operator should see
+        FAILED so the state doesn't hide.
+        """
+        table, s3 = labeling_env
+
+        # No input files in S3 at all.
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            labelState="labeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            contentSignature="stale",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
         assert result is not None
         assert result["status"] == "FAILED"
-        assert "a.pdf" in result["error"]
-        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
-        assert row["status"] == "FAILED"
-        assert row["fileCount"] == 2
+        assert result["error"] == "No input files found"
 
     def test_reconcile_clears_error_when_baseline_added_back(self, labeling_env):
         """A row FAILED yesterday must recover when the missing baseline arrives."""
@@ -4627,6 +4699,78 @@ class TestTestSetResolver:
             test_set_index._compute_content_signature(base, "synthetic")
             == f"{base}|src=synthetic"
         )
+
+    def test_get_test_sets_does_not_flip_labelled_set_to_failed_after_demote(
+        self, labeling_env
+    ):
+        """Round-4 blocking regression, at the full ``get_test_sets`` level.
+
+        The reviewer's headline flow: a labelled set at (2 inputs, 2 baselines)
+        picks up a third direct-S3 input. Under the shipped code:
+
+        * poll 1 sees COMPLETED/labeled/2, softens the partial pairing,
+          leaves labelState=labeled and status=COMPLETED — good.
+        * poll 2 (TTL window past) runs `_reconcile_label_state` first,
+          which sees partial pairing and DEMOTES labelState in place to
+          'unlabeled' on the row it hands to the reconcile.
+        * `_reconcile_test_set_tracking_entry` then keys its softening on
+          labelState=='labeled'/'draft', doesn't see either, and hard-fails
+          the row: status=FAILED, error="Missing baseline files for: c.pdf".
+
+        The UI renders a red FAILED badge on a set that is simply mid-
+        labelling. This exercises the whole ``get_test_sets`` call chain
+        — helper-level tests couldn't see the interaction, which is why
+        it slipped through three earlier review rounds.
+        """
+        table, s3 = labeling_env
+
+        # Two fully-paired documents + a third direct-S3 input.
+        for name in ("a.pdf", "b.pdf", "c.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=b"{}",
+            )
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=2,
+            labelState="labeled",  # what _reconcile_label_state will demote
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+            contentSignature="stale",  # forces the reconcile to run
+        )
+
+        # Full get_test_sets pass — this is the interaction the reviewer's
+        # probe exercised.
+        result = test_set_index.get_test_sets()
+
+        # The set should still be COMPLETED with no FAILED error string;
+        # `_reconcile_label_state` may have moved labelState (its call is
+        # independent of this MR's soften-vs-fail decision), but the
+        # reconcile MUST NOT flip status to FAILED for the partial pairing.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED", (
+            f"reconcile hard-failed a set that is mid-labelling: "
+            f"status={row['status']!r}, error={row.get('error')!r}"
+        )
+        assert "error" not in row, (
+            f"reconcile wrote a spurious error on a labelled set: {row.get('error')!r}"
+        )
+        assert row["fileCount"] == 3
+
+        # And the response the UI receives says the same thing.
+        entry = next((r for r in result if r["id"] == "ts1"), None)
+        assert entry is not None
+        assert entry["status"] == "COMPLETED"
+        assert entry.get("error") is None
+        assert entry["fileCount"] == 3
 
 
 @pytest.mark.unit
