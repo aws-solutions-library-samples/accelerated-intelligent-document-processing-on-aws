@@ -19,6 +19,13 @@ export interface AppContextValue {
   successMessage: string | undefined;
   currentCredentials: unknown;
   currentSession: unknown;
+  /**
+   * Whether credentials are still arriving, ready, or failed. Routes needs this
+   * to tell "authenticated but waiting" apart from "not signed in" — conflating
+   * them is what rendered a blank page after a valid sign-in.
+   */
+  credentialsStatus?: 'idle' | 'pending' | 'ready' | 'error';
+  retryCredentials?: () => void;
   setErrorMessage: React.Dispatch<React.SetStateAction<string | undefined>>;
   setSuccessMessage: React.Dispatch<React.SetStateAction<string | undefined>>;
   user: AuthUser | undefined;
