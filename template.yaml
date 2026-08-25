@@ -5718,6 +5718,7 @@ Resources:
           CIRCUIT_BREAKER_ENABLED: !If [CircuitBreakerEnabledCondition, "true", "false"]
           DOCUMENT_QUEUE_URL: !Ref DocumentQueue
           RECOVERY_TIMEOUT_SECONDS: !Ref CircuitBreakerRecoveryTimeoutSeconds
+          METRIC_NAMESPACE: !Ref AWS::StackName
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
@@ -5743,6 +5744,25 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # Concurrency-counter reconciliation: compare the counter against the
+        # executions that are really RUNNING, so a leaked counter cannot stop the
+        # stack admitting documents forever. Scoped to this stack's own state
+        # machine; ListExecutions is read-only.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:ListExecutions
+              Resource: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+        # PutMetricData takes no resource-level permissions (AWS-wide), so it is
+        # constrained by namespace condition instead.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace: !Ref AWS::StackName
       Events:
         SQSEvent:
           Type: SQS
@@ -6317,6 +6337,30 @@ Resources:
       Dimensions:
         - Name: StateMachineArn
           Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # A leaked workflow-concurrency counter is otherwise INVISIBLE: the queue stops
+  # draining and every other metric looks idle rather than broken, so the first
+  # signal is a human noticing that nothing has processed for hours. The queue
+  # processor publishes the drift (counter minus executions actually RUNNING)
+  # whenever it finds itself at the limit; a sustained positive drift means slots
+  # are held by workflows that already ended.
+  ConcurrencyCounterDriftAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow-concurrency counter holds slots for workflows that have already ended (drift > 0 for 15 minutes). Documents stop starting once the counter reaches MaxConcurrentWorkflows."
+      MetricName: ConcurrencyCounterDrift
+      Namespace: !Ref AWS::StackName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # The metric is only published when the processor is at the limit, so
+      # "no data" means "not blocked" — which is healthy, not unknown.
+      TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
 

@@ -4,10 +4,11 @@
 import boto3
 import json
 import os
+import time
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 import logging
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.config import ConfigurationManager
@@ -32,6 +33,12 @@ CIRCUIT_BREAKER_ID = 'circuit_breaker'
 CIRCUIT_BREAKER_ENABLED = os.environ.get('CIRCUIT_BREAKER_ENABLED', 'false').lower() == 'true'
 DOCUMENT_QUEUE_URL = os.environ.get('DOCUMENT_QUEUE_URL', '')
 RECOVERY_TIMEOUT_SECONDS = int(os.environ.get('RECOVERY_TIMEOUT_SECONDS', '300'))
+# How long a suspected counter leak must persist across two independent samples
+# before it is corrected. Must comfortably exceed the window between an
+# increment and its execution becoming visible to ListExecutions, since during
+# that window fewer executions are RUNNING than the counter says — legitimately.
+RECONCILE_GRACE_SECONDS = int(os.environ.get('RECONCILE_GRACE_SECONDS', '300'))
+METRIC_NAMESPACE = os.environ.get('METRIC_NAMESPACE', 'IDP')
 
 def update_counter(increment: bool = True) -> bool:
     """
@@ -72,6 +79,185 @@ def update_counter(increment: bool = True) -> bool:
             return False
         logger.error(f"Error updating counter: {e}")
         raise
+
+
+def _count_running_executions(limit: int = 1000) -> Optional[int]:
+    """Count RUNNING executions of the document-processing state machine.
+
+    Returns None if the count could not be established (API error, or more
+    running executions than `limit`), so callers can decline to act rather than
+    act on a partial number.
+    """
+    try:
+        total = 0
+        token = None
+        while True:
+            kwargs = {
+                'stateMachineArn': state_machine_arn,
+                'statusFilter': 'RUNNING',
+                'maxResults': 100,
+            }
+            if token:
+                kwargs['nextToken'] = token
+            page = sfn.list_executions(**kwargs)
+            total += len(page.get('executions', []))
+            token = page.get('nextToken')
+            if not token:
+                return total
+            if total > limit:
+                # More running than we care to page through; certainly not leaked.
+                logger.info(f"More than {limit} running executions; skipping reconcile")
+                return None
+    except ClientError as e:
+        logger.warning(f"Could not list executions for reconciliation: {e}")
+        return None
+
+
+def reconcile_counter() -> Optional[int]:
+    """Correct a leaked concurrency counter, conservatively.
+
+    The counter is incremented before ``StartExecution`` and decremented by the
+    workflow tracker on the completion event. If a decrement is ever missed the
+    counter drifts upward permanently, and once it reaches MAX_CONCURRENT the
+    stack stops admitting documents **forever** — there is no self-healing path.
+    Observed live: ``active_count`` pinned at 100 with only 29 executions
+    actually running, 2,532 messages held in flight, and no document started for
+    hours.
+
+    Called only when an increment was refused, i.e. only when the drift would
+    actually be hurting. Deliberately cautious in three ways, because wrongly
+    lowering the counter over-admits work:
+
+    1. **Two samples.** An increment happens before its execution exists, so a
+       single sample legitimately sees fewer running executions than the counter.
+       We record a sample and only act if a *previous* sample, at least
+       RECONCILE_GRACE_SECONDS old, agreed that the counter was too high.
+    2. **Never raises, only lowers**, and only as far as the larger of the two
+       observed running counts — never below what we know is in flight.
+    3. **Conditional write** on the exact value we sampled, so a concurrent
+       increment or decrement makes this a no-op instead of clobbering it.
+
+    Returns the corrected value, or None if no correction was made.
+    """
+    now = int(time.time())
+    try:
+        item = concurrency_table.get_item(
+            Key={'counter_id': COUNTER_ID}, ConsistentRead=True
+        ).get('Item') or {}
+    except ClientError as e:
+        logger.warning(f"Could not read counter for reconciliation: {e}")
+        return None
+
+    active = int(item.get('active_count', 0))
+    if active <= 0:
+        return None
+
+    running = _count_running_executions()
+    if running is None:
+        return None
+
+    if running >= active:
+        # No drift. Clear any stale suspicion so a later real leak needs two
+        # fresh samples of its own.
+        if item.get('drift_observed_at'):
+            _put_drift_sample(None, None)
+        return None
+
+    drift = active - running
+    _emit_drift_metric(drift, active, running)
+
+    prev_at = int(item.get('drift_observed_at') or 0)
+    prev_running = item.get('drift_running')
+    if not prev_at or now - prev_at < RECONCILE_GRACE_SECONDS:
+        logger.warning(
+            f"Concurrency counter may have leaked: active_count={active} but "
+            f"{running} executions are RUNNING (drift={drift}). Recording a "
+            f"sample; will correct if still true in {RECONCILE_GRACE_SECONDS}s."
+        )
+        _put_drift_sample(now, running)
+        return None
+
+    # Two independent samples, GRACE apart, both saw the counter too high.
+    target = max(running, int(prev_running or 0))
+    if target >= active:
+        return None
+
+    try:
+        concurrency_table.update_item(
+            Key={'counter_id': COUNTER_ID},
+            UpdateExpression=(
+                'SET active_count = :new REMOVE drift_observed_at, drift_running'
+            ),
+            ConditionExpression='active_count = :expected',
+            ExpressionAttributeValues={':new': target, ':expected': active},
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            # Someone incremented/decremented meanwhile — the counter is moving,
+            # so it is not stuck. Try again on a later invocation.
+            logger.info("Counter changed during reconciliation; skipping correction")
+            return None
+        logger.error(f"Failed to reconcile counter: {e}")
+        return None
+
+    logger.warning(
+        f"RECONCILED leaked concurrency counter: {active} -> {target} "
+        f"(running executions: {running}, previous sample: {prev_running}). "
+        f"{active - target} slot(s) had been held by workflows that already ended."
+    )
+    return target
+
+
+def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
+    """Record (or clear) the observation that the counter looks too high."""
+    try:
+        if when is None:
+            concurrency_table.update_item(
+                Key={'counter_id': COUNTER_ID},
+                UpdateExpression='REMOVE drift_observed_at, drift_running',
+            )
+        else:
+            concurrency_table.update_item(
+                Key={'counter_id': COUNTER_ID},
+                UpdateExpression=(
+                    'SET drift_observed_at = :at, drift_running = :running'
+                ),
+                ExpressionAttributeValues={':at': when, ':running': running},
+            )
+    except ClientError as e:
+        logger.warning(f"Could not record concurrency drift sample: {e}")
+
+
+def _emit_drift_metric(drift: int, active: int, running: int) -> None:
+    """Publish the drift so an alarm can fire before a human notices a stall.
+
+    A stuck counter is otherwise invisible: the queue simply stops draining and
+    every other metric looks idle rather than broken.
+    """
+    try:
+        cloudwatch = boto3.client('cloudwatch')
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    'MetricName': 'ConcurrencyCounterDrift',
+                    'Value': drift,
+                    'Unit': 'Count',
+                },
+                {
+                    'MetricName': 'ConcurrencyCounterActive',
+                    'Value': active,
+                    'Unit': 'Count',
+                },
+                {
+                    'MetricName': 'WorkflowsRunning',
+                    'Value': running,
+                    'Unit': 'Count',
+                },
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit concurrency drift metric: {e}")
 
 
 def check_circuit_breaker() -> tuple[bool, str]:
@@ -312,7 +498,24 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
         # Try to increment counter
         if not update_counter(increment=True):
             logger.warning(f"Concurrency limit reached for {object_key}")
-            return False, message_id
+            # Being at the limit is normal under load — but it is also what a
+            # LEAKED counter looks like, and a leaked counter never recovers on
+            # its own, so the queue would stop draining permanently. Check (and
+            # if confirmed, correct) here, where the cost is paid only when we
+            # are actually blocked. Never raises the counter, and requires two
+            # samples GRACE apart before touching it.
+            try:
+                if reconcile_counter() is not None and update_counter(increment=True):
+                    logger.info(
+                        f"Capacity recovered after reconciliation; proceeding with {object_key}"
+                    )
+                else:
+                    return False, message_id
+            except Exception as e:
+                # Reconciliation is best-effort; a failure here must not change
+                # the outcome for this message.
+                logger.warning(f"Counter reconciliation failed: {e}", exc_info=True)
+                return False, message_id
         
         try:
             # Start workflow with the document

@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A leaked workflow-concurrency counter stopped a stack accepting documents, permanently, with no signal.** The counter is incremented before `StartExecution` and decremented by the workflow tracker on the completion event; a missed decrement drifts it upward and **nothing ever puts it back**, so once it reaches `MaxConcurrentWorkflows` the queue simply stops draining forever. Observed live: `active_count` pinned at **100 with only 29 executions actually RUNNING**, 2,532 messages held in flight on `DocumentQueue`, and not a single document started for over two and a half hours. It is also invisible while it happens — every other metric looks *idle* rather than broken, so the first symptom is a human noticing nothing has processed. The queue processor now **reconciles** when an increment is refused (i.e. only when the drift is actually blocking work), and publishes a `ConcurrencyCounterDrift` metric that a new `ConcurrencyCounterDriftAlarm` watches (drift > 0 sustained 15 min → `AlertsTopic`). Reconciliation is deliberately cautious, because wrongly *lowering* the counter over-admits work: it requires the same discrepancy in **two independent samples ≥5 min apart** (a single sample legitimately sees fewer running executions than the counter, since the increment precedes its execution becoming visible), it **only ever lowers** and never below the larger of the two observed running counts, and it writes **conditionally on the exact value it sampled** so a concurrent increment/decrement makes it a no-op rather than clobbering the counter. It also declines to act at all if `ListExecutions` fails or the counter can't be read. New IAM: `states:ListExecutions` scoped to the stack's own state machine, and `cloudwatch:PutMetricData` conditioned to the stack's namespace ([aws-services-and-roles.md](docs/aws-services-and-roles.md)).
+
 ## [0.6.5]
 
 ### Added
