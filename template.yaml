@@ -4602,7 +4602,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4674,7 +4674,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4736,7 +4736,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4796,7 +4796,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4857,7 +4857,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4911,7 +4911,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -5153,6 +5153,10 @@ Resources:
             - !Ref ReportingBucket
             - !Ref ReportingBucketName
           STACK_NAME: !Ref AWS::StackName
+          # Rollup reads Bedrock per-token pricing from here — the same
+          # source of truth as data-plane cost math — instead of a
+          # hardcoded map that would drift as new models ship.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
       LoggingConfig:
         LogGroup: !Ref DataMartRollupFunctionLogGroup
       Policies:
@@ -5249,6 +5253,11 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # Read pricing from the ConfigurationTable (same source data-plane
+        # cost math uses) so Bedrock per-token prices in control_plane_hourly
+        # cannot drift from a hardcoded rollup-side map.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTable
 
   DataMartRollupFunctionLogGroup:
     Type: AWS::Logs::LogGroup

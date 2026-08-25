@@ -58,44 +58,23 @@ ATHENA_PRICE_PER_TB = 5.0  # $5 per TB scanned
 LAMBDA_ARM64_GB_SECOND_PRICE = 0.0000133334  # per GB-second on arm64
 LAMBDA_X86_64_GB_SECOND_PRICE = 0.0000166667  # per GB-second on x86_64
 LAMBDA_REQUEST_PRICE = 0.20 / 1_000_000  # $0.20 per 1M requests, both archs
-# Cross-region-inference prefixes stripped before pricing-key matching.
-# Real Bedrock model IDs on this codebase are all cross-region routers, e.g.
-# ``us.anthropic.claude-sonnet-4-20250514-v1:0``,
-# ``eu.anthropic.claude-3-7-sonnet-20250219-v1:0``,
-# ``global.anthropic.claude-opus-4-7`` — the leading ``us.``/``eu.``/
-# ``apac.``/``global.`` is a routing prefix, not part of the family name,
-# and previously prevented every pricing key from matching (silent 0-cost
-# for all control-plane Bedrock calls).
-_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "global.")
+# Bedrock pricing is the single source of truth at ``config_library/pricing.yaml``
+# (deployed into the ConfigurationTable in DynamoDB and used by every data-plane
+# Lambda that emits ``estimated_cost``). This rollup Lambda reads the same
+# source at cold start so its cost columns can never drift from data-plane
+# math. Prices there are **per-token USD** (e.g. ``3.0E-7`` = $0.30 / million).
+# See ``_load_bedrock_pricing_from_config`` below.
+#
+# Small hardcoded fallback for the case where the DynamoDB read itself fails
+# (throttling, table missing during initial deploy) — Sonnet defaults at the
+# per-token scale. Kept small on purpose; drift is not silent because
+# `_bedrock_price_for_model` logs which path answered.
+DEFAULT_BEDROCK_PRICE_PER_TOKEN = {"in": 3.0e-6, "out": 15.0e-6}
 
-# Bedrock **per-MILLION-token** prices in USD, keyed by family prefix after
-# region-prefix stripping. AWS publishes prices per million tokens; storing
-# them as-is here means the formula in _build_control_plane_rows divides by
-# 1_000_000 (NOT 1_000). A previous version divided by 1000 and overstated
-# cost by 1000× — the unit tests below the constants and the docs pin this.
-# Ordered longest-prefix-first so ``claude-3-5-haiku`` matches before the
-# more general ``claude-haiku``/``claude-3-`` prefixes that would otherwise
-# eat it and price it wrong. Fallback to Claude Sonnet pricing for unknown
-# models — best-effort.
-BEDROCK_PRICING = {
-    # Anthropic — most specific keys first so prefix scan matches correctly.
-    "anthropic.claude-3-5-haiku": {"in": 0.80, "out": 4.0},
-    "anthropic.claude-3-haiku": {"in": 0.25, "out": 1.25},
-    "anthropic.claude-haiku-4-5": {"in": 1.0, "out": 5.0},
-    "anthropic.claude-haiku": {"in": 0.80, "out": 4.0},
-    "anthropic.claude-opus": {"in": 15.0, "out": 75.0},
-    "anthropic.claude-sonnet": {"in": 3.0, "out": 15.0},
-    "anthropic.claude-3-5-sonnet": {"in": 3.0, "out": 15.0},
-    "anthropic.claude-3-7-sonnet": {"in": 3.0, "out": 15.0},
-    "anthropic.claude-3-sonnet": {"in": 3.0, "out": 15.0},
-    # Amazon Nova.
-    "amazon.nova-pro": {"in": 0.80, "out": 3.20},
-    "amazon.nova-lite": {"in": 0.06, "out": 0.24},
-    "amazon.nova-micro": {"in": 0.035, "out": 0.14},
-}
-DEFAULT_BEDROCK_PRICE = {"in": 3.0, "out": 15.0}
-# Divisor for the token-count × price math. Prices above are per million.
-BEDROCK_TOKENS_PER_UNIT = 1_000_000
+# Module-level pricing cache. Populated lazily on first Bedrock cost lookup;
+# survives across warm invocations of the same Lambda container.
+_bedrock_pricing_map: Optional[Dict[str, Dict[str, float]]] = None
+CONFIGURATION_TABLE_NAME = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 
 athena_client = boto3.client("athena")
 cloudwatch_client = boto3.client("cloudwatch")
@@ -422,17 +401,23 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 
 
 def _require_hourly_matches_raw_metering(target_date: str) -> None:
-    """Fail loudly if metering_hourly is missing any hour that raw metering
-    has data for (deploy-day exception below).
+    """Fail loudly if either hourly rollup is missing any hour that raw
+    metering has data for (deploy-day exception below).
 
-    We compare metering_hourly against RAW metering rather than "all 24
+    Guards **both** ``metering_hourly`` and ``metering_docs_hourly`` —
+    the rollup writes them sequentially, so a transient Athena outage
+    could leave one populated and the other empty for the same hour.
+    Checking only ``metering_hourly`` would let an incomplete
+    ``metering_docs_daily`` land and become idempotently locked, silently
+    under-counting ``n_docs``/``sum_pages`` for that day forever.
+
+    We compare each hourly against RAW metering rather than "all 24
     hours" — a day may legitimately have fewer than 24 hours of data (deploy
     day, offline period, low-volume weekend) and demanding 24 would block
     the daily rollup forever for those days. The guard's real purpose is to
     catch the "transient outage caused an hourly rollup to fail while raw
     metering does have data for that hour" case — an actual data hole that
-    the async retry can fix once the hourly rollup catches up. If both sets
-    match, the day is faithfully rolled up; write metering_daily.
+    the async retry can fix once the hourly rollup catches up.
 
     Deploy-day exception: raw ``metering`` predates this rollup Lambda by
     however long the stack has been up, so on the first daily invocation
@@ -441,42 +426,47 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
     never a historical hour. Blocking daily forever on this would poison
     the first-ever daily rollup and every subsequent one (idempotency
     skip means no re-attempt). We treat "hourly is completely empty for
-    the target date" as the deploy-day case and skip the guard; and
-    otherwise only require raw hours ≥ the earliest hourly-written hour
-    to be present. Real transient-outage misses in the go-forward hourly
-    window still fail loudly and get replayed by async retry.
+    the target date" as the deploy-day case (per-table) and skip that
+    table's guard; and otherwise only require raw hours ≥ the earliest
+    hourly-written hour to be present. Real transient-outage misses in
+    the go-forward hourly window still fail loudly and get replayed by
+    async retry.
     """
     # nosec B608 — target_date is from datetime.strftime, not user input
     raw_sql = (
         f'SELECT DISTINCT hour FROM "{DATABASE}"."metering" '  # nosec B608
         f"WHERE date = '{target_date}'"  # nosec B608
     )
-    hourly_sql = (
-        f'SELECT DISTINCT hour FROM "{DATABASE}"."metering_hourly" '  # nosec B608
-        f"WHERE date = '{target_date}'"  # nosec B608
-    )
     raw_rows = _run_athena_query_with_results(raw_sql)
-    hourly_rows = _run_athena_query_with_results(hourly_sql)
     raw_hours = {r[0] for r in raw_rows if r and r[0]}
-    hourly_hours = {r[0] for r in hourly_rows if r and r[0]}
-    if not hourly_hours:
-        logger.info(
-            f"metering_hourly for date={target_date} is empty — treating as "
-            f"first-run/deploy-day and skipping raw-vs-hourly guard. "
-            f"raw metering hours present: {sorted(raw_hours)}"
-        )
+    if not raw_hours:
+        # No raw data for the day → nothing to check either hourly against.
         return
-    earliest_hourly = min(hourly_hours)
-    in_window_raw = {h for h in raw_hours if h >= earliest_hourly}
-    missing = in_window_raw - hourly_hours
-    if missing:
-        raise RuntimeError(
-            f"metering_hourly for date={target_date} is missing hours "
-            f"{sorted(missing)} within the hourly-rollup window "
-            f"(earliest hourly-written hour = {earliest_hourly!r}). "
-            f"Refusing to write incomplete metering_daily; async retry "
-            f"will replay once the hourly rollup catches up."
+    for hourly_table in ("metering_hourly", "metering_docs_hourly"):
+        hourly_sql = (
+            f'SELECT DISTINCT hour FROM "{DATABASE}"."{hourly_table}" '  # nosec B608
+            f"WHERE date = '{target_date}'"  # nosec B608
         )
+        hourly_rows = _run_athena_query_with_results(hourly_sql)
+        hourly_hours = {r[0] for r in hourly_rows if r and r[0]}
+        if not hourly_hours:
+            logger.info(
+                f"{hourly_table} for date={target_date} is empty — treating "
+                f"as first-run/deploy-day and skipping raw-vs-hourly guard "
+                f"for this table. raw hours present: {sorted(raw_hours)}"
+            )
+            continue
+        earliest_hourly = min(hourly_hours)
+        in_window_raw = {h for h in raw_hours if h >= earliest_hourly}
+        missing = in_window_raw - hourly_hours
+        if missing:
+            raise RuntimeError(
+                f"{hourly_table} for date={target_date} is missing hours "
+                f"{sorted(missing)} within the hourly-rollup window "
+                f"(earliest hourly-written hour = {earliest_hourly!r}). "
+                f"Refusing to write incomplete daily rollups; async retry "
+                f"will replay once the hourly rollup catches up."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -658,31 +648,6 @@ def _get_cw_metrics_for_function(
                 "Stat": "Sum",
             },
         },
-        {
-            "Id": "athena_bytes",
-            "MetricStat": {
-                "Metric": {
-                    "Namespace": "IDPControlPlane",
-                    "MetricName": "AthenaBytesScanned",
-                    # Query by FunctionName ONLY (not Component). The
-                    # helper emits with both dims, but relying on Component
-                    # here would cause silent drops when the emitter's
-                    # hardcoded component label differs from the rollup's
-                    # derived label (e.g. ChatStreamProcessorFunction
-                    # vendors the analytics agent → emitted as
-                    # analytics-agent, but _COMPONENT_RULES maps
-                    # chatstream → doc-chat). FunctionName is unique per
-                    # Lambda, so it's sufficient for attribution — the
-                    # rollup already derives the component label locally
-                    # from function_name for the output row.
-                    "Dimensions": [
-                        {"Name": "FunctionName", "Value": function_name},
-                    ],
-                },
-                "Period": 3600,
-                "Stat": "Sum",
-            },
-        },
     ]
     response = cloudwatch_client.get_metric_data(
         MetricDataQueries=query,
@@ -693,11 +658,103 @@ def _get_cw_metrics_for_function(
     return {
         "duration_ms": flat.get("duration", 0.0),
         "invocations": flat.get("invocations", 0.0),
-        "athena_bytes": flat.get("athena_bytes", 0.0),
+        "athena_bytes": _get_athena_bytes_sum(function_name, hour_start, hour_end),
         "bedrock_by_model": _get_bedrock_tokens_by_model(
             function_name, hour_start, hour_end
         ),
     }
+
+
+def _get_athena_bytes_sum(
+    function_name: str,
+    hour_start: datetime,
+    hour_end: datetime,
+) -> float:
+    """Sum ``IDPControlPlane/AthenaBytesScanned`` for this function over the
+    hour.
+
+    CloudWatch identifies metrics by their **full** dimension set — a
+    GetMetricData query with a *subset* of the emitted dims (e.g. only
+    ``FunctionName``) matches no metric at all and returns 0 datapoints
+    silently. The emitter (``idp_common.metrics.emit_control_plane_cost_metric``)
+    always publishes AthenaBytesScanned with dims
+    ``[Component, FunctionName]``. To read those back reliably, we
+    ``ListMetrics`` first — filtered by ``FunctionName`` (subset filter is
+    fine on ListMetrics) — to discover the full dim signatures the
+    emitter actually used for this function, then ``GetMetricData`` with
+    each signature's dim set verbatim.
+    """
+    signatures = _list_ipdcp_metric_signatures(
+        metric_name="AthenaBytesScanned",
+        function_name=function_name,
+    )
+    if not signatures:
+        return 0.0
+    queries: List[Dict[str, Any]] = []
+    for i, dims in enumerate(signatures):
+        queries.append(
+            {
+                "Id": f"a{i}",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "IDPControlPlane",
+                        "MetricName": "AthenaBytesScanned",
+                        "Dimensions": dims,
+                    },
+                    "Period": 3600,
+                    "Stat": "Sum",
+                },
+            }
+        )
+    total = 0.0
+    for chunk_start in range(0, len(queries), 500):
+        chunk = queries[chunk_start : chunk_start + 500]
+        resp = cloudwatch_client.get_metric_data(
+            MetricDataQueries=chunk,
+            StartTime=hour_start,
+            EndTime=hour_end,
+        )
+        for r in resp.get("MetricDataResults", []):
+            total += float(sum(r.get("Values", []) or [0.0]))
+    return total
+
+
+def _list_ipdcp_metric_signatures(
+    metric_name: str, function_name: str
+) -> List[List[Dict[str, str]]]:
+    """Return the full dim signatures emitted for
+    ``IDPControlPlane/<metric_name>`` by ``function_name``.
+
+    ListMetrics with a ``Dimensions=[{FunctionName}]`` filter returns
+    every metric whose dim set *contains* FunctionName — i.e. the exact
+    metrics we want to read back. Each returned metric's ``Dimensions``
+    field is the full dim set as published, which we pass verbatim to
+    GetMetricData so the identity match hits.
+    """
+    signatures: List[List[Dict[str, str]]] = []
+    seen: set = set()
+    next_token: Optional[str] = None
+    while True:
+        kwargs: Dict[str, Any] = {
+            "Namespace": "IDPControlPlane",
+            "MetricName": metric_name,
+            "Dimensions": [{"Name": "FunctionName", "Value": function_name}],
+        }
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = cloudwatch_client.list_metrics(**kwargs)
+        for m in resp.get("Metrics", []):
+            dims = m.get("Dimensions", []) or []
+            # De-dupe by canonical (sorted) dim tuple.
+            key = tuple(sorted((d["Name"], d["Value"]) for d in dims))
+            if key in seen:
+                continue
+            seen.add(key)
+            signatures.append(dims)
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+    return signatures
 
 
 def _get_bedrock_tokens_by_model(
@@ -708,57 +765,39 @@ def _get_bedrock_tokens_by_model(
     """List Bedrock token metrics for this function and return
     ``{model_id: {"in": tokens, "out": tokens}}``.
 
-    Scopes on ``FunctionName`` alone (not ``Component``) because the
-    emitter's hardcoded component label can drift from the rollup's
-    derived label — see the comment on the athena_bytes query above.
-    ``FunctionName`` is unique per Lambda so it's sufficient for
-    attribution.
-
-    GetMetricData needs an exact dimension set, so we ListMetrics first
-    to discover the Model values emitted by THIS function, then query
-    one aggregate per (FunctionName, Model). See §10.5 in
-    docs/reporting-sql-layer.md.
+    CloudWatch identifies metrics by their **full** dimension set — a
+    GetMetricData with a *subset* of the emitted dims returns 0 datapoints
+    silently. The emitter publishes BedrockInput/OutputTokens with
+    ``[Component, FunctionName, Model]``. We ListMetrics with a
+    FunctionName filter (subset filter is fine on ListMetrics) to
+    discover each emitted metric's full dim signature, then GetMetricData
+    with that signature verbatim. See §10.5 in docs/reporting-sql-layer.md.
     """
-    models: List[str] = []
-    seen: set = set()
-    for metric_name in ("BedrockInputTokens", "BedrockOutputTokens"):
-        next_token: Optional[str] = None
-        while True:
-            # Discover Model values emitted by THIS function only.
-            # See the Component-drop comment above the athena_bytes
-            # query for why we scope on FunctionName alone.
-            kwargs: Dict[str, Any] = {
-                "Namespace": "IDPControlPlane",
-                "MetricName": metric_name,
-                "Dimensions": [
-                    {"Name": "FunctionName", "Value": function_name},
-                ],
-            }
-            if next_token:
-                kwargs["NextToken"] = next_token
-            resp = cloudwatch_client.list_metrics(**kwargs)
-            for m in resp.get("Metrics", []):
-                for d in m.get("Dimensions", []):
-                    if d.get("Name") == "Model" and d.get("Value") not in seen:
-                        seen.add(d["Value"])
-                        models.append(d["Value"])
-            next_token = resp.get("NextToken")
-            if not next_token:
-                break
-    if not models:
-        return {}
-
-    # Batch queries for all (model, direction) pairs into a single
-    # GetMetricData call. IDs must be alphanumeric — sanitize model IDs.
-    queries: List[Dict[str, Any]] = []
-    id_to_key: Dict[str, Tuple[str, str]] = {}
-    for i, model in enumerate(models):
-        for direction, metric_name in (
-            ("in", "BedrockInputTokens"),
-            ("out", "BedrockOutputTokens"),
-        ):
-            qid = f"m{i}_{direction}"
-            id_to_key[qid] = (model, direction)
+    result: Dict[str, Dict[str, float]] = {}
+    for direction, metric_name in (
+        ("in", "BedrockInputTokens"),
+        ("out", "BedrockOutputTokens"),
+    ):
+        signatures = _list_ipdcp_metric_signatures(
+            metric_name=metric_name,
+            function_name=function_name,
+        )
+        if not signatures:
+            continue
+        queries: List[Dict[str, Any]] = []
+        id_to_model: Dict[str, str] = {}
+        for i, dims in enumerate(signatures):
+            model = next((d["Value"] for d in dims if d.get("Name") == "Model"), None)
+            if model is None:
+                # Emitter guarantees Model for bedrock metrics; a
+                # signature without one is malformed — skip loudly.
+                logger.warning(
+                    f"Bedrock metric signature missing Model dim for "
+                    f"{function_name!r}: {dims!r}"
+                )
+                continue
+            qid = f"b{i}"
+            id_to_model[qid] = model
             queries.append(
                 {
                     "Id": qid,
@@ -766,33 +805,29 @@ def _get_bedrock_tokens_by_model(
                         "Metric": {
                             "Namespace": "IDPControlPlane",
                             "MetricName": metric_name,
-                            # FunctionName + Model only — same rationale as
-                            # the athena_bytes query above (drop Component
-                            # to avoid label-mismatch drops).
-                            "Dimensions": [
-                                {"Name": "FunctionName", "Value": function_name},
-                                {"Name": "Model", "Value": model},
-                            ],
+                            "Dimensions": dims,
                         },
                         "Period": 3600,
                         "Stat": "Sum",
                     },
                 }
             )
-    # GetMetricData caps at 500 queries per call. With ~few models per
-    # component we're nowhere near it, but chunk just in case.
-    result: Dict[str, Dict[str, float]] = {m: {"in": 0.0, "out": 0.0} for m in models}
-    for chunk_start in range(0, len(queries), 500):
-        chunk = queries[chunk_start : chunk_start + 500]
-        response = cloudwatch_client.get_metric_data(
-            MetricDataQueries=chunk,
-            StartTime=hour_start,
-            EndTime=hour_end,
-        )
-        flat = _flatten_cw_response(response)
-        for qid, value in flat.items():
-            model, direction = id_to_key[qid]
-            result[model][direction] = value
+        # GetMetricData caps at 500 queries per call.
+        for chunk_start in range(0, len(queries), 500):
+            chunk = queries[chunk_start : chunk_start + 500]
+            resp = cloudwatch_client.get_metric_data(
+                MetricDataQueries=chunk,
+                StartTime=hour_start,
+                EndTime=hour_end,
+            )
+            for r in resp.get("MetricDataResults", []):
+                model = id_to_model.get(r["Id"])
+                if model is None:
+                    continue
+                values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+                total = float(math.fsum(values))
+                bucket = result.setdefault(model, {"in": 0.0, "out": 0.0})
+                bucket[direction] += total
     return result
 
 
@@ -880,13 +915,9 @@ def _build_control_plane_rows(
     # Common (Lambda + Athena) fields shared across per-model rows.
     def _row(model: Optional[str], tokens_in: int, tokens_out: int) -> Dict[str, Any]:
         price = _bedrock_price_for_model(model)
-        # BEDROCK_PRICING values are per MILLION tokens (AWS's published
-        # unit), not per thousand. Dividing by 1_000_000 gives the correct
-        # cost — an earlier version divided by 1000 and overstated 1000×.
-        est_bedrock_cost = (
-            tokens_in * price["in"] / BEDROCK_TOKENS_PER_UNIT
-            + tokens_out * price["out"] / BEDROCK_TOKENS_PER_UNIT
-        )
+        # Prices are per-TOKEN USD (matches config_library/pricing.yaml scale,
+        # e.g. 3.0E-7 for Nova-2 Lite input = $0.30/M). No divisor needed.
+        est_bedrock_cost = tokens_in * price["in"] + tokens_out * price["out"]
         return {
             "hour_ts": hour_ts,
             "function_name": function_name,
@@ -914,27 +945,80 @@ def _build_control_plane_rows(
 
 
 def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
-    """Return per-MILLION-token pricing for a Bedrock model, falling back to
-    Claude Sonnet defaults if the model is unknown.
+    """Return per-TOKEN USD pricing for a Bedrock model, loaded from the
+    ConfigurationTable (same source as data-plane cost math).
 
-    Strips the cross-region-inference prefix (``us.``/``eu.``/``apac.``/
-    ``global.``) before matching, so a real model ID like
-    ``us.anthropic.claude-sonnet-4-20250514-v1:0`` resolves against the
-    ``anthropic.claude-sonnet`` key. Iterates longest-key-first so
-    ``anthropic.claude-3-5-haiku`` wins over ``anthropic.claude-haiku``.
+    Lookup key is ``bedrock/<model>`` — matches the ``pricing[].name`` shape
+    in ``config_library/pricing.yaml`` and the ``service_api`` written by
+    ``save_reporting_data.save_metering_data``. If the model is missing
+    from the config or the config load itself failed, falls back to
+    ``DEFAULT_BEDROCK_PRICE_PER_TOKEN`` (Sonnet defaults) with a WARNING —
+    surfaces drift instead of silently pricing at $0.
     """
-    if model:
-        stripped = model
-        for region_prefix in _BEDROCK_REGION_PREFIXES:
-            if stripped.startswith(region_prefix):
-                stripped = stripped[len(region_prefix) :]
-                break
-        for prefix, price in sorted(
-            BEDROCK_PRICING.items(), key=lambda kv: len(kv[0]), reverse=True
-        ):
-            if stripped.startswith(prefix):
-                return price
-    return DEFAULT_BEDROCK_PRICE
+    if not model:
+        return DEFAULT_BEDROCK_PRICE_PER_TOKEN
+    pricing_map = _load_bedrock_pricing_from_config()
+    key = f"bedrock/{model}"
+    entry = pricing_map.get(key)
+    if entry:
+        return {
+            "in": entry.get("inputTokens", DEFAULT_BEDROCK_PRICE_PER_TOKEN["in"]),
+            "out": entry.get("outputTokens", DEFAULT_BEDROCK_PRICE_PER_TOKEN["out"]),
+        }
+    logger.warning(
+        f"No pricing entry for {key!r} in ConfigurationTable; falling back "
+        f"to Sonnet default. Add an entry to config_library/pricing.yaml "
+        f"to remove this warning."
+    )
+    return DEFAULT_BEDROCK_PRICE_PER_TOKEN
+
+
+def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
+    """Load per-token Bedrock pricing from the ConfigurationTable, once per
+    Lambda container.
+
+    Uses ``idp_common.config.ConfigurationManager.get_merged_pricing()`` —
+    the same helper every data-plane cost-writer uses. Returns
+    ``{service_name: {unit_name: price_per_token_usd}}``; on any failure
+    (missing env var, DynamoDB throttling, malformed config), returns an
+    empty dict — callers see the DEFAULT_BEDROCK_PRICE_PER_TOKEN fallback.
+    """
+    global _bedrock_pricing_map
+    if _bedrock_pricing_map is not None:
+        return _bedrock_pricing_map
+    _bedrock_pricing_map = {}
+    if not CONFIGURATION_TABLE_NAME:
+        logger.warning(
+            "CONFIGURATION_TABLE_NAME env var not set; Bedrock cost columns "
+            "will use hardcoded default pricing."
+        )
+        return _bedrock_pricing_map
+    try:
+        from idp_common.config import ConfigurationManager
+
+        manager = ConfigurationManager(table_name=CONFIGURATION_TABLE_NAME)
+        merged = manager.get_merged_pricing()
+        for service in getattr(merged, "pricing", None) or []:
+            units: Dict[str, float] = {}
+            for unit in getattr(service, "units", None) or []:
+                try:
+                    units[unit.name] = float(unit.price)
+                except (TypeError, ValueError):
+                    continue
+            if units:
+                _bedrock_pricing_map[service.name] = units
+        logger.info(
+            f"Loaded {len(_bedrock_pricing_map)} pricing entries from "
+            f"ConfigurationTable."
+        )
+    except Exception as e:
+        # Never crash the rollup over pricing telemetry — degrade to default.
+        logger.warning(
+            f"Failed to load pricing from ConfigurationTable "
+            f"({CONFIGURATION_TABLE_NAME!r}): {e}. Falling back to hardcoded "
+            f"default pricing for Bedrock cost columns."
+        )
+    return _bedrock_pricing_map
 
 
 # Component-mapping rules — ORDER MATTERS. First match wins. Rules are

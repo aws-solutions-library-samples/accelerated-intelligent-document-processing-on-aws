@@ -714,9 +714,24 @@ class TestControlPlaneRowBuilding:
         assert r["est_athena_cost"] > 0
         assert r["est_bedrock_cost"] == 0.0
 
-    def test_row_per_bedrock_model(self, rollup):
+    def test_row_per_bedrock_model(self, rollup, monkeypatch):
         """A component that called two Bedrock models emits one row per
         model, each with the correct per-model pricing applied."""
+        # Inject per-token prices matching config_library/pricing.yaml.
+        monkeypatch.setattr(
+            rollup,
+            "_bedrock_pricing_map",
+            {
+                "bedrock/us.anthropic.claude-opus-4-1": {
+                    "inputTokens": 15.0e-6,
+                    "outputTokens": 75.0e-6,
+                },
+                "bedrock/us.anthropic.claude-haiku-4-5": {
+                    "inputTokens": 1.0e-6,
+                    "outputTokens": 5.0e-6,
+                },
+            },
+        )
         with patch.object(
             rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
         ):
@@ -736,32 +751,36 @@ class TestControlPlaneRowBuilding:
             )
         assert len(rows) == 2
         by_model = {r["bedrock_model"]: r for r in rows}
-        # Opus pricing: $15 in / $75 out per MILLION tokens.
-        # 1000 tokens in → $15 * 1000 / 1e6 = $0.015
-        # 500 tokens out → $75 * 500 / 1e6 = $0.0375
+        # Opus: $15/M input, $75/M output → 1000 * 15e-6 + 500 * 75e-6 = 0.0525
         opus = by_model["us.anthropic.claude-opus-4-1"]
         assert opus["bedrock_tokens_in"] == 1000
         assert opus["bedrock_tokens_out"] == 500
-        expected_opus = 1000 * 15 / 1_000_000 + 500 * 75 / 1_000_000
+        expected_opus = 1000 * 15.0e-6 + 500 * 75.0e-6
         assert abs(opus["est_bedrock_cost"] - expected_opus) < 1e-9
-        # Haiku 4.5 pricing: $1 in / $5 out per MILLION tokens (matched by
-        # the more-specific ``anthropic.claude-haiku-4-5`` prefix after the
-        # ``us.`` region strip; if this fell back to the shorter
-        # ``anthropic.claude-haiku`` key it would resolve to $0.80/$4,
-        # which would be a longest-prefix-wins regression).
+        # Haiku 4.5: $1/M input, $5/M output
         haiku = by_model["us.anthropic.claude-haiku-4-5"]
-        expected_haiku = 2000 * 1.0 / 1_000_000 + 1000 * 5.0 / 1_000_000
+        expected_haiku = 2000 * 1.0e-6 + 1000 * 5.0e-6
         assert abs(haiku["est_bedrock_cost"] - expected_haiku) < 1e-9
 
-    def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(self, rollup):
+    def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(
+        self, rollup, monkeypatch
+    ):
         """Regression pin for the earlier 1000× overstate.
 
-        AWS charges $3 per MILLION Sonnet input tokens. A prior version
-        of the code divided by 1000 instead of 1_000_000, so 1M tokens
-        got billed at $3000. This test locks in the correct math with
-        a very-round-number sanity check that any future rewrite has to
-        stay consistent with.
+        AWS charges $3 per MILLION Sonnet input tokens. Prices in
+        ConfigurationTable are per-TOKEN (3e-6). 1M tokens × 3e-6 = $3.00.
+        A prior version had the wrong unit and overstated by 1000×.
         """
+        monkeypatch.setattr(
+            rollup,
+            "_bedrock_pricing_map",
+            {
+                "bedrock/us.anthropic.claude-sonnet-4-20250514": {
+                    "inputTokens": 3.0e-6,
+                    "outputTokens": 15.0e-6,
+                }
+            },
+        )
         with patch.object(
             rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
         ):
@@ -770,13 +789,10 @@ class TestControlPlaneRowBuilding:
                 component="analytics-agent",
                 hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
                 metrics={
-                    # Non-zero activity so _build_control_plane_rows doesn't
-                    # early-return; Bedrock cost is what we're pinning.
                     "duration_ms": 1.0,
                     "invocations": 1.0,
                     "athena_bytes": 0.0,
                     "bedrock_by_model": {
-                        # 1M input, 0 output → $3.00 flat
                         "us.anthropic.claude-sonnet-4-20250514": {
                             "in": 1_000_000,
                             "out": 0,
@@ -784,7 +800,7 @@ class TestControlPlaneRowBuilding:
                     },
                 },
             )
-        # 1_000_000 * 3 / 1_000_000 = 3.00 — NOT 3000.
+        # 1_000_000 * 3e-6 = 3.00 — NOT 3000.
         assert abs(rows[0]["est_bedrock_cost"] - 3.00) < 1e-6
 
     def test_lambda_cost_scales_with_actual_memory_at_same_arch(self, rollup):
@@ -918,90 +934,166 @@ class TestControlPlaneRowBuilding:
                 is False
             )
 
-    def test_athena_query_scopes_on_functionname_not_component(self, rollup):
-        """The AthenaBytesScanned query must NOT filter by Component —
-        callers of emit_control_plane_cost_metric may hardcode a
-        component label (e.g. athena_tool passes "analytics-agent")
-        that doesn't match what _COMPONENT_RULES derives for a Lambda
-        vendoring that code (e.g. ChatStreamProcessorFunction → doc-chat).
-        FunctionName alone is sufficient — the rollup derives Component
-        locally at row-build time.
+    def test_athena_query_uses_full_dim_signature_from_list_metrics(self, rollup):
+        """Round-4 regression pin: CloudWatch matches metrics on their
+        **full** dimension set. Emitter publishes AthenaBytesScanned with
+        ``[Component, FunctionName]``; a GetMetricData with only
+        ``[FunctionName]`` matches nothing and silently returns 0.
+
+        The rollup must ListMetrics first (subset filter is fine there) to
+        discover the full dim signature the emitter used, then
+        GetMetricData with that exact signature. This test pins that the
+        emitted 2-dim identity reaches the get_metric_data call intact.
         """
-        captured: list = []
+        get_captured: list = []
+
+        emitted_dims = [
+            {"Name": "Component", "Value": "analytics-agent"},
+            {"Name": "FunctionName", "Value": "ChatStreamProcessorFunction"},
+        ]
+
+        def fake_list_metrics(**_kwargs):
+            return {
+                "Metrics": [
+                    {
+                        "Namespace": "IDPControlPlane",
+                        "MetricName": "AthenaBytesScanned",
+                        "Dimensions": emitted_dims,
+                    }
+                ]
+            }
 
         def fake_get_metric_data(MetricDataQueries, **_kwargs):  # noqa: N803
-            captured.extend(MetricDataQueries)
-            return {"MetricDataResults": []}
+            get_captured.extend(MetricDataQueries)
+            return {
+                "MetricDataResults": [
+                    {"Id": q["Id"], "Values": [42.0]} for q in MetricDataQueries
+                ]
+            }
 
         mock_cw = MagicMock()
+        mock_cw.list_metrics.side_effect = fake_list_metrics
         mock_cw.get_metric_data.side_effect = fake_get_metric_data
-        mock_cw.list_metrics.return_value = {"Metrics": []}
 
         with patch.object(rollup, "cloudwatch_client", mock_cw):
-            rollup._get_cw_metrics_for_function(
+            result = rollup._get_cw_metrics_for_function(
                 function_name="ChatStreamProcessorFunction",
                 hour_start=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
                 hour_end=datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc),
             )
-        athena_q = next(q for q in captured if q["Id"] == "athena_bytes")
-        dim_names = {d["Name"] for d in athena_q["MetricStat"]["Metric"]["Dimensions"]}
-        assert dim_names == {"FunctionName"}, (
-            f"Expected FunctionName-only, got {dim_names}. "
-            f"Adding Component here reintroduces the label-mismatch drop."
-        )
+        # Athena query must have used the FULL emitted dim signature —
+        # NOT a FunctionName-only subset.
+        athena_queries = [
+            q
+            for q in get_captured
+            if q["Id"].startswith("a") and q["Id"] != "athena_bytes"
+        ]
+        # We might see other queries; grab all queries touching AthenaBytesScanned.
+        athena_queries = [
+            q
+            for q in get_captured
+            if q.get("MetricStat", {}).get("Metric", {}).get("MetricName")
+            == "AthenaBytesScanned"
+        ]
+        assert athena_queries, "No AthenaBytesScanned query issued"
+        for q in athena_queries:
+            dims = q["MetricStat"]["Metric"]["Dimensions"]
+            names = {d["Name"] for d in dims}
+            assert names == {"Component", "FunctionName"}, (
+                f"Expected [Component, FunctionName] (emitter's shape), "
+                f"got {names}. Subset match returns 0 datapoints in real CloudWatch."
+            )
+        # And the value must have reached the caller.
+        assert result["athena_bytes"] == 42.0
 
 
 @pytest.mark.unit
 class TestBedrockPricing:
-    """Pricing lookup must handle new/unknown model IDs gracefully —
-    dashboard shows an over- or under-estimate, but never fails."""
+    """Pricing is loaded from the ConfigurationTable (single source of
+    truth shared with data-plane cost math). Tests inject a fake pricing
+    map into the module cache to bypass the DynamoDB call.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pricing_map(self, rollup, monkeypatch):
+        # Prices below are per-TOKEN USD, matching config_library/pricing.yaml.
+        fake = {
+            "bedrock/us.anthropic.claude-opus-4-1-abc": {
+                "inputTokens": 15.0e-6,
+                "outputTokens": 75.0e-6,
+            },
+            "bedrock/us.anthropic.claude-sonnet-4-20250514": {
+                "inputTokens": 3.0e-6,
+                "outputTokens": 15.0e-6,
+            },
+            "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+                "inputTokens": 3.0e-6,
+                "outputTokens": 15.0e-6,
+            },
+            "bedrock/global.anthropic.claude-opus-4-7": {
+                "inputTokens": 15.0e-6,
+                "outputTokens": 75.0e-6,
+            },
+            "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+                "inputTokens": 0.8e-6,
+                "outputTokens": 4.0e-6,
+            },
+            "bedrock/us.amazon.nova-lite-v1:0": {
+                "inputTokens": 6.0e-8,
+                "outputTokens": 2.4e-7,
+            },
+            "bedrock/us.amazon.nova-2-lite-v1:0": {
+                "inputTokens": 3.0e-7,
+                "outputTokens": 2.5e-6,
+            },
+        }
+        monkeypatch.setattr(rollup, "_bedrock_pricing_map", fake)
+        yield
 
     def test_opus_pricing(self, rollup):
         p = rollup._bedrock_price_for_model("us.anthropic.claude-opus-4-1-abc")
-        assert p["in"] == 15.0
-        assert p["out"] == 75.0
+        assert p["in"] == 15.0e-6
+        assert p["out"] == 75.0e-6
 
     def test_sonnet_pricing(self, rollup):
         p = rollup._bedrock_price_for_model("us.anthropic.claude-sonnet-4-20250514")
-        assert p["in"] == 3.0
+        assert p["in"] == 3.0e-6
 
     def test_unknown_model_falls_back(self, rollup):
         p = rollup._bedrock_price_for_model("some-brand-new-model")
-        assert p == rollup.DEFAULT_BEDROCK_PRICE
+        assert p == rollup.DEFAULT_BEDROCK_PRICE_PER_TOKEN
 
     def test_none_model_falls_back(self, rollup):
         p = rollup._bedrock_price_for_model(None)
-        assert p == rollup.DEFAULT_BEDROCK_PRICE
+        assert p == rollup.DEFAULT_BEDROCK_PRICE_PER_TOKEN
 
-    def test_eu_region_prefix_stripped(self, rollup):
-        """A real EU cross-region model ID must match the anthropic.claude
-        family key after the leading ``eu.`` is stripped — otherwise every
-        EU Bedrock call is silently priced at $0.
+    def test_eu_region_id_matches_when_config_has_it(self, rollup):
+        """Config keys are the exact ``bedrock/<full-model-id>`` shape used
+        by data-plane cost math — no region-prefix stripping needed here.
+        The eu/global variants ARE in config_library/pricing.yaml.
         """
         p = rollup._bedrock_price_for_model(
             "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
-        assert p["in"] == 3.0
-        assert p["out"] == 15.0
+        assert p["in"] == 3.0e-6
+        assert p["out"] == 15.0e-6
 
-    def test_global_region_prefix_stripped(self, rollup):
+    def test_global_region_id_matches_when_config_has_it(self, rollup):
         p = rollup._bedrock_price_for_model("global.anthropic.claude-opus-4-7")
-        assert p["in"] == 15.0
-        assert p["out"] == 75.0
-
-    def test_claude_3_5_haiku_wins_over_claude_haiku(self, rollup):
-        """Longest-prefix wins: `anthropic.claude-3-5-haiku` must beat the
-        generic `anthropic.claude-haiku`. Both key into different prices
-        (Haiku 3.5 is $0.80/$4; but this pin proves prefix-order matters).
-        """
-        p = rollup._bedrock_price_for_model(
-            "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-        )
-        # Haiku 3.5 pricing in constants: $0.80 / $4.0 per million.
-        assert p["in"] == 0.80
-        assert p["out"] == 4.0
+        assert p["in"] == 15.0e-6
+        assert p["out"] == 75.0e-6
 
     def test_nova_lite_bare_id(self, rollup):
+        """Nova Lite v1 config entry — different pricing tier than Nova-2."""
         p = rollup._bedrock_price_for_model("us.amazon.nova-lite-v1:0")
-        assert p["in"] == 0.06
-        assert p["out"] == 0.24
+        assert p["in"] == 6.0e-8
+        assert p["out"] == 2.4e-7
+
+    def test_nova_2_lite_priced_correctly(self, rollup):
+        """Regression pin for round-4 finding: Nova-2 Lite was previously
+        priced as Sonnet fallback (10× over on input, 6× on output).
+        """
+        p = rollup._bedrock_price_for_model("us.amazon.nova-2-lite-v1:0")
+        # $0.30/M input, $2.50/M output → 3.0e-7 / 2.5e-6 per token.
+        assert p["in"] == 3.0e-7
+        assert p["out"] == 2.5e-6
