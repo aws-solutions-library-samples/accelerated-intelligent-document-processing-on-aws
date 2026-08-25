@@ -43,10 +43,11 @@ Headline results at v0.6.5:
    66 pages**, at a steeply growing cost premium ($0.17 → $20.93 per document; **~11×
    simple** at 3,200 rows).
 4. **🚨 Do not use `assessment: integrated` with simple extraction on list documents.** At
-   the shipped default extraction model it returned **0 of 100 rows in 4 of 4 repeats**
-   while reporting `COMPLETED` **and scalar accuracy 1.000**. Across the 7-document grid its
-   mean recall is **0.294**, including an 800-row document that returned **zero** rows. This
-   is the single most dangerous configuration in the matrix (§2.1).
+   the shipped default extraction model it returned **1–10 of 100 rows across 4 of 4
+   repeats**, and **none of the returned rows matched ground truth**, while reporting
+   `COMPLETED` **and scalar accuracy 1.000**. Across the 7-document grid its mean recall is
+   **0.294**; the 800-row document came back with the transaction list **absent entirely**.
+   This is the single most dangerous configuration in the matrix (§2.1).
 5. **Advanced mode can null an entire list** on a long-free-text document (recall 0.000 on
    `longdesc_100` where simple mode got 1.000) — the agent's tool-decline path, unchanged
    since v0.6.0 (§2, finding 3).
@@ -125,11 +126,13 @@ properly, with repeats on a single document.
    document, versus $1.74–2.44 for advanced. Simple is the right default up to the cliff in
    §3.
 2. **🚨 Integrated confidence + simple extraction loses lists catastrophically (recall
-   0.294).** Per document: 800 rows → **0 recovered**, 400 rows → 5–10 recovered,
-   `longdesc_100` → 1 recovered; only the ≤100-row narrow documents survive. It is also the
-   *cheapest* and *fastest* cell ($0.247, 35 s) — because it is doing far less work — which
-   is exactly how it can look attractive. Corroborated with repeats in §2.1. Advanced +
-   integrated recovers to 1.000 because sharding keeps each call small.
+   0.294).** Per document: on the 800-row document the transaction list is **absent from the
+   response entirely**; 400-row documents return 5–10 rows of 400; `longdesc_100` returns 10
+   rows of 100 and **none of them match** (§2.1 separates the truncation from the value
+   corruption). Only the ≤100-row narrow documents survive. It is also the *cheapest* and
+   *fastest* cell ($0.247, 35 s) — because it is doing far less work — which is exactly how
+   it can look attractive. Corroborated with repeats in §2.1. Advanced + integrated recovers
+   to 1.000 because sharding keeps each call small.
 3. **⚠️ Advanced mode nulled an entire list** on `longdesc_100` (recall 0.000, 0/100 rows,
    $0.143 and 33 s — it gave up early), while simple mode returned all 100. That single
    document is the whole 0.857 for `tt-adv-sep`; the other six are 1.000. Same tool-decline
@@ -160,25 +163,44 @@ Because the failure is a *partial or empty list* rather than an error, a single 
 establish it. The `intconf` suite runs the integrated cell **and** a `separate` control on
 the same document (`longdesc_100`, 100 rows) 4× each:
 
-| extraction model | cell | recall per repeat | rows recovered | scalar accuracy |
-|---|---|---|---|---|
-| **Sonnet 5** (shipped default) | simple / **integrated** | 0.000, 0.000, 0.000, 0.000 | **0/100 ×4** | **1.000** |
-| **Sonnet 5** | simple / separate | 1.000 ×4 | 100/100 ×4 | 1.000 |
-| Sonnet 4.6 | simple / **integrated** | 0.100, 0.100, **1.000, 1.000** | 10/100, 10/100, 100/100, 100/100 | 0.500 |
-| Sonnet 4.6 | simple / separate | 1.000 ×4 | 100/100 ×4 | 0.500 |
+| extraction model | cell | recall per repeat | rows **returned** | rows **matching ground truth** | scalar accuracy |
+|---|---|---|---|---|---|
+| **Sonnet 5** (shipped default) | simple / **integrated** | 0.000 ×4 | **10, 4, 1, 5** of 100 | **0 of 100 ×4** | **1.000** |
+| **Sonnet 5** | simple / separate | 1.000 ×4 | 100 of 100 ×4 | 100 ×4 | 1.000 |
+| Sonnet 4.6 | simple / **integrated** | 0.100, 0.100, **1.000, 1.000** | 10, 10, 100, 100 | 10, 10, 100, 100 | 0.500 |
+| Sonnet 4.6 | simple / separate | 1.000 ×4 | 100 of 100 ×4 | 100 ×4 | 0.500 |
 
-Two things to take from this:
+The **returned** and **matching** columns are separated deliberately, because two distinct
+failures stack up at the default model and an earlier draft of this paper conflated them
+into a single "0 rows":
 
-- **At the shipped default model the failure is total and reproducible** — the entire
-  transaction list is dropped, every time, and the document is reported `COMPLETED` with
-  **perfect scalar accuracy**. Nothing in the run's status or field metrics reveals it.
-- **At Sonnet 4.6 the same cell is bimodal (2 of 4 truncate to exactly 10 rows).** So any
+- **Truncation.** Only 1–10 of 100 rows come back, varying run to run. On the 800-row
+  document (§2) the transaction list is **absent from the response entirely**. Root cause:
+  the TopK envelope asks for several guesses *per cell*, so a list that fits comfortably in
+  a plain extraction exceeds what the model will emit in one response — and it stops
+  emitting rows rather than erroring.
+- **Value corruption.** *None* of the rows that do come back match ground truth, because the
+  prompt asked for each guess "as short as possible": the model put the document's actual
+  text in `G2` and a shortened version in `G1`, and `G1` is what becomes the value. So
+  recall reads 0.000 even for the handful of rows returned.
+- **At Sonnet 4.6 the cell is bimodal (2 of 4 truncate to exactly 10 rows).** So any
   single-sample measurement of this cell — including the release audit trail's n=1 grid, see
   [releases/v0.6.5.md §3.1](releases/v0.6.5.md) — can land on either outcome and appear to
-  show a fix. It is not fixed.
+  show a fix.
+- **Nothing in the run reveals any of it.** Status is `COMPLETED` and scalar accuracy is
+  1.000, because the scalar fields are extracted correctly either way.
 
 The `separate` control was complete in 8 of 8 runs across both models, at 1.5–2× the
 integrated cell's cost. **Use `separate`.**
+
+> **Fixes since this measurement.** The value-corruption cause ("as short as possible") is
+> removed and list cells now request a single guess instead of four, which cuts list output
+> ~4× and pushes the truncation point out. A separate defect found in the same
+> investigation — group/object fields keeping their raw `{G1,P1,…}` candidate dict as the
+> extracted value, with no confidence at all — is also fixed. The single-response limit is
+> fundamental to this mode, so **the recommendation to use `separate` on list-bearing
+> schemas stands**, and these numbers describe the configuration as measured, before those
+> fixes.
 
 ---
 
@@ -283,8 +305,9 @@ comparisons of configurations that all did the job.
    *cheaper* than a complete one, so neither status nor cost will alert you. If large tables
    are possible, use advanced mode, or add a schema `minItems` constraint, or reconcile row
    counts downstream.
-2. **`integrated` confidence with simple extraction returned 0 of 100 rows, 4 times out of
-   4, at the shipped default model — with `scalar_accuracy` 1.000 and status `COMPLETED`.**
+2. **`integrated` confidence with simple extraction returned 1–10 of 100 rows in 4 of 4
+   repeats at the shipped default model, with none of them matching ground truth — and
+   `scalar_accuracy` 1.000 with status `COMPLETED` throughout.**
 
 ---
 
