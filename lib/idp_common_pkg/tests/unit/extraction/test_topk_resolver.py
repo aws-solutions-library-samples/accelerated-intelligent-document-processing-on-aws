@@ -217,7 +217,12 @@ class TestGroupFields:
     def test_group_subattributes_resolve_to_values(self):
         raw = {
             "Address": {
-                "Street": {"G1": "100 Main Street", "P1": 0.9, "G2": "Main St", "P2": 0.1},
+                "Street": {
+                    "G1": "100 Main Street",
+                    "P1": 0.9,
+                    "G2": "Main St",
+                    "P2": 0.1,
+                },
                 "Zip": {"G1": "90210", "P1": 0.95},
             }
         }
