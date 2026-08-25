@@ -646,6 +646,7 @@ class SticklerConfigMapper:
         # Translate evaluation method to comparator
         # BUT skip for structured arrays - they use item field comparators
         numeric_tolerance: Optional[float] = None
+        llm_in_list_downgraded = False
         if X_AWS_IDP_EVALUATION_METHOD in schema and not is_structured_array:
             method = schema[X_AWS_IDP_EVALUATION_METHOD]
 
@@ -680,12 +681,16 @@ class SticklerConfigMapper:
                 )
                 # Drop the method so no x-aws-stickler-comparator is emitted and
                 # Stickler's JsonSchemaFieldConverter applies its own type default.
+                # Deliberately fall THROUGH rather than returning early: this
+                # field's threshold / weight / clip-under-threshold / aggregate
+                # extensions are translated further down and must still be
+                # honored — only the comparator choice is being overridden.
                 del schema[X_AWS_IDP_EVALUATION_METHOD]
-                return cls._recurse_children(
-                    schema, field_path, llm_config, in_list_items, document_class
-                )
+                llm_in_list_downgraded = True
 
-            comparator = cls.METHOD_TO_COMPARATOR.get(method)
+            comparator = (
+                None if llm_in_list_downgraded else cls.METHOD_TO_COMPARATOR.get(method)
+            )
             if comparator:
                 schema["x-aws-stickler-comparator"] = comparator
 

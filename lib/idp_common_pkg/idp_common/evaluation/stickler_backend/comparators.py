@@ -27,6 +27,14 @@ from typing import Any, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# Cap on a comparator instance's memo table. Instances are cached per
+# (model, field) for the life of a warm Lambda container, so an unbounded dict
+# would grow with every distinct value pair the container ever sees. Well above
+# the distinct pairs any single document produces, so the cache still does its
+# job within a document.
+_VERDICT_CACHE_MAX = 10_000
+
+
 def _trivially_equal(a: str, b: str) -> bool:
     """True when two rendered values differ only by case or whitespace.
 
@@ -145,7 +153,9 @@ class LLMComparator(BaseComparator):
         # lifetime. Structured-list matching compares the same value pairs
         # repeatedly across the assignment matrix and again when scoring the
         # matched pairs, and the judge is deterministic at temperature 0, so a
-        # repeat is a wasted round trip.
+        # repeat is a wasted round trip. Bounded because comparator instances are
+        # cached per (model, field) for the life of a warm Lambda container, which
+        # processes many documents — an unbounded dict would be a slow leak.
         self._verdict_cache: dict[Tuple[str, str], float] = {}
 
         logger.debug(
@@ -184,7 +194,8 @@ class LLMComparator(BaseComparator):
                 f"LLM comparison: matched={matched}, score={score:.3f}, reason='{reason}'"
             )
 
-            self._verdict_cache[cache_key] = score
+            if len(self._verdict_cache) < _VERDICT_CACHE_MAX:
+                self._verdict_cache[cache_key] = score
             return score
 
         except Exception as e:

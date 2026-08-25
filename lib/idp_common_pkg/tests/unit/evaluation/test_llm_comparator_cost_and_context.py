@@ -159,6 +159,63 @@ def test_list_comparison_llm_calls_do_not_grow_with_row_count(n_rows):
 
 
 @pytest.mark.unit
+def test_downgrade_preserves_the_fields_other_extensions():
+    """Only the comparator choice is overridden — nothing else on the field.
+
+    Regression guard for a bug in the first draft of this fix, which returned
+    early from the translation pass on the downgrade path and therefore skipped
+    threshold / weight / clip-under-threshold / aggregate translation for the
+    field it had just rewritten.
+    """
+    schema = _schema()
+    desc = schema["properties"]["LineItems"]["items"]["properties"]["Desc"]
+    desc["x-aws-idp-evaluation-threshold"] = 0.9
+    desc["x-aws-idp-evaluation-weight"] = 3.0
+    desc["x-aws-idp-evaluation-clip-under-threshold"] = True
+    desc["x-aws-idp-evaluation-aggregate"] = "mean"
+
+    out = _build(schema)["schema"]["properties"]["LineItems"]["items"]["properties"][
+        "Desc"
+    ]
+    assert "x-aws-stickler-comparator" not in out  # downgraded
+    assert out["x-aws-stickler-threshold"] == 0.9
+    assert out["x-aws-stickler-weight"] == 3.0
+    assert out["x-aws-stickler-clip-under-threshold"] is True
+    assert out["x-aws-stickler-aggregate"] == "mean"
+
+
+@pytest.mark.unit
+def test_downgrade_still_translates_nested_children():
+    """A downgraded field's own children are still walked."""
+    schema = _schema()
+    items = schema["properties"]["LineItems"]["items"]
+    items["properties"]["Nested"] = {
+        "type": "object",
+        "x-aws-idp-evaluation-method": "LLM",
+        "properties": {
+            "Inner": {"type": "number", "x-aws-idp-evaluation-method": "NUMERIC_EXACT"}
+        },
+    }
+    out = _build(schema)["schema"]["properties"]["LineItems"]["items"]["properties"]
+    assert (
+        out["Nested"]["properties"]["Inner"]["x-aws-stickler-comparator"]
+        == "NumericComparator"
+    )
+
+
+@pytest.mark.unit
+def test_verdict_cache_is_bounded():
+    from idp_common.evaluation.stickler_backend import comparators as mod
+
+    comparator = LLMComparator(model="test-model")
+    with patch.object(mod, "_VERDICT_CACHE_MAX", 2):
+        with patch("idp_common.bedrock.invoke_model", return_value=_bedrock_ok()):
+            for i in range(10):
+                comparator.compare(f"expected {i}", f"actual {i}")
+    assert len(comparator._verdict_cache) <= 2
+
+
+@pytest.mark.unit
 def test_evaluation_method_on_structured_array_warns(caplog):
     """The method is discarded — say so instead of dropping intent silently."""
     with caplog.at_level("WARNING"):
