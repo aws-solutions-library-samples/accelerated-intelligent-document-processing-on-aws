@@ -4772,6 +4772,68 @@ class TestTestSetResolver:
         assert entry.get("error") is None
         assert entry["fileCount"] == 3
 
+    def test_memo_hits_do_not_consume_reconcile_probe_budget(self, labeling_env):
+        """On a stack with more than MAX_RECONCILE_PROBES test sets, memo hits
+        must not lock out sets past the alphabetically-first ``MAX_RECONCILE_PROBES``
+        on warm containers.
+
+        Discovered adversarially: the probe budget increments per call to the
+        reconcile helper, but memo hits are O(1) dict lookups with no S3
+        traffic. If they count against the budget, the first
+        MAX_RECONCILE_PROBES sets consume all slots on every warm poll (as
+        memo hits, doing zero S3 work), and the tail sets never get their own
+        chance to reconcile until cold start.
+
+        Fixed by checking the memo BEFORE consuming a budget slot in the
+        caller. Only S3-touching reconciles cost budget.
+        """
+        table, s3 = labeling_env
+
+        # Create MAX_RECONCILE_PROBES + 5 stale sets, alphabetically named.
+        set_count = test_set_index.MAX_RECONCILE_PROBES + 5
+        for i in range(set_count):
+            tsid = f"ts{i:03d}"
+            s3.put_object(
+                Bucket="test-set-bucket", Key=f"{tsid}/input/a.pdf", Body=b"x"
+            )
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"{tsid}/baseline/a.pdf/sections/1/result.json",
+                Body=b"{}",
+            )
+            _seed_test_set(
+                table,
+                tsid,
+                name=tsid,
+                status="COMPLETED",
+                fileCount=1,
+                labelState="labeled",
+                source="uploaded",
+                createdAt="2026-01-01T00:00:00Z",
+                InitialEventTime="2026-01-01T00:00:00Z",
+                ItemType="testset",
+                contentSignature="stale",
+            )
+
+        # First pass: reconcile does S3 work for the first MAX_RECONCILE_PROBES
+        # sets, memoizes them. The tail is deferred.
+        test_set_index.get_test_sets()
+        first_pass_memo = set(test_set_index._RECONCILE_MEMO.keys())
+        assert len(first_pass_memo) == test_set_index.MAX_RECONCILE_PROBES, (
+            f"expected {test_set_index.MAX_RECONCILE_PROBES} memoized after "
+            f"first pass, got {len(first_pass_memo)}"
+        )
+
+        # Second pass: memo hits for the first MAX_RECONCILE_PROBES MUST NOT
+        # consume the budget — the tail sets should get their turn.
+        test_set_index.get_test_sets()
+        after_second = set(test_set_index._RECONCILE_MEMO.keys())
+        expected = {f"ts{i:03d}" for i in range(set_count)}
+        assert after_second == expected, (
+            f"warm container starved sets past MAX_RECONCILE_PROBES: "
+            f"missing {sorted(expected - after_second)}"
+        )
+
 
 @pytest.mark.unit
 class TestLabelStateReconciliation:

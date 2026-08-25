@@ -2677,6 +2677,19 @@ def get_test_sets():
                 # directly in S3 — no S3 notification fires for that, so this
                 # lazy scan is the only chance to refresh the DDB row.
                 if prefix in existing_test_sets:
+                    existing_row = existing_test_sets[prefix]
+                    # Memo check BEFORE the budget gate so a warm container
+                    # serving > MAX_RECONCILE_PROBES sets doesn't lock out the
+                    # alphabetically-later ones. Memo hits are O(1) dict
+                    # lookups with no S3 traffic — the budget exists to cap
+                    # S3 work, not cheap in-process checks. Without this, on
+                    # a stack of 30 sets the first 25 would eat the budget on
+                    # every warm poll (all memo hits, no work) and sets 26-30
+                    # would never be visited by reconcile until cold start.
+                    if _within_reconcile_ttl(
+                        prefix, existing_row.get("contentSignature")
+                    ):
+                        continue
                     # Budget exhausted? Skip the reconcile — the row keeps its
                     # last-known values on this response, and the next poll's
                     # warm-container memo takes the fast path for anything we
@@ -2691,7 +2704,7 @@ def get_test_sets():
                         s3_client,
                         test_set_bucket,
                         prefix,
-                        existing_test_sets[prefix],
+                        existing_row,
                     )
                     if reconciled is not None:
                         # Refresh the in-memory row + the result entry we
