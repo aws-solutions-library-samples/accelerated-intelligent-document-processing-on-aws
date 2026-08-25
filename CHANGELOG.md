@@ -3,6 +3,16 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **An `LLM` evaluation method on a field inside a list was quadratic, and it stalled an entire deployment.** Lists are paired with the Hungarian algorithm, which builds a full `N_ground-truth × N_predicted` similarity matrix and invokes each item field's comparator **once per cell**, then scores the matched pairs — measured at exactly `N² + 2N` comparator calls. With a Bedrock round trip per cell, a 54-line-item invoice needed ~3,000 sequential model calls (~45 min), so the 900 s evaluation Lambda could never finish it *at any retry count*: it timed out mid-matrix, Step Functions retried 8× at 2.5× backoff (~5.2 h/document), and the document then hard-failed, discarding its completed OCR, extraction and assessment. Observed live with 29 documents wedged, 2,532 queued behind them and the workflow-concurrency counter stuck at its ceiling, so the stack accepted no new documents for hours. An `LLM` method on a list-item field is now **downgraded to that field's deterministic type default** (string → Levenshtein, number → Numeric, boolean → Exact) with a warning naming the field — which is the right shape for a matching cost function anyway — and `x-aws-idp-evaluation-allow-llm-in-list: true` opts a small, bounded list back in. A regression test asserts the Bedrock call count stays flat in row count for 3/10/54-row lists; it was `N²+2N` before. Setting an evaluation method on the **array itself** has never had any effect and is now warned about rather than silently discarded.
+
+- **The LLM comparison judge was being asked to grade values with no idea what field it was looking at.** The prompt interpolates `{DOCUMENT_CLASS}`, `{ATTRIBUTE_NAME}` and `{ATTRIBUTE_DESCRIPTION}`, but Stickler's comparator protocol is `compare(value1, value2)` and carries no field context, so the adapter passed empty strings: every request went out as `for a document of class: . For the attribute named "" described as "":`. The field *description* is what makes a semantic match decision possible at all — without it the model was choosing between two bare strings, on an invoice where `Agency` and `Advertiser` are both company names. Context now reaches the comparator through the same per-field `x-aws-stickler-comparator-config` channel the model config already uses. ⚠️ **`LLM`-method scores from earlier releases were produced context-free and are not directly comparable with current ones.**
+
+- **Identical values no longer cost a Bedrock call.** `Florida Democratic Party` vs `Florida Democratic Party` was being sent to the model. Values equal after case/whitespace normalization now short-circuit to a match — deliberately narrow, so anything needing real judgement (punctuation, abbreviation, word order, synonymy) still reaches the model — and repeated `(expected, actual)` pairs are memoized per comparator instance. Together with the list fix this took a representative 54-row invoice from ~3,000 model calls to zero.
+
 ## [0.6.5]
 
 ### Added
