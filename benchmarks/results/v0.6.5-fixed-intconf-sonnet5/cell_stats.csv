@@ -1,3 +1,0 @@
-cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
-core-tt-simple-int,4,0,0.24575,0.01064,0.0433,0.2402,0.2617,1.0,1.0,176.63756
-core-tt-simple-sep,4,0,0.15945,0.00277,0.0174,0.1578,0.1636,1.0,0.5,84.4167
