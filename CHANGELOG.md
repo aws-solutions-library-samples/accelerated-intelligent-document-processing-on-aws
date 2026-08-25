@@ -3,6 +3,16 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **In integrated (1S-TopK) confidence mode, every group field's value was the raw candidate object instead of the extracted value — and it had no confidence at all.** `resolve_candidates` handled scalar candidates and array items but had no case for a **group (object)** field whose sub-attributes are candidates, so the group fell through to the pass-through branch: `Address.City` was stored as `{"G1": "Anytown", "P1": 0.95, …}` rather than `"Anytown"`, and because no confidence leaf was emitted the group's fields were also **invisible to threshold alerts and HITL**. Silent, and it applied to every group field of every document processed in this mode. Groups now resolve, recursively (group-in-group, list-in-group, group-in-list-row), with `$ref`s dereferenced against `$defs` at every level so numeric coercion reaches nested sub-attributes too. Nine regression tests.
+
+- **The integrated-confidence prompt told the model to make each guess "as short as possible", so it returned shortened values.** That instruction contradicted the prompt's own guideline 2 ("extract each entity candidate exactly how it is presented in the document"), and it demonstrably won: on a benchmark document whose row descriptions carry a unique marker, the model put the *correct* full text in `G2` (p=0.15) and a **truncated** version in `G1` (p=0.8) — and `G1` is what becomes the extracted value. Replaced with "copied EXACTLY as it appears in the document".
+
+- **Integrated confidence asked for four guesses per *list cell*, multiplying list output ~4× and truncating long lists.** For a 100-row × 3-column table that is 1,200 guess strings instead of 300 values, so a list that fits comfortably in a plain extraction exceeds what the model will emit in one response — and it stops emitting rows rather than erroring. Measured on a 100-row list: `integrated` returned **10 of 100 rows** (4 of 4 repeats at the default model) while `separate` returned 100 of 100 in 8 of 8. List cells are now asked for `G1/P1` **only**, keeping multi-candidate calibration for scalars where the cost is negligible, and the output format finally documents the group shape (it previously showed only SIMPLE and LIST, which is why groups were never handled). ⚠️ This reduces but does not eliminate the limit — it is fundamental to producing values and confidence in one response — so **`separate` remains the recommendation for list-bearing schemas**. Docs updated in both tiers: [extraction-and-confidence.md](docs/extraction-and-confidence.md) and the [extraction README](lib/idp_common_pkg/idp_common/extraction/README.md).
+
 ## [0.6.5]
 
 ### Added
