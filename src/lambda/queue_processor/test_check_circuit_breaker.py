@@ -47,11 +47,9 @@ def index_module(monkeypatch):
     for name, mod in module_patches.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
-    with (
-        patch.dict(os.environ, env_vars, clear=False),
-        patch("boto3.resource") as mock_resource,
-        patch("boto3.client") as mock_client,
-    ):
+    with patch.dict(os.environ, env_vars, clear=False), \
+         patch("boto3.resource") as mock_resource, \
+         patch("boto3.client") as mock_client:
         mock_table = MagicMock()
         mock_resource.return_value.Table.return_value = mock_table
         mock_client.return_value = MagicMock()
