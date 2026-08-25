@@ -1264,6 +1264,43 @@ For large documents and big tables:
 - **Simple + `separate` confidence still handles large lists** via [large-list batching](#large-list-batching-list_batch_size) (`list_batch_size`) — full per-cell confidence and geometry with no extra configuration. This is the direct replacement for the retired granular assessment.
 - **Rule of thumb:** a document that is large only because it contains a long *list* (e.g. a 300-row bank statement) is well served by Simple + separate + batching. A document with a **very large single section** (dense multi-page narrative or multiple large tables) is better served by **Advanced sharding**, which also splits the extraction work, not just the confidence pass.
 
+### Detecting a truncated list
+
+Extraction can lose rows **silently**: a benchmarked simple-mode run returns
+complete lists (recall 1.000) up to ~800 rows, then **0.199 at 1,200 rows and
+0.009 at 3,200** — and reports success every time. Two things make this
+particularly easy to miss:
+
+- **Scalar accuracy is unaffected.** The document's non-list fields extract
+  perfectly whether the table came back complete, partial, or not at all — so a
+  quality metric based on field accuracy looks healthy.
+- **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
+  truncated, so cost monitoring will not flag it either.
+
+So it must be detected structurally. Three signals are now raised as
+[processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
+| `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
+| `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+
+**Add `minItems` to list fields you care about.** It costs nothing at extraction
+time and turns an invisible truncation into a visible warning:
+
+```yaml
+Transactions:
+  type: array
+  minItems: 1        # or a realistic floor for your corpus
+  items: { … }
+```
+
+Without it, only the empty/absent and sparse signals apply — a list that returns
+10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
+For corpora where large tables are expected, also prefer **Advanced** mode, which
+holds recall 1.000 through 3,200 rows by sharding.
+
 ---
 
 ## 9. Output Format

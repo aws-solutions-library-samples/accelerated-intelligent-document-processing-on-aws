@@ -1864,14 +1864,30 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         is_agentic = self.config.extraction.agentic.enabled
         properties = (self._class_schema or {}).get(SCHEMA_PROPERTIES, {}) or {}
 
-        # 1) Empty schema-defined array fields.
-        empty_lists = [
+        # 1) Empty OR ABSENT schema-defined array fields.
+        #
+        # "Absent" matters as much as "empty" and used to be missed entirely: the
+        # `isinstance(..., list)` guard meant a response that simply OMITTED a
+        # declared list produced no issue at all. Measured on an 800-row
+        # transaction document in integrated-confidence mode, the response came
+        # back with the `Transactions` key **not present** — status COMPLETED,
+        # scalar accuracy 1.000, and not one warning anywhere. A declared list
+        # that the model declined to emit is the single largest silent-data-loss
+        # shape this pipeline has.
+        array_fields = [
             name
             for name, spec in properties.items()
-            if isinstance(spec, dict)
-            and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
-            and isinstance(extracted_fields.get(name), list)
-            and len(extracted_fields.get(name, [])) == 0
+            if isinstance(spec, dict) and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
+        ]
+        empty_lists = [
+            name
+            for name in array_fields
+            if name not in extracted_fields
+            or extracted_fields.get(name) is None
+            or (
+                isinstance(extracted_fields.get(name), list)
+                and len(extracted_fields[name]) == 0
+            )
         ]
         if empty_lists:
             fields_str = ", ".join(empty_lists)
@@ -1889,7 +1905,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     message=(
                         f"Extraction returned no rows for list field(s): "
                         f"{fields_str}. If the document contains this data, it was "
-                        f"not captured.{rec}"
+                        f"not captured. Note that scalar fields can still score "
+                        f"perfectly while a whole list is missing, so no other "
+                        f"signal will flag this.{rec}"
                     ),
                     root_cause=(
                         f"{'agentic' if is_agentic else 'traditional'} extraction "
@@ -1956,6 +1974,70 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"empty_fields": pop.get("empty_fields", [])[:20]},
+                )
+            )
+
+        # 4) A list came back SHORTER than its declared `minItems`.
+        #
+        # This is the one unambiguous, mode-agnostic truncation signal available
+        # without ground truth: the config author asserted a floor and the
+        # extraction is under it. Previously the `minItems` check ran only on the
+        # agentic path, so simple mode — which is where the silent completeness
+        # cliff actually lives (recall 1.000 through ~800 rows, then 0.199 at
+        # 1,200 and 0.009 at 3,200) — had no completeness check of any kind.
+        #
+        # Deliberately a *warning*, not a failure: the partial rows are real data
+        # and are more useful than a discarded document. What matters is that it
+        # stops being silent, because neither status nor cost reveals it — a
+        # truncated run is actually CHEAPER than a complete one.
+        short_lists: list[dict[str, Any]] = []
+        for name in array_fields:
+            value = extracted_fields.get(name)
+            if not isinstance(value, list) or not value:
+                continue  # empty/absent already reported by (1)
+            raw_min = (properties.get(name) or {}).get("minItems")
+            if raw_min in (None, ""):
+                continue
+            try:
+                # minItems can arrive as a string after a config round-trip.
+                min_items = int(raw_min)
+            except (TypeError, ValueError):
+                continue
+            if min_items > 0 and len(value) < min_items:
+                short_lists.append(
+                    {"field": name, "rows": len(value), "min_items": min_items}
+                )
+
+        if short_lists:
+            detail = ", ".join(
+                f"{s['field']} ({s['rows']} of at least {s['min_items']})"
+                for s in short_lists
+            )
+            rec = (
+                " Advanced (agentic) extraction shards large lists and is "
+                "recommended for documents this size."
+                if not is_agentic
+                else ""
+            )
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code="extraction_list_truncated",
+                    message=(
+                        f"List field(s) returned fewer rows than the schema's "
+                        f"minItems requires: {detail}. The extraction is very "
+                        f"likely truncated — the returned rows are usable but "
+                        f"incomplete.{rec}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"minItems violated on: {detail}"
+                    ),
+                    section_id=section_id,
+                    details={"short_lists": short_lists, "agentic": is_agentic},
                 )
             )
         return issues
@@ -3826,8 +3908,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     tool_used=tool_used,
                 )
 
-            # Population heuristic: flag suspiciously sparse extractions (e.g.
-            # nested fields silently returning null). Advisory only.
+        # Population heuristic: flag suspiciously sparse extractions (e.g.
+        # nested fields silently returning null). Advisory only.
+        #
+        # Deliberately OUTSIDE the `extraction_method == "agentic"` block above.
+        # It used to run only on the agentic path, which is backwards: simple mode
+        # is the one with no validation step and the one where the silent
+        # completeness cliff lives (recall 1.000 through ~800 list rows, then 0.199
+        # at 1,200 and 0.009 at 3,200 — reported as success either way). The
+        # consumer that turns this into a surfaced ProcessingIssue was already
+        # mode-agnostic; only the producer was gated.
+        if self._class_schema:
             metadata["population_check"] = self._check_population_completeness(
                 extracted_fields=result.extracted_fields,
                 schema=self._class_schema,

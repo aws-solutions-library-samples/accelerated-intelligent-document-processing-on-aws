@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A list that came back missing, or far shorter than the schema demands, was reported as a clean success.** Extraction loses rows silently: a benchmarked simple-mode run returns complete lists (recall 1.000) up to ~800 rows, then **0.199 at 1,200 and 0.009 at 3,200** — reporting success every time. Two properties make it near-undetectable: **scalar accuracy is unaffected** (the non-list fields extract perfectly whether the table came back whole, partial, or not at all, so field-accuracy dashboards look healthy), and **a truncated run is *cheaper*** ($1.78 → $1.04 when a run truncated), so cost monitoring will not flag it either. Three gaps closed. **(1)** An **absent** declared list raised nothing at all — the empty-list check was guarded by `isinstance(value, list)`, so a response that simply omitted the list fell straight through. Measured on an 800-row transaction document, `Transactions` was **not present in the response**, status was `COMPLETED`, scalar accuracy 1.000, and no warning was emitted anywhere; null lists were equally silent. **(2)** A new `extraction_list_truncated` warning fires when a list returns fewer rows than its schema `minItems` — the one unambiguous truncation signal available without ground truth — and it runs in **both** modes. **(3)** The population-ratio heuristic (`extraction_sparse`) only ever *ran* on the agentic path, which is backwards: simple mode is the one with no validation step and the one where the cliff lives. The consumer that turns it into a surfaced issue was already mode-agnostic; only the producer was gated. All three surface as structured processing issues on the section, so they reach DynamoDB, the document list's **Processing Issues** column and the section **Processing Report** tab. Deliberately warnings rather than failures — partial rows are real data and more useful than a discarded document; what matters is that it stops being silent. [docs/extraction-and-confidence.md](docs/extraction-and-confidence.md) gains a "Detecting a truncated list" section recommending `minItems` on list fields you care about.
+
 ## [0.6.5]
 
 ### Added
