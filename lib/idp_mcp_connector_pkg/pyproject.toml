@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idp_mcp_connector"
-version = "0.6.4"
+version = "0.6.5"
 description = "Local MCP connector that bridges IDE tools (Cline, Kiro) to the IDP Accelerator MCP Server on AWS Bedrock AgentCore Gateway"
 readme = "README.md"
 requires-python = ">=3.11"

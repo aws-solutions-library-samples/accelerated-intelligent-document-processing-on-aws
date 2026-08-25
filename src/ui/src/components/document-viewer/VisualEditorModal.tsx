@@ -29,6 +29,8 @@ import type { BoxProps } from '@cloudscape-design/components';
 import PageImageViewer from '../common/PageImageViewer';
 import type { PageImageViewerHandle } from '../common/PageImageViewer';
 import EditHistoryTab from './EditHistoryTab';
+import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
+import { extractClassificationIndex } from '../common/classification-comparison-utils';
 import ProcessingReportTab from './ProcessingReportTab';
 
 const client = generateClient();
@@ -165,6 +167,15 @@ const VisualEditorModal = ({
   const sectionDocItem = sectionData?.documentItem as Record<string, unknown> | undefined;
   const evaluationStatus = sectionDocItem?.evaluationStatus || sectionDocItem?.EvaluationStatus;
   const isBaselineAvailable = evaluationStatus === 'BASELINE_AVAILABLE' || evaluationStatus === 'COMPLETED';
+
+  // Per-page ground-truth classes for this document, from the same results.json
+  // the field-level comparison already uses — so the class comparison costs no
+  // extra request.
+  const classificationIndex = useMemo(() => extractClassificationIndex(evaluationResults), [evaluationResults]);
+  const sectionPageNumbers = useMemo(
+    () => ((sectionData?.PageIds as Array<string | number> | undefined) ?? []).map((pageId) => Number(pageId)).filter((n) => !Number.isNaN(n)),
+    [sectionData?.PageIds],
+  );
 
   // Construct baseline URI from output URI
   const constructBaselineUri = (outputUri: string | undefined) => {
@@ -1092,10 +1103,22 @@ const VisualEditorModal = ({
                           </Box>
                         )}
                         {showEvaluation && baselineData && (
-                          <Alert type="info" header="Evaluation Comparison Mode">
-                            Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
-                            and reasons.
-                          </Alert>
+                          <>
+                            {/* The section's own class, compared first: every
+                                field below was extracted against this class's
+                                schema, so a class mismatch explains the field
+                                mismatches rather than adding to them. */}
+                            <SectionClassEvaluation
+                              index={classificationIndex}
+                              pageNumbers={sectionPageNumbers}
+                              predictedClass={(localJsonData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                              baselineClass={(localBaselineData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                            />
+                            <Alert type="info" header="Evaluation Comparison Mode">
+                              Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
+                              and reasons.
+                            </Alert>
+                          </>
                         )}
                         {inferenceResult ? (
                           <FormFieldRenderer

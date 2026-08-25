@@ -360,6 +360,25 @@ The evaluation calculates the following metrics:
 
 These metrics are calculated at both the attribute level (per field), section level (per document class), and document level (overall performance).
 
+### Failure and exclusion flags in section metrics
+
+A section's `metrics` dict can also carry non-numeric state that distinguishes
+*not scored* from *scored zero*. Consumers of `results.json` should branch on
+these before reading the numbers:
+
+| Key | Meaning |
+|-----|---------|
+| `evaluation_skipped: True` | Nothing to score (class has no extractable fields, or is excluded from processing). `weighted_overall_score` is `None` and the section is dropped from the document weighted mean and confusion-matrix rollup. |
+| `evaluation_failed: True` | Evaluation was attempted and failed. Metrics are zeroed and **do** count against document-level aggregates. |
+| `failure_type: str` | Set alongside `evaluation_failed`; names the cause — `missing_schema_configuration`, `empty_nested_object`, `extraction_parsing_failed`, `baseline_data_validation_error`, `schema_configuration_error`, `unexpected_error`. |
+| `skipped_field_count: int` | Some fields were dropped from scoring after per-field validation errors; the rest were scored normally. |
+
+`DocumentEvaluationResult.to_markdown` keys the failure block's "How to fix"
+guidance on `failure_type`, and renders none when it is absent (results written
+before the field existed) rather than guessing — advice for the wrong cause is
+worse than no advice. When adding a new failure branch, set `failure_type` and
+add a matching case in `_failure_remediation`.
+
 ## Visual Reporting
 
 The evaluation module produces richly formatted Markdown reports with:
