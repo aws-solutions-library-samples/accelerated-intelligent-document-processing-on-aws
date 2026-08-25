@@ -14,6 +14,7 @@ Generate a new entry with **`make benchmark-release VERSION=<new> PREV=<publishe
 
 | Release | vs (published) | Accuracy | Cost | Notable | Report |
 |---------|----------------|----------|------|---------|--------|
+| **v0.6.5** | v0.6.4 | flat (0.900 = 0.900, all 30 pairs equal) | +1.4% across the 24 runs in the 8 stable cells; +8.5% total, all of it in 2 non-deterministic cells | **0 regressions.** Measured recall 0.931→0.987 but a 4× repeat run shows the integrated-confidence cell is **bimodal (2/4 truncate)** — the hazard is NOT fixed and the "improvement" is noise; alert rate 10.7%→6.4%; confidence pass now attaches page images (per-page cost note) | [v0.6.5.md](./v0.6.5.md) |
 | **v0.6.0** | v0.5.16 | flat (0.917 = 0.917) | **−32.5%** total (advanced −44–55%) | cacheRead −95%; one integrated-confidence completeness regression on long lists; v0.6 fixes v0.5.16 advanced-assessment timeouts | [v0.6.0.md](./v0.6.0.md) |
 
 <!-- APPEND NEW ROWS ABOVE THIS LINE (newest first). Columns:
