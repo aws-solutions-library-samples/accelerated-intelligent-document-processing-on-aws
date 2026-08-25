@@ -7,6 +7,40 @@ an MR to `develop`. It covers reproducing the scan, telling real issues from
 false positives, and the two ways to make a HIGH finding go away: **mitigate**
 (fix the code) or **suppress** (record accepted-risk / scanner-limitation).
 
+## ⚠️ SRT does NOT check dependencies for CVEs — `make dep-audit` does
+
+SRT's five scanners include **syft**, which builds an SBOM: an *inventory* of
+packages, with **no vulnerability matching**. So SRT can never fail a build for a
+known-vulnerable dependency, and for a long time nothing else in CI did either
+(found by diffing our SRT output against an independent ASH scan, whose grype
+stage flags exactly this class). If you are asked "are we exposed to CVE-X",
+**SRT is the wrong tool** — reach for:
+
+```bash
+make dep-audit        # regenerate manifests + audit ~1800 pinned deps vs OSV
+make dep-audit-fast   # reuse existing dist/manifests (skip regeneration)
+```
+
+- Implemented by `scripts/security/dep_audit.py`; gated in CI by the `dep_audit`
+  job (`fast_checks`, every push and MR, no AWS).
+- Reads the manifests `scripts/generate-dep-manifest.sh` produces, covering
+  `uv.lock`, every `package-lock.json` and every `requirements.txt`.
+- **Fails on HIGH/CRITICAL.** Triage the same way as SRT — but in
+  `scripts/security/dep_audit_allowlist.json`, with a real justification
+  (`{"id": "GHSA-…", "package": "…", "reason": "…"}`). Prefer bumping the pin;
+  allowlist only when the advisory is genuinely unreachable, and say why.
+- **Exit 2 means the audit could not run** (OSV unreachable) — that is not a
+  pass. Exit 1 is findings, 0 is clean.
+- Two gotchas worth knowing before you chase a finding:
+  - An advisory with **no `fixed` event** and an open-ended range matches *every*
+    version. Check the reported `last known affected range` — the fix may have
+    shipped outside the registry (SheetJS/`xlsx` publishes patches to
+    `cdn.sheetjs.com`, which OSV cannot model).
+  - Bumping a pin can be blocked downstream: `bedrock-agentcore`'s fix needs
+    `boto3>=1.43.31` against a deliberate `boto3<1.43.0` pin, and a Pillow bump
+    can break SAM's arm64 build (see `feature-platform/pii-anonymizer/hook/Makefile`
+    for the multi-`--platform` workaround).
+
 ## What SRT is and how the gate works
 
 - `make srt-setup` downloads the `srt` binary into `.srt/`, writes

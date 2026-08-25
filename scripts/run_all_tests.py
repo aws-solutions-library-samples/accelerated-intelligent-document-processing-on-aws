@@ -118,6 +118,9 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
+    # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
+    # subdir for the same reason as scripts/sdlc/tests above.
+    "scripts/security/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------

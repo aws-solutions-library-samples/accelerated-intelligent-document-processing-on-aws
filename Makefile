@@ -567,7 +567,6 @@ endif
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_sdk/pyproject.toml && rm -f lib/idp_sdk/pyproject.toml.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_common_pkg/pyproject.toml && rm -f lib/idp_common_pkg/pyproject.toml.bak
-	@sed -i.bak 's/version=".*"/version="$(V)"/' lib/idp_common_pkg/setup.py && rm -f lib/idp_common_pkg/setup.py.bak
 	@sed -i.bak 's/@click.version_option(version=".*")/@click.version_option(version="$(V)")/' lib/idp_cli_pkg/idp_cli/cli.py && rm -f lib/idp_cli_pkg/idp_cli/cli.py.bak
 	@sed -i.bak 's/^__version__ = ".*"/__version__ = "$(V)"/' lib/idp_sdk/idp_sdk/__init__.py && rm -f lib/idp_sdk/idp_sdk/__init__.py.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_mcp_connector_pkg/pyproject.toml && rm -f lib/idp_mcp_connector_pkg/pyproject.toml.bak
@@ -586,7 +585,6 @@ endif
 	@echo "  - lib/idp_sdk/pyproject.toml"
 	@echo "  - lib/idp_sdk/idp_sdk/__init__.py"
 	@echo "  - lib/idp_common_pkg/pyproject.toml"
-	@echo "  - lib/idp_common_pkg/setup.py"
 	@echo "  - lib/idp_mcp_connector_pkg/pyproject.toml"
 	@echo "  - lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py"
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
@@ -655,6 +653,17 @@ security-results: ## Run security tests + curate a public-safe snapshot into sec
 ##@ Dependencies
 dep-manifest: ## Generate dependency manifests for artifact repository mirroring (Python + Node)
 	@bash scripts/generate-dep-manifest.sh
+
+# SRT (the security gate) runs syft, which inventories dependencies but does no
+# vulnerability matching — so nothing in CI used to fail on a known-vulnerable
+# pin. This target closes that gap by matching the generated manifests against
+# OSV. Findings that are genuinely unreachable go in
+# scripts/security/dep_audit_allowlist.json WITH a justification.
+dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on HIGH+)
+	@$(PYTHON) scripts/security/dep_audit.py
+
+dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
+	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
