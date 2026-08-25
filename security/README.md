@@ -22,7 +22,7 @@ README for the curation process).
 
 | Test | Goal / coverage | Run with | Owning script | Skill |
 |------|-----------------|----------|---------------|-------|
-| **SRT** — SAST & dependency scan | Static analysis (Bandit, Semgrep, Checkov), dependency inventory (Syft), and a security-matrix review across the whole repo. Gate = any **HIGH** finding with `status: Open`. | `make srt-scan` (or `make srt`) | `scripts/srt/run.py`; suppression register `scripts/srt/issues.json` | [`srt-security-scan.md`](../.claude/skills/srt-security-scan.md) |
+| **SRT** — SAST & dependency scan | Static analysis (Bandit, Semgrep, Checkov), dependency inventory (Syft), and a security-matrix review across the whole repo. Gate = any **HIGH** finding whose `status` is `Open` **or `reopened`** — `reopened` is what SRT records when a finding it had marked resolved/suppressed is detected again, so only `suppressed`/`resolved` are accepted dispositions. | `make srt-scan` (or `make srt`) | `scripts/srt/run.py`; suppression register `scripts/srt/issues.json` | [`srt-security-scan.md`](../.claude/skills/srt-security-scan.md) |
 | **ZAP DAST** — dynamic API scan | OWASP ZAP baseline/active scan of the deployed UI API (`POST /op/{field}`), seeded from a generated OpenAPI spec of every operation. Gate = any **High** alert. | `make stacktest-zap STACK_NAME=…` | `scripts/sdlc/run_stacktest.py zapdast`; rules `scripts/sdlc/zap-rules.conf` | [`run-stack-tests.md`](../.claude/skills/run-stack-tests.md) |
 | **RBAC static** — authorization scan | Offline (no AWS, CI-safe) cross-check of the API op universe vs. schema `@aws_cognito_user_pools` directives vs. the expectations file, catching drift and missing server-side checks. | `make api-test-static` | `scripts/sdlc/scan_api_rbac.py`; expectations `scripts/api_rbac_expectations.yaml` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test.md) |
 | **RBAC dynamic** — live authorization tests | Against a deployed stack: temporary Cognito users (one per group + config-version-scoped Author + a second user for IDOR) exercise every op × every role + unauthenticated + malformed/expired tokens, plus the AppSec mandatory-cases checklist (IDOR, token lifecycle, TLS, input validation, deleted-resource). Gate = any hard failure. | `make api-test STACK_NAME=…` | `scripts/test_api_rbac.py` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test.md) |
@@ -98,7 +98,7 @@ python3 security/threat-modeling/scripts/build_threat_model.py --check  # CI dri
 ## CI gating (where these run automatically)
 
 - **SRT** runs in the GitLab CI `security_review` stage on MRs targeting
-  `develop`; the pipeline fails on any open HIGH finding.
+  `develop`; the pipeline fails on any open-or-reopened HIGH finding.
 - **RBAC static** is CI-safe and runs offline.
 - **ZAP DAST** and **RBAC dynamic** need a live stack; they are on-demand
   `make stacktest-*` / `make api-test` targets (see

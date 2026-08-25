@@ -3,7 +3,15 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
-## [0.6.5]
+## [Unreleased]
+
+### Fixed
+
+- **The SRT security gate ignored `reopened` findings, so a re-detected HIGH passed CI silently.** SRT records `reopened` when a finding it had previously marked `resolved` or `suppressed` is detected again, and reports it as needing attention in its own status line (`Open: N / Reopened: M … N+M issues need attention`) — but both the CI gate (`scripts/srt/run.py`) and the published-results curator (`scripts/security/curate_results.py`) matched `status == "Open"` alone. Two HIGH findings on **tracked** files were sitting in exactly that blind spot and rendering as `PASS ✅ · 0 open HIGH` in the 0.6.5.dev1 snapshot: `LAMBDA-012` on `nested/bedrockkb/template.yaml` and the semgrep npm `minimum-release-age` rule on `src/ui/.npmrc`. Both gates now treat `Open` and `reopened` as blocking, so only `suppressed` and `resolved` are accepted dispositions. The underlying cause of the recurrence is that **`resolved` is not sticky** — it means "the scanner stopped seeing this", so the next scan re-detects and reopens it; the two findings are therefore re-dispositioned as `suppressed` in `scripts/srt/issues.json` with recorded justifications (LAMBDA-012 is a scanner false positive: the role has exactly one consumer and the check's own fix text names no second function; the npm rule's mitigation `min-release-age = 7` needs npm ≥ 11.10, newer than the build toolchain, while `npm ci` + the committed lockfile already resolves nothing from the registry). Verified by re-running `make srt-scan` with the register restored: 0 open and 0 reopened HIGH on CI-visible paths.
+
+### Changed
+
+- **The benchmark harness records the version that actually ran, and the release-A/B figures are now reproducible.** `aggregate.py` wrote only the local `git rev-parse HEAD` into each scored run's metadata, which is *not* the code under test whenever a run targets a published template — so both sides of a release A/B recorded the same commit. Scored runs now also carry `stack_version`, read from the deployed stack's own CloudFormation `Description`, and fail soft to `null` rather than losing a scored run if the stack is unreachable. The two charts the release audit trail cites were also produced ad hoc, which undercut the "every number comes from the harness" rule; `--figures-compare NEW BASE [--labels …]` now emits both (per-cell cost bars, and paired per-`(cell, doc)` accuracy/recall scatter against the identity line) from the same summaries as the prose tables. Also new: `make_configs.py --set AXIS=VALUE` to override a `default_cell` axis for a single-release study (the committed `default_cell` holds `extraction_model` at the cross-version control), a `coresynth` suite — the `core` grid over exact-ground-truth synthetic docs only, without the two 20-document reference corpora that add 400 runs — and an `intconf` suite that re-verifies the standing integrated-confidence row-loss hazard with repeats plus a same-document control, since that is the one finding a single-sample grid cannot settle.
 
 ### Added
 
