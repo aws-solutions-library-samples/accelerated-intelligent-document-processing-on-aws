@@ -42,6 +42,12 @@ RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300")
 # increment and its execution becoming visible to ListExecutions, since during
 # that window fewer executions are RUNNING than the counter says — legitimately.
 RECONCILE_GRACE_SECONDS = int(os.environ.get("RECONCILE_GRACE_SECONDS", "300"))
+# Beyond this age a recorded drift sample is treated as belonging to a previous
+# episode and discarded rather than acted on. Reconciliation only runs when an
+# increment is refused, so a sample can outlive the condition that produced it.
+RECONCILE_SAMPLE_MAX_AGE_SECONDS = int(
+    os.environ.get("RECONCILE_SAMPLE_MAX_AGE_SECONDS", str(RECONCILE_GRACE_SECONDS * 4))
+)
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 
@@ -188,6 +194,19 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     age = now - prev_at
+    if age > RECONCILE_SAMPLE_MAX_AGE_SECONDS:
+        # The existing sample is from an OLD episode. Reconciliation only runs on
+        # a refused increment, so once capacity returns the sample stops being
+        # revisited and can linger indefinitely. Trusting a stale one would let a
+        # LATER leak be corrected on its very first observation, defeating the
+        # two-sample safeguard — so start the clock again instead.
+        logger.info(
+            f"Discarding stale concurrency drift sample ({age}s old) and "
+            f"restarting the observation window."
+        )
+        _put_drift_sample(now, running)
+        return None
+
     if age < RECONCILE_GRACE_SECONDS:
         # A sample already exists and the grace window has not elapsed. Do NOT
         # re-record it: rewriting the timestamp on every refusal RESETS the clock,

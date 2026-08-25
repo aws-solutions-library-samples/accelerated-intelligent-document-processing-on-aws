@@ -160,6 +160,28 @@ class TestTwoSampleRequirement:
         # No write at all: not a correction, and crucially not a fresh sample.
         index_module.concurrency_table.update_item.assert_not_called()
 
+    def test_stale_sample_from_an_old_episode_is_discarded_not_trusted(
+        self, index_module
+    ):
+        """A sample can outlive its episode, and must not authorize a shortcut.
+
+        Reconciliation only runs on a refused increment, so once capacity returns
+        the sample stops being revisited and lingers. If a LATER leak then found
+        that stale sample already past the grace window, it would be corrected on
+        its very first observation — defeating the two-sample safeguard.
+        """
+        with patch.object(index_module.time, "time", return_value=100_000):
+            index_module.concurrency_table.get_item.return_value = _counter(
+                100, drift_at=1_000, drift_running=29  # ~99,000s old
+            )
+            index_module.sfn.list_executions.return_value = _running(29)
+            assert index_module.reconcile_counter() is None
+        expr = index_module.concurrency_table.update_item.call_args.kwargs[
+            "UpdateExpression"
+        ]
+        assert "SET drift_observed_at" in expr, "should restart the window"
+        assert "active_count" not in expr, "must not correct on a stale sample"
+
     def test_second_observation_after_grace_corrects(self, index_module):
         with patch.object(index_module.time, "time", return_value=2_000):
             index_module.concurrency_table.get_item.return_value = _counter(
