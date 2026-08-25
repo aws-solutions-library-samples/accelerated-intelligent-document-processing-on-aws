@@ -10,6 +10,7 @@ from idp_common.bedrock.model_utils import (
     get_model_max_output_tokens,
     parse_max_tokens_limit_from_error,
     parse_model_id,
+    resolve_model_id_from_arn,
 )
 
 
@@ -217,6 +218,59 @@ class TestParseModelId:
         base_id, tier = parse_model_id("global.amazon.nova-2-lite-v1:0:priority")
         assert base_id == "global.amazon.nova-2-lite-v1:0"
         assert tier == "priority"
+
+
+@pytest.mark.unit
+class TestResolveModelIdFromArn:
+    """Test reducing a Bedrock ARN to the model ID it names (issue #648)."""
+
+    def test_govcloud_inference_profile_arn(self):
+        assert (
+            resolve_model_id_from_arn(
+                "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012"
+                ":inference-profile/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
+            == "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+
+    def test_foundation_model_arn_with_empty_account(self):
+        assert (
+            resolve_model_id_from_arn(
+                "arn:aws:bedrock:us-east-1::foundation-model/"
+                "anthropic.claude-3-5-sonnet-20240620-v1:0"
+            )
+            == "anthropic.claude-3-5-sonnet-20240620-v1:0"
+        )
+
+    def test_bare_model_id_unchanged(self):
+        model_id = "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        assert resolve_model_id_from_arn(model_id) == model_id
+
+    def test_lambda_hook_unchanged(self):
+        assert resolve_model_id_from_arn("LambdaHook") == "LambdaHook"
+
+    def test_malformed_arn_unchanged(self):
+        assert resolve_model_id_from_arn("arn:malformed") == "arn:malformed"
+
+    def test_arn_without_resource_id_unchanged(self):
+        # No "/" separator, so there is no resource id to extract
+        arn = "arn:aws:bedrock:us-east-1:123456789012:something"
+        assert resolve_model_id_from_arn(arn) == arn
+
+    def test_opaque_application_profile_resolves_to_uuid(self):
+        # Resolves to the opaque id, which matches no catalog entry — callers
+        # treat that as unverifiable rather than invalid.
+        assert (
+            resolve_model_id_from_arn(
+                "arn:aws:bedrock:us-east-1:123456789012"
+                ":application-inference-profile/abc123uuid"
+            )
+            == "abc123uuid"
+        )
+
+    def test_empty_and_none_unchanged(self):
+        assert resolve_model_id_from_arn("") == ""
+        assert resolve_model_id_from_arn(None) is None
 
 
 @pytest.mark.unit

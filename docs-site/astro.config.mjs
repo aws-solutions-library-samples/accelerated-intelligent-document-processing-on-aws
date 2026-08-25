@@ -170,7 +170,7 @@ export default defineConfig({
               label: "Extensions",
               items: [
                 {
-                  label: "Auto Optimizer",
+                  label: "Auto Optimizer (Beta)",
                   slug: "extensions/auto-optimizer",
                 },
                 {

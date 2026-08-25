@@ -22,7 +22,7 @@ exclude = [
 
 [project]
 name = "idp_common"
-version = "0.6.4"
+version = "0.6.5"
 description = "Common utilities for GenAI IDP Accelerator patterns"
 authors = [{ name = "AWS", email = "noreply@amazon.com" }]
 requires-python = ">=3.12,<3.14"

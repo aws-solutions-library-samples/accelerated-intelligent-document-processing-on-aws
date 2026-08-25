@@ -20,6 +20,8 @@ import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
+import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -53,11 +55,31 @@ interface DocumentItem {
 interface PagesPanelProps {
   pages?: PageItem[];
   documentItem?: DocumentItem;
+  /**
+   * Ground-truth-vs-predicted classification for this document, loaded once by
+   * the document page. Empty (the default) when there is no ground truth, in
+   * which case no class is annotated.
+   */
+  classificationIndex?: ClassificationIndex;
 }
 
 // Cell renderer components
 const IdCell = ({ item }: { item: PageItem }): React.JSX.Element => <span>{item.Id}</span>;
-const ClassCell = ({ item }: { item: PageItem }): React.JSX.Element => <span>{item.Class || '-'}</span>;
+// Class/Type, annotated with a mismatch alert when ground truth expects a
+// different class for this page. Page ids are the same 1-based numbers the
+// comparison index is keyed on.
+const ClassCell = ({
+  item,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
+}: {
+  item: PageItem;
+  classificationIndex?: ClassificationIndex;
+}): React.JSX.Element => (
+  <SpaceBetween direction="horizontal" size="xs">
+    <span>{item.Class || '-'}</span>
+    <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
+  </SpaceBetween>
+);
 const ThumbnailCell = ({ imageUrl }: { imageUrl?: string | null }): React.JSX.Element => (
   <div style={{ width: '100px', height: '100px' }}>
     {imageUrl ? (
@@ -98,11 +120,20 @@ const ActionsCell = ({
   );
 
 // Edit mode: Class/Type column
-const EditableClassCell = ({ item, onResetClass }: { item: PageItem; onResetClass: (id: string) => void }): React.JSX.Element => (
+const EditableClassCell = ({
+  item,
+  onResetClass,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
+}: {
+  item: PageItem;
+  onResetClass: (id: string) => void;
+  classificationIndex?: ClassificationIndex;
+}): React.JSX.Element => (
   <FormField>
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
         <StatusIndicator>{item.Class}</StatusIndicator>
+        <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>
     ) : (
@@ -112,7 +143,11 @@ const EditableClassCell = ({ item, onResetClass }: { item: PageItem; onResetClas
 );
 
 // Column definitions for view mode
-const createViewColumnDefinitions = (thumbnailUrls: Record<string, string | null>, onViewEditClick: (item: PageItem) => void) => [
+const createViewColumnDefinitions = (
+  thumbnailUrls: Record<string, string | null>,
+  onViewEditClick: (item: PageItem) => void,
+  classificationIndex: ClassificationIndex,
+) => [
   {
     id: 'id',
     header: 'Page ID',
@@ -125,7 +160,7 @@ const createViewColumnDefinitions = (thumbnailUrls: Record<string, string | null
   {
     id: 'class',
     header: 'Class/Type',
-    cell: (item: PageItem) => <ClassCell item={item} />,
+    cell: (item: PageItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
     sortingField: 'Class',
     minWidth: 200,
     width: 200,
@@ -154,6 +189,7 @@ const createEditColumnDefinitions = (
   thumbnailUrls: Record<string, string | null>,
   onResetClass: (id: string) => void,
   onViewEditClick: (item: PageItem) => void,
+  classificationIndex: ClassificationIndex,
 ) => [
   {
     id: 'id',
@@ -167,7 +203,7 @@ const createEditColumnDefinitions = (
   {
     id: 'class',
     header: 'Class/Type',
-    cell: (item: PageItem) => <EditableClassCell item={item} onResetClass={onResetClass} />,
+    cell: (item: PageItem) => <EditableClassCell item={item} onResetClass={onResetClass} classificationIndex={classificationIndex} />,
     minWidth: 250,
     width: 250,
     isResizable: true,
@@ -190,7 +226,7 @@ const createEditColumnDefinitions = (
   },
 ];
 
-const PagesPanel = ({ pages, documentItem }: PagesPanelProps): React.JSX.Element => {
+const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFICATION_INDEX }: PagesPanelProps): React.JSX.Element => {
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string | null>>({});
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedPages, setEditedPages] = useState<PageItem[]>([]);
@@ -486,8 +522,8 @@ const PagesPanel = ({ pages, documentItem }: PagesPanelProps): React.JSX.Element
 
   // Determine which columns and data to use
   const columnDefinitions = isEditMode
-    ? createEditColumnDefinitions(thumbnailUrls, handleResetClass, handleViewEditClick)
-    : createViewColumnDefinitions(thumbnailUrls, handleViewEditClick);
+    ? createEditColumnDefinitions(thumbnailUrls, handleResetClass, handleViewEditClick, classificationIndex)
+    : createViewColumnDefinitions(thumbnailUrls, handleViewEditClick, classificationIndex);
 
   const tableItems = isEditMode ? editedPages : pages || [];
 

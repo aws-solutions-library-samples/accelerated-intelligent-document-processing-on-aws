@@ -776,8 +776,7 @@ detections reach the rest of the pipeline in three places:
 flag a stray pen mark, smudge or scanning artifact, typically at *low*
 confidence (single- or low-double-digit). The appended block reports each
 detection's confidence band, its page position in left/right + upper/lower terms,
-and the OCR text it sits on or next to — because a bare `left=0.572` is not usable
-evidence in practice: on the form in
+— because a bare `left=0.572` is not usable evidence in practice: on the form in
 [#634](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/634)
 both the extraction and the confidence model read that as *"the first (left)
 signature box"* when the detection was in the right-hand cell.
@@ -785,29 +784,47 @@ signature box"* when the detection was in the right-hand cell.
 #### Extracting a reliable signed/unsigned boolean
 
 Measured on that form — an unsigned Form 4549 whose left signature cell holds only
-a faint smudge, with a date filled in beside it — **no single measure was enough**.
-Each of these, on its own, still returned `true` for the unsigned field
-(Claude Sonnet 4.5, temperature 0, page images attached, repeated runs):
+a faint smudge, with a date filled in beside it (Claude Sonnet 4.5, temperature 0,
+page images attached, repeated runs). Prose alone does not do it: descriptions
+saying "smudges are not signatures" still returned `true`, as did few-shot examples
+alone, and as did the detections block alone.
 
-- the OCR detections block alone;
-- strict field descriptions alone;
-- few-shot examples alone.
+**What worked, 9/9 and then confirmed end-to-end on a live stack, is a description
+that turns the detection confidence into an explicit decision rule.** Give the
+boolean field a description along these lines:
 
-What worked, reproducibly, was **all three together**:
+> Does a handwritten signature (a person's name or initials) exist in the LEFT
+> "Signature of taxpayer" box near the bottom of page 2? Decide with this rule, in
+> order: (1) Look at the `--- OCR signature detections ---` block in the document
+> text. It lists EVERY region the OCR engine flagged as a possible signature, each
+> with a detection confidence from 0-100. (2) Answer false unless that block
+> contains a detected region with confidence of 50 or higher that falls in the LEFT
+> signature box (left half of the page). A confidence below 50 means a faint or
+> ambiguous mark — a stray pen mark, smudge, speck or scanning artifact — and MUST
+> be treated as NOT a signature. (3) If the block lists no region for that box,
+> answer false. (4) A date in the adjacent Date column is NOT evidence of a
+> signature; handwriting elsewhere is NOT evidence. (5) Only answer true when a
+> qualifying detection (confidence >= 50) is present AND you can see a handwritten
+> name or initials there. (6) IGNORE any inline `[SIGNATURE]` marker in the text:
+> it is placed by reading order, so its position next to a field is NOT evidence
+> that that field is signed — use ONLY the detections block. (7) A faint mark you
+> can see does NOT override rules 2-3. When in doubt, answer false.
 
-1. **Say what counts, in the field description.** A signature is a handwritten name
-   or initials; a date in the adjacent column is *not* evidence of one; stray marks,
-   smudges and scan artifacts are *not* signatures; if no signature region is
-   detected in that cell, answer false.
-2. **Give a few-shot example of the negative case** — the unsigned document *with* a
-   date present, and a note that small marks are not signatures. This is the single
-   biggest contributor, and it needs `{FEW_SHOT_EXAMPLES}` in your extraction
-   `task_prompt` (present in the shipped prompts; a custom prompt must add it).
-   See [few-shot-examples.md](few-shot-examples.md).
-3. **Keep `SIGNATURES` enabled** so the detections block is there. With steps 1-2
-   but *without* it, the false positive did not disappear — it **moved to the other
-   taxpayer's field**, because the model could tell a mark existed somewhere but not
-   which cell it was in.
+Rules 6 and 7 are the ones that made it deterministic. Without 6 the model latches
+onto the inline token's accidental adjacency; without 7 it overrides the OCR
+evidence with its own read of the smudge.
+
+Two supporting measures, if you have them:
+
+- **Keep `SIGNATURES` enabled** so the block exists at all — the rule above depends
+  on it.
+- **A few-shot example of the negative case** (the unsigned document *with* a date
+  present) also works, and needs `{FEW_SHOT_EXAMPLES}` in the extraction
+  `task_prompt` — present in the shipped prompts; a custom prompt must add it. See
+  [few-shot-examples.md](few-shot-examples.md). Note that with examples but *no*
+  detections block the false positive did not disappear, it **moved to the other
+  taxpayer's field**: the model could tell a mark existed but not which cell owned
+  it.
 
 **If your corpus has no signature fields, remove the `SIGNATURES` entry.** Pages
 with a detection (including false positives on stray ink) add a few prompt tokens

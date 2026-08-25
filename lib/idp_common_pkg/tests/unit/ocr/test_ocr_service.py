@@ -1440,15 +1440,15 @@ class TestSignatureDetections:
         # table parser, which would otherwise treat this as a document table.
         assert "|" not in summary
 
-    def test_summary_names_the_text_around_the_detection(self):
-        """The label the mark sits on is the decisive context.
+    def test_summary_omits_surrounding_text(self):
+        """Naming the text around a detection measured WORSE — see the docstring.
 
-        Measured on the issue-#634 form: with coordinates alone, both the
-        extraction and the confidence model attributed a detection at x=59% to
-        "the first (left) signature box". Naming the overlapping label plus the
-        left/right half is what makes the cell unambiguous.
+        An earlier version reported ``at: "Signature of taxpayer"`` alongside each
+        detection. Naming a signature label beside the mark biases the model toward
+        true: on the issue-#634 document the entry without it passed 9/9 and with it
+        2/5. This pins the decision so it is not silently reverted.
         """
-        right_label = {
+        label = {
             "BlockType": "LINE",
             "Id": "label-right",
             "Text": "Signature of taxpayer",
@@ -1462,80 +1462,22 @@ class TestSignatureDetections:
                 }
             },
         }
-        date_right = {
-            "BlockType": "LINE",
-            "Id": "date-right",
-            "Text": "Date",
-            "Confidence": 100.0,
-            "Geometry": {
-                "BoundingBox": {
-                    "Left": 0.754,
-                    "Top": 0.868,
-                    "Width": 0.033,
-                    "Height": 0.011,
-                }
-            },
-        }
-        # A stray tick OCR'd as a single character, closer than the real label.
-        noise = {
-            "BlockType": "LINE",
-            "Id": "noise",
-            "Text": "I",
-            "Confidence": 74.8,
-            "Geometry": {
-                "BoundingBox": {
-                    "Left": 0.525,
-                    "Top": 0.921,
-                    "Width": 0.003,
-                    "Height": 0.004,
-                }
-            },
-        }
-        blocks = [right_label, date_right, noise, self.SIGNATURE_BLOCK]
 
         summary = OcrService._format_signature_summary(
-            OcrService._extract_signature_detections(blocks), blocks
+            OcrService._extract_signature_detections([label, self.SIGNATURE_BLOCK])
         )
 
-        # The label the detection sits on, even though it neither ends before the
-        # mark nor sits fully above it.
-        assert 'at: "Signature of taxpayer"' in summary
-        assert 'right: "Date"' in summary
-        # Single-character OCR noise must not crowd out the real label.
-        assert '"I"' not in summary
+        assert "nearest text" not in summary
+        assert "Signature of taxpayer" not in summary
+        # The position is what disambiguates the cell.
+        assert "right half, lower area" in summary
 
-    def test_neighbor_text_is_clipped(self):
-        long_line = {
-            "BlockType": "LINE",
-            "Id": "long",
-            "Text": "Note: If a joint return was filed, BOTH taxpayers must sign this form today",
-            "Confidence": 99.9,
-            "Geometry": {
-                "BoundingBox": {
-                    "Left": 0.276,
-                    "Top": 0.851,
-                    "Width": 0.434,
-                    "Height": 0.011,
-                }
-            },
-        }
-        blocks = [long_line, self.SIGNATURE_BLOCK]
-
+    def test_summary_reports_position_for_a_lone_detection(self):
         summary = OcrService._format_signature_summary(
-            OcrService._extract_signature_detections(blocks), blocks
-        )
-
-        assert "..." in summary
-        assert "taxpayers must sign this form today" not in summary
-
-    def test_summary_without_blocks_still_reports_position(self):
-        """Context is optional — a caller without blocks still gets position."""
-        summary = OcrService._format_signature_summary(
-            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK]), None
+            OcrService._extract_signature_detections([self.SIGNATURE_BLOCK])
         )
 
         assert "right half, lower area" in summary
-        assert "nearest text" not in summary
 
     @pytest.mark.parametrize(
         "left,top,expected",
@@ -1626,8 +1568,13 @@ class TestSignatureDetections:
 
     def test_parsed_page_text_appends_summary(self, service):
         """The summary rides along with the parsed page text (extraction prompt)."""
-        with patch("textractor.parsers.response_parser.parse") as mock_parse:
-            mock_parse.return_value.to_markdown.return_value = (
+        # Patch the module attribute (not `...response_parser.parse`): the service
+        # does `from textractor.parsers import response_parser`, which resolves via
+        # getattr on `textractor.parsers`. When textractor isn't installed that
+        # parent is a MagicMock, so patching the deeper dotted path targets a
+        # different object and never takes effect.
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
                 "Signature of taxpayer\n[SIGNATURE]"
             )
             result = service._parse_textract_response(
@@ -1641,8 +1588,10 @@ class TestSignatureDetections:
         assert "right half, lower area" in text
 
     def test_parsed_page_text_unchanged_without_signatures(self, service):
-        with patch("textractor.parsers.response_parser.parse") as mock_parse:
-            mock_parse.return_value.to_markdown.return_value = "Signature of taxpayer"
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
+                "Signature of taxpayer"
+            )
             result = service._parse_textract_response(
                 {"Blocks": [self.LINE_BLOCK]}, page_id=2
             )

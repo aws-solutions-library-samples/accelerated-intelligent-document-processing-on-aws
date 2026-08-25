@@ -5,6 +5,45 @@ import React from 'react';
 import { Alert, Box, Button, Container, Header, Link, SpaceBetween, Spinner } from '@cloudscape-design/components';
 
 import type { FeatureEntitlement, FeatureLicenseMode } from '../../types/feature-platform';
+import { sourceDisplayLabel } from './entitlement-source';
+
+/**
+ * The buyer's own AWS Marketplace subscription management console.
+ *
+ * Deliberately NOT the product listing page: a listing sells a subscription,
+ * whereas "manage" means view the agreement, change the offer, or cancel — all of
+ * which live in the buyer account's Marketplace console. A real AWS Marketplace
+ * subscription cannot be cancelled from this UI at all (the in-UI Cancel button
+ * drives the simulator's admin API), so this link is the only honest path to it.
+ *
+ * Region-free on purpose: AWS Marketplace is a us-east-1 service and the console
+ * redirects there from wherever the buyer is signed in. Same URL the
+ * "After subscribing on AWS Marketplace" doc page points at, so the two agree.
+ */
+export const MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL = 'https://console.aws.amazon.com/marketplace/home#/subscriptions';
+
+/**
+ * Link out to the buyer's AWS Marketplace subscriptions console.
+ *
+ * Rendered on every state that has established the extension is PAID and the
+ * customer has (or may have) a subscription — active-and-installed,
+ * active-but-not-installed, and awaiting-admin-install alike. A customer who has
+ * paid needs the same one thing from all of them: somewhere to go and look at,
+ * change, or cancel what they are paying for.
+ *
+ * Deliberately not gated on the IDP `Admin` group. Viewing and cancelling a
+ * Marketplace subscription happens in the AWS console under the caller's own IAM
+ * permissions — an IDP viewer may well be the account's billing owner, and the
+ * link grants nothing by existing.
+ *
+ * NOT shown on the NONE state, which needs the *listing* (where a subscription
+ * is created) rather than the management console.
+ */
+export const ManageSubscriptionButton: React.FC = () => (
+  <Button iconName="external" href={MARKETPLACE_SUBSCRIPTIONS_CONSOLE_URL} target="_blank">
+    Manage subscription
+  </Button>
+);
 
 /** "Learn more" external doc link, rendered when a docsUrl is available. */
 export const LearnMore: React.FC<{ docsUrl?: string | null }> = ({ docsUrl }) =>
@@ -203,6 +242,11 @@ export const InstallPrompt: React.FC<{
       <Alert
         type={isOss ? 'info' : unverified ? 'warning' : 'success'}
         header={isOss ? 'Ready to install' : unverified ? 'Subscription not verified' : 'Subscription active'}
+        // Same action as the installed-and-active banner. This screen states the
+        // subscription is active, so it owes the customer the same route to
+        // managing it — not installing the stack yet doesn't make the
+        // subscription any less real, or any less billable. OSS has none.
+        action={isOss ? undefined : <ManageSubscriptionButton />}
       >
         {isOss ? (
           <>
@@ -255,7 +299,14 @@ export const AwaitingAdminInstall: React.FC<{
     }
   >
     <SpaceBetween size="l">
-      <Alert type="warning" header="Awaiting installation">
+      <Alert
+        type="warning"
+        header="Awaiting installation"
+        // Offered to non-admins too: the subscription is an account-level thing,
+        // billed whether or not an IDP admin has got round to installing the
+        // stack, and the AWS console enforces its own permissions.
+        action={isOss ? undefined : <ManageSubscriptionButton />}
+      >
         {isOss ? (
           <>
             <b>{featureDisplayName}</b> is available but has not been installed into this IDP stack yet. Ask an IDP administrator to install
@@ -445,29 +496,48 @@ export const ActiveSubscriptionBanner: React.FC<{
   cancelError?: string | null;
 }> = ({ entitlement, mismatchNote, canCancel, onCancel, cancelling, cancelError }) => {
   const expires = formatDate(entitlement.expiresAt);
-  const source = entitlement.source ?? 'marketplace';
-  const header = expires ? `Subscription active · expires ${expires}` : 'Subscription active';
+  // The authority, named the way the customer knows it. The raw
+  // `marketplace-live` identifier belongs in the *unverified* banner, where
+  // naming the exact mode is the whole point; a confirmed subscription should say
+  // which product it came from.
+  const source = sourceDisplayLabel(entitlement.source ?? undefined);
+  // One line. The source used to occupy a second row as "Source:
+  // marketplace-live"; parenthesising it into the header says the same thing in
+  // the space the status already took.
+  const header = expires ? `Subscription active (${source}) · expires ${expires}` : `Subscription active (${source})`;
+  const showBody = !!mismatchNote || !!cancelError;
   return (
     <Alert
       type="success"
       header={header}
       statusIconAriaLabel="Subscription active"
       action={
-        canCancel && onCancel ? (
-          <Button loading={cancelling} onClick={onCancel}>
-            Cancel Subscription
-          </Button>
-        ) : undefined
+        // "Manage subscription" points at the buyer's own AWS Marketplace
+        // console, the only place a real subscription can be inspected, changed
+        // or cancelled. It lives in the action slot so the banner stays one line.
+        // The in-UI Cancel button drives `unsubscribeFeature`, which only works
+        // against the simulator, so it is still offered for simulated grants
+        // only (see `canCancelSubscription` in FeaturePage).
+        <SpaceBetween direction="horizontal" size="xs">
+          <ManageSubscriptionButton />
+          {canCancel && onCancel && (
+            <Button loading={cancelling} onClick={onCancel}>
+              Cancel Subscription
+            </Button>
+          )}
+        </SpaceBetween>
       }
     >
-      Source: <b>{source}</b>
-      {mismatchNote && <Box margin={{ top: 's' }}>{mismatchNote}</Box>}
-      {cancelError && (
-        <Box margin={{ top: 's' }}>
-          <Alert type="error" header="Failed to cancel subscription">
-            {cancelError}
-          </Alert>
-        </Box>
+      {/* Normally renders nothing — these are the exceptional cases they name. */}
+      {showBody && (
+        <SpaceBetween size="s">
+          {mismatchNote && <Box variant="span">{mismatchNote}</Box>}
+          {cancelError && (
+            <Alert type="error" header="Failed to cancel subscription">
+              {cancelError}
+            </Alert>
+          )}
+        </SpaceBetween>
       )}
     </Alert>
   );
