@@ -454,8 +454,6 @@ The appended block therefore reports, per detection:
   *detection* confidence, so a very low value often means a stray mark;
 - **position in words** — `right half, lower area (x=59%, y=89%)`, matching the
   left/right, upper/lower language field descriptions actually use;
-- **the surrounding OCR text** — `at:` (a line whose box overlaps the mark, e.g. the
-  ruled label a signature is written on), plus `left:` / `right:` / `above:`;
 - **an explicit total** (`flagged 1 region on this page`), so a consumer weighing two
   signature fields can see that only one region exists;
 - **a caveat** that the inline `[SIGNATURE]` token's placement is reading-order
@@ -463,10 +461,15 @@ The appended block therefore reports, per detection:
 
 Raw coordinates alone were measured to be unusable: on the two-column signature
 block of an IRS Form 4549, both the extraction and the confidence model read a
-detection at `left=0.572` as "the first (left) signature box". Naming the
-overlapping label and the page half removes the spatial inference. Single-character
-lines are skipped when picking neighbours — a stray tick OCR'd as `"I"` would
-otherwise crowd out the real label.
+detection at `left=0.572` as "the first (left) signature box". Stating the page half
+removes that spatial inference.
+
+**Naming the OCR text around each detection was tried and removed.** Reporting
+`at: "Signature of taxpayer"; right: "Date"` reads as more helpful and measured
+worse — naming a signature *label* beside the mark biases the model toward `true`.
+With a confidence-threshold rule in the field descriptions, the entry above passed
+**9/9** on that document while the same entry plus the surrounding text passed
+**2/5**. Do not re-add it without measuring.
 
 The block is deliberately **not** formatted as a markdown table, since page text is
 scanned by the agentic extraction table parser.

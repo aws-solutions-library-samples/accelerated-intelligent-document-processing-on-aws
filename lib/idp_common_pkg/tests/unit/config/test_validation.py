@@ -185,6 +185,97 @@ class TestValidateModelIds:
         assert result["valid"] is False
         assert len(result["errors"]) == 5
 
+    def test_govcloud_inference_profile_arn_passes(self):
+        """A GovCloud inference-profile ARN resolves to its model ID (issue #648).
+
+        GovCloud Bedrock has no bare cross-region model ID path, so every
+        GovCloud config names an account-scoped inference-profile ARN.
+        """
+        valid_models = {"us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"}
+        arn = (
+            "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012"
+            ":inference-profile/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+
+        config = {
+            "ocr": {"model_id": arn},
+            "classification": {"model": arn},
+            "extraction": {"model": arn},
+            "summarization": {"model": arn},
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value=valid_models,
+        ):
+            _validate_model_ids(config, result)
+
+        assert result["valid"] is True
+        assert result["errors"] == []
+        assert result["warnings"] == []
+
+    def test_foundation_model_arn_passes(self):
+        """A commercial foundation-model ARN resolves to its model ID."""
+        valid_models = {"anthropic.claude-sonnet-4-6"}
+        config = {
+            "extraction": {
+                "model": (
+                    "arn:aws:bedrock:us-east-1::foundation-model/"
+                    "anthropic.claude-sonnet-4-6"
+                )
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value=valid_models,
+        ):
+            _validate_model_ids(config, result)
+
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    def test_unresolvable_arn_warns_instead_of_failing(self):
+        """An opaque profile ARN is unverifiable, not invalid: warn, don't fail."""
+        valid_models = {"us.anthropic.claude-sonnet-4-6"}
+        config = {
+            "extraction": {
+                "model": (
+                    "arn:aws:bedrock:us-east-1:123456789012"
+                    ":application-inference-profile/abc123uuid"
+                )
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value=valid_models,
+        ):
+            _validate_model_ids(config, result)
+
+        assert result["valid"] is True
+        assert result["errors"] == []
+        assert len(result["warnings"]) == 1
+        assert "extraction.model" in result["warnings"][0]
+
+    def test_bare_typo_still_fails_with_arn_support(self):
+        """ARN support must not weaken typo detection for bare model IDs."""
+        valid_models = {"us.amazon.nova-lite-v1:0"}
+        config = {"extraction": {"model": "us.amazon.nova-lyte-v1:0"}}
+        result = {"valid": True, "errors": [], "warnings": []}
+
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value=valid_models,
+        ):
+            _validate_model_ids(config, result)
+
+        assert result["valid"] is False
+        assert len(result["errors"]) == 1
+
 
 class TestValidateTaskPromptPlaceholders:
     """Test _validate_task_prompt_placeholders function."""

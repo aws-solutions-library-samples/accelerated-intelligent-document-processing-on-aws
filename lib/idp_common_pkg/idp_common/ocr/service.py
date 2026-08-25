@@ -2198,7 +2198,7 @@ class OcrService:
         # feature's output (and, critically, its confidence) never reached the
         # confidence/assessment prompt that consumes this artifact.
         signature_summary = self._format_signature_summary(
-            self._extract_signature_detections(blocks), blocks
+            self._extract_signature_detections(blocks)
         )
         if signature_summary:
             markdown_table = f"{markdown_table}\n\n{signature_summary}"
@@ -2272,82 +2272,8 @@ class OcrService:
 
         return f"{half}, {band} (x={center_x:.0%}, y={center_y:.0%})"
 
-    @staticmethod
-    def _find_signature_neighbors(
-        box: Dict[str, Any], blocks: List[Dict[str, Any]]
-    ) -> List[str]:
-        """
-        Find the OCR text immediately left of, right of, and above a region.
-
-        Turns "which of the two 'Signature of taxpayer' cells is this?" from
-        coordinate arithmetic into a text association, using the LINE geometry the
-        page already has. Returns pre-formatted ``direction: "text"`` fragments,
-        omitting directions with no nearby line.
-
-        ``at`` (a line whose box overlaps the detection) is the most useful of the
-        four and the easiest to miss: a signature written on a ruled line overlaps
-        its own printed label, so it is neither strictly left of nor strictly above
-        the mark. Single-character lines are skipped — they are usually OCR noise
-        (a stray tick read as "I") and crowd out the real label.
-        """
-        sig_left = box.get("left", 0.0)
-        sig_top = box.get("top", 0.0)
-        sig_right = sig_left + box.get("width", 0.0)
-        sig_bottom = sig_top + box.get("height", 0.0)
-        # Vertical tolerance for "same row"/"just above": signature boxes are short,
-        # and a printed label often sits a hair inside or above the detected mark.
-        row_pad = max(box.get("height", 0.0), 0.01)
-
-        best: Dict[str, tuple] = {}
-        for block in blocks or []:
-            if not isinstance(block, dict) or block.get("BlockType") != "LINE":
-                continue
-            text = (block.get("Text") or "").strip()
-            geom = OcrService._extract_geometry(block)
-            if len(text) < 2 or not geom:
-                continue
-            line = geom["boundingBox"]
-            line_left = line.get("left", 0.0)
-            line_top = line.get("top", 0.0)
-            line_right = line_left + line.get("width", 0.0)
-            line_bottom = line_top + line.get("height", 0.0)
-
-            overlaps_x = line_right > sig_left and line_left < sig_right
-            overlaps_y = line_bottom > sig_top and line_top < sig_bottom
-            same_row = (
-                line_bottom > sig_top - row_pad and line_top < sig_bottom + row_pad
-            )
-
-            if overlaps_x and overlaps_y:
-                candidate = ("at", 0.0)
-            elif same_row and line_right <= sig_left:
-                candidate = ("left", sig_left - line_right)
-            elif same_row and line_left >= sig_right:
-                candidate = ("right", line_left - sig_right)
-            elif overlaps_x and line_bottom <= sig_top + row_pad:
-                candidate = ("above", max(sig_top - line_bottom, 0.0))
-            else:
-                continue
-
-            direction, distance = candidate
-            if direction not in best or distance < best[direction][0]:
-                best[direction] = (distance, text)
-
-        def _clip(text: str) -> str:
-            return text if len(text) <= 60 else text[:57] + "..."
-
-        return [
-            f'{direction}: "{_clip(best[direction][1])}"'
-            for direction in ("at", "left", "right", "above")
-            if direction in best
-        ]
-
     @classmethod
-    def _format_signature_summary(
-        cls,
-        signatures: List[Dict[str, Any]],
-        blocks: Optional[List[Dict[str, Any]]] = None,
-    ) -> str:
+    def _format_signature_summary(cls, signatures: List[Dict[str, Any]]) -> str:
         """
         Render signature detections as a compact, self-describing text block.
 
@@ -2361,19 +2287,23 @@ class OcrService:
         detection itself was in the taxpayer-2 cell. Both the extraction and the
         confidence model then attributed the mark to the wrong taxpayer ("the OCR
         detected a signature region in the first (left) signature box" for a box at
-        x=57%). Hence: plain-language position, the neighbouring OCR text, an
-        explicit total, and a caveat that the inline token's placement is not
-        evidence of which field the signature belongs to.
+        x=57%). Hence: plain-language position, an explicit total, and a caveat that
+        the inline token's placement is not evidence of field membership.
 
-        Deliberately NOT a markdown table — page text is scanned by the agentic
-        extraction table parser, which would otherwise pick this up as a document
-        table.
+        WHAT IS DELIBERATELY *NOT* HERE: an earlier version also named the OCR text
+        surrounding each detection ("at: 'Signature of taxpayer'; right: 'Date'").
+        It reads as more helpful and measured worse — naming a signature *label*
+        beside the mark biases the model toward true. On the issue-#634 document with
+        a threshold rule in the field descriptions, the entry below passed 9/9 while
+        the same entry plus that context passed 2/5. Do not re-add it without
+        measuring.
+
+        Deliberately NOT a markdown table either — page text is scanned by the
+        agentic extraction table parser, which would otherwise pick this up as a
+        document table.
 
         Args:
             signatures: Output of :meth:`_extract_signature_detections`.
-            blocks: The page's Textract-format blocks, used to name the text
-                surrounding each detection. Optional; omitted context just makes
-                the entry shorter.
 
         Returns:
             The summary block, or "" when there are no detections.
@@ -2386,9 +2316,8 @@ class OcrService:
         lines = [
             "--- OCR signature detections ---",
             f"The OCR engine flagged {total} region{plural} on this page as "
-            f"containing a signature, listed below with the page position and the "
-            f"surrounding text. No signature was detected anywhere else on the "
-            f"page. Confidence is the engine's signature-DETECTION confidence "
+            f"containing a signature, listed below with its page position. No "
+            f"signature was detected anywhere else on the page. Confidence is the engine's signature-DETECTION confidence "
             f"(0-100): a low value means a faint or ambiguous mark, which may be a "
             f"stray pen mark or scan artifact rather than a signature. NOTE: the "
             f"inline [SIGNATURE] token in the text above is placed by reading "
@@ -2411,15 +2340,11 @@ class OcrService:
                 confidence_text = f"{confidence} ({band})"
 
             box = (sig.get("geometry") or {}).get("boundingBox") or {}
-            entry = f"signature {index}: confidence={confidence_text}"
-            if box:
-                entry += f" — page position: {cls._describe_signature_position(box)}"
-                neighbors = cls._find_signature_neighbors(box, blocks or [])
-                if neighbors:
-                    entry += f"; nearest text — {'; '.join(neighbors)}"
-            else:
-                entry += " — page position: unknown"
-            lines.append(entry)
+            position = cls._describe_signature_position(box) if box else "unknown"
+            lines.append(
+                f"signature {index}: confidence={confidence_text} "
+                f"— page position: {position}"
+            )
         return "\n".join(lines)
 
     # Current consolidated OCR page-data schema version. Bump when the shape of
@@ -2734,7 +2659,7 @@ class OcrService:
         # summary supplies position, neighbouring text, and confidence instead.
         page_blocks = response.get("Blocks", [])
         signatures = self._extract_signature_detections(page_blocks)
-        summary = self._format_signature_summary(signatures, page_blocks)
+        summary = self._format_signature_summary(signatures)
         if summary:
             logger.info(
                 f"Appended {len(signatures)} signature detection(s){page_info} "

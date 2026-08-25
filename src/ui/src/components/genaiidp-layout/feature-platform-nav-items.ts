@@ -37,17 +37,14 @@ const COMING_SOON_EXTENSIONS: { displayName: string; description: string }[] = [
  * Lifecycle status of a feature, used to choose the nav badge:
  *   - 'unavailable' — a marketplace extension that isn't published for this
  *                     Region, so it cannot be installed here at all. Outranks
- *                     'subscribe': subscribing first would dead-end.
- *   - 'subscribe' — marketplace feature, not yet subscribed (no entitlement
- *                   signal here, so inferred: catalog-only + source=marketplace)
- *   - 'install'   — installable now: not installed, and either an OSS feature
- *                   or a subscribed marketplace feature (we can't see
- *                   entitlement in the nav, so marketplace-not-installed shows
- *                   'subscribe'; OSS-not-installed shows 'install')
+ *                     'install', because installing could not succeed.
+ *   - 'install'   — not installed. One badge for OSS and marketplace alike; see
+ *                   `statusOf` for why the nav does not try to distinguish
+ *                   "needs subscribing" from "needs installing".
  *   - 'update'    — installed at an older version than the catalog latest
  *   - 'ready'     — installed and up to date
  */
-type FeatureStatus = 'unavailable' | 'subscribe' | 'install' | 'update' | 'ready';
+type FeatureStatus = 'unavailable' | 'install' | 'update' | 'ready';
 
 /**
  * Merged nav entry used internally by the builder. `installed === null` means
@@ -72,11 +69,25 @@ function statusOf(entry: NavEntry): FeatureStatus {
   // published for this Region can't be installed even with a valid subscription,
   // so prompting to subscribe would dead-end.
   if (!entry.availableInRegion) return 'unavailable';
-  // Not installed. Marketplace features must be subscribed first; the nav
-  // can't see entitlement state, so it surfaces 'subscribe' and the feature
-  // page resolves the actual subscribe-vs-install step. OSS features install
-  // directly.
-  return entry.source === 'marketplace' ? 'subscribe' : 'install';
+  // Not installed — and that is ALL the nav claims, for either source.
+  //
+  // This used to infer "marketplace + not installed ⇒ not subscribed" and show a
+  // 'Subscribe' badge. The inference is simply wrong for a customer who has
+  // already paid: they saw "Subscription active" on the feature page and
+  // "Subscribe" in the nav at the same time. The nav cannot resolve entitlement
+  // — it is built from listInstalledFeatures + listCatalogFeatures, and neither
+  // carries an entitlement verdict, by design: the verdict comes from
+  // checkFeatureEntitlement, which is per-feature and (for `marketplace-live`)
+  // calls the AWS Marketplace Agreement API. Fanning that out across every
+  // catalog entry on every page render, to choose one word on a badge, would put
+  // a real Marketplace API call on the critical path of the whole application.
+  //
+  // So the nav states what it actually knows. Whether the next step is
+  // subscribing or installing is resolved on the feature page, which has the
+  // verdict and is where the user is going anyway. The badge's job — per the
+  // note on buildStatusInfo — is to say "this needs action", not to predict
+  // which action.
+  return 'install';
 }
 
 function mergeEntries(installed: InstalledFeature[], catalog: CatalogFeature[]): NavEntry[] {
@@ -131,7 +142,9 @@ const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey'
   // Not published for this Region — cannot be installed here at all, so don't
   // invite a subscription that couldn't be used.
   unavailable: { text: 'Not in this Region', color: 'red' },
-  subscribe: { text: 'Subscribe', color: 'grey' },
+  // "Install" rather than "Deploy" or "Set up" to match the vocabulary used
+  // everywhere else for this step: InstallPrompt, "Awaiting installation",
+  // listInstalledFeatures, the InstalledFeatures table.
   install: { text: 'Install', color: 'blue' },
   update: { text: 'Update', color: 'blue' },
   ready: null,
@@ -144,10 +157,21 @@ const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey'
  * show, so we return undefined.
  */
 function buildStatusInfo(entry: NavEntry): React.ReactNode {
-  const badgeSpec = STATUS_BADGE[statusOf(entry)];
+  const status = statusOf(entry);
+  const badgeSpec = STATUS_BADGE[status];
   const badge = badgeSpec ? React.createElement(Badge, { color: badgeSpec.color }, badgeSpec.text) : null;
 
-  if (!entry.description) {
+  // A not-yet-installed marketplace extension needs a subscription at some point,
+  // and the badge no longer says so. Note it in the hover text instead: the nav
+  // can honestly say a subscription is REQUIRED (a property of the extension,
+  // straight from the catalog) without claiming whether this customer HAS one,
+  // which is the verdict it cannot see.
+  const needsSubscriptionNote = status === 'install' && entry.source === 'marketplace';
+  const hoverText = needsSubscriptionNote
+    ? [entry.description, 'Requires an AWS Marketplace subscription.'].filter(Boolean).join(' ')
+    : entry.description;
+
+  if (!hoverText) {
     return badge ?? undefined;
   }
 
@@ -158,7 +182,7 @@ function buildStatusInfo(entry: NavEntry): React.ReactNode {
     Popover,
     {
       header: entry.displayName,
-      content: entry.description,
+      content: hoverText,
       triggerType: 'text',
       dismissButton: false,
       position: 'right',
