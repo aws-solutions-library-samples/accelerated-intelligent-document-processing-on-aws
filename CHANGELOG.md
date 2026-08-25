@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A failed evaluation destroyed the document it had just finished processing, after holding a workflow slot for five hours.** `EvaluationStep` had a retry policy but no `Catch`, and it lumped `Sandbox.Timedout` in with the transient faults — 8 attempts at 2.5× backoff. An evaluation timeout is *deterministic* (the document needs more time than the function has), so every retry burned another full 900 s and failed identically: **~5.2 hours per document**, then a hard failure that propagated out of the `ProcessSections` Map and discarded the document's already-completed OCR, classification, extraction, assessment and summarization output. Evaluation is a **measurement** step that runs after all the expensive production work — the same reasoning `PostprocessingHook` already documents for why a late-stage failure must not throw away a good document. Now: `Sandbox.Timedout` / `States.Timeout` get **one** attempt (transient faults keep the full 8), and any error is caught to a new `RecordEvaluationFailure` step that stamps an honest `EvaluationStatus` — the new **`TIMED_OUT`**, or `FAILED` — and continues to the normal tail. That step's own failure is caught to the tail as well, because the document surviving matters more than the status being written. Previously a timeout left `EvaluationStatus` stuck at `RUNNING` forever, since the Lambda was killed before it could record anything. Five structural tests in a newly-registered `patterns/unified/tests` root pin the retry split and the failure routing, which live in the state machine where no Python test could see them.
+
 ## [0.6.5]
 
 ### Added

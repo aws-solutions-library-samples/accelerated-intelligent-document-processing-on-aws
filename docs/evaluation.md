@@ -1205,6 +1205,7 @@ The evaluation also tracks different evaluation statuses:
 - **RUNNING**: Evaluation is in progress
 - **COMPLETED**: Evaluation finished successfully
 - **FAILED**: Evaluation encountered errors
+- **TIMED_OUT**: Evaluation could not finish within the evaluation Lambda's time limit
 - **NO_BASELINE**: No baseline data available for comparison
 - **BASELINE_COPYING**: Process of copying document to baseline is in progress
 - **BASELINE_AVAILABLE**: Document is available in the baseline
@@ -1542,6 +1543,33 @@ annotation table preserves full auditability.
 
 See the end-to-end demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
+
+## A failed evaluation no longer discards the document
+
+Evaluation is a **measurement** step: by the time it runs, OCR, classification,
+extraction, assessment and summarization have all succeeded and their output
+objects are written. So an evaluation failure is caught and the document
+continues to the normal end of the workflow with an honest
+`EvaluationStatus` (`FAILED` or `TIMED_OUT`) rather than failing the execution
+and throwing away that work.
+
+Two things changed to make that true:
+
+- **A timeout is retried once, not eight times.** An evaluation Lambda timeout is
+  *deterministic* — the document needs more time than the function has, so every
+  retry burns another full timeout and fails identically. It used to share the
+  transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
+  document held a workflow-concurrency slot for **~5.2 hours** before failing.
+  Genuinely transient faults (throttling, Lambda service errors) still get the
+  full retry budget.
+- **Failures are recorded, not silently swallowed.** The caught error routes
+  through a step that stamps the evaluation status, so a document whose
+  evaluation timed out shows `TIMED_OUT` instead of sitting at `RUNNING`
+  indefinitely.
+
+If you see `TIMED_OUT`, the document's extraction results are intact — only its
+score is missing. Re-run evaluation for that document after reducing the
+comparison work (see the warning about `LLM` methods inside lists, above).
 
 ## Troubleshooting Evaluation Issues
 

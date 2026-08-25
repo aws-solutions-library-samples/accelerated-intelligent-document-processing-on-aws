@@ -86,6 +86,10 @@ RUN_ROOTS = [
     "feature-platform/sample-health-insurance-review/feature-api/tests",
     "feature-platform/sample-health-insurance-review/hook/tests",
     "feature-platform/sample-health-insurance-review/ui-deployer/tests",
+    # Structural assertions on patterns/unified/statemachine/workflow.asl.json —
+    # invariants that live in the state machine (retry policies, failure routing)
+    # where no Python test can see them. Pure JSON parsing, no AWS clients.
+    "patterns/unified/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
