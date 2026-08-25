@@ -808,6 +808,9 @@ def generate_draft_labels(args, event=None):
     test_set_id = input_data["testSetId"]
     config_version = input_data.get("configVersion")
     object_keys = input_data.get("objectKeys") or []
+    # Forces the class for this run's documents instead of classifying them. Only
+    # ever set by a single-document re-extract after a class correction.
+    document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
@@ -848,6 +851,8 @@ def generate_draft_labels(args, event=None):
         run_input["configVersion"] = config_version
     if object_keys:
         run_input["objectKeys"] = object_keys
+    if document_class:
+        run_input["documentClass"] = document_class
 
     lambda_client = boto3.client("lambda")
     response = lambda_client.invoke(
@@ -915,8 +920,21 @@ def reextract_test_set_document(args, event=None):
     reprocessed outside a job would never reach the baseline. Going through a job
     also keeps the harvest's overwrite safety, pruning and curve bookkeeping.
 
-    The class is pinned by writing it to the baseline first, since classification is
-    skipped for pages that already carry one.
+    The corrected class is applied in **two** places, and both are load-bearing:
+
+    1. Sent into the run, which stamps it as S3 metadata on the copied document so
+       the classification step uses it instead of classifying. This is what makes
+       extraction run against the class the reviewer chose.
+    2. Written onto the existing baseline up front, so a run that never completes
+       still records the correction, and so a reviewed label is demoted (the
+       harvest refuses to overwrite ``reviewed-human``).
+
+    Step 2 alone used to be the whole implementation, and it silently did not
+    work: the run classifies from the input document and never sees the test set's
+    baseline, so the pipeline re-derived the original class and the harvest wrote
+    it back over the pin. The observable result was the demotion sticking while
+    the correction vanished, leaving fields extracted under the old schema beside
+    a "Re-extracted as X" success message.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -958,6 +976,14 @@ def reextract_test_set_document(args, event=None):
                 "testSetId": test_set_id,
                 "objectKeys": [object_key],
                 "configVersion": config_version,
+                # The correction has to reach the PIPELINE, not just the baseline.
+                # Stamping it on the baseline alone does not work: the run
+                # classifies from the input document, which never sees the test
+                # set's baseline, and the harvest then writes the pipeline's own
+                # class back over the pin. The visible result was the demotion
+                # sticking while the corrected class silently disappeared, and
+                # fields still extracted under the old schema.
+                "documentClass": document_class,
             }
         },
         event,

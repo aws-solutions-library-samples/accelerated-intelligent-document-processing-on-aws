@@ -2589,10 +2589,15 @@ class TestTestSetResolver:
     ):
         """Correcting the class must actually reach the extraction.
 
-        The class is written to the baseline before the run because the pipeline
-        skips classification for pages that already carry one — that is what makes
-        the re-run extract against the class the annotator chose rather than
-        re-deciding it. Only the named document is processed.
+        Two things have to happen, and this test previously asserted only the
+        first — which is why the flow shipped broken. The baseline pin is not
+        sufficient on its own: the run classifies from the *input document* and
+        never reads the test set's baseline, so the pipeline re-derived the
+        original class and the harvest wrote it back over the pin.
+
+        So the class must also be sent INTO the run, which stamps it as S3
+        metadata for the classification step. Only the named document is
+        processed.
         """
         table, s3 = labeling_env
         _seed_test_set(table, "ts1", fileCount=2)
@@ -2629,6 +2634,9 @@ class TestTestSetResolver:
         assert result["jobId"] == "ts1-reextract"
         payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
         assert payload["arguments"]["input"]["objectKeys"] == ["check.pdf"]
+        # The assertion whose absence let the bug ship: without this the class
+        # never reaches the pipeline and the correction is silently discarded.
+        assert payload["arguments"]["input"]["documentClass"] == "bank-check"
 
         written = json.loads(
             s3.get_object(

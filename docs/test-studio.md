@@ -865,6 +865,13 @@ configuration, which may have moved on since. Choosing a different class offers
 new labels before returning, so you are never left looking at fields from the
 previous class.
 
+The corrected class is sent into the re-run itself, not merely written onto the
+existing labels: the document is re-processed with classification **skipped** and
+your chosen class applied to every page, so extraction genuinely runs against that
+class's schema. (Writing it onto the labels alone does not work — the run
+classifies from the source document and would re-derive the class you just
+corrected.)
+
 Two consequences worth knowing:
 
 - **Re-extraction replaces this document's labels**, including confirmed ones.

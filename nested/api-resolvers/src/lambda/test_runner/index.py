@@ -98,6 +98,7 @@ def handler(event, context):
         # Names exactly which documents to process, where numberOfFiles takes the
         # first N of the set.
         object_keys = input_data.get("objectKeys") or []
+        document_class = input_data.get("documentClass")
         config_version = input_data.get("configVersion")
         # A draft-labeling run produces ground truth rather than being scored
         # against it, so it is never evaluated. Carried as its own flag; the
@@ -209,6 +210,13 @@ def handler(event, context):
         # extraction to a stale copy of itself.
         if purpose == "draft-labeling":
             message_body["purpose"] = purpose
+
+        # A single-document re-extract after a class correction. Passed straight
+        # through to the copier, which stamps it as S3 metadata so the
+        # classification step uses it instead of classifying again — the whole
+        # point of the request is that the model's own answer was wrong.
+        if document_class:
+            message_body["documentClass"] = document_class
 
         sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
 
