@@ -1374,31 +1374,37 @@ class TestRunLevelCountsFromRows:
         `""` and `{}`. Similarly, `match=False` with `actual=[]` must land in
         `fn` (missed), not `fd` (wrong-value). Guards against a semantic
         classifier drift that would inflate precision when a schema legitimately
-        includes empty containers as valid absent values."""
+        includes empty containers as valid absent values.
+
+        Under leaf-weighting (finding 1 from #625 adversarial review), a row
+        with a structured non-None side is weighted by its leaf count — so
+        ``expected=["a","b"], actual=[]`` (2-leaf expected, missing) contributes
+        2 fn, not 1. Empty containers stay weight-1 (min-1 floor).
+        """
         index = import_test_module()
         docs = [
             {
                 "field_comparisons": [
                     {
-                        "field_path": "notes",
+                        "expected_key": "notes",
                         "match": True,
                         "expected_value": [],
                         "actual_value": [],
                     },
                     {
-                        "field_path": "tags",
+                        "expected_key": "tags",
                         "match": True,
                         "expected_value": {},
                         "actual_value": {},
                     },
                     {
-                        "field_path": "attrs",
+                        "expected_key": "attrs",
                         "match": True,
                         "expected_value": "",
                         "actual_value": "",
                     },
                     {
-                        "field_path": "items",
+                        "expected_key": "items",
                         "match": False,
                         "expected_value": ["a", "b"],
                         "actual_value": [],
@@ -1407,11 +1413,11 @@ class TestRunLevelCountsFromRows:
             },
         ]
         m = index._run_level_counts_from_rows(docs)
-        # All three True rows are correctly-empty → tn=3, not tp=3
+        # Three empty-empty True rows → tn=3 (each weight-1 by min-1 floor)
         assert m["tn"] == 3
         assert m["tp"] == 0
-        # False row with actual=[] treated as missed (actual absent), fn=1
-        assert m["fn"] == 1
+        # False row with expected=["a","b"] (2 leaves) missing → fn=2 leaf-normalized
+        assert m["fn"] == 2
         assert m["fd"] == 0
 
     def test_none_document_is_skipped(self, mock_env):

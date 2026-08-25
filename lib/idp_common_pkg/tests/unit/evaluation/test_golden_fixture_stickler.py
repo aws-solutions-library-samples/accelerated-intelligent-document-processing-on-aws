@@ -208,6 +208,11 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
         classification=spec["classification"],
         page_ids=spec["page_ids"],
     )
+    # Import the SAME root-extractor production uses — a duplicate copy here
+    # can't catch a bug in that extractor (finding 8 from #625 adversarial
+    # review).
+    from idp_common.evaluation.contract import row_root_attribute
+
     result = svc.evaluate_section(section, spec["expected"], spec["actual"])
     field_comparisons = (result.stickler_comparison_result or {}).get(
         "field_comparisons"
@@ -215,12 +220,7 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
 
     def _rows_under(attr_name: str):
         for fc in field_comparisons:
-            path = fc.get("field_path") or ""
-            idx_bracket = path.find("[")
-            idx_dot = path.find(".")
-            cuts = [i for i in (idx_bracket, idx_dot) if i >= 0]
-            root = path[: min(cuts)] if cuts else path
-            if root == attr_name:
+            if row_root_attribute(fc) == attr_name:
                 yield fc
 
     for attr in result.attributes:
@@ -235,7 +235,7 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
         assert attr.matched == expected_matched, (
             f"{fixture_name}.{attr.name}: IDP matched={attr.matched} vs "
             f"drilldown expected={expected_matched} "
-            f"(red rows: {[fc['field_path'] for fc in my_rows if fc.get('match') is False]})"
+            f"(red rows: {[fc.get('expected_key') or fc.get('field_path') for fc in my_rows if fc.get('match') is False]})"
         )
 
 

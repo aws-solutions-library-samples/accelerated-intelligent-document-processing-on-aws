@@ -598,6 +598,13 @@ def _load_s3_json(s3_uri: str) -> Dict[str, Any]:
     return json.loads(content)
 
 
+def _safe_div(num: float, den: float) -> float:
+    """Zero-denominator convention: return 0.0. Matches per-doc
+    ``stickler_backend/results.py`` — both paths agree so per-doc and run-level
+    dashboards report the same shape (finding 7 from #625 adversarial review)."""
+    return float(num) / float(den) if den > 0 else 0.0
+
+
 def _run_level_counts_from_rows(
     comparison_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -612,40 +619,174 @@ def _run_level_counts_from_rows(
     every leaf: each row carries a threshold-gated ``match`` decision using the
     field's own configured comparator + threshold.
 
-    Uses the same shared classifier (``idp_common.evaluation.contract``) as
-    the per-doc path in ``stickler_backend/results.py``. Row classification
-    that diverges between the two would silently reintroduce a class of
-    per-doc vs run-level dashboard inconsistency — this shared import
-    prevents that.
+    Uses the same shared classifier + row-weighting + anonymous-root filter as
+    the per-doc path in ``stickler_backend/results.py`` via
+    ``idp_common.evaluation.contract`` (findings 1 + 2 from #625 adversarial
+    review — row unit-mix and per-doc/run-level filter mismatch).
 
     Returns a dict with the same keys the caller reads from
     ``process_eval.metrics``: ``tp``, ``fa``, ``fd``, ``fp``, ``tn``, ``fn``,
     ``cm_precision``, ``cm_recall``, ``cm_f1``, ``cm_accuracy``.
     """
-    from idp_common.evaluation.contract import aggregate_row_counts
+    from idp_common.evaluation.contract import (
+        aggregate_row_counts,
+        iter_countable_rows,
+    )
 
     all_rows: List[Dict[str, Any]] = []
     for scr in comparison_results:
         if not scr:
             continue
         all_rows.extend(scr.get("field_comparisons") or [])
-    counts = aggregate_row_counts(all_rows)
+    countable = iter_countable_rows(all_rows, context="run-level aggregation")
+    counts = aggregate_row_counts(countable)
     tp = counts["tp"]
     fp = counts["fp"]
     fn = counts["fn"]
     tn = counts["tn"]
     total = tp + fp + fn + tn
 
-    def _sd(num: int, den: int) -> float:
-        return float(num) / float(den) if den > 0 else 0.0
-
     return {
         **counts,
-        "cm_precision": _sd(tp, tp + fp),
-        "cm_recall": _sd(tp, tp + fn),
-        "cm_f1": _sd(2 * tp, 2 * tp + fp + fn),
-        "cm_accuracy": _sd(tp + tn, total),
+        "cm_precision": _safe_div(tp, tp + fp),
+        "cm_recall": _safe_div(tp, tp + fn),
+        "cm_f1": _safe_div(2 * tp, 2 * tp + fp + fn),
+        "cm_accuracy": _safe_div(tp + tn, total),
     }
+
+
+def _collapse_indices(path: str) -> str:
+    """Strip ``[N]`` list-index tokens from a Stickler field path.
+
+    ``Items[3].name`` → ``Items.name``. Matches the pattern
+    ``_IndexCollapsingConfidenceAccumulator`` already uses so per-field metrics
+    and confidence metrics bucket on the same key.
+    """
+    return re.sub(r"\[\d+\]", "", path)
+
+
+def _run_level_field_metrics_from_rows(
+    comparison_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Per-field breakdown derived from rows, bucketed by index-collapsed path.
+
+    ``process_eval.field_metrics`` (Stickler's ``cm.fields.X.overall``) uses
+    the same item-level rollup that hides leaves inside kept items — so on
+    the ``partial_list_failure`` fixture, the top-level says precision 0.20
+    while ``Items.name`` under per-field says 1.00 (finding 3 from #625
+    adversarial review — run-level dashboard self-contradicts).
+
+    Item-level rows (rejected/missing/extra items) are attributed one count
+    per leaf of the item's structure so a dropped 2-leaf item contributes
+    2 fn to Items.name + Items.amount (matching top-level's leaf-normalized
+    counts), not a single fn to Items.
+    """
+    from idp_common.evaluation.contract import (
+        _count_leaves,
+        classify_field_comparison,
+        iter_countable_rows,
+    )
+
+    def _leaf_paths(value: Any) -> List[str]:
+        """Return leaf paths (dot-joined) within a structured value.
+
+        ``{'name': 'A', 'amount': 1}`` → ``['name', 'amount']``.
+        Empty/scalar/unknown → ``[]``; caller falls back to root path.
+        """
+        if isinstance(value, dict):
+            out: List[str] = []
+            for k, v in value.items():
+                child = _leaf_paths(v)
+                if child:
+                    out.extend(f"{k}.{c}" for c in child)
+                else:
+                    out.append(k)
+            return out
+        if hasattr(value, "model_dump"):
+            try:
+                return _leaf_paths(value.model_dump())
+            except Exception:  # noqa: BLE001
+                pass
+        if hasattr(value, "__dict__") and not isinstance(
+            value, (str, int, float, bool, list, tuple)
+        ):
+            try:
+                return _leaf_paths(
+                    {k: v for k, v in vars(value).items() if not k.startswith("_")}
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return []
+
+    field_counts: Dict[str, Dict[str, int]] = {}
+
+    def _add(field: str, bucket: str, weight: int = 1) -> None:
+        entry = field_counts.setdefault(
+            field, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
+        )
+        entry[bucket] += weight
+
+    for scr in comparison_results:
+        if not scr:
+            continue
+        rows = iter_countable_rows(
+            scr.get("field_comparisons") or [],
+            context="run-level field_metrics",
+        )
+        for fc in rows:
+            bucket = classify_field_comparison(fc)
+            path = (
+                fc.get("expected_key")
+                or fc.get("actual_key")
+                or fc.get("field_path")
+                or ""
+            )
+            collapsed = _collapse_indices(path)
+            if not collapsed:
+                continue
+
+            # Determine if this is an item-level row (Stickler emits one row
+            # per unmatched item, with the whole item as a structured value).
+            exp = fc.get("expected_value")
+            act = fc.get("actual_value")
+            value = exp if exp is not None else act
+            is_item_level = (
+                isinstance(value, (dict,))
+                or hasattr(value, "model_dump")
+                or (
+                    value is not None
+                    and hasattr(value, "__dict__")
+                    and not isinstance(value, (str, int, float, bool, list, tuple))
+                )
+            )
+            leaves = _leaf_paths(value) if is_item_level else []
+            if leaves:
+                # Spread across each leaf field so a dropped 2-leaf item
+                # contributes 1 fn to each of its 2 leaf fields.
+                for leaf in leaves:
+                    _add(f"{collapsed}.{leaf}", bucket)
+            else:
+                # Leaf row (or empty structured value) — attribute to the
+                # collapsed path directly. Weight by leaf count of the value
+                # if it's a plain list (rare) so a hallucinated flat list
+                # still normalizes.
+                weight = max(1, _count_leaves(value)) if value is not None else 1
+                _add(collapsed, bucket, weight if isinstance(value, list) else 1)
+
+    # Derived metrics per field
+    out: Dict[str, Dict[str, Any]] = {}
+    for fname, c in field_counts.items():
+        fp = c["fa"] + c["fd"]
+        total = c["tp"] + fp + c["fn"] + c["tn"]
+        out[fname] = {
+            **c,
+            "fp": fp,
+            "cm_precision": _safe_div(c["tp"], c["tp"] + fp),
+            "cm_recall": _safe_div(c["tp"], c["tp"] + c["fn"]),
+            "cm_f1": _safe_div(2 * c["tp"], 2 * c["tp"] + fp + c["fn"]),
+            "cm_accuracy": _safe_div(c["tp"] + c["tn"], total),
+        }
+    return out
 
 
 def _transform_stickler_metrics(
@@ -667,10 +808,15 @@ def _transform_stickler_metrics(
         Dictionary matching existing IDP metrics format (without split metrics)
     """
     # Top-level metrics come from the row-level ``field_comparisons`` sweep so
-    # list-heavy documents don't silently under-report failures (#625). The
-    # per-field ``process_eval.field_metrics`` is already leaf-level in
-    # Stickler's output and is passed through unchanged below.
+    # list-heavy documents don't silently under-report failures (#625).
+    # Per-field metrics also come from rows (bucketed by index-collapsed path)
+    # so the run-level dashboard's top-level and per-field views agree on the
+    # same document — Stickler's ``process_eval.field_metrics`` uses the item-
+    # level ``cm.fields.X.overall`` rollup that hides leaves inside kept items,
+    # so it would say ``Items.name`` precision = 1.00 while top-level says 0.20
+    # (finding 3 from #625 adversarial review).
     metrics = _run_level_counts_from_rows(comparison_results)
+    row_field_metrics = _run_level_field_metrics_from_rows(comparison_results)
 
     # Use Stickler's bulk confidence metrics (computed by aggregate_from_comparisons)
     # Stickler automatically aggregates prediction_confidences from comparison results
@@ -758,7 +904,7 @@ def _transform_stickler_metrics(
             "fa": metrics.get("fa", 0),
             "fd": metrics.get("fd", 0),
         },
-        "field_metrics": _with_accuracy_intervals(process_eval.field_metrics),
+        "field_metrics": _with_accuracy_intervals(row_field_metrics),
         "document_count": process_eval.document_count,
         "total_time": process_eval.total_time,
     }

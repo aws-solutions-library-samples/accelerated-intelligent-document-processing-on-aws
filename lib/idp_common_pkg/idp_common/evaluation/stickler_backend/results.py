@@ -22,7 +22,11 @@ import types
 import typing
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from idp_common.evaluation.contract import aggregate_row_counts
+from idp_common.evaluation.contract import (
+    aggregate_row_counts,
+    iter_countable_rows,
+    row_root_attribute,
+)
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     SectionEvaluationResult,
@@ -360,35 +364,16 @@ def transform_stickler_result(
         stickler_result.get("field_comparisons") or []
     )
 
-    # Bucket rows by their root attribute so per-attribute verdict is O(N) once.
-    # Stickler emits ``field_path`` as either the scalar name (``customer_name``),
-    # a list index path (``Items[3].name``), or a nested-object path (``Address.city``);
-    # the root is everything before the first ``[`` or ``.``. Rows whose path
-    # starts with ``[`` or ``.`` (no leading attribute name) have no root — we
-    # both skip them from ``rows_by_attr`` AND from section counts below, so a
-    # ghost row can't move section metrics without a matching parent verdict.
-    # This shape isn't observed on current Stickler builds; if it ever appears
-    # the log warning surfaces it rather than silently reintroducing the
-    # parent-vs-section drift issue #625 fixed.
+    # Filter to rows attributable to a parent attribute — both per-doc and
+    # run-level aggregators use the same shared filter so their counts agree
+    # (issue #625 finding 2). Then bucket by root attribute for O(N) per-
+    # attribute verdict evaluation.
+    countable_rows = iter_countable_rows(
+        field_comparisons, context=f"section:{section.section_id}"
+    )
     rows_by_attr: Dict[str, List[Dict[str, Any]]] = {}
-    countable_rows: List[Dict[str, Any]] = []
-    for fc in field_comparisons:
-        path = fc.get("field_path") or ""
-        idx_bracket = path.find("[")
-        idx_dot = path.find(".")
-        cut_candidates = [i for i in (idx_bracket, idx_dot) if i >= 0]
-        root = path[: min(cut_candidates)] if cut_candidates else path
-        if not root:
-            logger.warning(
-                "Skipping field_comparisons row with anonymous root (path=%r) "
-                "on section %s — verdict and section counts cannot attribute "
-                "it to a parent attribute.",
-                path,
-                section.section_id,
-            )
-            continue
-        rows_by_attr.setdefault(root, []).append(fc)
-        countable_rows.append(fc)
+    for fc in countable_rows:
+        rows_by_attr.setdefault(row_root_attribute(fc), []).append(fc)
 
     attribute_results: List[AttributeEvaluationResult] = []
     for field_name, score in field_scores.items():
