@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { useAuthenticator } from '@aws-amplify/ui-react';
-import { Alert, Box, Button, SpaceBetween, Spinner } from '@cloudscape-design/components';
 
 import UnauthRoutes from './UnauthRoutes';
 
@@ -12,44 +11,9 @@ import useAppContext from '../contexts/app';
 import AuthRoutes from './AuthRoutes';
 
 import { REDIRECT_URL_PARAM } from './constants';
+import { SessionError, SessionLoading } from './SessionStates';
 
 const logger = new ConsoleLogger('Routes');
-
-/** Signed in, credentials still arriving. Brief, and better than a blank page. */
-const SessionLoading = (): React.JSX.Element => (
-  <Box padding="xxl" textAlign="center">
-    <SpaceBetween size="s" alignItems="center">
-      <Spinner size="large" />
-      <Box variant="p" color="text-body-secondary">
-        Establishing your session…
-      </Box>
-    </SpaceBetween>
-  </Box>
-);
-
-/**
- * Credentials could not be obtained despite a valid sign-in.
- *
- * Always offers a way out. The failure this replaces was recoverable by a reload
- * the whole time — the user just had no way to know that.
- */
-const SessionError = ({ onRetry }: { onRetry?: () => void }): React.JSX.Element => (
-  <Box padding="xxl">
-    <Alert
-      type="error"
-      header="Could not establish your session"
-      action={
-        <SpaceBetween direction="horizontal" size="xs">
-          {onRetry && <Button onClick={onRetry}>Retry</Button>}
-          <Button onClick={() => window.location.reload()}>Reload the page</Button>
-        </SpaceBetween>
-      }
-    >
-      You are signed in, but the app could not obtain AWS credentials for your session. This is usually temporary — retrying or reloading
-      normally resolves it. If it persists, sign out and sign in again.
-    </Alert>
-  </Box>
-);
 
 const Routes = (): React.JSX.Element => {
   const { user, currentCredentials, credentialsStatus, retryCredentials } = useAppContext();

@@ -24,8 +24,11 @@ export interface AppContextValue {
    * to tell "authenticated but waiting" apart from "not signed in" — conflating
    * them is what rendered a blank page after a valid sign-in.
    */
-  credentialsStatus?: 'idle' | 'pending' | 'ready' | 'error';
-  retryCredentials?: () => void;
+  // Required, not optional: there is exactly one provider and it always supplies
+  // both. Optional would let an undefined status render the loading state
+  // forever — a quieter version of the blank page this exists to prevent.
+  credentialsStatus: 'idle' | 'pending' | 'ready' | 'error';
+  retryCredentials: () => void;
   setErrorMessage: React.Dispatch<React.SetStateAction<string | undefined>>;
   setSuccessMessage: React.Dispatch<React.SetStateAction<string | undefined>>;
   user: AuthUser | undefined;

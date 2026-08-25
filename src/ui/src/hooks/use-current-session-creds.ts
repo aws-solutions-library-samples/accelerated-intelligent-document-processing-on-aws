@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { fetchAuthSession } from 'aws-amplify/auth';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { useAuthenticator } from '@aws-amplify/ui-react';
+
+import { fetchSharedAuthSession } from '../api/auth-session';
 
 const DEFAULT_CREDS_REFRESH_INTERVAL_IN_MS = 60 * 15 * 1000;
 
@@ -21,40 +22,18 @@ const RETRY_DELAYS_IN_MS = [400, 1200, 3000];
 
 const logger = new ConsoleLogger('useCurrentSessionCreds');
 
-/**
- * Credential fetch shared across every consumer of this hook.
- *
- * The hook is mounted from three places (App, ChatPanel, use-agent-chat), each
- * of which fetched unconditionally on mount. Concurrent identical
- * `GetCredentialsForIdentity` calls were observed racing, with one returning 200
- * and its twin 400 `NotAuthorizedException: Invalid login token` — the token was
- * fine, that is just Cognito's answer to the duplicate. Sharing one in-flight
- * promise means a cold start issues one call rather than several.
- */
-let inFlight: Promise<Awaited<ReturnType<typeof fetchAuthSession>>> | null = null;
-
-const fetchSharedAuthSession = (): Promise<Awaited<ReturnType<typeof fetchAuthSession>>> => {
-  if (!inFlight) {
-    inFlight = fetchAuthSession().finally(() => {
-      inFlight = null;
-    });
-  }
-  return inFlight;
-};
-
-/** Exposed for tests: drop any shared promise so cases start from a clean slate. */
-export const resetSharedAuthSession = (): void => {
-  inFlight = null;
-};
-
 export type CredentialsStatus = 'idle' | 'pending' | 'ready' | 'error';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const useCurrentSessionCreds = ({
   credsIntervalInMs = DEFAULT_CREDS_REFRESH_INTERVAL_IN_MS,
+  // Injectable so tests can exercise the exhaust-all-retries path without
+  // actually sleeping the real schedule (~4.6s per case).
+  retryDelaysInMs = RETRY_DELAYS_IN_MS,
 }: {
   credsIntervalInMs?: number;
+  retryDelaysInMs?: number[];
 }): {
   currentSession: unknown;
   currentCredentials: unknown;
@@ -84,7 +63,7 @@ const useCurrentSessionCreds = ({
     setCredentialsStatus((prev) => (prev === 'ready' ? prev : 'pending'));
 
     // One more attempt than there are delays: the delays sit *between* attempts.
-    for (let attempt = 0; attempt <= RETRY_DELAYS_IN_MS.length; attempt += 1) {
+    for (let attempt = 0; attempt <= retryDelaysInMs.length; attempt += 1) {
       try {
         const session = await fetchSharedAuthSession();
         if (!mountedRef.current) return;
@@ -95,7 +74,7 @@ const useCurrentSessionCreds = ({
         return;
       } catch (error) {
         if (!mountedRef.current) return;
-        const delay = RETRY_DELAYS_IN_MS[attempt];
+        const delay = retryDelaysInMs[attempt];
         if (delay === undefined) {
           // Out of attempts. Surfaced rather than only logged (this is the
           // `// XXX surface credential refresh error` that used to live here):
@@ -109,7 +88,7 @@ const useCurrentSessionCreds = ({
         if (!mountedRef.current) return;
       }
     }
-  }, []);
+  }, [retryDelaysInMs]);
 
   const clearRefreshInterval = useCallback(() => {
     if (intervalRef.current) {

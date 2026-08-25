@@ -27,9 +27,16 @@ vi.mock('@aws-amplify/ui-react', () => ({
 }));
 
 // Imported after the vi.mock calls above, which vitest hoists regardless.
-import useCurrentSessionCreds, { resetSharedAuthSession } from '../use-current-session-creds';
+// The de-duplication now lives in api/auth-session so every caller in the app
+// shares it, not just this hook — mocking aws-amplify/auth still covers it,
+// since that is what the shared module calls.
+import { resetSharedAuthSession } from '../../api/auth-session';
+import useCurrentSessionCreds from '../use-current-session-creds';
 
 const CREDS = { accessKeyId: 'AKIA', secretAccessKey: 's' };
+// The production schedule is 400/1200/3000ms; sleeping it in three cases cost
+// ~9s of a 16s suite and left thin margin on a loaded runner. Same code path.
+const FAST_RETRIES = [1, 2, 3];
 
 describe('useCurrentSessionCreds', () => {
   beforeEach(() => {
@@ -73,9 +80,9 @@ describe('useCurrentSessionCreds', () => {
     // credentials undefined until the next interval tick.
     fetchAuthSession.mockRejectedValueOnce(new Error('NotAuthorizedException')).mockResolvedValue({ credentials: CREDS });
 
-    const { result } = renderHook(() => useCurrentSessionCreds({}));
+    const { result } = renderHook(() => useCurrentSessionCreds({ retryDelaysInMs: FAST_RETRIES }));
 
-    await waitFor(() => expect(result.current.credentialsStatus).toBe('ready'), { timeout: 5000 });
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('ready'));
     expect(result.current.currentCredentials).toEqual(CREDS);
     expect(fetchAuthSession.mock.calls.length).toBeGreaterThan(1);
   });
@@ -83,18 +90,21 @@ describe('useCurrentSessionCreds', () => {
   it('surfaces an error state when every attempt fails', async () => {
     // Not silence. The caller renders an actionable message rather than nothing,
     // which is what the `// XXX surface credential refresh error` TODO cost.
+    // FAST_RETRIES exercises the same loop without sleeping the real schedule.
     fetchAuthSession.mockRejectedValue(new Error('still failing'));
 
-    const { result } = renderHook(() => useCurrentSessionCreds({}));
+    const { result } = renderHook(() => useCurrentSessionCreds({ retryDelaysInMs: FAST_RETRIES }));
 
-    await waitFor(() => expect(result.current.credentialsStatus).toBe('error'), { timeout: 8000 });
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('error'));
     expect(result.current.currentCredentials).toBeUndefined();
+    // Every attempt was made: one per delay, plus the initial one.
+    expect(fetchAuthSession).toHaveBeenCalledTimes(FAST_RETRIES.length + 1);
   });
 
   it('offers a retry that can recover without a reload', async () => {
     fetchAuthSession.mockRejectedValue(new Error('down'));
-    const { result } = renderHook(() => useCurrentSessionCreds({}));
-    await waitFor(() => expect(result.current.credentialsStatus).toBe('error'), { timeout: 8000 });
+    const { result } = renderHook(() => useCurrentSessionCreds({ retryDelaysInMs: FAST_RETRIES }));
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('error'));
 
     fetchAuthSession.mockReset();
     fetchAuthSession.mockResolvedValue({ credentials: CREDS });
@@ -102,7 +112,7 @@ describe('useCurrentSessionCreds', () => {
       result.current.retryCredentials();
     });
 
-    await waitFor(() => expect(result.current.credentialsStatus).toBe('ready'), { timeout: 5000 });
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('ready'));
   });
 
   it('clears its refresh timer on unmount', async () => {
