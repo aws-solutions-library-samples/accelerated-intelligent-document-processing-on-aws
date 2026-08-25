@@ -18,63 +18,68 @@ patch_all()
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
+logging.getLogger("idp_common.bedrock.client").setLevel(
+    os.environ.get("BEDROCK_LOG_LEVEL", "INFO")
+)
 # Get LOG_LEVEL from environment variable with INFO as default
 
-sfn = boto3.client('stepfunctions')
-sqs = boto3.client('sqs')
-dynamodb = boto3.resource('dynamodb')
+sfn = boto3.client("stepfunctions")
+sqs = boto3.client("sqs")
+dynamodb = boto3.resource("dynamodb")
 document_service = create_document_service()
-concurrency_table = dynamodb.Table(os.environ['CONCURRENCY_TABLE'])
-state_machine_arn = os.environ['STATE_MACHINE_ARN']
-MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT', '5'))
-COUNTER_ID = 'workflow_counter'
-CIRCUIT_BREAKER_ID = 'circuit_breaker'
-CIRCUIT_BREAKER_ENABLED = os.environ.get('CIRCUIT_BREAKER_ENABLED', 'false').lower() == 'true'
-DOCUMENT_QUEUE_URL = os.environ.get('DOCUMENT_QUEUE_URL', '')
-RECOVERY_TIMEOUT_SECONDS = int(os.environ.get('RECOVERY_TIMEOUT_SECONDS', '300'))
+concurrency_table = dynamodb.Table(os.environ["CONCURRENCY_TABLE"])
+state_machine_arn = os.environ["STATE_MACHINE_ARN"]
+MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "5"))
+COUNTER_ID = "workflow_counter"
+CIRCUIT_BREAKER_ID = "circuit_breaker"
+CIRCUIT_BREAKER_ENABLED = (
+    os.environ.get("CIRCUIT_BREAKER_ENABLED", "false").lower() == "true"
+)
+DOCUMENT_QUEUE_URL = os.environ.get("DOCUMENT_QUEUE_URL", "")
+RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300"))
 # How long a suspected counter leak must persist across two independent samples
 # before it is corrected. Must comfortably exceed the window between an
 # increment and its execution becoming visible to ListExecutions, since during
 # that window fewer executions are RUNNING than the counter says — legitimately.
-RECONCILE_GRACE_SECONDS = int(os.environ.get('RECONCILE_GRACE_SECONDS', '300'))
-METRIC_NAMESPACE = os.environ.get('METRIC_NAMESPACE', 'IDP')
+RECONCILE_GRACE_SECONDS = int(os.environ.get("RECONCILE_GRACE_SECONDS", "300"))
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+
 
 def update_counter(increment: bool = True) -> bool:
     """
     Update the concurrency counter
-    
+
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
-        
+
     Returns:
         bool: True if update successful, False if at limit
-        
+
     Raises:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
     try:
         update_args = {
-            'Key': {'counter_id': COUNTER_ID},
-            'UpdateExpression': 'ADD active_count :inc',
-            'ExpressionAttributeValues': {
-                ':inc': 1 if increment else -1,
-                ':max': MAX_CONCURRENT
+            "Key": {"counter_id": COUNTER_ID},
+            "UpdateExpression": "ADD active_count :inc",
+            "ExpressionAttributeValues": {
+                ":inc": 1 if increment else -1,
+                ":max": MAX_CONCURRENT,
             },
-            'ReturnValues': 'UPDATED_NEW'
+            "ReturnValues": "UPDATED_NEW",
         }
-        
+
         if increment:
-            update_args['ConditionExpression'] = 'active_count < :max'
-        
+            update_args["ConditionExpression"] = "active_count < :max"
+
         logger.info(f"Counter update args: {update_args}")
         response = concurrency_table.update_item(**update_args)
         logger.info(f"Counter update response: {response}")
         return True
-        
+
     except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             logger.warning("Concurrency limit reached")
             return False
         logger.error(f"Error updating counter: {e}")
@@ -93,15 +98,15 @@ def _count_running_executions(limit: int = 1000) -> Optional[int]:
         token = None
         while True:
             kwargs = {
-                'stateMachineArn': state_machine_arn,
-                'statusFilter': 'RUNNING',
-                'maxResults': 100,
+                "stateMachineArn": state_machine_arn,
+                "statusFilter": "RUNNING",
+                "maxResults": 100,
             }
             if token:
-                kwargs['nextToken'] = token
+                kwargs["nextToken"] = token
             page = sfn.list_executions(**kwargs)
-            total += len(page.get('executions', []))
-            token = page.get('nextToken')
+            total += len(page.get("executions", []))
+            token = page.get("nextToken")
             if not token:
                 return total
             if total > limit:
@@ -141,14 +146,17 @@ def reconcile_counter() -> Optional[int]:
     """
     now = int(time.time())
     try:
-        item = concurrency_table.get_item(
-            Key={'counter_id': COUNTER_ID}, ConsistentRead=True
-        ).get('Item') or {}
+        item = (
+            concurrency_table.get_item(
+                Key={"counter_id": COUNTER_ID}, ConsistentRead=True
+            ).get("Item")
+            or {}
+        )
     except ClientError as e:
         logger.warning(f"Could not read counter for reconciliation: {e}")
         return None
 
-    active = int(item.get('active_count', 0))
+    active = int(item.get("active_count", 0))
     if active <= 0:
         return None
 
@@ -159,22 +167,39 @@ def reconcile_counter() -> Optional[int]:
     if running >= active:
         # No drift. Clear any stale suspicion so a later real leak needs two
         # fresh samples of its own.
-        if item.get('drift_observed_at'):
+        if item.get("drift_observed_at"):
             _put_drift_sample(None, None)
         return None
 
     drift = active - running
     _emit_drift_metric(drift, active, running)
 
-    prev_at = int(item.get('drift_observed_at') or 0)
-    prev_running = item.get('drift_running')
-    if not prev_at or now - prev_at < RECONCILE_GRACE_SECONDS:
+    prev_at = int(item.get("drift_observed_at") or 0)
+    prev_running = item.get("drift_running")
+
+    if not prev_at:
+        # First observation: start the clock and wait for a second, independent look.
         logger.warning(
             f"Concurrency counter may have leaked: active_count={active} but "
             f"{running} executions are RUNNING (drift={drift}). Recording a "
             f"sample; will correct if still true in {RECONCILE_GRACE_SECONDS}s."
         )
         _put_drift_sample(now, running)
+        return None
+
+    age = now - prev_at
+    if age < RECONCILE_GRACE_SECONDS:
+        # A sample already exists and the grace window has not elapsed. Do NOT
+        # re-record it: rewriting the timestamp on every refusal RESETS the clock,
+        # and under load refusals arrive far more often than the grace period, so
+        # the window would never elapse and the counter would never be corrected.
+        # Found in live verification — the counter sat at its ceiling while the
+        # sample timestamp advanced on every invocation.
+        logger.info(
+            f"Concurrency counter drift still present (active_count={active}, "
+            f"{running} RUNNING); {RECONCILE_GRACE_SECONDS - age}s left before "
+            f"correcting."
+        )
         return None
 
     # Two independent samples, GRACE apart, both saw the counter too high.
@@ -184,15 +209,15 @@ def reconcile_counter() -> Optional[int]:
 
     try:
         concurrency_table.update_item(
-            Key={'counter_id': COUNTER_ID},
+            Key={"counter_id": COUNTER_ID},
             UpdateExpression=(
-                'SET active_count = :new REMOVE drift_observed_at, drift_running'
+                "SET active_count = :new REMOVE drift_observed_at, drift_running"
             ),
-            ConditionExpression='active_count = :expected',
-            ExpressionAttributeValues={':new': target, ':expected': active},
+            ConditionExpression="active_count = :expected",
+            ExpressionAttributeValues={":new": target, ":expected": active},
         )
     except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             # Someone incremented/decremented meanwhile — the counter is moving,
             # so it is not stuck. Try again on a later invocation.
             logger.info("Counter changed during reconciliation; skipping correction")
@@ -213,16 +238,16 @@ def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
     try:
         if when is None:
             concurrency_table.update_item(
-                Key={'counter_id': COUNTER_ID},
-                UpdateExpression='REMOVE drift_observed_at, drift_running',
+                Key={"counter_id": COUNTER_ID},
+                UpdateExpression="REMOVE drift_observed_at, drift_running",
             )
         else:
             concurrency_table.update_item(
-                Key={'counter_id': COUNTER_ID},
+                Key={"counter_id": COUNTER_ID},
                 UpdateExpression=(
-                    'SET drift_observed_at = :at, drift_running = :running'
+                    "SET drift_observed_at = :at, drift_running = :running"
                 ),
-                ExpressionAttributeValues={':at': when, ':running': running},
+                ExpressionAttributeValues={":at": when, ":running": running},
             )
     except ClientError as e:
         logger.warning(f"Could not record concurrency drift sample: {e}")
@@ -235,24 +260,24 @@ def _emit_drift_metric(drift: int, active: int, running: int) -> None:
     every other metric looks idle rather than broken.
     """
     try:
-        cloudwatch = boto3.client('cloudwatch')
+        cloudwatch = boto3.client("cloudwatch")
         cloudwatch.put_metric_data(
             Namespace=METRIC_NAMESPACE,
             MetricData=[
                 {
-                    'MetricName': 'ConcurrencyCounterDrift',
-                    'Value': drift,
-                    'Unit': 'Count',
+                    "MetricName": "ConcurrencyCounterDrift",
+                    "Value": drift,
+                    "Unit": "Count",
                 },
                 {
-                    'MetricName': 'ConcurrencyCounterActive',
-                    'Value': active,
-                    'Unit': 'Count',
+                    "MetricName": "ConcurrencyCounterActive",
+                    "Value": active,
+                    "Unit": "Count",
                 },
                 {
-                    'MetricName': 'WorkflowsRunning',
-                    'Value': running,
-                    'Unit': 'Count',
+                    "MetricName": "WorkflowsRunning",
+                    "Value": running,
+                    "Unit": "Count",
                 },
             ],
         )
@@ -270,25 +295,25 @@ def check_circuit_breaker() -> tuple[bool, str]:
         - state: Current circuit breaker state (CLOSED, OPEN, HALF_OPEN, DISABLED, ERROR)
     """
     if not CIRCUIT_BREAKER_ENABLED:
-        return True, 'DISABLED'
+        return True, "DISABLED"
 
     try:
         response = concurrency_table.get_item(
-            Key={'counter_id': CIRCUIT_BREAKER_ID},
-            ProjectionExpression='#state',
-            ExpressionAttributeNames={'#state': 'state'}
+            Key={"counter_id": CIRCUIT_BREAKER_ID},
+            ProjectionExpression="#state",
+            ExpressionAttributeNames={"#state": "state"},
         )
-        item = response.get('Item')
+        item = response.get("Item")
 
         if not item:
-            return True, 'CLOSED'
+            return True, "CLOSED"
 
-        state = item.get('state', 'CLOSED')
+        state = item.get("state", "CLOSED")
 
-        if state == 'OPEN':
+        if state == "OPEN":
             logger.warning("Circuit breaker is OPEN - blocking new workflows")
             return False, state
-        elif state == 'HALF_OPEN':
+        elif state == "HALF_OPEN":
             logger.info("Circuit breaker is HALF_OPEN - allowing probe traffic")
             return True, state
 
@@ -296,7 +321,7 @@ def check_circuit_breaker() -> tuple[bool, str]:
 
     except ClientError as e:
         logger.error(f"Error checking circuit breaker: {e}")
-        return True, 'ERROR'
+        return True, "ERROR"
 
 
 def extend_visibility_for_outage(receipt_handle: str) -> None:
@@ -324,13 +349,13 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
 def start_workflow(document: Document) -> Dict[str, Any]:
     """
     Start Step Functions workflow
-    
+
     Args:
         document: The Document object to process
-        
+
     Returns:
         Dict containing execution details
-        
+
     Raises:
         ClientError: If Step Functions operation fails
     """
@@ -356,7 +381,7 @@ def start_workflow(document: Document) -> Dict[str, Any]:
     # writes Config#default with no IsActive attribute, so "no active version"
     # is a normal state and resolve_active_version() returns 'default' for it.
     # Failing here would reject documents that process correctly today.
-    config_table_name = os.environ.get('CONFIG_TABLE')
+    config_table_name = os.environ.get("CONFIG_TABLE")
     if not document.config_version and config_table_name:
         try:
             document.config_version = ConfigurationManager(
@@ -374,16 +399,22 @@ def start_workflow(document: Document) -> Dict[str, Any]:
             )
 
     # Compress document for Step Functions to handle large documents
-    working_bucket = os.environ.get('WORKING_BUCKET')
+    working_bucket = os.environ.get("WORKING_BUCKET")
     if working_bucket:
         # Use document compression (always compress with default 0KB threshold)
-        compressed_document = document.serialize_document(working_bucket, "workflow_start", logger)
-        logger.info(f"Document compressed for Step Functions workflow (always compress)")
+        compressed_document = document.serialize_document(
+            working_bucket, "workflow_start", logger
+        )
+        logger.info(
+            f"Document compressed for Step Functions workflow (always compress)"
+        )
     else:
         # Fallback to direct document dict if no working bucket
         compressed_document = document.to_dict()
-        logger.warning("No WORKING_BUCKET configured, sending uncompressed document to workflow")
-    
+        logger.warning(
+            "No WORKING_BUCKET configured, sending uncompressed document to workflow"
+        )
+
     # Inject use_bda flag and bda_project_arn from config into document for state machine routing.
     # The unified state machine uses $.document.use_bda to choose BDA vs pipeline branch,
     # and $.document.bda_project_arn for the per-config-version BDA project.
@@ -392,79 +423,88 @@ def start_workflow(document: Document) -> Dict[str, Any]:
             # Read the version PINNED above, so the routing flags and the rest of
             # the pipeline are guaranteed to come from the same config version.
             # (Still tolerant of an unset pin: the pin block above is best-effort.)
-            config_version = getattr(document, 'config_version', None) or 'default'
+            config_version = getattr(document, "config_version", None) or "default"
             manager = ConfigurationManager(table_name=config_table_name)
 
             # Read use_bda from the full config (properly decompresses gzip storage)
             config = manager.get_merged_configuration(config_version)
-            use_bda = getattr(config, 'use_bda', False) if config else False
-            compressed_document['use_bda'] = bool(use_bda)
+            use_bda = getattr(config, "use_bda", False) if config else False
+            compressed_document["use_bda"] = bool(use_bda)
 
             # Read per-version BDA project ARN (stored as top-level DynamoDB metadata)
             if use_bda:
                 bda_project_arn = manager.get_bda_project_arn(config_version)
                 if bda_project_arn:
-                    compressed_document['bda_project_arn'] = bda_project_arn
-                    logger.info(f"Config version '{config_version}': use_bda=True, bda_project_arn={bda_project_arn}")
+                    compressed_document["bda_project_arn"] = bda_project_arn
+                    logger.info(
+                        f"Config version '{config_version}': use_bda=True, bda_project_arn={bda_project_arn}"
+                    )
                 else:
                     # No BDA project linked — fall back to pipeline to avoid errors
                     logger.warning(
                         f"Config version '{config_version}' has use_bda=True but no BDA project ARN linked. "
                         f"Falling back to pipeline mode. Please sync the config version to a BDA project."
                     )
-                    compressed_document['use_bda'] = False
+                    compressed_document["use_bda"] = False
             else:
-                logger.info(f"Config version '{config_version}': use_bda=False, using pipeline mode")
+                logger.info(
+                    f"Config version '{config_version}': use_bda=False, using pipeline mode"
+                )
         except Exception as e:
-            logger.warning(f"Could not read config from ConfigurationManager: {e}. Defaulting to pipeline mode.", exc_info=True)
-            compressed_document['use_bda'] = False
+            logger.warning(
+                f"Could not read config from ConfigurationManager: {e}. Defaulting to pipeline mode.",
+                exc_info=True,
+            )
+            compressed_document["use_bda"] = False
     else:
-        logger.warning("CONFIG_TABLE env var not set. Cannot determine use_bda flag. Defaulting to pipeline mode.")
-        compressed_document['use_bda'] = False
+        logger.warning(
+            "CONFIG_TABLE env var not set. Cannot determine use_bda flag. Defaulting to pipeline mode."
+        )
+        compressed_document["use_bda"] = False
 
-    event = {
-        "document": compressed_document
-    }
+    event = {"document": compressed_document}
 
-    logger.info(f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)")
-    
+    logger.info(
+        f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
+    )
+
     try:
         execution = sfn.start_execution(
-            stateMachineArn=state_machine_arn,
-            input=json.dumps(event)
+            stateMachineArn=state_machine_arn, input=json.dumps(event)
         )
-        
+
         # Set workflow execution ARN and start_time in the document
-        document.workflow_execution_arn = execution.get('executionArn', '')
+        document.workflow_execution_arn = execution.get("executionArn", "")
         document.start_time = datetime.now(timezone.utc).isoformat()
-        
+
         logger.info(f"Workflow started: {execution.get('executionArn', '')}")
         return execution
     except Exception as e:
         logger.error(f"Error starting workflow: {str(e)}")
         # Ensure we have a default workflow_execution_arn to avoid None errors
-        document.workflow_execution_arn = document.workflow_execution_arn or ''
+        document.workflow_execution_arn = document.workflow_execution_arn or ""
         raise
+
 
 def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Process a single SQS message
-    
+
     Args:
         record: The SQS message record
-        
+
     Returns:
         Tuple of (success, message_id)
-        
+
     Note: This function handles its own errors and returns success/failure
     """
-    message = record['body']
-    message_id = record['messageId']
-    receipt_handle = record.get('receiptHandle', '')
+    message = record["body"]
+    message_id = record["messageId"]
+    receipt_handle = record.get("receiptHandle", "")
 
     try:
         # Handle both compressed and uncompressed documents
-        working_bucket = os.environ.get('WORKING_BUCKET')
+        working_bucket = os.environ.get("WORKING_BUCKET")
         message_data = json.loads(message)
         document = Document.load_document(message_data, working_bucket, logger)
         object_key = document.input_key
@@ -475,21 +515,25 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
         # of outage state.
         current_doc = document_service.get_document(object_key)
         if current_doc and current_doc.status == Status.ABORTED:
-            logger.info(f"Document {object_key} was aborted by user, skipping workflow start")
+            logger.info(
+                f"Document {object_key} was aborted by user, skipping workflow start"
+            )
             return True, message_id  # Return success to remove message from queue
 
         # Check circuit breaker before paying the cost of X-Ray setup and
         # counter increment.
         cb_allowed, cb_state = check_circuit_breaker()
         if not cb_allowed:
-            logger.warning(f"Circuit breaker {cb_state} for {object_key} - message will retry later")
-            if cb_state == 'OPEN' and receipt_handle:
+            logger.warning(
+                f"Circuit breaker {cb_state} for {object_key} - message will retry later"
+            )
+            if cb_state == "OPEN" and receipt_handle:
                 extend_visibility_for_outage(receipt_handle)
             return False, message_id
 
         # X-Ray annotations
-        xray_recorder.put_annotation('document_id', {document.id})
-        xray_recorder.put_annotation('processing_stage', 'queue_processor')
+        xray_recorder.put_annotation("document_id", {document.id})
+        xray_recorder.put_annotation("processing_stage", "queue_processor")
         current_segment = xray_recorder.current_segment()
         if current_segment:
             document.trace_id = current_segment.trace_id
@@ -516,50 +560,55 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                 # the outcome for this message.
                 logger.warning(f"Counter reconciliation failed: {e}", exc_info=True)
                 return False, message_id
-        
+
         try:
             # Start workflow with the document
             execution = start_workflow(document)
-            
+
             # Update document status in document service
             updated_doc = document_service.update_document(document)
             logger.info(f"Document updated: {updated_doc}")
-            
+
             return True, message_id
-            
+
         except Exception as e:
             logger.error(f"Error processing {object_key}: {str(e)}", exc_info=True)
             # Decrement counter on failure
             try:
                 update_counter(increment=False)
             except Exception as counter_error:
-                logger.error(f"Failed to decrement counter: {counter_error}", exc_info=True)
+                logger.error(
+                    f"Failed to decrement counter: {counter_error}", exc_info=True
+                )
             return False, message_id
-            
+
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in message {message_id}: {str(e)}")
         return False, message_id
-        
+
     except KeyError as e:
         logger.error(f"Missing required field in message {message_id}: {str(e)}")
         return False, message_id
-        
+
     except Exception as e:
-        logger.error(f"Unexpected error processing message {message_id}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Unexpected error processing message {message_id}: {str(e)}", exc_info=True
+        )
         return False, message_id
 
-@xray_recorder.capture('queue_processor')
+
+@xray_recorder.capture("queue_processor")
 def handler(event, context):
     logger.info(f"Processing event: {json.dumps(event)}")
     logger.info(f"Processing batch of {len(event['Records'])} messages")
-    
+
     failed_message_ids = []
-    
-    for record in event['Records']:
+
+    for record in event["Records"]:
         success, message_id = process_message(record)
         if not success:
             failed_message_ids.append(message_id)
-    
+
     return {
         "batchItemFailures": [
             {"itemIdentifier": message_id} for message_id in failed_message_ids

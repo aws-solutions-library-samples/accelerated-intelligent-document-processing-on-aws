@@ -51,9 +51,11 @@ def index_module(monkeypatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
-    with patch.dict(os.environ, env_vars, clear=False), \
-         patch("boto3.resource") as mock_resource, \
-         patch("boto3.client") as mock_client:
+    with (
+        patch.dict(os.environ, env_vars, clear=False),
+        patch("boto3.resource") as mock_resource,
+        patch("boto3.client") as mock_client,
+    ):
         mock_table = MagicMock()
         mock_resource.return_value.Table.return_value = mock_table
         mock_client.return_value = MagicMock()
@@ -130,19 +132,40 @@ class TestTwoSampleRequirement:
     def test_second_observation_inside_grace_still_waits(self, index_module):
         with patch.object(index_module.time, "time", return_value=1_000):
             index_module.concurrency_table.get_item.return_value = _counter(
-                100, drift_at=900, drift_running=29  # 100s ago, grace is 300s
+                100,
+                drift_at=900,
+                drift_running=29,  # 100s ago, grace is 300s
             )
             index_module.sfn.list_executions.return_value = _running(29)
             assert index_module.reconcile_counter() is None
-        expr = index_module.concurrency_table.update_item.call_args.kwargs[
-            "UpdateExpression"
-        ]
-        assert "active_count" not in expr
+        index_module.concurrency_table.update_item.assert_not_called()
+
+    def test_existing_sample_timestamp_is_never_overwritten(self, index_module):
+        """Rewriting the sample on every refusal RESETS the grace clock.
+
+        Regression guard for a bug found in live verification: refusals arrive
+        far more often than the grace period under load, so re-recording the
+        sample each time meant the window never elapsed and the counter was never
+        corrected — it sat at its ceiling indefinitely while the timestamp
+        advanced on every invocation.
+        """
+        with patch.object(index_module.time, "time", return_value=1_000):
+            index_module.concurrency_table.get_item.return_value = _counter(
+                100,
+                drift_at=990,
+                drift_running=29,  # 10s ago
+            )
+            index_module.sfn.list_executions.return_value = _running(29)
+            index_module.reconcile_counter()
+        # No write at all: not a correction, and crucially not a fresh sample.
+        index_module.concurrency_table.update_item.assert_not_called()
 
     def test_second_observation_after_grace_corrects(self, index_module):
         with patch.object(index_module.time, "time", return_value=2_000):
             index_module.concurrency_table.get_item.return_value = _counter(
-                100, drift_at=1_000, drift_running=29  # 1000s ago > 300s grace
+                100,
+                drift_at=1_000,
+                drift_running=29,  # 1000s ago > 300s grace
             )
             index_module.sfn.list_executions.return_value = _running(29)
             assert index_module.reconcile_counter() == 29
