@@ -1082,8 +1082,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The Visual
-Editor's **Show Evaluation** toggle compares the section's class alongside its
-fields. Check the class before reading the extraction scores: a misclassified
+Editor ("View Data") shows the section's class comparison as soon as it opens,
+without needing the **Show Evaluation** toggle, which adds the per-field
+comparison. Check the class before reading the extraction scores: a misclassified
 page was extracted against the wrong schema, so its low score is a symptom
 rather than the cause. See
 [Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).

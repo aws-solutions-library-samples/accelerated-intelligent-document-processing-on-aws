@@ -91,11 +91,10 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **View Data → Show evaluation**
-compares what was extracted against the ground truth, highlighting mismatched
-fields with their scores and reasons.
-
-The comparison covers the **document class** as well as the fields. The class is
+On a document that has an evaluation baseline, **View Data** shows the
+**document class** comparison straight away — predicted, expected, and a verdict
+— and **Show evaluation** adds the field-by-field comparison, highlighting
+mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
 it — extraction runs against that class's schema, so the fields can be filled in
 competently and still be wrong. A banner above the fields reports one of:
