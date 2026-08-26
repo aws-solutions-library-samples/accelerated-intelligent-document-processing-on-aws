@@ -25,6 +25,14 @@ import lib
 
 BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Floor for the run-to-run spread of a QUALITY metric (accuracy / recall) when a
+# cell has n<2 and therefore no measured stdev. In accuracy points, matching the
+# 0.02 regression threshold: at n=1 a shift larger than ~0.028 (the combined
+# floor for both sides) is still reported, but a smaller one is called
+# inconclusive rather than a finding. Chosen because quality metrics on
+# non-deterministic cells were observed swinging 0.10 <-> 1.00 on one document.
+QUALITY_SPREAD_FLOOR = 0.02
+
 
 def score_all(run_dir):
     rm = json.load(open(os.path.join(run_dir, "runmap.json")))
@@ -233,14 +241,67 @@ def _cells(summary):
     return summary.get("cell_stats") or cell_stats(summary.get("rows", []))
 
 
+QUALITY_METRICS = ("scalar_accuracy", "completeness_recall", "weighted_accuracy")
+
+
+def _paired_quality_deltas(cur_summary, base_summary):
+    """Per-(cell, metric) list of per-document deltas, for a PAIRED comparison.
+
+    Both releases run the identical document set, so pairing on (cell, doc,
+    repeat) removes document heterogeneity — essential when a doc set spans
+    5-row and 100-row documents, where the across-document spread is large even
+    if every document moved identically.
+    """
+
+    def index(summary):
+        out = {}
+        for r in summary.get("rows", []):
+            out[(r.get("cell"), r.get("doc"), r.get("repeat", 0))] = r
+        return out
+
+    cur_rows, base_rows = index(cur_summary), index(base_summary)
+    deltas: dict[tuple[str, str], list[float]] = {}
+    for key, cr in cur_rows.items():
+        br = base_rows.get(key)
+        if not br:
+            continue
+        cell = key[0]
+        for m in QUALITY_METRICS:
+            cv, bv = cr.get(m), br.get(m)
+            if isinstance(cv, (int, float)) and isinstance(bv, (int, float)):
+                deltas.setdefault((cell, m), []).append(cv - bv)
+    return deltas
+
+
+def _delta_spread(deltas):
+    """Spread of the paired per-document deltas, floored.
+
+    With <2 pairs there is no measured spread, so the floor stands in: at n=1 a
+    shift must clear QUALITY_SPREAD_FLOOR to be reported, which keeps a genuinely
+    large single-sample movement visible while refusing to call a small one a
+    finding.
+    """
+    xs = [d for d in deltas if isinstance(d, (int, float))]
+    if len(xs) < 2:
+        return QUALITY_SPREAD_FLOOR
+    mean = sum(xs) / len(xs)
+    sd = (sum((x - mean) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
+    return max(sd, QUALITY_SPREAD_FLOOR)
+
+
 def compare_cells(summary_path, baseline_path):
     """Variance-aware CELL-level comparison — the reliable way to detect a real
     cost/accuracy DIFFERENCE between releases (or, reused, between configs). A cost
     change is only flagged when the mean shift exceeds the combined sampling spread
     (max(stdev, 8% floor) of both sides), so single-sample agentic noise (which can
     swing ~4x) does not masquerade as a regression, and a genuine shift is caught."""
-    cur = _cells(json.load(open(summary_path)))
-    base = _cells(json.load(open(baseline_path)))
+    cur_summary, base_summary = (
+        json.load(open(summary_path)),
+        json.load(open(baseline_path)),
+    )
+    cur = _cells(cur_summary)
+    base = _cells(base_summary)
+    paired = _paired_quality_deltas(cur_summary, base_summary)
     reg, imp, weak = [], [], []
     for cell, c in cur.items():
         b = base.get(cell)
@@ -269,19 +330,52 @@ def compare_cells(summary_path, baseline_path):
                 reg.append((cell, tag))
             elif pct <= -15:
                 imp.append((cell, tag))
-        # accuracy/recall at cell level (mean shift beyond 0.02)
+        # Accuracy/recall at cell level — variance-aware, exactly like cost above.
+        #
+        # These used to be compared on the raw mean shift alone, so a
+        # NON-DETERMINISTIC quality swing was promoted to a headline cell-level
+        # regression/improvement on n=1 evidence. That bit for real at v0.6.5: the
+        # integrated-confidence cell reads recall 0.10 or 1.00 on the SAME document
+        # depending on the run, and the release A/B duly reported "recall
+        # 0.700->1.000, CELL-LEVEL IMPROVEMENT" — in the direction that flattered
+        # the release — until a 4x repeat showed the cell is simply bimodal.
+        #
+        # The test is PAIRED, not a comparison of the two sides' own spreads.
+        # Both releases run the identical document set, so the per-document
+        # differences remove document heterogeneity entirely — which matters here
+        # because the corefast docs differ hugely (5 rows vs 100 rows), so the
+        # across-document stdev is large even when every document moved the same
+        # way. Comparing each side's own stdev would therefore mask a genuine
+        # uniform shift; the spread of the paired DELTAS would not.
         for m, lbl in (
             ("scalar_accuracy", "acc"),
             ("completeness_recall", "recall"),
             ("weighted_accuracy", "wacc"),
         ):
             cm, bm = c[m]["mean"], b[m]["mean"]
-            if cm is not None and bm is not None:
-                d = cm - bm
-                if d <= -0.02:
-                    reg.append((cell, f"{lbl} {d:+.3f} ({bm:.3f}->{cm:.3f})"))
-                elif d >= 0.02:
-                    imp.append((cell, f"{lbl} {d:+.3f} ({bm:.3f}->{cm:.3f})"))
+            if cm is None or bm is None:
+                continue
+            d = cm - bm
+            if abs(d) < 0.02:
+                continue
+            deltas = paired.get((cell, m), [])
+            spread = _delta_spread(deltas)
+            tag = (
+                f"{lbl} {d:+.3f} ({bm:.3f}->{cm:.3f}); paired per-doc deltas "
+                f"n={len(deltas)} spread±{spread:.3f}"
+            )
+            if abs(d) <= spread:
+                weak.append(
+                    (
+                        cell,
+                        tag
+                        + "  [within run-to-run spread — inconclusive, add repeats]",
+                    )
+                )
+            elif d < 0:
+                reg.append((cell, tag))
+            else:
+                imp.append((cell, tag))
         # new systematic failures
         if b["n_fail"] == 0 and c["n_fail"] > 0:
             reg.append((cell, f"NEW FAILURES {c['n_fail']}/{c['n_runs']}"))

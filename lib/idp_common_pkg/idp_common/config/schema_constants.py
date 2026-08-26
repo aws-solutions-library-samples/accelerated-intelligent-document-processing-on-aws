@@ -147,6 +147,14 @@ X_AWS_IDP_EXAMPLES = "x-aws-idp-examples"
 # tolerance, range_mode).
 X_AWS_IDP_EVALUATION_METHOD_CONFIG = "x-aws-idp-evaluation-method-config"
 
+# Opt-in escape hatch for an LLM evaluation method on a field INSIDE a structured
+# list. Off by default because Hungarian row matching invokes an item field's
+# comparator once per (ground-truth row x predicted row) cell, so an LLM call
+# there costs O(N^2) Bedrock requests — measured at N^2 + 2N — and times out the
+# evaluation Lambda on lists of a few dozen rows. Set true only for very small
+# lists where the semantic match genuinely matters and the row count is bounded.
+X_AWS_IDP_EVALUATION_LLM_IN_LIST = "x-aws-idp-evaluation-allow-llm-in-list"
+
 # Valid evaluation methods
 EVALUATION_METHOD_EXACT = "EXACT"
 EVALUATION_METHOD_NUMERIC_EXACT = "NUMERIC_EXACT"
