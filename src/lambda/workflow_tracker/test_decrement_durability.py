@@ -59,6 +59,7 @@ def index_module(monkeypatch):
         sys.modules[_MODULE_NAME] = module
         spec.loader.exec_module(module)
         module.concurrency_table = MagicMock()
+        module.cloudwatch = MagicMock()
         # Keep the real implementation reachable for the telemetry-failure test.
         module.real_emit_counter_metric = module._emit_counter_metric
         module._emit_counter_metric = MagicMock()
@@ -128,10 +129,9 @@ def test_metric_failure_never_breaks_the_decrement(index_module):
     """Telemetry is not allowed to affect the thing it reports on."""
     index_module._emit_counter_metric = index_module.real_emit_counter_metric
     index_module.concurrency_table.update_item.return_value = _ok(3)
-    with patch.object(
-        index_module.boto3, "client", side_effect=RuntimeError("no cloudwatch")
-    ):
-        assert index_module.decrement_counter() == 3
+    index_module.cloudwatch.put_metric_data.side_effect = RuntimeError("no cloudwatch")
+    assert index_module.decrement_counter() == 3
+    assert index_module.cloudwatch.put_metric_data.called
     assert index_module.concurrency_table.update_item.call_count == 1
 
 

@@ -495,7 +495,7 @@ def _emit_counter_metric(value) -> None:
     if value is None:
         return
     try:
-        boto3.client("cloudwatch").put_metric_data(
+        cloudwatch.put_metric_data(
             Namespace=METRIC_NAMESPACE,
             MetricData=[
                 {

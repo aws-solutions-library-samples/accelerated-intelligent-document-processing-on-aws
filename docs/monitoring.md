@@ -64,8 +64,16 @@ the **Workflow Concurrency Counter** widget:
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
 
-`ConcurrencyCounterDriftAlarm` fires on sustained drift (> 0 for 15 minutes) to
-`AlertsTopic`. The queue processor also **self-heals**: on a refused increment it
+Two alarms publish to `AlertsTopic`:
+
+- **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
+  fires on the *symptom*, once slots are already being held wrongly.
+- **`WorkflowTrackerDLQAlarm`** — any message in the Workflow Tracker
+  dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
+  so an event it could not process is a slot that was never released, and it
+  alarms on the first message rather than waiting for drift to accumulate.
+
+The queue processor also **self-heals**: on a refused increment it
 reconciles the counter against `ListExecutions`, requiring the same discrepancy
 in two samples at least five minutes apart, only ever lowering it, and writing
 conditionally on the value it sampled.
