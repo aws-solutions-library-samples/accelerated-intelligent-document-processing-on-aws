@@ -86,6 +86,11 @@ RUN_ROOTS = [
     "feature-platform/sample-health-insurance-review/feature-api/tests",
     "feature-platform/sample-health-insurance-review/hook/tests",
     "feature-platform/sample-health-insurance-review/ui-deployer/tests",
+    # Benchmark harness analysis/orchestration code. It decides what a release
+    # report *claims* and which config a run actually executes, so a bug here
+    # becomes a wrong published number rather than a visible failure — which is
+    # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
+    "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",

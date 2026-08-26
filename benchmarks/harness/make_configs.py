@@ -235,7 +235,17 @@ def main():
     for cell in cells:
         cfg, resolved = build_cell(base_path, axes, default_cell, cell)
         name = f"{cell['id']}__{args.klass}"
-        path = os.path.join(OUT, name + ".yaml")
+        # The FILE is namespaced by suite; the config VERSION name is not.
+        #
+        # Suites share cell names (`core_cells` is used by corefast, core,
+        # coresynth, …), so an un-namespaced filename made two suites fight over
+        # one file: building suite B overwrote suite A's configs while leaving
+        # A's index untouched, so A's index advertised one set of axes and the
+        # file on disk held another. That silently produced a benchmark
+        # comparison across two DIFFERENT extraction models — see the
+        # integrity check in run_matrix.py, which now refuses to launch on any
+        # such mismatch.
+        path = os.path.join(OUT, f"{name}__{args.suite}.yaml")
         yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
         written.append(
             {
