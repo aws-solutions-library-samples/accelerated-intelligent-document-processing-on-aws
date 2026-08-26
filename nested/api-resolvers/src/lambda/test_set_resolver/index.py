@@ -2885,6 +2885,14 @@ def get_test_set_documents(args):
     result = {
         "documents": documents,
         "nextToken": response.get("NextContinuationToken"),
+        # The set's whole size, not this page's. A paginated response that reports
+        # only what it returned leaves the caller counting the page and calling it
+        # the total: the UI showed "Documents (50)" and offered to "Label 50
+        # document(s)" for a 100-document set, then labeled all 100 — because
+        # select-all sends no objectKeys and the server walks the set itself.
+        # Read from the stored counter already fetched above, so this is O(1) and
+        # stays O(1) as sets grow.
+        "totalCount": _as_int(item.get("fileCount")) or 0,
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested

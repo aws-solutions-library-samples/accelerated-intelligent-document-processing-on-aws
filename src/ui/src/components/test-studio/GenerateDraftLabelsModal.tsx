@@ -42,12 +42,26 @@ interface Props {
   visible: boolean;
   testSetId: string;
   documents: TestSetDocumentItem[];
+  /**
+   * Documents in the whole set, from the server. `documents` is only the page the
+   * caller has loaded, so counts derived from it understate a paginated set — a
+   * 100-document set was described here as 50.
+   */
+  setTotalCount?: number | null;
   onDismiss: () => void;
   onSubmit: (configVersion: string | undefined, objectKeys: string[] | undefined) => void;
   submitting?: boolean;
 }
 
-const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, onSubmit, submitting }: Props): React.JSX.Element => {
+const GenerateDraftLabelsModal = ({
+  visible,
+  testSetId,
+  documents,
+  setTotalCount,
+  onDismiss,
+  onSubmit,
+  submitting,
+}: Props): React.JSX.Element => {
   const [configVersion, setConfigVersion] = useState<SelectProps.Option>({
     label: 'Active configuration',
     value: ACTIVE_CONFIG,
@@ -59,6 +73,9 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
 
   const labelable = useMemo(() => documents.filter((d) => !isProtected(d)), [documents]);
   const protectedCount = documents.length - labelable.length;
+  // True when the loaded page is only part of the set, in which case no count
+  // derived from `documents` describes what select-all will actually do.
+  const isPartialView = typeof setTotalCount === 'number' && setTotalCount > documents.length;
   // Must track what will actually be submitted: in select-all mode `selected` is
   // empty, so keying the replace-warning on it would hide the warning.
   const targeted = selectAll ? labelable : selected;
@@ -107,7 +124,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
       onDismiss={onDismiss}
       size="large"
       header={
-        <Header variant="h2" description={`${testSetId} · ${documents.length} document(s)`}>
+        <Header variant="h2" description={`${testSetId} · ${setTotalCount ?? documents.length} document(s)`}>
           Generate draft labels
         </Header>
       }
@@ -123,7 +140,11 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
               disabled={targetCount === 0}
               onClick={() => onSubmit(selectedConfigVersion, effectiveKeys)}
             >
-              {targetCount === 0 ? 'Nothing to label' : `Label ${targetCount} document(s)`}
+              {targetCount === 0
+                ? 'Nothing to label'
+                : selectAll && isPartialView
+                  ? 'Label every document that needs it'
+                  : `Label ${targetCount} document(s)`}
             </Button>
           </SpaceBetween>
         </Box>
@@ -159,10 +180,29 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
 
         <FormField label="Documents to label">
           <SpaceBetween size="s">
+            {/* The count is shown only when this page IS the set. Otherwise the
+                server decides the scope — select-all sends no object keys and it
+                walks the whole set — so a number from the page would be wrong in
+                the one direction that matters: too small. */}
             <Checkbox checked={selectAll} onChange={({ detail }) => setSelectAll(detail.checked)}>
-              Extract labels for every document that needs them ({labelable.length})
-              {protectedCount > 0 ? ` — skipping ${protectedCount} with existing ground truth` : ''}
+              {isPartialView
+                ? `Extract labels for every document in the set that needs them (of ${setTotalCount})`
+                : `Extract labels for every document that needs them (${labelable.length})`}
+              {!isPartialView && protectedCount > 0 ? ` — skipping ${protectedCount} with existing ground truth` : ''}
             </Checkbox>
+            {selectAll && isPartialView && (
+              <Box variant="small" color="text-body-secondary">
+                Documents already carrying reviewed or uploaded ground truth are skipped. The exact number is counted server-side when the
+                job starts, and reported on the progress banner.
+              </Box>
+            )}
+
+            {!selectAll && isPartialView && (
+              <Alert type="info">
+                This list is the {documents.length} document(s) currently loaded, of {setTotalCount} in the set. To pick a document that is
+                not here, page to it first — or leave the box above checked to cover the whole set.
+              </Alert>
+            )}
 
             {!selectAll && (
               <Table

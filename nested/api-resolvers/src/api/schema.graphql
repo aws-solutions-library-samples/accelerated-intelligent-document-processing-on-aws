@@ -776,6 +776,10 @@ type TestSetDocument @aws_cognito_user_pools @aws_iam {
 type TestSetDocumentsPage @aws_cognito_user_pools @aws_iam {
   documents: [TestSetDocument!]!
   nextToken: String
+  # Documents in the whole test set, not in this page. Without it a caller can
+  # only count what it received, which is how a 100-document set came to be
+  # described as 50 in the labeling dialog.
+  totalCount: Int
   # Set when a draft-labeling job for this set is still RUNNING, so a page load
   # can resume polling it. Labels are harvested on read, so a job only advances
   # while something polls: without this a browser refresh mid-run dropped the

@@ -873,6 +873,7 @@ export const getTestSetDocuments = /* GraphQL */ `
         fieldCount
       }
       nextToken
+      totalCount
       activeLabelJobId
     }
   }

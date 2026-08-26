@@ -219,6 +219,8 @@ const TestSetDetail = (): React.JSX.Element => {
   const [pageTokens, setPageTokens] = useState<(string | null)[]>([null]);
   const [currentPageIndex, setCurrentPageIndex] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  // The set's size, from the server. The page length is not the total.
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -257,6 +259,7 @@ const TestSetDetail = (): React.JSX.Element => {
         const page = response.data?.getTestSetDocuments;
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
+        setTotalCount(page?.totalCount ?? null);
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -488,7 +491,11 @@ const TestSetDetail = (): React.JSX.Element => {
             <Table
               header={
                 <Header
-                  counter={`(${filteredDocs.length})`}
+                  counter={
+                    totalCount !== null && totalCount > filteredDocs.length
+                      ? `(${filteredDocs.length} of ${totalCount})`
+                      : `(${filteredDocs.length})`
+                  }
                   description={
                     hasConfidence
                       ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
@@ -626,6 +633,7 @@ const TestSetDetail = (): React.JSX.Element => {
             />
 
             <GenerateDraftLabelsModal
+              setTotalCount={totalCount}
               visible={showLabelModal}
               testSetId={testSetId ?? ''}
               documents={documents}

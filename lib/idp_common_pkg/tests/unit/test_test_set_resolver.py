@@ -3355,6 +3355,40 @@ class TestTestSetResolver:
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
 
+    def test_documents_page_reports_the_SET_size_not_the_page_size(self, labeling_env):
+        """A paginated response must say how big the whole set is.
+
+        Without it a caller can only count what it received and call that the
+        total, which is what happened: the UI showed "Documents (50)" for a
+        100-document set and offered to "Label 50 document(s)" — then labeled all
+        100, because select-all sends no object keys and the server walks the set
+        itself. The number shown was wrong in the one direction that matters.
+
+        Read from the stored fileCount, so it stays O(1) as sets grow.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=100)
+        for i in range(3):
+            s3.put_object(
+                Bucket="test-set-bucket", Key=f"ts1/input/doc{i}.pdf", Body=b"x"
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1", "limit": 2})
+
+        assert len(page["documents"]) == 2, "page is capped by limit"
+        assert page["totalCount"] == 100, "but the total describes the whole set"
+        assert page["nextToken"], "and there is more to fetch"
+
+    def test_total_count_is_zero_rather_than_absent_when_unknown(self, labeling_env):
+        """A missing fileCount must not surface as null and render as blank."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["totalCount"] == 0
+
     def test_documents_page_omits_the_job_once_it_is_finished(self, labeling_env):
         table, s3 = labeling_env
         _seed_test_set(
