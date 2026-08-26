@@ -10331,7 +10331,18 @@ Resources:
             #     discarded), so we use the region-agnostic *.on.aws — the *.
             #     prefix matches any subdomain depth. Without this the browser
             #     blocks the streamed fetch ("Failed to fetch").
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://cognito-idp.*.amazonaws.com https://cognito-identity.*.amazonaws.com https://*.appsync-api.*.amazonaws.com https://*.execute-api.*.amazonaws.com https://*.on.aws https://*.s3.*.amazonaws.com https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com wss://*.appsync-realtime-api.*.amazonaws.com wss://*.execute-api.*.amazonaws.com ws://localhost:*;"
+            #   - The same leftmost-wildcard rule previously invalidated SEVEN
+            #     other sources in this very list — cognito-idp.*, cognito-
+            #     identity.*, *.appsync-api.*, *.execute-api.*, *.s3.*,
+            #     wss://*.appsync-realtime-api.*, wss://*.execute-api.* — each
+            #     silently discarded by the browser with "contains an invalid
+            #     source … It will be ignored", 7 console errors on every page
+            #     load. They were also redundant: *.amazonaws.com and
+            #     wss://*.amazonaws.com already cover every one of those hosts at
+            #     any subdomain depth, which is why the app worked throughout.
+            #     Removed rather than corrected, so the policy says what it does.
+            #     Do not re-add a host with a wildcard anywhere but the front.
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true
