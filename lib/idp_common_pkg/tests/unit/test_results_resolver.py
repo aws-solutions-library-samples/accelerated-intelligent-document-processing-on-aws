@@ -1118,3 +1118,61 @@ def test_status_poll_retries_once_throttle_window_expires():
 
     assert result["status"] == "EVALUATING"
     mock_sqs.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+class TestDraftLabelingRunsAreNotAwaitingMetrics:
+    """A draft-labeling run CREATES the baseline, so it can never have metrics.
+
+    Treating one as "awaiting" cost twice: it badged EVALUATING indefinitely
+    (observed live — a run COMPLETE with 100/100 documents processed and
+    CompletedAt set, still EVALUATING three days later), and every view enqueued a
+    full aggregation, re-reading every document's results.json from S3, to compute
+    extraction metrics that are structurally empty because there is nothing to
+    score against.
+    """
+
+    def test_a_draft_labeling_run_is_never_awaiting_metrics(self):
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "draft-labeling",
+            "FilesCount": 100,
+            "CompletedFiles": 100,
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+        # And therefore does not render the EVALUATING badge.
+        assert index._display_status(item, "COMPLETE") == "COMPLETE"
+
+    def test_a_scoring_run_with_no_metrics_still_awaits(self):
+        """The behaviour this must not break: a real scored run genuinely is
+        pending its aggregation, and the badge is how that is communicated."""
+        item = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True
+        assert index._display_status(item, "COMPLETE") == "EVALUATING"
+
+    def test_a_scoring_run_with_metrics_does_not_await(self):
+        item = {"Status": "COMPLETE", "Purpose": "scoring", "testRunResult": {"x": 1}}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+
+    def test_a_run_predating_Purpose_falls_back_to_its_context(self):
+        """Records created before Purpose was persisted carry only the free-text
+        Context. Matched exactly, not as a substring: a user-typed context that
+        merely mentions labeling must not silently suppress a real run's badge."""
+        legacy = {"Status": "COMPLETE", "Context": "Draft labeling run"}
+        assert index._awaiting_metrics(legacy, "COMPLETE") is False
+
+        lookalike = {"Status": "COMPLETE", "Context": "Draft labeling run for Q3"}
+        assert index._awaiting_metrics(lookalike, "COMPLETE") is True
+
+    def test_purpose_wins_over_a_misleading_context(self):
+        """A persisted Purpose is authoritative; Context is user-supplied text."""
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "scoring",
+            "Context": "Draft labeling run",
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True

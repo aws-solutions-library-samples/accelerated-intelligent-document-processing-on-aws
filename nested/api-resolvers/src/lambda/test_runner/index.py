@@ -481,6 +481,12 @@ def _store_test_run_metadata(
             "CreatedAt": created_at,
         }
 
+        # Persisted so downstream resolvers can tell a scoring run from one that
+        # CREATES the baseline. Without it the only marker was the free-text
+        # Context string ("Draft labeling run"), which a user can type themselves
+        # and which nothing guarantees.
+        item["Purpose"] = purpose
+
         if context:
             item["Context"] = context
 

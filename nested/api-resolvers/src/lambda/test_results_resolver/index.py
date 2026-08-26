@@ -240,7 +240,33 @@ def _awaiting_metrics(item, status):
     was evaluating, because "terminal but no metrics" and "actually evaluating"
     render identically. Keep the rule here so the three sites cannot drift.
     """
+    if _is_draft_labeling_run(item):
+        return False
     return status in _METRICS_ELIGIBLE_STATUSES and not item.get("testRunResult")
+
+
+def _is_draft_labeling_run(item):
+    """True for a run that CREATES a baseline rather than being scored against one.
+
+    Such a run has no baseline by construction — that is what it is producing — so
+    the copier skips baseline staging and evaluation never runs. It therefore has
+    no aggregate metrics to wait for, ever.
+
+    Treating one as "awaiting metrics" cost twice: it displayed EVALUATING
+    indefinitely (observed on a dev stack: a run COMPLETE with 100/100 documents
+    processed and CompletedAt set, still badged EVALUATING three days later), and
+    every view of it enqueued a full aggregation — re-reading every document's
+    results.json from S3 — to compute extraction metrics that are structurally
+    empty.
+
+    Prefers the persisted ``Purpose``. Falls back to the Context string only for
+    runs created before Purpose was written, which is why the fallback is exact
+    rather than a substring match.
+    """
+    purpose = item.get("Purpose")
+    if purpose:
+        return purpose == "draft-labeling"
+    return item.get("Context") == "Draft labeling run"
 
 
 def _display_status(item, status):
