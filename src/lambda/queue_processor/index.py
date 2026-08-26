@@ -580,19 +580,53 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                 logger.warning(f"Counter reconciliation failed: {e}", exc_info=True)
                 return False, message_id
 
+        # Everything from here on is compensated by the counter decrement below,
+        # so it must contain ONLY work that happens before the execution exists.
+        # Once StartExecution succeeds the slot has an owner (the workflow
+        # tracker, on the terminal event) and this function must neither
+        # decrement it nor report the message as failed.
+        workflow_started = False
         try:
             # Start workflow with the document
             execution = start_workflow(document)
+            workflow_started = True
 
-            # Update document status in document service
-            updated_doc = document_service.update_document(document)
-            logger.info(f"Document updated: {updated_doc}")
+            # Update document status in document service.
+            #
+            # AFTER the point of no return: the workflow is running. A failure
+            # here used to fall into the handler below, which decremented the
+            # counter (leaving it one BELOW the true in-flight count, which
+            # over-admits work) and returned failure, so SQS redelivered the
+            # message and a SECOND workflow was started for the same document.
+            # Now it is logged and the message is acked, because the execution
+            # that matters already exists.
+            try:
+                updated_doc = document_service.update_document(document)
+                logger.info(f"Document updated: {updated_doc}")
+            except Exception as post_start_error:
+                logger.error(
+                    f"Workflow for {object_key} started as "
+                    f"{execution.get('executionArn') if isinstance(execution, dict) else execution} "
+                    f"but the tracking update failed: {post_start_error}. NOT "
+                    f"decrementing the counter and NOT retrying the message — the "
+                    f"execution owns the slot and a retry would duplicate it.",
+                    exc_info=True,
+                )
 
             return True, message_id
 
         except Exception as e:
             logger.error(f"Error processing {object_key}: {str(e)}", exc_info=True)
-            # Decrement counter on failure
+            # Release the slot ONLY if no execution was created. If one was, the
+            # workflow tracker will decrement on its terminal event and doing it
+            # here as well would double-release.
+            if workflow_started:
+                logger.error(
+                    f"Error after the workflow for {object_key} started: {e}. "
+                    f"Leaving the counter alone — the execution owns the slot.",
+                    exc_info=True,
+                )
+                return True, message_id
             try:
                 update_counter(increment=False)
             except Exception as counter_error:

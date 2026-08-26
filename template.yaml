@@ -6346,6 +6346,30 @@ Resources:
   # processor publishes the drift (counter minus executions actually RUNNING)
   # whenever it finds itself at the limit; a sustained positive drift means slots
   # are held by workflows that already ended.
+  # The workflow tracker owns the concurrency-counter DECREMENT, so an event it
+  # cannot process is not just a lost status update — it is a workflow slot that
+  # was never released. The counter drifts up and, at MaxConcurrentWorkflows, the
+  # stack stops admitting documents. The reconciler recovers from that and
+  # ConcurrencyCounterDriftAlarm reports it, but both are downstream of the cause;
+  # this alarm fires on the cause, on the first message, before anything stalls.
+  WorkflowTrackerDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} workflow-completion event lands in the Workflow Tracker dead-letter queue. Each one is a workflow-concurrency slot that was not released and a document whose completion status was not recorded."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WorkflowTrackerDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ConcurrencyCounterDriftAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -6903,6 +6927,46 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Save Reporting Data Tracker Lambda Errors",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "ConcurrencyCounterActive",
+                      {
+                        "stat": "Maximum",
+                        "label": "Counter (claimed slots)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterDrift",
+                      {
+                        "stat": "Maximum",
+                        "label": "Drift (slots held by workflows that already ended)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; drift is sampled only when an increment is refused)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "annotations": {
+                    "horizontal": [
+                      {
+                        "value": ${MaxConcurrentWorkflows},
+                        "label": "MaxConcurrentWorkflows (${MaxConcurrentWorkflows}) — queue stops draining here",
+                        "color": "#ff0000"
+                      }
+                    ]
+                  }
                 }
               }
             ]
