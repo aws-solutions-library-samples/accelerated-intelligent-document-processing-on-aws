@@ -785,6 +785,15 @@ behavior.
 > primary defense-in-depth; Phase 2 CSP hardening is an additional
 > layer tracked for a future release.
 
+**Later note (not part of the original report):** seven of the `connect-src`
+sources quoted above — including `wss://*.appsync-realtime-api.*` — placed a
+wildcard in the middle of a host, which CSP does not permit, so browsers
+discarded them. They were redundant (`*.amazonaws.com` and `wss://*.amazonaws.com`
+already match those hosts at any subdomain depth, which is why realtime
+subscriptions kept working) and have since been removed from the policy. The
+mitigation this report describes stands; the list of literal sources no longer
+matches the template.
+
 **Residual risk:**
 - `script-src 'unsafe-eval' 'unsafe-inline' https:` remains. Primary
   defense is the SafeMarkdown sanitizer (finding #1).
