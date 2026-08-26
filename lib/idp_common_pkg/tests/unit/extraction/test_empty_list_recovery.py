@@ -108,6 +108,25 @@ class TestFindEmptyDeclaredLists:
         assert empty == []
         assert populated == []
 
+    def test_an_array_declared_through_a_ref_is_still_found(self):
+        """No shipped config declares a top-level array via $ref today, but missing
+        one would silently disable the check instead of failing loudly."""
+        schema = {
+            "type": "object",
+            "$defs": {"Txns": {"type": "array", "items": {"type": "object"}}},
+            "properties": {"Transactions": {"$ref": "#/$defs/Txns"}},
+        }
+        empty, populated = find_empty_declared_lists({"Transactions": None}, schema)
+        assert empty == ["Transactions"]
+        assert populated == []
+
+    def test_an_unresolvable_ref_is_skipped_not_crashed(self):
+        schema = {
+            "type": "object",
+            "properties": {"Transactions": {"$ref": "#/$defs/Missing"}},
+        }
+        assert find_empty_declared_lists({"Transactions": None}, schema) == ([], [])
+
 
 class TestEmptyListFeedback:
     def test_feedback_names_the_field_and_the_evidence(self):

@@ -288,8 +288,19 @@ def find_empty_declared_lists(
     """
     empty: list[str] = []
     populated: list[str] = []
+    defs = schema.get("$defs") or {}
     for name, field_schema in (schema.get("properties") or {}).items():
-        if not isinstance(field_schema, dict) or field_schema.get("type") != "array":
+        if not isinstance(field_schema, dict):
+            continue
+        # A top-level array could be declared through a $ref. No shipped config
+        # does that today (arrays are inline with `items: {$ref: ...}`), but
+        # missing one would silently disable this check rather than fail loudly,
+        # and a one-level deref is what topk_resolver already does.
+        if "$ref" in field_schema:
+            target = defs.get(str(field_schema["$ref"]).split("/")[-1])
+            if isinstance(target, dict):
+                field_schema = target
+        if field_schema.get("type") != "array":
             continue
         value = data.get(name)
         if value is None or (isinstance(value, list) and not value):
