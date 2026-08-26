@@ -118,7 +118,13 @@ export const QUALITY_TIER_COLORS: Record<string, 'green' | 'blue' | 'severity-ne
   gold: 'green',
   silver: 'blue',
   bronze: 'severity-neutral',
-  unrated: 'red',
+  // NOT red. "Unrated" is the absence of a defensible claim, not a fault — and
+  // reviewing a document can legitimately move a set INTO it: once there is
+  // enough evidence to test whether confidence ranks correctness, the estimator
+  // may find it does not, and withdraw the number it had been inferring from a
+  // cross-set prior. Red made that read as "your review broke this set", when in
+  // fact the preceding Bronze figure was the less honest of the two states.
+  unrated: 'severity-neutral',
 };
 
 export const renderQualityTier = (tier?: string | null, reason?: string | null, accuracy?: number | null): React.JSX.Element => {
@@ -144,6 +150,13 @@ export const renderQualityTier = (tier?: string | null, reason?: string | null, 
           </Box>
         )}
         <Badge color={QUALITY_TIER_COLORS[tier] ?? 'severity-neutral'}>{label}</Badge>
+        {/* The reason is the whole content of an unrated verdict, and it is the one
+            case where the user cannot guess it — so it is not left to a hover. */}
+        {tier === 'unrated' && reason ? (
+          <Box variant="span" fontSize="body-s" color="text-body-secondary">
+            — {reason}
+          </Box>
+        ) : null}
       </SpaceBetween>
     </Popover>
   );

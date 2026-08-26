@@ -736,9 +736,21 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 ]}
               />
               {!selected && <Alert type="info">Choose a document from the queue to start.</Alert>}
-              {selected && !selected.reviewObjectKey && (
+              {/* A missing review key has TWO opposite causes and they need
+                  opposite advice. The queue rail beside this already distinguishes
+                  them; this pane did not, and told a reviewer whose every document
+                  already had ground truth to "generate draft labels first" — while
+                  the same screen said "nothing to review". Keyed on labelSource,
+                  exactly as the rail is. */}
+              {selected && !selected.reviewObjectKey && !selected.labelSource && (
                 <Alert type="warning" header="Not ready to annotate">
-                  This test set has no labeling run yet, so there is nothing to claim or review. Generate draft labels for the set first.
+                  This document has no labels yet. Generate draft labels for the set first, then it will appear here for review.
+                </Alert>
+              )}
+              {selected && !selected.reviewObjectKey && selected.labelSource && (
+                <Alert type="success" header="Already ground truth">
+                  This document carries authored ground truth, so there is nothing to draft-label or review — draft labeling skips it
+                  deliberately, and nothing here will overwrite it. You can still open it below to inspect or correct the values.
                 </Alert>
               )}
               {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}

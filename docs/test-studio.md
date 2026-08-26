@@ -1236,6 +1236,15 @@ tooltip shows the bounds.)
 Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
 about how much evidence there is, not a defect in the field.
 
+**A set can move *into* "Not rated" as you review it, and that is the estimator
+working.** With no measurements the tier is inferred from a cross-set prior, which
+can read as high as Gold. Reviewing documents produces the evidence needed to test
+whether confidence actually *ranks* correctness on this set — and if it does not,
+the estimator withdraws the number rather than keep quoting an inferred one. So
+"91.7% Bronze, 0 measurements" becoming "Not rated, 136 measurements" is a gain in
+honesty, not a loss in quality; the badge is deliberately not coloured as an error,
+and it states the reason inline. Nothing about your labels got worse.
+
 The interval is a [Wilson score
 interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),
 not the textbook normal approximation. Per-field results routinely sit at 0% or 100% on
