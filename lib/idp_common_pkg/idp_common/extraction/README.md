@@ -1180,6 +1180,18 @@ Deliberately narrow:
   behaviour is unchanged. `metadata.completeness_check` reports it separately as
   `unexplained_empty_lists` (with a `complete` flag), leaving
   `schema_constraints_met` meaning exactly what it says.
+- **Its effect is one more agent turn**, never a failure. After the last attempt
+  the loop keeps the best-effort result, so the worst case is one wasted turn on a
+  document that genuinely has no rows inside a detected table.
+
+⚠️ **Not gated on `validation.enabled`** — unlike the schema checks above. That flag
+defaults to `false`, and the config that produced this bug has it `false`, so the
+first version of this check (which *was* gated on it) was dead on exactly the
+configurations that needed it — caught by live verification, not by the tests. A
+guard against **silent data loss** cannot itself be off by default. The two checks
+are independently enabled: schema validation stays opt-in; the empty-list check
+runs whenever the OCR evidence is present. `_build_schema_validator` returns `None`
+only when *neither* applies.
 
 The failure this closes: an agent declined the deterministic table parser because
 one column was OCR-corrupted (`tool_usage_decision.agent_stated_reason`: *"the

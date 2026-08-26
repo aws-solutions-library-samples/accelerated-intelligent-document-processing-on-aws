@@ -2540,42 +2540,63 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
 
     def _build_schema_validator(self, ocr_analysis: dict[str, Any] | None = None):
-        """Return an in-loop schema-validation callback, or None when disabled.
+        """Return an in-loop validation callback for the agent's self-correction
+        round, or None when there is nothing to check.
 
-        The callback validates an extracted dict against the full class JSON
-        Schema (notably ``format`` keywords the Pydantic model does not enforce)
-        and returns ``(is_valid, agent_feedback)`` for the agent to self-correct.
+        Two independent checks, with **independent enablement**:
 
-        When ``ocr_analysis`` says this section holds a substantial table, the
-        callback ALSO rejects a result whose declared list fields all came back
-        with no rows. That case violates no schema constraint unless the config
-        sets ``minItems``, so without this it consumed none of the retries the
-        loop exists to provide — observed live: an agent declined the
-        deterministic parser because one column was OCR-corrupted, returned
-        ``Transactions: null`` for a 100-row table, and the section was reported
-        COMPLETED with scalar accuracy 1.000.
+        1. **Full JSON-Schema validation** — gated on
+           ``extraction.agentic.validation.enabled`` (default **false**, so
+           upgrading changes no behavior). Catches what the generated Pydantic
+           model does not, notably ``format`` keywords.
 
-        Only the *all* case is rejected: if some list field is populated, the
-        detected tables plausibly belong to that one and an empty sibling may be
-        genuinely absent from the document.
+        2. **Empty declared list with OCR table evidence** — NOT gated. When the
+           pre-flight found a substantial table and *every* declared list field
+           came back with no rows, the result is rejected regardless of whether
+           schema validation is on.
+
+        Check 2 is deliberately ungated, and that is a considered decision rather
+        than an oversight. It was originally written behind ``validation.enabled``
+        and **live verification caught the mistake**: the very config that
+        produced the bug has ``validation.enabled: false`` — the documented
+        default — so the safety net was dead on exactly the configurations that
+        needed it. A guard against *silent data loss* that is itself off by
+        default reproduces the problem it was written to fix.
+
+        The blast radius is small enough to justify that:
+
+        - It fires only on positive evidence (the OCR pre-flight's own >30
+          pipe-table-row rule, the same signal that produced the agent's tool
+          guidance) AND only when *no* declared list has any rows.
+        - Its effect is one more agent turn with specific feedback. It cannot
+          fail the extraction — after the last attempt the loop keeps the
+          best-effort result — so the worst case is one wasted turn on a document
+          that genuinely has no rows in a detected table.
+        - A populated sibling list suppresses it: the detected tables plausibly
+          belong to that one, so an empty sibling may be genuinely absent.
+
+        Observed live at Sonnet 5: an agent declined the deterministic parser
+        because one column was OCR-corrupted, returned ``Transactions: null`` for
+        a 100-row table, and the section was reported COMPLETED with scalar
+        accuracy 1.000.
         """
         vcfg = self.config.extraction.agentic.validation
-        if not vcfg.enabled:
-            return None
-
         class_schema = self._class_schema
         check_formats = vcfg.check_formats
-        # Reuse the pre-flight's own definition of "there is a substantial table
-        # here" (>30 pipe-table rows) rather than inventing a second threshold —
-        # it is the same signal the agent was given tool guidance from.
+        schema_checks = bool(vcfg.enabled)
         ocr = ocr_analysis or {}
         table_evidence = bool(ocr.get("tool_usage_recommended")) and bool(
             ocr.get("tables_detected")
         )
 
+        if not schema_checks and not table_evidence:
+            return None
+
         def _validate(data: dict[str, Any]) -> tuple[bool, str]:
-            report = validate_extraction(
-                data, class_schema, check_formats=check_formats
+            report = (
+                validate_extraction(data, class_schema, check_formats=check_formats)
+                if schema_checks
+                else ValidationReport(valid=True)
             )
             if table_evidence:
                 empty, populated = find_empty_declared_lists(data, class_schema)
@@ -2587,6 +2608,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                             "empty_list_fields": empty,
                             "ocr_tables_detected": ocr.get("tables_detected"),
                             "ocr_estimated_rows": ocr.get("estimated_row_count"),
+                            "schema_validation_enabled": schema_checks,
                         },
                     )
                     feedback = build_empty_list_feedback(
