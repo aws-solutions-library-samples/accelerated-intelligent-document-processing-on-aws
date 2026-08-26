@@ -818,6 +818,11 @@ const ComprehensiveBreakdown = ({
 
                   const cost = (details.estimated_cost as number) || 0;
                   const unitCost = asFiniteNumber(details.unit_cost);
+                  // Rows like `totalTokens` and `requests` are counts, not charges:
+                  // nothing prices them and nothing is billed for them. Seen live
+                  // reading "$0" unit cost beside "N/A" estimated cost, which says
+                  // both "free" and "not priced" in the same row.
+                  const isUnpriced = cost === 0 && (unitCost === null || unitCost === 0);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -825,8 +830,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: unitCost === null ? 'None' : formatUnitCostUsd(unitCost),
-                    estimatedCost: cost > 0 ? formatCostUsd(cost) : 'N/A',
+                    unitCost: isUnpriced ? '—' : unitCost === null ? 'Not priced' : formatUnitCostUsd(unitCost),
+                    estimatedCost: isUnpriced ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
                     sortOrder: 0, // Regular items
                   });
                 });

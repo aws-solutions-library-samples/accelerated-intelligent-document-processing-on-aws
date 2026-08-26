@@ -78,7 +78,9 @@ describe('asFiniteNumber', () => {
 
   it('distinguishes a genuine zero from a missing value', () => {
     // The old code used a truthiness check, so a real 0 unit cost rendered as
-    // 'None' — indistinguishable from not being priced at all.
+    // 'None' — indistinguishable from not being priced at all. The table uses that
+    // distinction to decide whether a row is a count ('—') or a zero-priced
+    // charge; see the isUnpriced branch in TestResults.
     expect(asFiniteNumber(0)).toBe(0);
     expect(asFiniteNumber(undefined)).toBeNull();
     expect(asFiniteNumber(null)).toBeNull();

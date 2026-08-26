@@ -550,7 +550,8 @@ const FormFieldRenderer = memo<Record<string, any>>(
                textbox with the same label. The click handler stays as a mouse
                convenience; keyboard and AT users get the explicit locate control
                below, which works in read-only mode too (where there is no input to
-               focus). */
+               focus) and is only offered when the field actually has a bounding box
+               to show. */
             {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
@@ -638,15 +639,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         The whole field was a click target before, with no
                         affordance: invisible to sighted users, unreachable to AT
                         ones. */}
-                    <Button
-                      variant="inline-icon"
-                      iconName="search"
-                      ariaLabel={geometry ? `Show ${fieldKey} on the page` : `Select ${fieldKey}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClick();
-                      }}
-                    />
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
+                    )}
                   </SpaceBetween>
                   <div
                     style={{
@@ -862,15 +865,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         The whole field was a click target before, with no
                         affordance: invisible to sighted users, unreachable to AT
                         ones. */}
-                    <Button
-                      variant="inline-icon"
-                      iconName="search"
-                      ariaLabel={geometry ? `Show ${fieldKey} on the page` : `Select ${fieldKey}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClick();
-                      }}
-                    />
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
+                    )}
                   </SpaceBetween>
                   <div
                     style={{
@@ -1096,15 +1101,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         The whole field was a click target before, with no
                         affordance: invisible to sighted users, unreachable to AT
                         ones. */}
-                    <Button
-                      variant="inline-icon"
-                      iconName="search"
-                      ariaLabel={geometry ? `Show ${fieldKey} on the page` : `Select ${fieldKey}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClick();
-                      }}
-                    />
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
+                    )}
                   </SpaceBetween>
                   <div
                     style={{
@@ -1441,7 +1448,8 @@ const FormFieldRenderer = memo<Record<string, any>>(
                textbox with the same label. The click handler stays as a mouse
                convenience; keyboard and AT users get the explicit locate control
                below, which works in read-only mode too (where there is no input to
-               focus). */
+               focus) and is only offered when the field actually has a bounding box
+               to show. */
             {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
@@ -1529,15 +1537,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         The whole field was a click target before, with no
                         affordance: invisible to sighted users, unreachable to AT
                         ones. */}
-                    <Button
-                      variant="inline-icon"
-                      iconName="search"
-                      ariaLabel={geometry ? `Show ${fieldKey} on the page` : `Select ${fieldKey}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClick();
-                      }}
-                    />
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
+                    )}
                   </SpaceBetween>
                   <div
                     style={{
@@ -1888,15 +1898,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                  This is the fallback field shape, which has no value header row to
                  hang the locate control off. */
               secondaryControl={
-                <Button
-                  variant="inline-icon"
-                  iconName="search"
-                  ariaLabel={geometry ? `Show ${fieldKey} on the page` : `Select ${fieldKey}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleClick();
-                  }}
-                />
+                geometry ? (
+                  <Button
+                    variant="inline-icon"
+                    iconName="search"
+                    ariaLabel={`Show ${fieldKey} on the page`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleClick();
+                    }}
+                  />
+                ) : undefined
               }
             >
               {isReadOnly ? (

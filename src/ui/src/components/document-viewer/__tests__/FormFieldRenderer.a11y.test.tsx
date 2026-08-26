@@ -65,13 +65,26 @@ describe('FormFieldRenderer accessibility', () => {
     expect(onFieldFocus).toHaveBeenCalledWith(GEOMETRY);
   });
 
-  it('names the locate control honestly when the field has no bounding box', () => {
+  it('offers no locate control when the field has no bounding box', () => {
     renderField({ geometry: undefined });
 
-    // Nothing to show on the page, so it must not claim it can show one — but the
-    // field is still selectable, which is what drives the copy-link affordance.
+    // Caught on a live stack: a baseline with no geometry showed the banner "No
+    // field geometry available — bounding-box highlighting is disabled" and a
+    // magnifier on every field regardless. A control that cannot do the thing it
+    // depicts is worse than no control.
     expect(screen.queryByRole('button', { name: /on the page/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Select AccountNumber/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /AccountNumber/i })).not.toBeInTheDocument();
+  });
+
+  it('still selects the field on focus when there is no bounding box to show', async () => {
+    // Removing the button must not remove keyboard reach: selection is what drives
+    // the copy-link affordance, and it does not need geometry.
+    const onFieldPathSelect = vi.fn();
+    renderField({ geometry: undefined, onFieldPathSelect });
+
+    await userEvent.tab();
+
+    expect(onFieldPathSelect).toHaveBeenCalledWith('AccountNumber');
   });
 
   it('keeps the locate control reachable in read-only mode, where there is no input to focus', () => {

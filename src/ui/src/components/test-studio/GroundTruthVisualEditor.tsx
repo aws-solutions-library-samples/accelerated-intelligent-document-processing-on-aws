@@ -573,6 +573,13 @@ const GroundTruthVisualEditor = ({
                               ? 'What this section is classified as, from this config version. Distinct from the extraction labels below.'
                               : 'What this section is classified as. Distinct from the extraction labels below.'
                           }
+                          constraintText={
+                            isReextracting
+                              ? 'Locked while the re-extraction runs.'
+                              : isReadOnly
+                                ? 'You do not have permission to change this class.'
+                                : undefined
+                          }
                         >
                           <SpaceBetween size="xs">
                             {/* Constrained to the config's classes: a class with no
@@ -592,17 +599,7 @@ const GroundTruthVisualEditor = ({
                                 onChange={({ detail }) => updateDocumentClass(detail.selectedOption.value ?? '')}
                                 options={classOptionsWithCurrent}
                                 disabled={isReadOnly || isReextracting}
-                                placeholder={
-                                  // A greyed-out control with no explanation is
-                                  // indistinguishable from a broken one, and the two
-                                  // reasons here call for different responses: wait,
-                                  // or get permission.
-                                  isReextracting
-                                    ? 'Re-extracting — the class is locked until it finishes'
-                                    : isReadOnly
-                                      ? 'You do not have permission to change this class'
-                                      : 'Choose a document class'
-                                }
+                                placeholder="Choose a document class"
                               />
                             ) : (
                               <Input

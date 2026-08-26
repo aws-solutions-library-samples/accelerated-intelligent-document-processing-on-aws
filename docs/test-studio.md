@@ -1260,12 +1260,19 @@ the estimator withdraws the number rather than keep quoting an inferred one. So
 honesty, not a loss in quality; the badge is deliberately not coloured as an error,
 and it states the reason inline. Nothing about your labels got worse.
 
-**A set of hand-authored ground truth carries no estimate at all, and reads `Ground
-truth` rather than a tier.** The figure is inferred from the confidence scores of the
-run that produced the labels, and labels you uploaded or corrected by hand have none.
-That is not a lower rating — it is the reference the estimates are measured against.
-This is distinct from `Not assessed yet`, which means a set does have machine drafts
-but no curve has been computed for them.
+**A low figure on a set of hand-authored ground truth is a statement about the
+confidence data, not about the labels.** A tier is always returned — `quality_tier`
+yields at least Bronze even at `prior` estimate confidence, where no observation from
+this set contributed anything — so a set of uploaded ground truth can read "76.1%
+est. Bronze" purely from the cross-set prior. Those labels are the reference other
+runs are scored against; the number beside them describes how little evidence the
+estimator has, which is exactly what Bronze means.
+
+Where no estimate is returned at all, the column distinguishes the two reasons rather
+than showing a bare dash: `Ground truth` for a set whose labels are authored, and
+`Not assessed yet` for one whose drafts simply have no curve yet. While the
+per-set estimate requests are still in flight it reads `Estimating`, because a pending
+request is not a verdict.
 
 The `Est. label accuracy` column header opens a legend covering all four tiers and
 their thresholds, so a `Bronze` badge can be read without already knowing the scale.

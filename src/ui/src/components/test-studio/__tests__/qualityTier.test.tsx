@@ -83,6 +83,24 @@ describe('renderLabelAccuracy', () => {
     expect(screen.queryByText('Ground truth')).not.toBeInTheDocument();
   });
 
+  it('does not state a verdict while the estimate request is still in flight', () => {
+    // Found on a live stack: estimates arrive one request per set after the table
+    // renders, so for a second or two every labeled row claimed "Ground truth"
+    // and then flipped to a percentage. A pending request is not a verdict.
+    render(renderLabelAccuracy(null, 'labeled', true));
+
+    expect(screen.getByText('Estimating')).toBeInTheDocument();
+    expect(screen.queryByText('Ground truth')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not assessed yet')).not.toBeInTheDocument();
+  });
+
+  it('prefers a returned estimate over the pending flag, so a settled row does not regress', () => {
+    render(renderLabelAccuracy({ tier: 'bronze', reason: 'from a cross-set prior', accuracy: 0.761 }, 'labeled', true));
+
+    expect(screen.getByText('76.1% est.')).toBeInTheDocument();
+    expect(screen.queryByText('Estimating')).not.toBeInTheDocument();
+  });
+
   it('shows the estimate whenever there is one, whatever the label state', () => {
     render(renderLabelAccuracy({ tier: 'silver', reason: 'partly measured here', accuracy: 0.961 }, 'labeled'));
 
@@ -105,11 +123,15 @@ describe('LabelAccuracyLegend', () => {
     expect(screen.getByText(/at least 95%/)).toBeInTheDocument();
   });
 
-  it('explains why authored ground truth carries no figure', async () => {
+  it('does not claim authored ground truth carries no figure, because it does', async () => {
+    // quality_tier() returns at least BRONZE even at EstimateConfidence.PRIOR, so
+    // a set of uploaded ground truth is given a prior-derived percentage. The
+    // legend said the opposite, and the row next to it proved the legend wrong.
     render(<LabelAccuracyLegend />);
 
     await userEvent.click(screen.getByText(/Est. label accuracy/));
 
-    expect(screen.getByText(/not a lower rating/i)).toBeInTheDocument();
+    expect(screen.queryByText(/carries no estimate/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/a statement about the confidence data behind the estimate/i)).toBeInTheDocument();
   });
 });

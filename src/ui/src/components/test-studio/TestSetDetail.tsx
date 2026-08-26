@@ -165,8 +165,9 @@ export const LabelAccuracyLegend = (): React.JSX.Element => (
           Reviewing only a subset would not be meaningful.
         </Box>
         <Box variant="span" fontSize="body-s" color="text-body-secondary">
-          Ground truth you uploaded or reviewed by hand carries no estimate, because there is no model confidence to infer one from. That is
-          not a lower rating — it is the reference the estimates are compared against.
+          A set whose labels you uploaded or authored by hand is the reference other runs are scored against, so a low figure here is a
+          statement about the confidence data behind the estimate, not about those labels. Where no estimate exists at all, the column says
+          so rather than implying one.
         </Box>
       </SpaceBetween>
     }
@@ -190,8 +191,16 @@ export const LabelAccuracyLegend = (): React.JSX.Element => (
 export const renderLabelAccuracy = (
   entry?: { tier?: string | null; reason?: string | null; accuracy?: number | null } | null,
   labelState?: string | null,
+  isEstimating?: boolean,
 ): React.JSX.Element => {
   if (entry?.tier) return renderQualityTier(entry.tier, entry.reason, entry.accuracy);
+
+  // Estimates arrive one request per set, after the table has already rendered.
+  // Without this the column asserted a verdict for the second or two the calls
+  // were in flight, then replaced it with a percentage — caught on a live stack,
+  // where a 2000-document set flashed "Ground truth" before settling on
+  // "76.1% est. Bronze".
+  if (isEstimating) return <StatusIndicator type="loading">Estimating</StatusIndicator>;
 
   if (labelState === 'labeled') {
     return (
@@ -202,8 +211,8 @@ export const renderLabelAccuracy = (
         triggerType="custom"
         content={
           <Box variant="span" fontSize="body-s">
-            These labels are the reference other runs are scored against, so there is nothing to estimate. An accuracy figure is inferred
-            from model confidence, and hand-authored ground truth has none.
+            No accuracy estimate was returned for this set. Its labels are the reference other runs are scored against, so the absence is
+            not a low rating — there is simply no confidence data here to infer a figure from.
           </Box>
         }
       >
