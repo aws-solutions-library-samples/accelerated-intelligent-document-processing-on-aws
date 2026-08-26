@@ -54,6 +54,11 @@ groups:
   # backoff -> ~2h/doc before failing), so a full-grid cross-version A/B must use
   # docs whose assessment fits one Lambda invocation on BOTH versions.
   corefast:       [tiny_form, small_narrow, longdesc_100]
+  # core_synth: core_docs minus the two reference CORPORA (realkie, ocr_bench are
+  # 20-doc test sets each, so a 10-cell grid over them is 400 extra document runs).
+  # This is the grid the config-guidance paper's cross-config matrix is computed on:
+  # exact-ground-truth synthetic list docs only, one run per (cell, doc).
+  core_synth:     [tiny_form, small_narrow, med_narrow, large_narrow, wide_400, manylists_400, longdesc_100]
   scaling_series: [scale_25, scale_100, scale_400, scale_800, scale_1200, scale_1600, scale_3200]
   all:            "*"
 

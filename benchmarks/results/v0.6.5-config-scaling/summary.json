@@ -1,0 +1,744 @@
+{
+  "meta": {
+    "stack": "IDPBench065",
+    "stack_version": "0.6.5",
+    "suite": "scaling",
+    "class": "bank_statement",
+    "commit": "720f3052a",
+    "pricing_sha256": "bc68d49e506ef4609c1ba96a5a811988b6d6b5de51bf5b4d4962f1d26f05f2e2",
+    "scored_at": "2026-08-25T03:18:25.933006Z",
+    "region": "us-west-2"
+  },
+  "rows": [
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_25.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_25-20260825-023810",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 1.0,
+      "wall_s": 52.126629,
+      "cost": 0.0552,
+      "cost_by_phase": {
+        "OCR": 0.01529,
+        "Classification": 2e-05,
+        "Extraction": 0.0384,
+        "Assessment": 0.0015,
+        "Summarization": 2e-05
+      },
+      "tokens": {
+        "inputTokens": 5883,
+        "outputTokens": 2898,
+        "cacheReadInputTokens": 3513,
+        "cacheWriteInputTokens": 4647
+      },
+      "rows_truth": 25,
+      "rows_extracted": 25,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 25,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 1.0,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 82
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_100.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_100-20260825-023813",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 73.467159,
+      "cost": 0.1686,
+      "cost_by_phase": {
+        "OCR": 0.04538,
+        "Classification": 1e-05,
+        "Extraction": 0.11766,
+        "Assessment": 0.00554,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 23241,
+        "outputTokens": 10923,
+        "cacheReadInputTokens": 53929,
+        "cacheWriteInputTokens": 10618
+      },
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 1.0,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_400.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_400-20260825-023819",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 9.0,
+      "wall_s": 289.955747,
+      "cost": 0.6144,
+      "cost_by_phase": {
+        "OCR": 0.13541,
+        "Classification": 1e-05,
+        "Extraction": 0.42813,
+        "Assessment": 0.05089,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 104130,
+        "outputTokens": 54157,
+        "cacheReadInputTokens": 1370445,
+        "cacheWriteInputTokens": 117044
+      },
+      "rows_truth": 400,
+      "rows_extracted": 400,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 400,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9997,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 1204
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_800.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_800-20260825-023828",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 17.0,
+      "wall_s": 602.126227,
+      "cost": 1.7815,
+      "cost_by_phase": {
+        "OCR": 0.25552,
+        "Classification": 2e-05,
+        "Extraction": 0.83488,
+        "Assessment": 0.6911,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 10814259,
+        "outputTokens": 110582,
+        "cacheReadInputTokens": 3076,
+        "cacheWriteInputTokens": 77177
+      },
+      "rows_truth": 800,
+      "rows_extracted": 800,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 800,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9976,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 2407
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_1200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_1200-20260825-024000",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 25.0,
+      "wall_s": 311.794432,
+      "cost": 1.0383,
+      "cost_by_phase": {
+        "OCR": 0.37585,
+        "Classification": 2e-05,
+        "Extraction": 0.47146,
+        "Assessment": 0.19092,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 2929801,
+        "outputTokens": 37373,
+        "cacheReadInputTokens": 1668,
+        "cacheWriteInputTokens": 0
+      },
+      "rows_truth": 1200,
+      "rows_extracted": 239,
+      "completeness_recall": 0.1992,
+      "truncation_prefix": 239,
+      "dups": 0,
+      "n_gaps": 961,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9722,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 724
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_1600.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_1600-20260825-024013",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 33.0,
+      "wall_s": 389.214172,
+      "cost": 1.1688,
+      "cost_by_phase": {
+        "OCR": 0.49585,
+        "Classification": 2e-05,
+        "Extraction": 0.48458,
+        "Assessment": 0.18831,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 2785099,
+        "outputTokens": 36917,
+        "cacheReadInputTokens": 1668,
+        "cacheWriteInputTokens": 0
+      },
+      "rows_truth": 1600,
+      "rows_extracted": 141,
+      "completeness_recall": 0.0881,
+      "truncation_prefix": 141,
+      "dups": 0,
+      "n_gaps": 1459,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9645,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 430
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_3200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_3200-20260825-024332",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 66.0,
+      "wall_s": 481.298196,
+      "cost": 1.9171,
+      "cost_by_phase": {
+        "OCR": 0.99141,
+        "Classification": 2e-05,
+        "Extraction": 0.76095,
+        "Assessment": 0.16471,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 2424104,
+        "outputTokens": 24398,
+        "cacheReadInputTokens": 1668,
+        "cacheWriteInputTokens": 0
+      },
+      "rows_truth": 3200,
+      "rows_extracted": 30,
+      "completeness_recall": 0.0094,
+      "truncation_prefix": 30,
+      "dups": 0,
+      "n_gaps": 3170,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9973,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 92
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_25.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_25-20260825-024527",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 1.0,
+      "wall_s": 48.056692,
+      "cost": 0.1658,
+      "cost_by_phase": {
+        "OCR": 0.01542,
+        "Classification": 2e-05,
+        "Extraction": 0.14974,
+        "Assessment": 0.00066,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 12835,
+        "outputTokens": 4264,
+        "cacheReadInputTokens": 33303,
+        "cacheWriteInputTokens": 15325
+      },
+      "rows_truth": 25,
+      "rows_extracted": 25,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 25,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9982,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 82
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_100.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_100-20260825-024729",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 177.245444,
+      "cost": 0.4376,
+      "cost_by_phase": {
+        "OCR": 0.04535,
+        "Classification": 2e-05,
+        "Extraction": 0.38519,
+        "Assessment": 0.00704,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 69993,
+        "outputTokens": 26143,
+        "cacheReadInputTokens": 125807,
+        "cacheWriteInputTokens": 24859
+      },
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9806,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_400.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_400-20260825-024753",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 9.0,
+      "wall_s": 388.816923,
+      "cost": 1.7771,
+      "cost_by_phase": {
+        "OCR": 0.1355,
+        "Classification": 1e-05,
+        "Extraction": 1.61426,
+        "Assessment": 0.02732,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 376084,
+        "outputTokens": 97660,
+        "cacheReadInputTokens": 507649,
+        "cacheWriteInputTokens": 51670
+      },
+      "rows_truth": 400,
+      "rows_extracted": 400,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 400,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9914,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 1207
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_800.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_800-20260825-024917",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 17.0,
+      "wall_s": 406.798739,
+      "cost": 3.3353,
+      "cost_by_phase": {
+        "OCR": 0.25536,
+        "Classification": 2e-05,
+        "Extraction": 3.02393,
+        "Assessment": 0.05594,
+        "Summarization": 1e-05
+      },
+      "tokens": {
+        "inputTokens": 770280,
+        "outputTokens": 186930,
+        "cacheReadInputTokens": 1075216,
+        "cacheWriteInputTokens": 77639
+      },
+      "rows_truth": 800,
+      "rows_extracted": 800,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 800,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9734,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 2407
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_1200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_1200-20260825-025143",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 25.0,
+      "wall_s": 415.53754,
+      "cost": 4.9739,
+      "cost_by_phase": {
+        "OCR": 0.37554,
+        "Classification": 2e-05,
+        "Extraction": 4.51034,
+        "Assessment": 0.08799,
+        "Summarization": 3e-05
+      },
+      "tokens": {
+        "inputTokens": 1172774,
+        "outputTokens": 294508,
+        "cacheReadInputTokens": 1503339,
+        "cacheWriteInputTokens": 110355
+      },
+      "rows_truth": 1200,
+      "rows_extracted": 1200,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 1200,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.976,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 3607
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_1600.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_1600-20260825-025214",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 33.0,
+      "wall_s": 583.859797,
+      "cost": 9.0257,
+      "cost_by_phase": {
+        "OCR": 0.4955,
+        "Classification": 1e-05,
+        "Extraction": 8.41316,
+        "Assessment": 0.11705,
+        "Summarization": 2e-05
+      },
+      "tokens": {
+        "inputTokens": 2091089,
+        "outputTokens": 424268,
+        "cacheReadInputTokens": 2502567,
+        "cacheWriteInputTokens": 148868
+      },
+      "rows_truth": 1600,
+      "rows_extracted": 1600,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 1600,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9743,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 4807
+    },
+    {
+      "cell": "core-tt-adv-sep",
+      "doc": "scale_3200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "run_id": "bench-scale_3200-20260825-025502",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 66.0,
+      "wall_s": 1119.890561,
+      "cost": 20.9289,
+      "cost_by_phase": {
+        "OCR": 0.99116,
+        "Classification": 2e-05,
+        "Extraction": 19.67412,
+        "Assessment": 0.26355,
+        "Summarization": 2e-05
+      },
+      "tokens": {
+        "inputTokens": 5528687,
+        "outputTokens": 813643,
+        "cacheReadInputTokens": 5635057,
+        "cacheWriteInputTokens": 276472
+      },
+      "rows_truth": 3200,
+      "rows_extracted": 3200,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 3200,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "mean_confidence": 0.9866,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 9607
+    }
+  ],
+  "cell_stats": {
+    "core-tt-simple-sep": {
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "n_runs": 7,
+      "n_success": 7,
+      "n_fail": 0,
+      "max_repeat": 1,
+      "cost": {
+        "n": 7,
+        "mean": 0.96341,
+        "stdev": 0.73086,
+        "cv": 0.7586,
+        "min": 0.0552,
+        "max": 1.9171
+      },
+      "completeness_recall": {
+        "n": 7,
+        "mean": 0.61381,
+        "stdev": 0.48479,
+        "cv": 0.7898,
+        "min": 0.0094,
+        "max": 1.0
+      },
+      "scalar_accuracy": {
+        "n": 7,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "weighted_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "wall_s": {
+        "n": 7,
+        "mean": 314.28322,
+        "stdev": 201.52697,
+        "cv": 0.6412,
+        "min": 52.12663,
+        "max": 602.12623
+      }
+    },
+    "core-tt-adv-sep": {
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "advanced",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "reasoning_effort": "low"
+      },
+      "n_runs": 7,
+      "n_success": 7,
+      "n_fail": 0,
+      "max_repeat": 1,
+      "cost": {
+        "n": 7,
+        "mean": 5.80633,
+        "stdev": 7.33404,
+        "cv": 1.2631,
+        "min": 0.1658,
+        "max": 20.9289
+      },
+      "completeness_recall": {
+        "n": 7,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "scalar_accuracy": {
+        "n": 7,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "weighted_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "wall_s": {
+        "n": 7,
+        "mean": 448.60081,
+        "stdev": 343.85291,
+        "cv": 0.7665,
+        "min": 48.05669,
+        "max": 1119.89056
+      }
+    }
+  }
+}

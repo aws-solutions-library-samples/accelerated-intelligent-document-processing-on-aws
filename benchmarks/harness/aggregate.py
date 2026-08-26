@@ -16,6 +16,7 @@ import csv
 import datetime
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -226,13 +227,42 @@ def _meta(rm):
     ).stdout.split()[:1]
     return {
         "stack": rm.get("stack"),
+        "stack_version": _stack_version(rm.get("stack")),
         "suite": rm.get("suite"),
         "class": rm.get("class"),
+        # NOTE: `commit` is the LOCAL repo HEAD at scoring time, which is not
+        # necessarily the code that ran — a run against a published template, or a
+        # run scored after further local commits, will differ. `stack_version` above
+        # is the authoritative "what code produced these numbers", read from the
+        # deployed stack's own CloudFormation Description.
         "commit": commit,
         "pricing_sha256": ph[0] if ph else None,
         "scored_at": datetime.datetime.utcnow().isoformat() + "Z",
         "region": lib.REGION,
     }
+
+
+def _stack_version(stack_name):
+    """The deployed accelerator version, from the stack's CFN Description.
+
+    The Description is `... (vX.Y.Z)`, set at publish time, so it identifies the
+    code that actually served the run — the one fact a release A/B cannot get
+    from the local checkout. Returns None (never raises) if the stack is gone or
+    credentials don't reach it; a missing version must not lose a scored run.
+    """
+    if not stack_name:
+        return None
+    try:
+        desc = (
+            lib.session()
+            .client("cloudformation")
+            .describe_stacks(StackName=stack_name)["Stacks"][0]
+            .get("Description", "")
+        )
+        m = re.search(r"\(v([0-9][^)]*)\)", desc)
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 def _cells(summary):
@@ -477,6 +507,91 @@ def figures(summary_path):
         print(f"figures -> {figdir}/scaling.png")
 
 
+def figures_compare(new_path, base_path, new_label="new", base_label="baseline"):
+    """Emit the two release-A/B charts: per-cell cost, and paired accuracy/recall.
+
+    The release audit trail cites these, but they used to be produced ad hoc — so
+    the "every number here comes from the harness" claim did not extend to the
+    figures. Both are computed from the same two summary.json files the prose
+    tables are computed from.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        print("matplotlib not available; skipping figures")
+        return
+    new, base = json.load(open(new_path)), json.load(open(base_path))
+    figdir = os.path.join(BENCH, "paper", "figures")
+    os.makedirs(figdir, exist_ok=True)
+    cn, cb = _cells(new), _cells(base)
+    cells = [c for c in cb if c in cn]
+    if not cells:
+        print("no shared cells; skipping compare figures")
+        return
+    short = [c.replace("core-", "") for c in cells]
+    idx = range(len(cells))
+    w = 0.38
+
+    def mean(cs, cell, key):
+        v = cs[cell].get(key)
+        return (v.get("mean") if isinstance(v, dict) else v) or 0
+
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ax.bar(
+        [i - w / 2 for i in idx],
+        [mean(cb, c, "cost") for c in cells],
+        w,
+        label=base_label,
+    )
+    ax.bar(
+        [i + w / 2 for i in idx],
+        [mean(cn, c, "cost") for c in cells],
+        w,
+        label=new_label,
+    )
+    ax.set(
+        ylabel="cost $/doc (mean over docs)",
+        title=f"Cost per config cell — {base_label} vs {new_label}",
+    )
+    ax.set_xticks(list(idx))
+    ax.set_xticklabels(short, rotation=30, ha="right")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    cost_png = os.path.join(figdir, "version_cost_compare.png")
+    fig.savefig(cost_png, dpi=120)
+
+    # Paired per-(cell,doc) accuracy + recall: a scatter on the identity line, so
+    # any point off the diagonal is a real per-run change rather than an average.
+    rn = {(r["cell"], r["doc"]): r for r in new["rows"]}
+    rb = {(r["cell"], r["doc"]): r for r in base["rows"]}
+    keys = [k for k in rb if k in rn]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
+    for ax, key, title in (
+        (ax1, "scalar_accuracy", "Scalar accuracy"),
+        (ax2, "completeness_recall", "Completeness recall"),
+    ):
+        xs = [rb[k].get(key) or 0 for k in keys]
+        ys = [rn[k].get(key) or 0 for k in keys]
+        ax.scatter(xs, ys, alpha=0.65)
+        ax.plot([0, 1], [0, 1], "--", color="gray", linewidth=1)
+        ax.set(
+            xlabel=f"{base_label}",
+            ylabel=f"{new_label}",
+            title=f"{title} (paired, n={len(keys)})",
+        )
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    acc_png = os.path.join(figdir, "version_accuracy_compare.png")
+    fig.savefig(acc_png, dpi=120)
+    print(f"figures -> {cost_png}\nfigures -> {acc_png}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", help="results/run-XXXX dir to score")
@@ -484,6 +599,19 @@ def main():
     ap.add_argument("--compare", help="summary.json to compare")
     ap.add_argument("--baseline", help="baseline.json")
     ap.add_argument("--figures", help="summary.json to chart")
+    ap.add_argument(
+        "--figures-compare",
+        nargs=2,
+        metavar=("NEW_SUMMARY", "BASE_SUMMARY"),
+        help="emit the release-A/B cost + paired-accuracy charts from two summary.json files",
+    )
+    ap.add_argument(
+        "--labels",
+        nargs=2,
+        metavar=("NEW_LABEL", "BASE_LABEL"),
+        default=["new", "baseline"],
+        help="legend labels for --figures-compare (default: new baseline)",
+    )
     ap.add_argument(
         "--cost-var", help="summary.json: print per-cell cost mean±stdev+CV"
     )
@@ -496,6 +624,10 @@ def main():
         compare_cells(a.compare, a.baseline)  # variance-aware cell level
     if a.figures:
         figures(a.figures)
+    if a.figures_compare:
+        figures_compare(
+            *a.figures_compare, new_label=a.labels[0], base_label=a.labels[1]
+        )
     if a.cost_var:
         cs = _cells(json.load(open(a.cost_var)))
         print(

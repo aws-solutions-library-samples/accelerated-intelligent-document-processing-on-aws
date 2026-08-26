@@ -28,8 +28,18 @@ false positives, and the two ways to make a HIGH finding go away: **mitigate**
   `./srt assess -y -p <repo> --no-diagrams --no-threat-models --no-license-update`.
   SRT merges new findings into `.srt/issues.json`, then `run.py` parses that
   file and prints the `OPEN HIGH PRIORITY SECURITY ISSUES` table.
-- **The gate = HIGH priority AND `status == "Open"`.** Medium/Low never block.
-  Suppressed/resolved/fixed never block.
+- **The gate = HIGH priority AND `status` in (`Open`, `reopened`).** Medium/Low
+  never block. Only `suppressed` and `resolved` are accepted dispositions.
+- **`resolved` is NOT sticky — `suppressed` is.** SRT sets `reopened` when a
+  finding it had recorded as resolved/suppressed is detected again, and counts it
+  in its own "N issues need attention" line (`Open: 39 / Reopened: 10`). Until
+  0.6.5 both `scripts/srt/run.py` and the results curator gated on `Open` alone,
+  so a re-detected HIGH passed CI silently — two were sitting in the tree
+  (`LAMBDA-012` in `nested/bedrockkb/template.yaml`, and the semgrep npm
+  `minimum-release-age` finding on `src/ui/.npmrc`), both carrying
+  `status: resolved`. If you intend a finding to stay quiet, write
+  `status: "suppressed"` **with** a `suppressionReason`; never leave it
+  `resolved`, because the next scan will re-detect it and now correctly block.
 - **Exit code differs by environment** (`run.py`):
   - **CI** (`CI`/`GITLAB_CI`/`GITHUB_ACTIONS` set): exits **1** on any HIGH-open
     → pipeline fails.
@@ -292,5 +302,13 @@ These are accepted and living in `scripts/srt/issues.json` — don't "re-fix":
 - **API-GW-002** (`HttpApi`) — REST API in Lambda-proxy mode; the dispatcher
   validates each body per-field, request validators add nothing for opaque
   proxy payloads.
+- **LAMBDA-012** (`nested/bedrockkb/template.yaml`, `StartIngestionJobFunction`) —
+  scanner false positive: `StartIngestionJobFunctionRole` has exactly one consumer
+  and the check's own fix text names no second function (`…sharing role
+  GetAtt:StartIngestionJobFunctionRole with .`).
+- **semgrep `npm-missing-minimum-release-age`** (`src/ui/.npmrc`) — accepted:
+  `npm ci` + committed lockfile resolves nothing from the registry, and the
+  mitigation (`min-release-age = 7`) needs npm ≥ 11.10, newer than the build
+  toolchain. Revisit when the build npm reaches 11.10.
 - Various **DDB-002 / S3-008 / KMS-007 / EC2-002 / LAMBDA-*** in built
   `.aws-sam/*.yaml` and the bastion/KB stacks — reviewed accepted risks.
