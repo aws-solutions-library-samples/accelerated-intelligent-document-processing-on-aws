@@ -3355,6 +3355,106 @@ class TestTestSetResolver:
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
 
+    def test_the_annotation_queue_carries_the_class_through(self, labeling_env):
+        """End to end: the queue is a different resolver from the documents page,
+        so the field has to survive that hop too. Pinned because the value is
+        only useful where the review work actually happens."""
+        table, s3 = labeling_env
+        _seed_test_set(
+            table, "ts1", fileCount=1, labelJobId="run1", labelJobStatus="COMPLETED"
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        queue = test_set_index.get_annotation_queue({"testSetId": "ts1"})
+
+        assert queue["documents"][0]["documentClasses"] == ["Bank-Statement"]
+
+    def test_queue_shows_what_each_document_was_classified_as(self, labeling_env):
+        """A reviewer must be able to see the class without opening the document.
+
+        It is the one thing no other column can reveal. Extraction against the
+        wrong schema can be *confidently* wrong, so a misclassified document's
+        confidence and alert count look entirely normal — which is why it sorts
+        low in worst-first order and never gets opened.
+
+        Shown, not scored: nothing here can tell whether the class is WRONG,
+        because the draft under review is itself the candidate ground truth and
+        classification carries no real confidence. So it is deliberately kept out
+        of the ordering and out of the review-effort estimator.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["documents"][0]["documentClasses"] == ["Bank-Statement"]
+
+    def test_a_packet_reports_each_distinct_class_once(self, labeling_env):
+        """A split document has a class per section. Duplicates collapse so a
+        20-page packet of one class does not render twenty identical badges."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        for section, cls in (("1", "Invoice"), ("2", "W2"), ("3", "Invoice")):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/a.pdf/sections/{section}/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "document_class": {"type": cls},
+                        "inference_result": {"f": "v"},
+                    }
+                ).encode(),
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        # Distinct, and in the order encountered.
+        assert page["documents"][0]["documentClasses"] == ["Invoice", "W2"]
+
+    def test_a_baseline_with_no_class_reports_none_rather_than_a_blank(
+        self, labeling_env
+    ):
+        """An empty list, not [""] — a blank badge would read as a class named ""."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {"labelSource": "draft-machine", "inference_result": {"f": "v"}}
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["documents"][0]["documentClasses"] == []
+
     def test_documents_page_reports_the_SET_size_not_the_page_size(self, labeling_env):
         """A paginated response must say how big the whole set is.
 

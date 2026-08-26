@@ -867,6 +867,24 @@ whatever class the pipeline decided each document was. When that decision is
 wrong, correcting it is two steps rather than one: the class *and* the fields
 underneath it, which were extracted against the wrong schema.
 
+Each document in the queue shows the class it was assigned. That is there so a
+reviewer can notice a wrong one while working the list — it is the only column
+that can reveal it. A document extracted against the wrong schema is often
+*confidently* wrong, so its confidence and alert count look entirely normal, and
+worst-first ordering therefore puts it last.
+
+The class is **shown, not scored.** Nothing in the queue can tell whether a class
+is wrong: the draft under review is itself the candidate ground truth, so there is
+nothing to compare it against, and classification carries no meaningful
+confidence. It is deliberately excluded from the queue ordering and from the
+review-effort estimator, whose alert counts and confidence curve are defined in
+terms of *field* confidence — folding a different kind of signal into that number
+would double-count and corrupt the calibration the estimate depends on.
+
+To find misclassifications *measured against a baseline*, use the
+[Classification errors](#finding-classification-errors) panel on a test run.
+
+
 In the editor, **Class label** is a dropdown of the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always

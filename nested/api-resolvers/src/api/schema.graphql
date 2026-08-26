@@ -922,6 +922,15 @@ type AnnotationQueueItem @aws_cognito_user_pools @aws_iam {
   # Fields below their configured threshold, out of those carrying confidence.
   # The queue is ordered by this, with minConfidence as the tiebreak.
   alertCount: Int
+  # What each of this document's sections was classified as (distinct, in order).
+  # Shown so a reviewer can spot a misclassified document while working the queue.
+  # It is NOT scored and does not affect ordering: nothing here can tell whether a
+  # class is *wrong* — the draft under review IS the candidate ground truth, and
+  # classification carries no real confidence — so this is information for a human
+  # rather than a signal, and it is deliberately kept out of the review-effort
+  # estimator, whose alert counts and confidence curve are defined in terms of
+  # field confidence.
+  documentClasses: [String!]
   fieldCount: Int
   labelSource: String
   sectionCount: Int!

@@ -68,6 +68,7 @@ export interface QueueItem {
   minConfidence?: number | null;
   confidenceThreshold?: number | null;
   alertCount?: number | null;
+  documentClasses?: (string | null)[] | null;
   fieldCount?: number | null;
   labelSource?: string | null;
   sectionCount: number;
@@ -667,6 +668,19 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                             <SpaceBetween direction="horizontal" size="xxs">
                               {/* Alerts first: the queue is ordered by this. */}
                               {renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold)}
+                              {/* The class, shown but NOT scored and NOT part of the
+                                  ordering. A wrong class is invisible from every other
+                                  column: extraction under the wrong schema can be
+                                  confidently wrong, so the alert count and confidence
+                                  look entirely normal. Nothing here can tell whether
+                                  the class is wrong — the draft under review IS the
+                                  candidate ground truth — so it is put in front of a
+                                  human rather than turned into a number. */}
+                              {(item.documentClasses ?? []).filter(Boolean).map((cls) => (
+                                <Badge key={cls as string} color="grey">
+                                  {cls}
+                                </Badge>
+                              ))}
                               {renderLabelSource(item.labelSource)}
                             </SpaceBetween>
                           ),

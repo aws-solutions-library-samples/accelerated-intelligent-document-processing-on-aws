@@ -1351,6 +1351,12 @@ def get_annotation_queue(args, event=None):
                 "alertCount": doc.get("alertCount"),
                 "fieldCount": doc.get("fieldCount"),
                 "labelSource": doc.get("labelSource"),
+                # So a reviewer can see what each document was classified as
+                # without opening it. A wrong class is not visible any other way
+                # from the queue: extraction under the wrong schema can be
+                # confidently wrong, so the row's confidence and alert count look
+                # entirely normal.
+                "documentClasses": doc.get("documentClasses") or [],
                 "sectionCount": len(doc.get("sections") or []),
                 "sections": doc.get("sections") or [],
                 "claimedBy": owner or None,
@@ -2944,7 +2950,20 @@ def _attach_label_metadata(test_set_bucket, documents):
             return None
 
     per_doc = {
-        id(doc): {"sources": [], "confidences": [], "alerts": [], "fields": []}
+        id(doc): {
+            "sources": [],
+            "confidences": [],
+            "alerts": [],
+            "fields": [],
+            # The class each section was given. Collected here because these
+            # baselines are already being read for label state, so it costs
+            # nothing extra — and a reviewer working the queue could not
+            # previously see what class a document had been assigned without
+            # opening it, which is the whole difficulty with a misclassified
+            # document: extraction against the wrong schema can be confidently
+            # wrong, so nothing else about the row looks unusual.
+            "classes": [],
+        }
         for doc, _ in tasks
     }
     with concurrent.futures.ThreadPoolExecutor(
@@ -2982,11 +3001,30 @@ def _attach_label_metadata(test_set_bucket, documents):
             if alerts is not None:
                 bucket_for_doc["alerts"].append(alerts)
                 bucket_for_doc["fields"].append(fields)
+            section_class = (result.get("document_class") or {}).get("type")
+            if section_class:
+                bucket_for_doc["classes"].append(str(section_class))
 
     for doc in documents:
         collected = per_doc.get(
-            id(doc), {"sources": [], "confidences": [], "alerts": [], "fields": []}
+            id(doc),
+            {
+                "sources": [],
+                "confidences": [],
+                "alerts": [],
+                "fields": [],
+                "classes": [],
+            },
         )
+        # Distinct classes, order preserved. A single-section document yields one;
+        # a packet yields the classes its sections were split into. Reported as a
+        # list rather than joined, so the UI decides how to render more than one
+        # rather than parsing a string back apart.
+        seen_classes = []
+        for cls in collected["classes"]:
+            if cls not in seen_classes:
+                seen_classes.append(cls)
+        doc["documentClasses"] = seen_classes
         sources = collected["sources"]
         confidences = collected["confidences"]
         # A document counts as reviewed only when every section is.

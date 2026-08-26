@@ -401,6 +401,7 @@ export const getAnnotationQueue = /* GraphQL */ `
         minConfidence
         confidenceThreshold
         alertCount
+        documentClasses
         fieldCount
         labelSource
         sectionCount

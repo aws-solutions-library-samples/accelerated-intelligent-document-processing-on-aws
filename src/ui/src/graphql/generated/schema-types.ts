@@ -87,6 +87,7 @@ export type AnnotationQueueItem = {
   claimedBy?: Maybe<Scalars['String']['output']>;
   claimedByMe: Scalars['Boolean']['output'];
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
+  documentClasses?: Maybe<Array<Scalars['String']['output']>>;
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
