@@ -762,6 +762,61 @@ class TestControlPlaneRowBuilding:
         expected_haiku = 2000 * 1.0e-6 + 1000 * 5.0e-6
         assert abs(haiku["est_bedrock_cost"] - expected_haiku) < 1e-9
 
+    def test_shared_columns_stamped_once_not_fanned_out_across_models(
+        self, rollup, monkeypatch
+    ):
+        """Round-5 blocker: invocations/duration/athena_bytes/est_lambda_cost/
+        est_athena_cost must be stamped on ONE row per (function, hour), not
+        replicated across every per-model row. Otherwise
+        ``SUM(invocations) GROUP BY function_name`` fans out by the number of
+        Bedrock models the function touched — same bug class as the round-2
+        sum_pages blocker.
+        """
+        monkeypatch.setattr(
+            rollup,
+            "_bedrock_pricing_map",
+            {
+                "bedrock/model-a": {"inputTokens": 1e-6, "outputTokens": 1e-6},
+                "bedrock/model-b": {"inputTokens": 1e-6, "outputTokens": 1e-6},
+                "bedrock/model-c": {"inputTokens": 1e-6, "outputTokens": 1e-6},
+            },
+        )
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
+        ):
+            rows = rollup._build_control_plane_rows(
+                function_name="MultiModelAgentFn",
+                component="analytics-agent",
+                hour_ts=datetime(2026, 8, 18, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    "duration_ms": 60_000.0,
+                    "invocations": 5.0,
+                    "athena_bytes": 50_000_000_000,  # 50 GB → distinctive num
+                    "bedrock_by_model": {
+                        "model-a": {"in": 10, "out": 10},
+                        "model-b": {"in": 20, "out": 20},
+                        "model-c": {"in": 30, "out": 30},
+                    },
+                },
+            )
+        assert len(rows) == 3
+        # SUM across models must equal the function-hour truth — NOT 3× it.
+        assert sum(r["invocations"] for r in rows) == 5
+        assert sum(r["duration_ms_sum"] for r in rows) == 60_000
+        assert sum(r["athena_bytes_sum"] for r in rows) == 50_000_000_000
+        # est_lambda_cost + est_athena_cost also non-fanned.
+        total_lambda = sum(r["est_lambda_cost"] for r in rows)
+        total_athena = sum(r["est_athena_cost"] for r in rows)
+        # 60s * 1GB @ arm64 $1.3334e-5/GB-s + 5 * ($0.20/1M) = ~$0.0008
+        assert total_lambda > 0
+        # 50 GB / 1 TiB * $5 = ~$0.227
+        assert 0.22 < total_athena < 0.23
+        # Every model's own per-model column carries its own value on every row.
+        by_model = {r["bedrock_model"]: r for r in rows}
+        assert by_model["model-a"]["bedrock_tokens_in"] == 10
+        assert by_model["model-b"]["bedrock_tokens_in"] == 20
+        assert by_model["model-c"]["bedrock_tokens_in"] == 30
+
     def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(
         self, rollup, monkeypatch
     ):

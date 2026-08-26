@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 try:
     import yaml
@@ -196,10 +196,51 @@ def _check_allowlisted_lambda(path: Path, logical_id: str) -> List[str]:
     return []
 
 
+def _check_inverse_drift() -> List[str]:
+    """Return errors for any Lambda in the two source templates that
+    carries ``idp:plane=data`` but is NOT on the allowlist.
+
+    The main check covers allowlist → tag; this is the inverse (tag →
+    allowlist). Without it, someone renaming a data-plane Lambda without
+    updating the allowlist gets a passing lint AND the Lambda silently
+    falls into ``other-control`` at rollup time. Round-5 review fix.
+    """
+    errors: List[str] = []
+    allowlisted_by_template: Dict[Path, set[str]] = {}
+    for logical_id, path in DATA_PLANE_ALLOWLIST.items():
+        allowlisted_by_template.setdefault(path, set()).add(logical_id)
+
+    for template_path in {MAIN_TEMPLATE, UNIFIED_TEMPLATE}:
+        if not template_path.exists():
+            continue
+        template = yaml.load(template_path.read_text(), Loader=_cfn_tag_loader())
+        resources = (template or {}).get("Resources", {}) or {}
+        expected = allowlisted_by_template.get(template_path, set())
+        for logical_id, resource in resources.items():
+            if not isinstance(resource, dict):
+                continue
+            if resource.get("Type") not in (
+                "AWS::Serverless::Function",
+                "AWS::Lambda::Function",
+            ):
+                continue
+            if (
+                _tag_value(resource, "idp:plane") == "data"
+                and logical_id not in expected
+            ):
+                errors.append(
+                    f"{_display_path(template_path)}: {logical_id} carries "
+                    f"idp:plane=data but is NOT in DATA_PLANE_ALLOWLIST "
+                    f"— either add it to the allowlist or drop the tag."
+                )
+    return errors
+
+
 def main() -> int:
     missing: List[str] = []
     for logical_id, path in DATA_PLANE_ALLOWLIST.items():
         missing.extend(_check_allowlisted_lambda(path, logical_id))
+    missing.extend(_check_inverse_drift())
 
     if missing:
         print(
@@ -221,7 +262,7 @@ def main() -> int:
         return 1
     print(
         f"OK — all {len(DATA_PLANE_ALLOWLIST)} allowlisted data-plane Lambdas "
-        f"carry idp:plane=data."
+        f"carry idp:plane=data (both directions verified)."
     )
     return 0
 

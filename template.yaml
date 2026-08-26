@@ -5332,7 +5332,15 @@ Resources:
       Targets:
         - Id: DataMartRollupHourly
           Arn: !GetAtt DataMartRollupFunction.Arn
-          Input: '{"mode": "hourly"}'
+          # InputTransformer (not literal Input) so ``$.time`` from the
+          # scheduled event reaches the handler. Without this the handler's
+          # anchor-time logic degrades to ``datetime.now()`` on every
+          # invocation, and an async retry crossing an hour boundary silently
+          # rolls up the WRONG partition. Round-5 review fix.
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: '{"mode": "hourly", "time": <time>}'
 
   DataMartRollupHourlyPermission:
     Type: AWS::Lambda::Permission
@@ -5353,7 +5361,11 @@ Resources:
       Targets:
         - Id: DataMartRollupDaily
           Arn: !GetAtt DataMartRollupFunction.Arn
-          Input: '{"mode": "daily"}'
+          # See the hourly schedule above for the InputTransformer rationale.
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: '{"mode": "daily", "time": <time>}'
 
   DataMartRollupDailyPermission:
     Type: AWS::Lambda::Permission

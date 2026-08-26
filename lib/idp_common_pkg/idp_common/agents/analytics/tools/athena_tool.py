@@ -109,8 +109,11 @@ def run_athena_query(
                     component="analytics-agent",
                     athena_bytes=int(data_scanned),
                 )
-        except Exception:  # nosec — telemetry must not affect the caller
-            pass
+        except Exception as e:  # nosec — telemetry must not affect the caller
+            # WARNING (not silent) so a future packaging/import regression
+            # doesn't silently zero the analytics-agent's Athena spend in
+            # control_plane_hourly. Round-5 review fix.
+            logger.warning(f"Failed to emit analytics-agent Athena cost metric: {e!r}")
 
         # Check final state
         if state == "SUCCEEDED":

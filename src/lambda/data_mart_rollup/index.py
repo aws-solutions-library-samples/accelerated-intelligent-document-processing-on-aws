@@ -715,7 +715,13 @@ def _get_athena_bytes_sum(
             EndTime=hour_end,
         )
         for r in resp.get("MetricDataResults", []):
-            total += float(sum(r.get("Values", []) or [0.0]))
+            # Filter NaN before summing — a broken metric occasionally yields
+            # NaN, which would poison the int() cast at the athena_bytes_sum
+            # cast site downstream (raises ValueError, aborts the rollup,
+            # lands in the DLQ). Sibling paths (_flatten_cw_response,
+            # _get_bedrock_tokens_by_model) filter — this one must too.
+            values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+            total += float(math.fsum(values))
     return total
 
 
@@ -912,8 +918,21 @@ def _build_control_plane_rows(
 
     bedrock_by_model = metrics.get("bedrock_by_model") or {}
 
-    # Common (Lambda + Athena) fields shared across per-model rows.
-    def _row(model: Optional[str], tokens_in: int, tokens_out: int) -> Dict[str, Any]:
+    # Row shape: shared function-hour columns (invocations, duration_ms_sum,
+    # athena_bytes_sum, est_lambda_cost, est_athena_cost) are stamped on ONE
+    # row per (function, hour) — the first one — and zeroed on subsequent
+    # per-model rows. Otherwise a
+    # ``SELECT SUM(invocations) FROM control_plane_hourly GROUP BY function_name``
+    # would over-count by the number of Bedrock models the function touched
+    # (fan-out class, same shape as the round-2 sum_pages blocker). Bedrock
+    # columns (bedrock_tokens_in/out, est_bedrock_cost) stay per-model on
+    # each row. Round-5 review fix.
+    def _row(
+        model: Optional[str],
+        tokens_in: int,
+        tokens_out: int,
+        include_shared: bool,
+    ) -> Dict[str, Any]:
         price = _bedrock_price_for_model(model)
         # Prices are per-TOKEN USD (matches config_library/pricing.yaml scale,
         # e.g. 3.0E-7 for Nova-2 Lite input = $0.30/M). No divisor needed.
@@ -923,25 +942,33 @@ def _build_control_plane_rows(
             "function_name": function_name,
             "component": component,
             "bedrock_model": model,
-            "invocations": invocations,
-            "duration_ms_sum": int(duration_ms),
-            "athena_bytes_sum": athena_bytes,
+            # Shared function-hour columns — stamped once, zeroed on siblings.
+            "invocations": invocations if include_shared else 0,
+            "duration_ms_sum": int(duration_ms) if include_shared else 0,
+            "athena_bytes_sum": athena_bytes if include_shared else 0,
+            "est_lambda_cost": est_lambda_cost if include_shared else 0.0,
+            "est_athena_cost": est_athena_cost if include_shared else 0.0,
+            # Per-model columns — carry their own value on every row.
             "bedrock_tokens_in": tokens_in,
             "bedrock_tokens_out": tokens_out,
-            "est_lambda_cost": est_lambda_cost,
-            "est_athena_cost": est_athena_cost,
             "est_bedrock_cost": est_bedrock_cost,
         }
 
     if not bedrock_by_model:
         # Component didn't call Bedrock this hour — one row without a model.
-        return [_row(None, 0, 0)]
-    # One row per Bedrock model. Cost bookkeeping is straightforward this way,
-    # and consumers can group by ``bedrock_model`` for per-model drill-down.
-    return [
-        _row(model, int(tokens["in"]), int(tokens["out"]))
-        for model, tokens in bedrock_by_model.items()
-    ]
+        return [_row(None, 0, 0, include_shared=True)]
+    # One row per Bedrock model, but shared columns only on the FIRST.
+    # Ordering: dict insertion order is deterministic (Python 3.7+), so
+    # the row assigned the shared columns is stable across runs of the
+    # same input — consumers that filter to `bedrock_model = X` and rely
+    # on the shared columns being non-zero on any specific model row are
+    # doing the wrong query and would need to aggregate anyway.
+    rows: List[Dict[str, Any]] = []
+    for i, (model, tokens) in enumerate(bedrock_by_model.items()):
+        rows.append(
+            _row(model, int(tokens["in"]), int(tokens["out"]), include_shared=(i == 0))
+        )
+    return rows
 
 
 def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
@@ -1256,8 +1283,15 @@ def _emit_self_athena_cost(query_execution_response: Dict[str, Any]) -> None:
                 component="rollup-lambda",
                 athena_bytes=int(bytes_scanned),
             )
-    except Exception:  # nosec — cost telemetry must not affect the rollup
-        pass
+    except Exception as e:  # nosec — cost telemetry must not affect the rollup
+        # WARNING (not silent) so a future layer/packaging regression that
+        # revives the round-3 "idp_common not on sys.path" blocker is
+        # visible in the log instead of returning invisible zeros in
+        # control_plane_hourly forever. Round-5 review fix.
+        logger.warning(
+            f"Failed to emit self-athena-cost metric: {e!r} — "
+            f"control_plane_hourly's rollup-lambda row will under-count."
+        )
 
 
 def _s3_object_exists(key: str) -> bool:

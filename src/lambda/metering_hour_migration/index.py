@@ -18,8 +18,10 @@ Design
 
 Why inline (vs. Step Functions):
 - Common case is small (dev stacks: 0 files; test stacks: 10K-100K).
-- With ~50 concurrent ``CopyObject`` calls, ~500K files fit in a 900s
-  Lambda invocation.
+- With ~50 concurrent ``CopyObject`` calls and ~40 files/sec effective
+  throughput (S3 rate limits + copy latency), the handler is bounded by
+  ``MAX_INLINE_FILES = 30_000`` — enough for typical stacks with a
+  ~12-15 min copy budget before the 900s Lambda timeout.
 - For larger stacks, this handler fails loudly with a clear error that
   points at ``scripts/migrate_metering_hour_partition.py`` for manual
   execution. Failing during ``update-stack`` (before the Glue table
