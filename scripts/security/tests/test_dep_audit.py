@@ -174,3 +174,61 @@ class TestAllowlistFileIsValid:
             assert entry.get("id"), f"{key}: missing id"
             reason = entry.get("reason", "")
             assert len(reason) > 40, f"{key}: reason too thin to audit: {reason!r}"
+
+
+class TestAshConfig:
+    """Guards on `.ash/.ash.yaml`.
+
+    ASH is not in CI, so nothing else exercises this file. The dangerous mistake
+    it invites is a `path`-only suppression (no `rule_id`) on a source file or
+    CloudFormation template: that silently suppresses EVERY ASH finding on that
+    path, turning a triage entry into a blind spot. These tests make that
+    mistake fail loudly instead.
+    """
+
+    DATA_SUFFIXES = (".drawio", ".json", ".ipynb", ".md")
+
+    @staticmethod
+    def _config():
+        import pathlib
+
+        import yaml
+
+        p = pathlib.Path(__file__).resolve().parents[3] / ".ash" / ".ash.yaml"
+        assert p.exists(), f"missing {p}"
+        return yaml.safe_load(p.read_text(encoding="utf-8"))
+
+    def test_parses_and_every_suppression_is_justified(self):
+        sups = self._config()["global_settings"]["suppressions"]
+        assert sups
+        for s in sups:
+            assert s.get("path"), f"suppression without a path: {s}"
+            reason = s.get("reason", "")
+            assert len(reason) > 40, f"{s.get('path')}: reason too thin: {reason!r}"
+
+    def test_path_only_suppressions_are_data_files_only(self):
+        """A rule_id-less entry suppresses everything on the path, so it must not
+        point at code or a template."""
+        for s in self._config()["global_settings"]["suppressions"]:
+            if s.get("rule_id"):
+                continue
+            path = s["path"]
+            assert path.endswith(self.DATA_SUFFIXES) or path.endswith("/**"), (
+                f"path-only suppression on a non-data path: {path!r}. Use an "
+                "inline pragma, or scope the entry with a rule_id."
+            )
+
+    def test_dependency_suppressions_match_the_gating_allowlist(self):
+        """The ASH entries mirror dep_audit_allowlist.json. If a dependency is
+        upgraded and dropped there, this catches the stale ASH twin."""
+        gating = {e["id"] for e in dep_audit.load_allowlist().values()}
+        ash_ids = {
+            s["rule_id"]
+            for s in self._config()["global_settings"]["suppressions"]
+            if s.get("rule_id", "").startswith(("GHSA-", "CVE-"))
+        }
+        stale = ash_ids - gating
+        assert not stale, (
+            f"advisories suppressed for ASH but no longer in "
+            f"dep_audit_allowlist.json: {sorted(stale)}"
+        )

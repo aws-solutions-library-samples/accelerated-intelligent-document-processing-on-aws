@@ -1922,7 +1922,7 @@ class ClassificationService:
         """
         valid_classes = ", ".join(sorted(self.valid_doc_types))
         correction = (
-            f"\n\nYour previous response classified the document as "
+            f"\n\nYour previous response classified the document as "  # nosec B608 - LLM reclassification prompt text, not a SQL query
             f"'{invalid_class}', which is NOT a valid class. You MUST choose "
             f"exactly one class from this list: [{valid_classes}]. "
             f"Respond again using the required output format and select only "

@@ -359,7 +359,7 @@ class PackPublisher:
 
         try:
             req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=15) as r:  # nosec B310 - anonymous HEAD of the https artifact this tool just published
                 if r.status != 200:
                     raise RuntimeError(f"HTTP {r.status}")
         except urllib.error.HTTPError as exc:
