@@ -27,6 +27,25 @@ from typing import Any, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# Cap on a comparator instance's memo table. Instances are cached per
+# (model, field) for the life of a warm Lambda container, so an unbounded dict
+# would grow with every distinct value pair the container ever sees. Well above
+# the distinct pairs any single document produces, so the cache still does its
+# job within a document.
+_VERDICT_CACHE_MAX = 10_000
+
+
+def _trivially_equal(a: str, b: str) -> bool:
+    """True when two rendered values differ only by case or whitespace.
+
+    Used to skip the LLM round trip for values a semantic judge could only ever
+    call a match. Intentionally narrow — it folds case and collapses whitespace
+    and nothing else, so every judgement that needs actual reasoning (formatting,
+    abbreviation, word order, synonymy) still reaches the model.
+    """
+    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
 # Check if Stickler is available
 try:
     from stickler.structured_object_evaluator.models.comparator_registry import (
@@ -63,6 +82,9 @@ class LLMComparator(BaseComparator):
         system_prompt: Optional[str] = None,
         task_prompt: Optional[str] = None,
         threshold: Optional[float] = None,
+        document_class: Optional[str] = None,
+        attribute_name: Optional[str] = None,
+        attribute_description: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -84,6 +106,13 @@ class LLMComparator(BaseComparator):
             system_prompt: Custom system prompt for LLM
             task_prompt: Custom task prompt template for LLM
             threshold: Minimum score to consider a match (0.0-1.0)
+            document_class: Document class name, for the prompt's
+                ``{DOCUMENT_CLASS}`` placeholder.
+            attribute_name: Field name, for ``{ATTRIBUTE_NAME}``.
+            attribute_description: Field description, for
+                ``{ATTRIBUTE_DESCRIPTION}``. This is the one the judge most needs:
+                it is what makes a *semantic* decision possible instead of a guess
+                between two bare strings.
             **kwargs: Additional parameters (ignored)
         """
         super().__init__()
@@ -112,6 +141,23 @@ class LLMComparator(BaseComparator):
 
         self.threshold = to_float(threshold if threshold is not None else 0.8)
 
+        # Field context for the prompt's three context placeholders. Supplied
+        # per-field by SticklerConfigMapper via
+        # x-aws-stickler-comparator-config, because Stickler's comparator
+        # protocol is compare(value1, value2) and carries no field context.
+        self.document_class = document_class or ""
+        self.attribute_name = attribute_name or ""
+        self.attribute_description = attribute_description or ""
+
+        # Memoize verdicts per (expected, actual) within this comparator's
+        # lifetime. Structured-list matching compares the same value pairs
+        # repeatedly across the assignment matrix and again when scoring the
+        # matched pairs, and the judge is deterministic at temperature 0, so a
+        # repeat is a wasted round trip. Bounded because comparator instances are
+        # cached per (model, field) for the life of a warm Lambda container, which
+        # processes many documents — an unbounded dict would be a slow leak.
+        self._verdict_cache: dict[Tuple[str, str], float] = {}
+
         logger.debug(
             f"Initialized LLMComparator with model={self.llm_config['model']}, threshold={self.threshold}"
         )
@@ -130,13 +176,17 @@ class LLMComparator(BaseComparator):
             Similarity score between 0.0 and 1.0
         """
         try:
-            # Call the existing LLM comparison logic
+            cache_key = (repr(value1), repr(value2))
+            if cache_key in self._verdict_cache:
+                return self._verdict_cache[cache_key]
+
+            # Call the existing LLM comparison logic, WITH this field's context.
             matched, score, reason = compare_llm(
                 expected=value1,
                 actual=value2,
-                document_class="",  # Not required for basic comparison
-                attr_name="",  # Not required for basic comparison
-                attr_description="",  # Not required for basic comparison
+                document_class=self.document_class,
+                attr_name=self.attribute_name,
+                attr_description=self.attribute_description,
                 llm_config=self.llm_config,
             )
 
@@ -144,6 +194,8 @@ class LLMComparator(BaseComparator):
                 f"LLM comparison: matched={matched}, score={score:.3f}, reason='{reason}'"
             )
 
+            if len(self._verdict_cache) < _VERDICT_CACHE_MAX:
+                self._verdict_cache[cache_key] = score
             return score
 
         except Exception as e:
@@ -267,6 +319,23 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
 
         logger.debug(f"Expected value: {expected_str}")
         logger.debug(f"Actual value: {actual_str}")
+
+        # SHORT-CIRCUIT: values that are already equal after trivial normalization
+        # need no judge. A semantic comparator asked whether "Florida Democratic
+        # Party" matches "Florida Democratic Party" will always say yes, so the
+        # round trip buys nothing and costs latency, tokens, and throttle budget.
+        # This is free accuracy-wise (it can only agree with the model) and removes
+        # the bulk of calls on real corpora, where most fields are extracted
+        # correctly. Deliberately conservative: case, surrounding and repeated
+        # whitespace only — no punctuation or abbreviation folding, since deciding
+        # those is exactly the judge's job.
+        if _trivially_equal(expected_str, actual_str):
+            return (
+                True,
+                1.0,
+                "Values are identical after case/whitespace normalization "
+                "(no LLM call required).",
+            )
 
         # Create task_placeholders dictionary with all possible placeholders
         task_placeholders = {
