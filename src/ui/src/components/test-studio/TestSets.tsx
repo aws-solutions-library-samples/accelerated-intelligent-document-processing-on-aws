@@ -40,7 +40,7 @@ import { getErrorMessage } from '../../utils/errorUtils';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import CreateTestSetWizard from './CreateTestSetWizard';
-import { renderQualityTier } from './TestSetDetail';
+import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
 import { testSetDetailHref, testSetAnnotateHref } from '../../routes/constants';
 
 const client = generateClient();
@@ -761,12 +761,10 @@ const TestSets = (): React.JSX.Element => {
     },
     {
       id: 'qualityTier',
-      header: 'Est. label accuracy',
-      cell: (item: TestSetItem) => {
-        const entry = tiers[item.id];
-        if (!entry) return <Box color="text-status-inactive">-</Box>;
-        return renderQualityTier(entry.tier, entry.reason, entry.accuracy);
-      },
+      // The tier names are meaningless without the scale, and the per-row popover
+      // only ever explains the row you are hovering.
+      header: <LabelAccuracyLegend />,
+      cell: (item: TestSetItem) => renderLabelAccuracy(tiers[item.id], item.labelState),
     },
     {
       id: 'version',

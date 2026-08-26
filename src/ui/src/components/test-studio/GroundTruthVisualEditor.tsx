@@ -39,6 +39,7 @@ import { generateClient } from '../../api/client-shim';
 import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
+import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { describeClassConfigSource, resolveClassConfigVersion } from './classConfigVersion';
 import { getConfigClassOptions } from '../common/config-class-options';
@@ -211,15 +212,40 @@ const GroundTruthVisualEditor = ({
     }
   }, [localData, originalJson]);
 
-  // Warn on tab close with unsaved edits.
-  useEffect(() => {
-    if (!hasChanges) return undefined;
-    const beforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
+  // Covers tab close AND in-app navigation. Only the former was handled, and the
+  // latter is how edits were actually lost: a route change is not a page unload,
+  // so clicking a nav link discarded everything with no prompt at all.
+  useUnsavedChangesGuard(hasChanges, 'You have unsaved ground truth changes. Leave this document and discard them?');
+
+  // Leaf paths whose value differs from what was loaded. The renderer uses this to
+  // relabel the field as the reviewer's own and to drop the model's confidence,
+  // which otherwise stayed attached to hand-typed text.
+  const predictionChanges = useMemo(() => {
+    const changes = new Map<string, unknown>();
+    if (!localData || originalJson === null) return changes;
+    let original: Record<string, unknown>;
+    try {
+      original = JSON.parse(originalJson) as Record<string, unknown>;
+    } catch {
+      return changes;
+    }
+    const walk = (now: unknown, before: unknown, trail: string[]) => {
+      if (now !== null && typeof now === 'object') {
+        const beforeObj = (before ?? {}) as Record<string, unknown>;
+        if (Array.isArray(now)) {
+          // Array indices are dropped from the tracking key, matching the
+          // renderer's own path filter — so a changed row marks its field name.
+          now.forEach((item, i) => walk(item, Array.isArray(before) ? before[i] : undefined, trail));
+        } else {
+          Object.entries(now as Record<string, unknown>).forEach(([k, v]) => walk(v, beforeObj[k], [...trail, k]));
+        }
+        return;
+      }
+      if (now !== before) changes.set(trail.join('.'), now);
     };
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [hasChanges]);
+    walk(localData.inference_result ?? {}, original.inference_result ?? {}, []);
+    return changes;
+  }, [localData, originalJson]);
 
   const explainabilityInfo = (localData?.explainability_info as Record<string, unknown> | Record<string, unknown>[] | null) ?? null;
   const inferenceResult =
@@ -566,7 +592,17 @@ const GroundTruthVisualEditor = ({
                                 onChange={({ detail }) => updateDocumentClass(detail.selectedOption.value ?? '')}
                                 options={classOptionsWithCurrent}
                                 disabled={isReadOnly || isReextracting}
-                                placeholder="Choose a document class"
+                                placeholder={
+                                  // A greyed-out control with no explanation is
+                                  // indistinguishable from a broken one, and the two
+                                  // reasons here call for different responses: wait,
+                                  // or get permission.
+                                  isReextracting
+                                    ? 'Re-extracting — the class is locked until it finishes'
+                                    : isReadOnly
+                                      ? 'You do not have permission to change this class'
+                                      : 'Choose a document class'
+                                }
                               />
                             ) : (
                               <Input
@@ -584,12 +620,13 @@ const GroundTruthVisualEditor = ({
                                 header="Fields still reflect the previous class"
                                 action={
                                   <Button onClick={handleReextract} loading={isReextracting} disabled={isReadOnly}>
-                                    Change class &amp; re-extract
+                                    {isReextracting ? 'Re-extracting…' : 'Change class & re-extract'}
                                   </Button>
                                 }
                               >
                                 These fields were extracted as <b>{savedClassType}</b>. Re-extract to replace them with ones the{' '}
-                                <b>{documentClassType}</b> schema produces.
+                                <b>{documentClassType}</b> schema produces. This re-runs the document through the pipeline and usually takes
+                                under a minute; you can leave this page and come back.
                                 {localData?.labelSource === 'reviewed-human'
                                   ? ' This document was already marked reviewed; re-extracting discards those confirmed values.'
                                   : localData?.labelSource === 'draft-machine'
@@ -655,6 +692,7 @@ const GroundTruthVisualEditor = ({
                             onFieldFocus={handleFieldFocus}
                             onFieldDoubleClick={handleFieldFocus}
                             onFieldPathSelect={setSelectedFieldPath}
+                            predictionChanges={predictionChanges}
                             path={[]}
                             explainabilityInfo={explainabilityInfo}
                             collapsedPaths={collapsedPaths}

@@ -436,6 +436,10 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       <Button onClick={advanceToNext} disabled={isLoading}>
         Skip to next document
       </Button>
+      {/* Exactly one primary at a time, and it is whichever action comes next:
+          claim an unclaimed document, then confirm the one you hold. Both were
+          primary before, which put two solid-blue buttons side by side and left
+          the order of operations to be guessed. */}
       {selected.reviewObjectKey && !selected.claimedByMe && !selected.reviewed && (
         <Button variant="primary" onClick={claimSelected} loading={isClaiming} disabled={isLoading || Boolean(selected.claimedBy)}>
           {selected.claimedBy ? `Claimed by ${selected.claimedBy}` : 'Claim this document'}
@@ -450,7 +454,12 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       )}
       {/* Skipping advances the cursor without marking anything reviewed, so a
           correct document needs this to ever leave the queue. */}
-      <Button variant="primary" onClick={handleConfirmCorrect} loading={isConfirming} disabled={isLoading || !selected.reviewObjectKey}>
+      <Button
+        variant={selected.claimedByMe || selected.reviewed || !selected.reviewObjectKey ? 'primary' : 'normal'}
+        onClick={handleConfirmCorrect}
+        loading={isConfirming}
+        disabled={isLoading || !selected.reviewObjectKey}
+      >
         {selected.reviewed ? 'Re-confirm labels' : 'Labels are correct — mark reviewed'}
       </Button>
     </SpaceBetween>

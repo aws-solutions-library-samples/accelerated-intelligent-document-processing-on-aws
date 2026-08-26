@@ -97,11 +97,15 @@ const TestSetDocumentDetail = (): React.JSX.Element => {
     };
   }, [testSetId, objectKey]);
 
-  const handleSaved = (baselineKey: string) => {
+  const handleSaved = (_baselineKey: string) => {
     setFlashItems([
       {
         type: 'success',
-        content: `Ground truth saved to ${baselineKey}`,
+        // A storage path is not a confirmation. It used to print the full key —
+        // "opus-conf-bank-statement/baseline/152aa83d_doc_0001.pdf/sections/1/result.json"
+        // — which told the reviewer where the bytes went and nothing about what
+        // they had just done. State the consequence instead.
+        content: 'Ground truth saved — this document is now part of the reference that future runs are scored against.',
         dismissible: true,
         onDismiss: () => setFlashItems([]),
         id: 'gt-saved',

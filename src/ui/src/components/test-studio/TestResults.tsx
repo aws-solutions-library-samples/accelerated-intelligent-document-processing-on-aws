@@ -37,6 +37,7 @@ import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import ClassificationErrorsPanel from './ClassificationErrorsPanel';
+import { asFiniteNumber, formatCostUsd, formatUnitCostUsd } from './formatCost';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -797,6 +798,7 @@ const ComprehensiveBreakdown = ({
         <Container header={<Header variant="h3">Estimated Cost</Header>}>
           <Table
             resizableColumns
+            wrapLines
             items={(() => {
               const costItems: CostItem[] = [];
               let totalCost = 0;
@@ -815,6 +817,7 @@ const ComprehensiveBreakdown = ({
                   const api = apiParts.join('/');
 
                   const cost = (details.estimated_cost as number) || 0;
+                  const unitCost = asFiniteNumber(details.unit_cost);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -822,8 +825,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: details.unit_cost ? `$${details.unit_cost}` : 'None',
-                    estimatedCost: cost > 0 ? `$${cost.toFixed(4)}` : 'N/A',
+                    unitCost: unitCost === null ? 'None' : formatUnitCostUsd(unitCost),
+                    estimatedCost: cost > 0 ? formatCostUsd(cost) : 'N/A',
                     sortOrder: 0, // Regular items
                   });
                 });
@@ -860,7 +863,7 @@ const ComprehensiveBreakdown = ({
                     unit: '',
                     value: '',
                     unitCost: '',
-                    estimatedCost: `$${contextTotals[item.context].toFixed(4)}`,
+                    estimatedCost: formatCostUsd(contextTotals[item.context]),
                     isSubtotal: true,
                     sortOrder: 1, // Subtotal items
                   });
@@ -875,7 +878,7 @@ const ComprehensiveBreakdown = ({
                   unit: '',
                   value: '',
                   unitCost: '',
-                  estimatedCost: `$${totalCost.toFixed(4)}`,
+                  estimatedCost: formatCostUsd(totalCost),
                   isTotal: true,
                   sortOrder: 2, // Total item
                 });
@@ -931,10 +934,9 @@ const ComprehensiveBreakdown = ({
                   if (item.isSubtotal || item.isTotal) {
                     return <span style={{ fontWeight: 'bold', color: item.isTotal ? '#0073bb' : 'inherit' }}>{item.estimatedCost}</span>;
                   }
-                  const cost = item.estimatedCost;
-                  if (cost === 'N/A' || !cost) return 'N/A';
-                  const numValue = parseFloat(cost.toString().replace('$', ''));
-                  return isNaN(numValue) ? cost : `$${numValue.toFixed(4)}`;
+                  // Already formatted when the row was built; re-running toFixed(4)
+                  // here is what turned a sub-cent row back into '$0.0000'.
+                  return item.estimatedCost || 'N/A';
                 },
               },
             ]}
@@ -1788,7 +1790,16 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             <strong>Files:</strong>{' '}
             {testSetStatus === 'NOT_FOUND' ? 'Test set deleted' : testSetFileCount !== null ? `${testSetFileCount} files` : 'Loading...'}
           </Box>
-          <FormField label="Number of Files" description={`Optional: Limit the number of files to process (max: ${testSetFileCount || 0})`}>
+          <FormField
+            label="Number of Files"
+            // Same reasoning as TestRunner: an unknown maximum must not render as
+            // a maximum of zero.
+            description={
+              testSetFileCount
+                ? `Optional: Limit the number of files to process (max: ${testSetFileCount})`
+                : 'Optional: Limit the number of files to process.'
+            }
+          >
             <Input
               value={reRunNumberOfFiles}
               onChange={({ detail }) => {

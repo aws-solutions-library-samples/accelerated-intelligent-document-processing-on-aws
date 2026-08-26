@@ -13,10 +13,10 @@
  */
 
 import { render, screen } from '@testing-library/react';
-import React from 'react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import { QUALITY_TIER_COLORS, renderQualityTier } from '../TestSetDetail';
+import { LabelAccuracyLegend, QUALITY_TIER_COLORS, renderLabelAccuracy, renderQualityTier } from '../TestSetDetail';
 
 describe('renderQualityTier', () => {
   it('does not colour "unrated" as an error', () => {
@@ -58,5 +58,58 @@ describe('renderQualityTier', () => {
   it('renders a dash when there is no tier at all', () => {
     const { container } = render(renderQualityTier(null, null, null));
     expect(container.textContent).toBe('-');
+  });
+});
+
+/**
+ * The same column, but for the rows where there is no estimate — which is where
+ * the trust signal was inverted. A set of hand-authored ground truth showed a bare
+ * '-', while the machine drafts being measured against it showed a percentage, so
+ * the reference looked worse than the thing it was the reference for.
+ */
+describe('renderLabelAccuracy', () => {
+  it('does not present authored ground truth as unrated', () => {
+    const { container } = render(renderLabelAccuracy(null, 'labeled'));
+
+    expect(screen.getByText('Ground truth')).toBeInTheDocument();
+    expect(container.textContent).not.toBe('-');
+    expect(container.textContent).not.toMatch(/not rated|not assessed/i);
+  });
+
+  it('says a draft set is simply not assessed yet, which is a different claim', () => {
+    render(renderLabelAccuracy(null, 'draft'));
+
+    expect(screen.getByText('Not assessed yet')).toBeInTheDocument();
+    expect(screen.queryByText('Ground truth')).not.toBeInTheDocument();
+  });
+
+  it('shows the estimate whenever there is one, whatever the label state', () => {
+    render(renderLabelAccuracy({ tier: 'silver', reason: 'partly measured here', accuracy: 0.961 }, 'labeled'));
+
+    expect(screen.getByText('96.1% est.')).toBeInTheDocument();
+    expect(screen.getByText('Silver')).toBeInTheDocument();
+  });
+});
+
+describe('LabelAccuracyLegend', () => {
+  it('names every tier, so "Bronze" is readable without already knowing the scale', async () => {
+    render(<LabelAccuracyLegend />);
+
+    await userEvent.click(screen.getByText(/Est. label accuracy/));
+
+    for (const tier of ['Gold', 'Silver', 'Bronze', 'Unrated']) {
+      expect(screen.getByText(tier)).toBeInTheDocument();
+    }
+    // And the thresholds themselves, which are what the tier names stand for.
+    expect(screen.getByText(/at least 99%/)).toBeInTheDocument();
+    expect(screen.getByText(/at least 95%/)).toBeInTheDocument();
+  });
+
+  it('explains why authored ground truth carries no figure', async () => {
+    render(<LabelAccuracyLegend />);
+
+    await userEvent.click(screen.getByText(/Est. label accuracy/));
+
+    expect(screen.getByText(/not a lower rating/i)).toBeInTheDocument();
   });
 });

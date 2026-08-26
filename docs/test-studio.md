@@ -691,6 +691,21 @@ Reviewing a draft label is the same **Edit Ground Truth** flow described above;
 saving flips the label to *Reviewed (human)*. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
+**A field you edit stops carrying the model's confidence.** The score describes
+the value the model produced, so once you have replaced that value it says nothing
+about what is on screen. An edited field shows *"Edited — the model's confidence no
+longer applies"* in place of the percentage, and its provenance label changes from
+*Predicted:* to *Your value:*. Suppression is per field: correcting one field does
+not hide the confidence of the others.
+
+**Leaving the editor with unsaved edits prompts first.** This covers in-app
+navigation as well as closing the tab — clicking a nav link with corrections
+pending used to discard them silently.
+
+Each field also carries a **Show &lt;field&gt; on the page** button, which highlights
+where the value was read from. That was previously available only by clicking the
+field, with no visible affordance and no keyboard equivalent.
+
 ## How much review is enough?
 
 Reviewing every document in a large set is expensive, and most of that effort is
@@ -1244,6 +1259,16 @@ the estimator withdraws the number rather than keep quoting an inferred one. So
 "91.7% Bronze, 0 measurements" becoming "Not rated, 136 measurements" is a gain in
 honesty, not a loss in quality; the badge is deliberately not coloured as an error,
 and it states the reason inline. Nothing about your labels got worse.
+
+**A set of hand-authored ground truth carries no estimate at all, and reads `Ground
+truth` rather than a tier.** The figure is inferred from the confidence scores of the
+run that produced the labels, and labels you uploaded or corrected by hand have none.
+That is not a lower rating — it is the reference the estimates are measured against.
+This is distinct from `Not assessed yet`, which means a set does have machine drafts
+but no curve has been computed for them.
+
+The `Est. label accuracy` column header opens a legend covering all four tiers and
+their thresholds, so a `Bronze` badge can be read without already knowing the scale.
 
 The interval is a [Wilson score
 interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),
