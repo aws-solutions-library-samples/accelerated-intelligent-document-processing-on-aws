@@ -54,13 +54,13 @@ dev = [
 
 # Image handling dependencies
 image = [
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   "pypdfium2>=5.5.0",  # PDF page extraction for discovery multi-section support
 ]
 
 # OCR module dependencies
 ocr = [
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
   "numpy==1.26.4",
@@ -71,17 +71,17 @@ ocr = [
 
 # Classification module dependencies
 classification = [
-  "Pillow==12.2.0", # For image handling
+  "Pillow==12.3.0", # For image handling
 ]
 
 # Extraction module dependencies
 extraction = [
-  "Pillow==12.2.0",  # For image handling
+  "Pillow==12.3.0",  # For image handling
 ]
 
 # Assessment module dependencies
 assessment = [
-  "Pillow==12.2.0",               # For image handling
+  "Pillow==12.3.0",               # For image handling
   "aws-lambda-powertools>=3.2.0", # Structured logging and observability
 ]
 
@@ -118,6 +118,17 @@ reporting = [
 appsync = ["requests<3.0.0,>=2.32.3"]
 
 # Agents module dependencies
+#
+# bedrock-agentcore stays capped below 1.9.0 despite GHSA-j6g5-3hh3-pgw8 (HIGH,
+# argument-delimiter injection, fixed in 1.18.1). The vulnerable entry point is
+# the SDK's ``install_packages()`` helper, which this repo never calls — the
+# only code-interpreter tools invoked are ``writeFiles``/``listFiles``/
+# ``executeCode`` (see agents/analytics/tools/code_interpreter_tools.py), so the
+# advisory is unreachable here. Upgrading is not a local change either: 1.18.1
+# requires boto3>=1.43.31, which breaks the deliberate ``boto3<1.43.0`` pin
+# above and would move every Lambda and layer onto the 1.43 line. Revisit this
+# together with that boto3 migration, or sooner if install_packages() is ever
+# used.
 agents = [
   "strands-agents==1.14.0; python_version>='3.10'",
   "strands-agents-tools==0.2.22; python_version>='3.10'",
@@ -130,7 +141,7 @@ multi_document_discovery = [
   "scikit-learn>=1.5.0",       # KMeans clustering and silhouette analysis
   "scipy>=1.14.0",             # KDTree for nearest-neighbor search
   "numpy==1.26.4",             # Embedding matrices and vector operations
-  "Pillow==12.2.0",            # Image processing for document rendering
+  "Pillow==12.3.0",            # Image processing for document rendering
   "pypdfium2>=5.5.0",          # PDF page rendering
   "jinja2>=3.1.0",             # Prompt template rendering
   "strands-agents==1.14.0; python_version>='3.10'",  # Agentic schema generation
@@ -159,7 +170,7 @@ code_intel = [
     "requests==2.33.0",
     "strands-agents==1.14.0",
     "strands-agents-tools==0.2.22",
-    "bedrock-agentcore>=1.6.1,<1.9.0",
+    "bedrock-agentcore>=1.6.1,<1.9.0",  # cap rationale: see the [agents] extra
     "PyYAML>=6.0.0",
     "pathspec>=0.11.0",
     "chardet>=5.0.0"
@@ -183,7 +194,7 @@ test = [
   "openpyxl==3.1.5",
   "python-docx==1.2.0",
   "moto[s3,cloudformation]==5.1.8", # For mocking AWS services in tests (cloudformation extra needed by feature-platform launch-url tests)
-  "Pillow==12.2.0",                 # Required for image processing in assessment tests
+  "Pillow==12.3.0",                 # Required for image processing in assessment tests
   "rich>=13.0.0",                   # Required for publish tests
   "graphql-core>=3.2,<4",           # Real GraphQL parser: oracle for the API-validation-spec parser-correctness test
   "idp_common[agentic-extraction]", # Required for agentic_idp tests
@@ -210,7 +221,7 @@ test = [
 all = [
   "stickler-eval==0.5.0",
   "genson==1.3.0",
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
   "numpy==1.26.4",
@@ -221,7 +232,7 @@ all = [
   "python-docx==1.2.0",
   "strands-agents==1.14.0; python_version>='3.10'",
   "strands-agents-tools==0.2.22; python_version>='3.10'",
-  "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",
+  "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",  # cap rationale: see the [agents] extra
   "jsonschema>=4.0.0",
   # "s3fs==2023.12.2" - - disabled till we fix package dependencies
 ]

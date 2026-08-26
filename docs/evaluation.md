@@ -1443,7 +1443,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 ### Stickler Version Information
 
 The solution installs Stickler from PyPI (`stickler-eval==0.5.0`, pinned in
-`lib/idp_common_pkg/pyproject.toml` and `setup.py`). The resolved version is
+`lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from
 `importlib.metadata.version("stickler-eval")` so environment drift and

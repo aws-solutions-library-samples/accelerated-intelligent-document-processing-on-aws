@@ -96,7 +96,9 @@ def planner(monkeypatch):
 def _fake_parquet(monkeypatch, planner_mod, rows: List[Dict[str, Any]]):
     """Stub hf_hub_download + pyarrow so no network or real file is needed."""
     monkeypatch.setattr(
-        planner_mod, "hf_hub_download", lambda **kw: "/tmp/fake.parquet"
+        planner_mod,
+        "hf_hub_download",
+        lambda **kw: "/tmp/fake.parquet",  # nosec B108 - fake path returned by a monkeypatched download, never opened
     )
 
     class FakeTable:

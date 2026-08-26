@@ -892,8 +892,8 @@
     "status": "resolved",
     "firstDetectedAt": "2026-07-07T01:25:57.555Z",
     "assessmentCount": 4,
-    "suppressionReason": "Accepted: UI dependencies are pinned via package-lock.json and installed with npm ci; minimum-release-age is a repo-wide supply-chain policy decision tracked separately.",
-    "resolvedAt": "2026-07-08T23:11:40.738Z"
+    "resolvedAt": "2026-08-25T18:30:28.219Z",
+    "resolutionNote": "Fixed, not accepted: src/ui/.npmrc now sets min-release-age=7. The previous suppression reason (lockfile pinning + npm ci) was never a substitute \u2014 npm ci was never the exposed path; `npm install` adding or upgrading a dependency was."
   },
   {
     "source": "Bandit",

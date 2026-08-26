@@ -7,6 +7,94 @@ an MR to `develop`. It covers reproducing the scan, telling real issues from
 false positives, and the two ways to make a HIGH finding go away: **mitigate**
 (fix the code) or **suppress** (record accepted-risk / scanner-limitation).
 
+## ⚠️ SRT does NOT check dependencies for CVEs — `make dep-audit` does
+
+SRT's five scanners include **syft**, which builds an SBOM: an *inventory* of
+packages, with **no vulnerability matching**. So SRT can never fail a build for a
+known-vulnerable dependency, and for a long time nothing else in CI did either
+(found by diffing our SRT output against an independent ASH scan, whose grype
+stage flags exactly this class). If you are asked "are we exposed to CVE-X",
+**SRT is the wrong tool** — reach for:
+
+```bash
+make dep-audit        # regenerate manifests + audit ~1800 pinned deps vs OSV
+make dep-audit-fast   # reuse existing dist/manifests (skip regeneration)
+```
+
+- Implemented by `scripts/security/dep_audit.py`; gated in CI by the `dep_audit`
+  job (`fast_checks`, every push and MR, no AWS).
+- Reads the manifests `scripts/generate-dep-manifest.sh` produces, covering
+  `uv.lock`, every `package-lock.json` and every `requirements.txt`.
+- **Fails on HIGH/CRITICAL.** Triage the same way as SRT — but in
+  `scripts/security/dep_audit_allowlist.json`, with a real justification
+  (`{"id": "GHSA-…", "package": "…", "reason": "…"}`). Prefer bumping the pin;
+  allowlist only when the advisory is genuinely unreachable, and say why.
+- **Exit 2 means the audit could not run** (OSV unreachable) — that is not a
+  pass. Exit 1 is findings, 0 is clean.
+- Two gotchas worth knowing before you chase a finding:
+  - An advisory with **no `fixed` event** and an open-ended range matches *every*
+    version. Check the reported `last known affected range` — the fix may have
+    shipped outside the registry (SheetJS/`xlsx` publishes patches to
+    `cdn.sheetjs.com`, which OSV cannot model).
+  - Bumping a pin can be blocked downstream: `bedrock-agentcore`'s fix needs
+    `boto3>=1.43.31` against a deliberate `boto3<1.43.0` pin, and a Pillow bump
+    can break SAM's arm64 build (see `feature-platform/pii-anonymizer/hook/Makefile`
+    for the multi-`--platform` workaround).
+
+## Suppressing a finding so it stays suppressed (SRT *and* ASH)
+
+Our security reviewers also run [ASH](https://github.com/awslabs/automated-security-helper)
+out of band. ASH runs the **real scanner binaries**, so it inherits whatever each
+scanner natively honours — which means an **inline pragma is strictly better than
+a tool-specific config entry**: it lives next to the code it excuses, survives
+file moves and line drift, and satisfies every tool that runs that scanner.
+
+Verified locally against the actual scanner binaries (not assumed):
+
+| Scanner | Inline pragma | Notes |
+|---|---|---|
+| bandit | `# nosec B310 - reason` | **`# noqa: S310` is ruff, NOT bandit.** A line needs both. |
+| detect-secrets | `# pragma: allowlist secret` | Works in `#`, `//` and `<!-- -->` comments. |
+| checkov | `# checkov:skip=CKV_AWS_123:"reason"` | 521 already in use. |
+| cfn-nag | `Metadata: cfn_nag: rules_to_suppress` | 157 already in use. |
+| semgrep | `# nosemgrep: rule-id` | 43 already in use. |
+| grype / npm-audit | none exists | Must go in a config file. |
+
+Three traps that cost real time:
+
+1. **bandit's `# nosec` is line-scoped, and on a multi-line string the pragma
+   must sit on a line INSIDE the string node.** The closing `"""` works; the
+   opening line does **not** — putting it there makes it part of the string, so it
+   suppresses nothing *and* ships the pragma text as data. Two analytics prompts
+   had exactly this bug and were sending `# nosec B608 - ...` to the model.
+2. **detect-secrets dedupes by secret hash**, reporting one line per unique
+   secret per file. Suppress the first occurrence and the next one surfaces — so
+   annotate *every* occurrence of the pattern, then re-scan to confirm zero.
+3. **A semgrep rule can match your own justification comment.** Writing
+   `min-release-age=0` inside an explanatory comment in `.npmrc` re-triggered the
+   very rule the comment was explaining.
+
+### ASH-only suppressions: `.ash/.ash.yaml`
+
+For what cannot be inline — generated/data files with no comment syntax, and
+dependency advisories — use `global_settings.suppressions`. `path` and `reason`
+are required; `rule_id`, `line_start`, `line_end`, `expiration` are optional
+(schema: `automated_security_helper/schemas/AshConfig.json` in the ASH repo).
+
+> ⚠️ **A `path` entry with no `rule_id` suppresses ALL findings on that path.**
+> Only ever do that for pure data files. Never for a source file or a CFN
+> template — it converts a triage note into a blind spot.
+> `scripts/security/tests/test_dep_audit.py::TestAshConfig` enforces this.
+
+Keep the dependency entries in `.ash/.ash.yaml` in sync with
+`scripts/security/dep_audit_allowlist.json` (a test checks for stale twins).
+
+⚠️ **`pip install automated-security-helper` does NOT install ASH.** That PyPI
+name is an unrelated placeholder ("test-package-placeholder", single release
+`11.0.2`, no console script). Real ASH is installed from GitHub. See
+`docs/dependency-confusion.md` — this is the same class of hazard that doc covers
+for our own first-party names.
+
 ## What SRT is and how the gate works
 
 - `make srt-setup` downloads the `srt` binary into `.srt/`, writes

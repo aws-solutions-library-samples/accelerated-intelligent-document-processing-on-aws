@@ -75,7 +75,7 @@ class TestValidateAwsCredentials:
         """Test validation when explicit AWS credentials are available."""
         env_vars = {
             "AWS_ACCESS_KEY_ID": "test_key",
-            "AWS_SECRET_ACCESS_KEY": "test_secret",  # nosec B105 - dummy test credential
+            "AWS_SECRET_ACCESS_KEY": "test_secret",  # nosec B105 - dummy test credential  # pragma: allowlist secret
         }
         with patch.dict(os.environ, env_vars, clear=True):
             assert validate_aws_credentials() is True
