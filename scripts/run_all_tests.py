@@ -86,6 +86,10 @@ RUN_ROOTS = [
     "feature-platform/sample-health-insurance-review/feature-api/tests",
     "feature-platform/sample-health-insurance-review/hook/tests",
     "feature-platform/sample-health-insurance-review/ui-deployer/tests",
+    # Structural assertions on patterns/unified/statemachine/workflow.asl.json —
+    # invariants that live in the state machine (retry policies, failure routing)
+    # where no Python test can see them. Pure JSON parsing, no AWS clients.
+    "patterns/unified/tests",
     # Benchmark harness analysis/orchestration code. It decides what a release
     # report *claims* and which config a run actually executes, so a bug here
     # becomes a wrong published number rather than a visible failure — which is
