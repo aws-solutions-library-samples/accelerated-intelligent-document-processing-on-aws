@@ -860,7 +860,16 @@ underneath it, which were extracted against the wrong schema.
 
 In the editor, **Class label** is a dropdown of the classes defined by the config
 version that produced these labels — not the deployment's currently active
-configuration, which may have moved on since. Choosing a different class offers
+configuration, which may have moved on since. A badge above the fields always
+names which config the list came from, and says so explicitly when it is a
+fallback ("… (active config)", "built-in default"), because a list of classes
+from the wrong config looks exactly like a list of classes from the right one.
+
+The order is: the config stamped on the baseline; failing that the test set's own
+declared version; failing that the deployment's **active** config. Hand-uploaded
+and synthetic ground truth carries no stamp — nothing produced it through the
+pipeline — so those sets fall to the active config rather than to the built-in
+preset. Choosing a different class offers
 **Change class & re-extract**, which re-runs that one document and waits for the
 new labels before returning, so you are never left looking at fields from the
 previous class.

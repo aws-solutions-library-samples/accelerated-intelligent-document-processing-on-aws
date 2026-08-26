@@ -39,6 +39,8 @@ import { generateClient } from '../../api/client-shim';
 import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
+import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import { describeClassConfigSource, resolveClassConfigVersion } from './classConfigVersion';
 import { getConfigClassOptions } from '../common/config-class-options';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
@@ -87,6 +89,12 @@ interface GroundTruthVisualEditorProps {
    */
   testSetId?: string;
   /**
+   * Config version whose classes to offer when the baseline carries no stamp of
+   * its own — the test set's declared version, if the caller knows it. Without
+   * it the active config is used; see the fallback chain in the component.
+   */
+  configVersion?: string;
+  /**
    * Canonical path of a field to select on open ("LineItems[0].Rate"), from a
    * shared deep link. Ancestors are expanded so the field is actually on screen.
    */
@@ -115,6 +123,7 @@ const GroundTruthVisualEditor = ({
   saveButtonText,
   onReextracted,
   testSetId,
+  configVersion,
   focusFieldPath = null,
   buildFieldLink = null,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
@@ -230,12 +239,18 @@ const GroundTruthVisualEditor = ({
 
   const documentClassType = (localData?.document_class as Record<string, unknown> | undefined)?.type as string | undefined;
 
-  // Classes come from the config version stamped on the baseline, not the
-  // deployment's active config, which may have moved on since the labels were
-  // written.
-  const baselineConfigVersion =
-    ((localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined) || 'default';
-  const { mergedConfig } = useConfiguration(baselineConfigVersion);
+  // Which config's classes to offer, and why. See classConfigVersion.ts — the
+  // fallback order is the whole substance of #662, so it lives in a tested
+  // function rather than inline here.
+  const stampedConfigVersion = (localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined;
+  const { versions } = useConfigurationVersions();
+  const activeConfigVersion = useMemo(() => versions.find((v) => v.isActive)?.versionName, [versions]);
+  const classConfig = useMemo(
+    () => resolveClassConfigVersion(stampedConfigVersion, configVersion, activeConfigVersion),
+    [stampedConfigVersion, configVersion, activeConfigVersion],
+  );
+  const classConfigVersion = classConfig.version;
+  const { mergedConfig } = useConfiguration(classConfigVersion);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
   // A class the config no longer lists stays selectable; otherwise a document whose
   // class was since renamed would silently blank the field.
@@ -282,7 +297,7 @@ const GroundTruthVisualEditor = ({
       const started = await client.graphql({
         query: reextractTestSetDocument,
         variables: {
-          input: { testSetId, objectKey, documentClass: documentClassType, configVersion: baselineConfigVersion },
+          input: { testSetId, objectKey, documentClass: documentClassType, configVersion: classConfigVersion },
         },
       });
       const job = started.data?.reextractTestSetDocument;
@@ -462,7 +477,10 @@ const GroundTruthVisualEditor = ({
       {localData && (
         <SpaceBetween direction="horizontal" size="xs">
           {renderLabelSource(localData.labelSource as string | undefined)}
-          {baselineConfigVersion !== 'default' && <Badge color="grey">Config: {baselineConfigVersion}</Badge>}
+          {/* Always shown, including the fallback cases. Hiding it whenever the
+              version resolved to 'default' is exactly what let #662 go unnoticed:
+              the classes on offer were the built-in preset's and nothing said so. */}
+          <Badge color={classConfig.source === 'baseline' ? 'grey' : 'blue'}>Classes from: {describeClassConfigSource(classConfig)}</Badge>
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
               {editHistoryCount} revision{editHistoryCount === 1 ? '' : 's'} — see Revision History
