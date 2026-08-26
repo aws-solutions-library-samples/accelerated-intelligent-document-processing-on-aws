@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { useState, useEffect } from 'react';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../api/auth-session';
 import { generateClient } from '../api/client-shim';
 import { getMyProfile } from '../graphql/generated';
 
@@ -73,7 +73,7 @@ const useUserRole = (): UserRoleReturn => {
     const fetchUserData = async () => {
       try {
         // Fetch Cognito groups from auth session
-        const session = await fetchAuthSession();
+        const session = await fetchSharedAuthSession();
         const userGroups = session?.tokens?.idToken?.payload?.['cognito:groups'] || [];
         let groupsArray = Array.isArray(userGroups) ? (userGroups as string[]) : [userGroups as string];
 
@@ -84,7 +84,7 @@ const useUserRole = (): UserRoleReturn => {
         const appGroups = groupsArray.filter((g) => APP_GROUPS.includes(g));
         if (isFederated && appGroups.length === 0) {
           try {
-            const refreshed = await fetchAuthSession({ forceRefresh: true });
+            const refreshed = await fetchSharedAuthSession({ forceRefresh: true });
             const refreshedGroups = refreshed?.tokens?.idToken?.payload?.['cognito:groups'] || [];
             groupsArray = Array.isArray(refreshedGroups) ? (refreshedGroups as string[]) : [refreshedGroups as string];
           } catch (refreshErr) {
