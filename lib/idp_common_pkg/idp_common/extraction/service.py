@@ -49,7 +49,9 @@ from idp_common.extraction.topk_resolver import (
 )
 from idp_common.extraction.validation import (
     ValidationReport,
+    build_empty_list_feedback,
     build_subset_schema,
+    find_empty_declared_lists,
     validate_extraction,
 )
 from idp_common.models import Document, Section
@@ -1616,8 +1618,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         extracted_fields: dict[str, Any],
         schema: dict[str, Any],
         tool_used: bool,
+        ocr_analysis: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Detailed completeness check with violations."""
+        """Detailed completeness check with violations.
+
+        ``minItems`` is the only *schema* signal for a short list, and most configs
+        do not set it — so this used to print "All schema constraints satisfied"
+        directly above a warning that a declared 100-row list had come back
+        ``null``, which reads as a clean bill of health. When ``ocr_analysis``
+        supplies the evidence, that case is now reported here too, without
+        overstating it as a schema violation (it isn't one).
+        """
 
         violations = []
         properties = schema.get(SCHEMA_PROPERTIES, {})
@@ -1649,14 +1660,45 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         }
                     )
 
+        # Evidence-based emptiness: no schema constraint is broken, but the OCR
+        # pre-flight found a substantial table and every declared list came back
+        # with no rows. Reported separately so `schema_constraints_met` keeps its
+        # exact meaning while the summary stops claiming everything is fine.
+        ocr = ocr_analysis or {}
+        empty_lists: list[str] = []
+        if ocr.get("tool_usage_recommended") and ocr.get("tables_detected"):
+            empty, populated = find_empty_declared_lists(extracted_fields, schema)
+            if empty and not populated:
+                empty_lists = empty
+
+        schema_ok = len(violations) == 0
+        if violations:
+            summary = (
+                f"{len(violations)} constraint violation(s) detected - "
+                "extraction may be incomplete"
+            )
+        elif empty_lists:
+            summary = (
+                f"Schema constraints satisfied, but list field(s) "
+                f"{', '.join(empty_lists)} returned NO rows while the OCR found "
+                f"{ocr.get('tables_detected')} table region(s) with ~"
+                f"{ocr.get('estimated_row_count')} rows. "
+                + (
+                    "The agent did not use the table parsing tool."
+                    if not tool_used
+                    else "The table parsing tool ran but produced no rows."
+                )
+                + " Set minItems on the list field to make this a hard constraint."
+            )
+        else:
+            summary = "All schema constraints satisfied"
+
         return {
-            "schema_constraints_met": len(violations) == 0,
+            "schema_constraints_met": schema_ok,
             "violations": violations,
-            "summary": (
-                "All schema constraints satisfied"
-                if not violations
-                else f"{len(violations)} constraint violation(s) detected - extraction may be incomplete"
-            ),
+            "unexplained_empty_lists": empty_lists,
+            "complete": schema_ok and not empty_lists,
+            "summary": summary,
         }
 
     @staticmethod
@@ -2380,7 +2422,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # Completeness check
         if "completeness_check" in metadata:
             check = metadata["completeness_check"]
-            status_icon = "✓" if check.get("schema_constraints_met") else "✗"
+            if not check.get("schema_constraints_met"):
+                status_icon = "✗"
+            elif check.get("unexplained_empty_lists"):
+                # No schema constraint broken, but a table's worth of rows is
+                # missing — a ✓ here is what made this read as healthy.
+                status_icon = "⚠"
+            else:
+                status_icon = "✓"
             report_lines.extend(
                 [
                     f"{status_icon} Completeness Validation:",
@@ -2490,12 +2539,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             or self.config.extraction.agentic.validation.escalation_model
         )
 
-    def _build_schema_validator(self):
+    def _build_schema_validator(self, ocr_analysis: dict[str, Any] | None = None):
         """Return an in-loop schema-validation callback, or None when disabled.
 
         The callback validates an extracted dict against the full class JSON
         Schema (notably ``format`` keywords the Pydantic model does not enforce)
         and returns ``(is_valid, agent_feedback)`` for the agent to self-correct.
+
+        When ``ocr_analysis`` says this section holds a substantial table, the
+        callback ALSO rejects a result whose declared list fields all came back
+        with no rows. That case violates no schema constraint unless the config
+        sets ``minItems``, so without this it consumed none of the retries the
+        loop exists to provide — observed live: an agent declined the
+        deterministic parser because one column was OCR-corrupted, returned
+        ``Transactions: null`` for a 100-row table, and the section was reported
+        COMPLETED with scalar accuracy 1.000.
+
+        Only the *all* case is rejected: if some list field is populated, the
+        detected tables plausibly belong to that one and an empty sibling may be
+        genuinely absent from the document.
         """
         vcfg = self.config.extraction.agentic.validation
         if not vcfg.enabled:
@@ -2503,11 +2565,38 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         class_schema = self._class_schema
         check_formats = vcfg.check_formats
+        # Reuse the pre-flight's own definition of "there is a substantial table
+        # here" (>30 pipe-table rows) rather than inventing a second threshold —
+        # it is the same signal the agent was given tool guidance from.
+        ocr = ocr_analysis or {}
+        table_evidence = bool(ocr.get("tool_usage_recommended")) and bool(
+            ocr.get("tables_detected")
+        )
 
         def _validate(data: dict[str, Any]) -> tuple[bool, str]:
             report = validate_extraction(
                 data, class_schema, check_formats=check_formats
             )
+            if table_evidence:
+                empty, populated = find_empty_declared_lists(data, class_schema)
+                if empty and not populated:
+                    logger.warning(
+                        "Declared list field(s) returned no rows despite OCR table "
+                        "evidence; asking the agent to extract them",
+                        extra={
+                            "empty_list_fields": empty,
+                            "ocr_tables_detected": ocr.get("tables_detected"),
+                            "ocr_estimated_rows": ocr.get("estimated_row_count"),
+                        },
+                    )
+                    feedback = build_empty_list_feedback(
+                        empty,
+                        int(ocr.get("tables_detected") or 0),
+                        int(ocr.get("estimated_row_count") or 0),
+                    )
+                    if not report.valid:
+                        feedback = f"{report.agent_feedback()}\n\n{feedback}"
+                    return False, feedback
             return report.valid, report.agent_feedback()
 
         return _validate
@@ -3080,7 +3169,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Used only on the single-agent path: per-batch validation would
             # falsely fail minItems before the batches are merged, so batch
             # output is validated once after merge below.
-            schema_validator = self._build_schema_validator()
+            #
+            # ocr_analysis is the whole-document pre-flight, which is exactly the
+            # right scope here for the same reason: the single agent sees the
+            # whole section, so "the OCR has a 100-row table but every declared
+            # list came back empty" is a sound inference. It would NOT be sound
+            # per-shard, where a shard legitimately contains none of the rows.
+            schema_validator = self._build_schema_validator(ocr_analysis=ocr_analysis)
 
             # Use concurrent SHARDED extraction if configured and enough pages.
             # Each shard's prompt contains only its pages' text/images (built by
@@ -3906,6 +4001,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     extracted_fields=result.extracted_fields,
                     schema=self._class_schema,
                     tool_used=tool_used,
+                    ocr_analysis=result.ocr_analysis,
                 )
 
         # Population heuristic: flag suspiciously sparse extractions (e.g.

@@ -270,6 +270,68 @@ def validate_extraction(
     )
 
 
+def find_empty_declared_lists(
+    data: dict[str, Any], schema: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Split the schema's top-level array fields into ``(empty, populated)``.
+
+    "Empty" means absent, ``null``, or a zero-length list — the three ways a
+    declared list can come back carrying no rows. They are grouped together
+    deliberately: from the consumer's point of view they are indistinguishable,
+    and each is a table's worth of data that is simply gone.
+
+    No JSON Schema constraint is violated by any of them unless the config
+    happens to set ``minItems``, which is why this is a separate function rather
+    than part of :func:`validate_extraction` — the caller supplies the evidence
+    (an OCR pre-flight that found a substantial table) that turns "empty" into
+    "wrong".
+    """
+    empty: list[str] = []
+    populated: list[str] = []
+    for name, field_schema in (schema.get("properties") or {}).items():
+        if not isinstance(field_schema, dict) or field_schema.get("type") != "array":
+            continue
+        value = data.get(name)
+        if value is None or (isinstance(value, list) and not value):
+            empty.append(name)
+        else:
+            populated.append(name)
+    return empty, populated
+
+
+def build_empty_list_feedback(
+    fields: list[str], tables_detected: int, estimated_row_count: int
+) -> str:
+    """Agent feedback for declared lists that returned no rows despite evidence.
+
+    Written to counter the specific reasoning that produced this failure live: an
+    agent declined the deterministic table parser because one column ("Amount")
+    was OCR-corrupted, then returned the whole 100-row list as ``null`` rather
+    than extracting it directly — treating "I cannot map this cleanly" as
+    "therefore no rows". One unreadable column is not a reason to discard the
+    other columns, the other rows, or the field.
+    """
+    names = ", ".join(f"'{f}'" for f in fields)
+    plural = "s" if len(fields) > 1 else ""
+    return (
+        f"The list field{plural} {names} came back with NO rows, but the OCR text "
+        f"for this section contains {tables_detected} table region(s) with roughly "
+        f"{estimated_row_count} rows. Those rows are in the document and must be "
+        "extracted.\n"
+        "Extract them now, using whichever route works:\n"
+        "  - the deterministic parser (parse_table + map_table_to_schema + "
+        "finalize_table_extraction), or\n"
+        "  - extraction_tool / apply_json_patches directly, in batches.\n"
+        "Rules that are not negotiable:\n"
+        "  - NEVER return null or an empty list for a field whose rows are "
+        "visible in the document.\n"
+        "  - If ONE column is unreadable or cannot be mapped, still emit every "
+        "row, with that single cell set to null or to the literal text you can "
+        "see. Do not drop the row, and do not drop the whole list.\n"
+        "  - Keep every field you have already extracted correctly."
+    )
+
+
 def build_subset_schema(
     schema: dict[str, Any], fields: set[str] | list[str]
 ) -> dict[str, Any]:

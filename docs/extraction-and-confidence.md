@@ -1303,6 +1303,31 @@ Without it, only the empty/absent and sparse signals apply — a list that retur
 For corpora where large tables are expected, also prefer **Advanced** mode, which
 holds recall 1.000 through 3,200 rows by sharding.
 
+#### Advanced mode: an empty list is retried when the OCR proves there were rows
+
+In Advanced (agentic) mode, one case does **not** need `minItems` to be caught.
+The OCR pre-flight scan already counts Markdown pipe-table rows in the section, so
+when it finds a substantial table (>30 rows) and **every** declared list field
+comes back with no rows, the extraction loop rejects the result and gives the
+agent an explicit correction round naming the field and the row count. If some
+list is populated, the check stays quiet — the detected tables plausibly belong to
+that one, and an empty sibling may be genuinely absent.
+
+This closes a real failure mode: an agent declined the deterministic table parser
+because one column was OCR-corrupted, then returned the whole 100-row list as
+`null` — treating *"I cannot map this cleanly"* as *"therefore no rows"*. The
+result was schema-valid, scalar accuracy was 1.000, and the section was reported
+COMPLETED. The prompt now states the rule explicitly: declining the tool obliges
+the agent to extract the table directly, and one unreadable column means that
+cell is `null`, not that the row or the list is dropped.
+
+The **Processing Report** also stops contradicting itself here. It previously
+printed `✓ Completeness Validation: All schema constraints satisfied` immediately
+above the warning that the list was empty, because with no `minItems` no
+constraint *was* broken. It now reads `⚠` and says which list returned no rows,
+how many rows the OCR found, whether the table tool ran, and that `minItems` would
+make it a hard constraint.
+
 ---
 
 ## 9. Output Format
