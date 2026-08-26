@@ -19,7 +19,7 @@
 // Subscriptions have no transport here (the HTTP API uses polling instead).
 // `graphql()` on a subscription returns an inert subscription object so any
 // not-yet-migrated call site fails safe (logs once) rather than throwing.
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from './auth-session';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { apiBaseUrl } from '../aws-exports';
@@ -89,7 +89,7 @@ const buildArguments = (argMap: Record<string, string>, variables: Record<string
 };
 
 const getIdToken = async (): Promise<string> => {
-  const session = await fetchAuthSession();
+  const session = await fetchSharedAuthSession();
   const token = session.tokens?.idToken?.toString();
   if (!token) {
     throw new Error('restClient: no Cognito id token available');
