@@ -819,6 +819,7 @@ export const getTestRun = /* GraphQL */ `
       createdAt
       completedAt
       context
+      isDraftLabeling
       configVersion
       config
     }
@@ -836,6 +837,7 @@ export const getTestRuns = /* GraphQL */ `
       createdAt
       completedAt
       context
+      isDraftLabeling
       configVersion
     }
   }

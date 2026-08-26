@@ -1389,9 +1389,23 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Alert>
         )}
 
-        {!hasAccuracyData && results.status === 'COMPLETE' && (
+        {/* A draft-labeling run has no baseline by construction — producing the
+            labels is the point — so evaluation never runs and there are never
+            accuracy metrics. Warning that they "are not available" described an
+            expected outcome as a fault, on a screen already displaying "Context:
+            Draft labeling run" two lines above. The server owns the rule and
+            reports it as isDraftLabeling. */}
+        {!hasAccuracyData && results.status === 'COMPLETE' && results.isDraftLabeling && (
+          <Alert type="info" header="No accuracy metrics — this run produced labels rather than being scored">
+            A draft-labeling run creates the ground truth, so there is nothing to score it against. Review the drafts in the test set, then
+            run a test against the published version to get accuracy metrics.
+          </Alert>
+        )}
+
+        {!hasAccuracyData && results.status === 'COMPLETE' && !results.isDraftLabeling && (
           <Alert type="warning" header="No Accuracy Data">
-            Test run completed but accuracy metrics are not available
+            Test run completed but accuracy metrics are not available. This usually means the test set had no published ground truth to
+            score against.
           </Alert>
         )}
 

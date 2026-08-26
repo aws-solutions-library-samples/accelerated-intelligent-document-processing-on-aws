@@ -1899,6 +1899,7 @@ export type TestRun = {
   fieldMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   filesCount: Scalars['Int']['output'];
   gradedPacketMetrics?: Maybe<Scalars['AWSJSON']['output']>;
+  isDraftLabeling?: Maybe<Scalars['Boolean']['output']>;
   overallAccuracy?: Maybe<Scalars['Float']['output']>;
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];

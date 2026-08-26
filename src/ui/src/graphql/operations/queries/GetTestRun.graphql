@@ -23,6 +23,7 @@ query GetTestRun($testRunId: String!) {
     createdAt
     completedAt
     context
+    isDraftLabeling
     configVersion
     config
   }

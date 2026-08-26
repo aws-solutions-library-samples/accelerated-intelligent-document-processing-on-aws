@@ -725,6 +725,7 @@ def get_test_results(test_run_id):
             "createdAt": _format_datetime(metadata.get("CreatedAt")),
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
+            "isDraftLabeling": _is_draft_labeling_run(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "testSetVersion": metadata.get("TestSetVersion"),
             "config": _get_test_run_config(test_run_id),
@@ -768,6 +769,7 @@ def get_test_results(test_run_id):
             "createdAt": _format_datetime(metadata.get("CreatedAt")),
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
+            "isDraftLabeling": _is_draft_labeling_run(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "testSetVersion": metadata.get("TestSetVersion"),
         }
@@ -876,6 +878,7 @@ def _build_test_run_list(items):
                 "createdAt": _format_datetime(item.get("CreatedAt")),
                 "completedAt": _format_datetime(item.get("CompletedAt")),
                 "context": item.get("Context"),
+                "isDraftLabeling": _is_draft_labeling_run(item),
                 "configVersion": item.get("ConfigVersion"),
                 "testSetVersion": item.get("TestSetVersion"),
             }

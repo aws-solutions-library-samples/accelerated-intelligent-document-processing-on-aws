@@ -690,6 +690,15 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   configVersion: String
   testSetVersion: Int
   config: AWSJSON
+  # True for a run that PRODUCES ground truth rather than being scored against it.
+  # Such a run has no baseline by construction, so evaluation never runs and there
+  # are no accuracy metrics to wait for — ever. Exposed so the UI can say that,
+  # rather than warning that metrics "are not available" as though something had
+  # gone wrong. The server owns the rule (see _is_draft_labeling_run, which prefers
+  # the persisted Purpose and falls back to an exact Context match for runs created
+  # before Purpose was written); duplicating it client-side would give it two homes
+  # and let the fallback drift.
+  isDraftLabeling: Boolean
 }
 
 type TestRunComparison @aws_cognito_user_pools @aws_iam {

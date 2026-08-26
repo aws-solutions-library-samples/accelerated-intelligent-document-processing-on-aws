@@ -1176,3 +1176,24 @@ class TestDraftLabelingRunsAreNotAwaitingMetrics:
         }
 
         assert index._awaiting_metrics(item, "COMPLETE") is True
+
+    def test_the_purpose_is_reported_to_the_ui_not_just_used_internally(self):
+        """The rule has one home, and the UI has to be able to reach the verdict.
+
+        Without this the UI can only guess from the free-text Context, which is the
+        very thing the exact-match fallback exists to distrust — and it warned that
+        accuracy metrics "are not available" on a run that can never have them,
+        describing the expected outcome as a fault.
+        """
+        draft = {"Status": "COMPLETE", "Purpose": "draft-labeling"}
+        scoring = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._is_draft_labeling_run(draft) is True
+        assert index._is_draft_labeling_run(scoring) is False
+
+        # The same distrust of Context that _awaiting_metrics applies.
+        assert index._is_draft_labeling_run({"Context": "Draft labeling run"}) is True
+        assert (
+            index._is_draft_labeling_run({"Context": "Draft labeling run for Q3"})
+            is False
+        )
