@@ -29,8 +29,9 @@ import type { BoxProps } from '@cloudscape-design/components';
 import PageImageViewer from '../common/PageImageViewer';
 import type { PageImageViewerHandle } from '../common/PageImageViewer';
 import EditHistoryTab from './EditHistoryTab';
+import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
+import { extractClassificationIndex } from '../common/classification-comparison-utils';
 import ProcessingReportTab from './ProcessingReportTab';
-import { classificationComparisonForSection, describeVerdict } from './classificationComparison';
 
 const client = generateClient();
 
@@ -166,6 +167,15 @@ const VisualEditorModal = ({
   const sectionDocItem = sectionData?.documentItem as Record<string, unknown> | undefined;
   const evaluationStatus = sectionDocItem?.evaluationStatus || sectionDocItem?.EvaluationStatus;
   const isBaselineAvailable = evaluationStatus === 'BASELINE_AVAILABLE' || evaluationStatus === 'COMPLETED';
+
+  // Per-page ground-truth classes for this document, from the same results.json
+  // the field-level comparison already uses — so the class comparison costs no
+  // extra request.
+  const classificationIndex = useMemo(() => extractClassificationIndex(evaluationResults), [evaluationResults]);
+  const sectionPageNumbers = useMemo(
+    () => ((sectionData?.PageIds as Array<string | number> | undefined) ?? []).map((pageId) => Number(pageId)).filter((n) => !Number.isNaN(n)),
+    [sectionData?.PageIds],
+  );
 
   // Construct baseline URI from output URI
   const constructBaselineUri = (outputUri: string | undefined) => {
@@ -738,20 +748,6 @@ const VisualEditorModal = ({
   );
   const pageIdStrings = useMemo(() => pageIds.map(String), [pageIds]);
 
-  // Ground-truth comparison for this section's document class. Null when the
-  // evaluation carries no split detail, or when the section cannot be matched to
-  // one unambiguously — see classificationComparison.ts for why that case shows
-  // nothing rather than a best guess.
-  const classificationComparison = useMemo(
-    () =>
-      classificationComparisonForSection(
-        evaluationResults,
-        (sectionData?.Id || sectionData?.SectionId) as string | number | undefined,
-        allSections.length || 1,
-      ),
-    [evaluationResults, sectionData?.Id, sectionData?.SectionId, allSections.length],
-  );
-
   // Reset per-document view state when the modal closes. Image loading belongs to
   // PageImageViewer, which presigns and caches per page id.
   useEffect(() => {
@@ -1107,35 +1103,22 @@ const VisualEditorModal = ({
                           </Box>
                         )}
                         {showEvaluation && baselineData && (
-                          <Alert type="info" header="Evaluation Comparison Mode">
-                            Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
-                            and reasons.
-                          </Alert>
-                        )}
-                        {/* The class is model output too, and a wrong one invalidates
-                            every field below it — so it belongs in the comparison
-                            rather than only in the section header. */}
-                        {showEvaluation && classificationComparison && (
-                          <Alert
-                            type={classificationComparison.verdict === 'match' ? 'success' : 'warning'}
-                            header={
-                              classificationComparison.verdict === 'match'
-                                ? `Classification matches ground truth: ${classificationComparison.predicted}`
-                                : 'Classification does not match ground truth'
-                            }
-                          >
-                            <SpaceBetween size="xxs">
-                              {classificationComparison.verdict !== 'match' && (
-                                <Box variant="p">
-                                  Expected <b>{classificationComparison.expected ?? '—'}</b>, predicted{' '}
-                                  <b>{classificationComparison.predicted ?? 'no matching section'}</b>.
-                                </Box>
-                              )}
-                              <Box variant="small" color="text-body-secondary">
-                                {describeVerdict(classificationComparison)}
-                              </Box>
-                            </SpaceBetween>
-                          </Alert>
+                          <>
+                            {/* The section's own class, compared first: every
+                                field below was extracted against this class's
+                                schema, so a class mismatch explains the field
+                                mismatches rather than adding to them. */}
+                            <SectionClassEvaluation
+                              index={classificationIndex}
+                              pageNumbers={sectionPageNumbers}
+                              predictedClass={(localJsonData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                              baselineClass={(localBaselineData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                            />
+                            <Alert type="info" header="Evaluation Comparison Mode">
+                              Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
+                              and reasons.
+                            </Alert>
+                          </>
                         )}
                         {inferenceResult ? (
                           <FormFieldRenderer

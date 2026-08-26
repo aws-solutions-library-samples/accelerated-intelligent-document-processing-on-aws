@@ -1568,8 +1568,13 @@ class TestSignatureDetections:
 
     def test_parsed_page_text_appends_summary(self, service):
         """The summary rides along with the parsed page text (extraction prompt)."""
-        with patch("textractor.parsers.response_parser.parse") as mock_parse:
-            mock_parse.return_value.to_markdown.return_value = (
+        # Patch the module attribute (not `...response_parser.parse`): the service
+        # does `from textractor.parsers import response_parser`, which resolves via
+        # getattr on `textractor.parsers`. When textractor isn't installed that
+        # parent is a MagicMock, so patching the deeper dotted path targets a
+        # different object and never takes effect.
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
                 "Signature of taxpayer\n[SIGNATURE]"
             )
             result = service._parse_textract_response(
@@ -1583,8 +1588,10 @@ class TestSignatureDetections:
         assert "right half, lower area" in text
 
     def test_parsed_page_text_unchanged_without_signatures(self, service):
-        with patch("textractor.parsers.response_parser.parse") as mock_parse:
-            mock_parse.return_value.to_markdown.return_value = "Signature of taxpayer"
+        with patch("textractor.parsers.response_parser") as mock_response_parser:
+            mock_response_parser.parse.return_value.to_markdown.return_value = (
+                "Signature of taxpayer"
+            )
             result = service._parse_textract_response(
                 {"Blocks": [self.LINE_BLOCK]}, page_id=2
             )

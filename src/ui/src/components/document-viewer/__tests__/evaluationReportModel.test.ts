@@ -3,32 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  evaluationMethodsUsed,
-  formatScore,
-  mismatchedAttributes,
-  resultsUriFromReportUri,
-  scoreBand,
-  summarizeEvaluation,
-} from '../evaluationReportModel';
-
-describe('resultsUriFromReportUri', () => {
-  it('derives the JSON sibling of the markdown report', () => {
-    // They are written together under {input_key}/evaluation/, so the component
-    // needs no extra bucket or key props.
-    expect(resultsUriFromReportUri('s3://out/docs/a.pdf/evaluation/report.md')).toBe('s3://out/docs/a.pdf/evaluation/results.json');
-  });
-
-  it('returns null for anything that is not the evaluation report', () => {
-    // Pinned to the documented evaluation key template rather than to any
-    // `.md`, so another report's URI cannot yield a results path that does not
-    // exist and would read as a missing evaluation.
-    expect(resultsUriFromReportUri('s3://out/docs/a.pdf/summary/report.md')).toBeNull();
-    expect(resultsUriFromReportUri('s3://out/docs/a.pdf/evaluation/other.md')).toBeNull();
-    expect(resultsUriFromReportUri('')).toBeNull();
-    expect(resultsUriFromReportUri(null)).toBeNull();
-  });
-});
+import { evaluationMethodsUsed, formatScore, mismatchedAttributes, scoreBand, summarizeEvaluation } from '../evaluationReportModel';
 
 describe('summarizeEvaluation', () => {
   const results = {

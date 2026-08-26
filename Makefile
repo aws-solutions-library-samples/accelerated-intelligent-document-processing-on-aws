@@ -205,7 +205,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \

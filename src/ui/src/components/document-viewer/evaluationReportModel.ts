@@ -69,24 +69,6 @@ export interface EvaluationSummary {
 const asNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
 /**
- * Derive the URI of the JSON results from the URI of the markdown report.
- *
- * They are written as siblings under `{input_key}/evaluation/`, so the caller
- * does not need the bucket or the document key separately — it already has the
- * report URI from the document record.
- */
-export const resultsUriFromReportUri = (reportUri: string | null | undefined): string | null => {
-  if (!reportUri) return null;
-  // Matched against the whole `evaluation/report.md` tail rather than the
-  // filename alone, so this stays pinned to the one documented key template
-  // (EVALUATION_RESULTS_KEY_TEMPLATE, `{input_key}/evaluation/results.json`).
-  // Deriving a results URI from some other `.md` would produce a path that does
-  // not exist and read as a missing evaluation rather than as a wrong input.
-  if (!reportUri.endsWith('/evaluation/report.md')) return null;
-  return reportUri.replace(/\/report\.md$/, '/results.json');
-};
-
-/**
  * Summarise a results payload.
  *
  * Every field is optional in the source, and older payloads legitimately lack

@@ -50,6 +50,12 @@ PRUNE_DIR_MARKERS = (
     "/idp_common/agents/testing/",
 )
 
+# Generated files that are never source tests. `make srt-scan` nbconverts every
+# notebook to "<nb>-converted.py" (gitignored); notebooks named test_*.ipynb
+# therefore leave behind test_*-converted.py artifacts that would otherwise make
+# notebooks/ look like an unregistered test root.
+PRUNE_FILE_SUFFIXES = ("-converted.py",)
+
 # --- Registry 1: roots RUN in the fast (non-integration) gate -----------------
 # Each entry is a path relative to the repo root. They are run as independent
 # `pytest -m "not integration" <root>` invocations. Verified green headless.
@@ -148,6 +154,8 @@ def discover_test_roots() -> set[str]:
     for path in REPO_ROOT.rglob("test_*.py"):
         posix = "/" + path.as_posix().replace(REPO_ROOT.as_posix() + "/", "")
         if any(marker in posix for marker in PRUNE_DIR_MARKERS):
+            continue
+        if path.name.endswith(PRUNE_FILE_SUFFIXES):
             continue
         rel_dir = path.parent.relative_to(REPO_ROOT).as_posix()
         roots.add(rel_dir)

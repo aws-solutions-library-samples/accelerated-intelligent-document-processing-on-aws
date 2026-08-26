@@ -37,16 +37,9 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { getFileContents } from '../../graphql/generated';
 import { MarkdownReport } from './MarkdownViewer';
-import { classificationComparisonForSection, describeVerdict } from './classificationComparison';
 import type { AttributeResult, EvaluationResults, SectionResult } from './evaluationReportModel';
-import {
-  evaluationMethodsUsed,
-  formatScore,
-  mismatchedAttributes,
-  resultsUriFromReportUri,
-  scoreBand,
-  summarizeEvaluation,
-} from './evaluationReportModel';
+import { extractClassificationIndex, formatPageRanges, evaluationResultsUriFrom } from '../common/classification-comparison-utils';
+import { evaluationMethodsUsed, formatScore, mismatchedAttributes, scoreBand, summarizeEvaluation } from './evaluationReportModel';
 
 const client = generateClient();
 const logger = new ConsoleLogger('EvaluationReport');
@@ -142,7 +135,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
   const [onlyProblems, setOnlyProblems] = useState(false);
   const [showMarkdown, setShowMarkdown] = useState(false);
 
-  const resultsUri = useMemo(() => resultsUriFromReportUri(reportUri), [reportUri]);
+  const resultsUri = useMemo(() => evaluationResultsUriFrom(reportUri), [reportUri]);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,6 +172,24 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
 
   const summary = useMemo(() => summarizeEvaluation(results), [results]);
   const methods = useMemo(() => evaluationMethodsUsed(results), [results]);
+  // Page-derived, so a section whose split is wrong still has a ground-truth
+  // class for every page to compare against — which is why this is reported per
+  // document rather than per section: results.json carries no page ids on its
+  // section entries, and the Visual Editor's Show Evaluation mode already
+  // annotates section by section.
+  const misclassifiedPages = useMemo(() => {
+    const index = extractClassificationIndex(results as Record<string, unknown> | null);
+    if (!index.hasGroundTruth) return [];
+    const byPair = new Map<string, { expected: string; predicted: string; pages: number[] }>();
+    index.byPageNumber.forEach((page) => {
+      if (page.correct) return;
+      const key = `${page.predictedClass}→${page.groundTruthClass}`;
+      const existing = byPair.get(key);
+      if (existing) existing.pages.push(page.pageNumber);
+      else byPair.set(key, { expected: page.groundTruthClass, predicted: page.predictedClass, pages: [page.pageNumber] });
+    });
+    return [...byPair.values()];
+  }, [results]);
 
   if (loading) {
     return (
@@ -263,6 +274,25 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
           />
         </ColumnLayout>
 
+        {/* A wrong class makes the field numbers above and below it meaningless
+            rather than merely wrong, so it is reported before them. */}
+        {misclassifiedPages.length > 0 && (
+          <Alert type="warning" header="Some pages are not the class ground truth expects">
+            <SpaceBetween size="xxs">
+              {misclassifiedPages.map((group) => (
+                <Box key={`${group.predicted}-${group.expected}`} variant="p">
+                  Page{group.pages.length > 1 ? 's' : ''} <b>{formatPageRanges(group.pages)}</b> classified as <b>{group.predicted}</b>, but
+                  ground truth says <b>{group.expected}</b>.
+                </Box>
+              ))}
+              <Box variant="small" color="text-body-secondary">
+                Extraction runs against the assigned class&apos;s schema, so the fields for those pages may be wrong even where they look
+                plausible. Correct the class and re-extract before reading the numbers here.
+              </Box>
+            </SpaceBetween>
+          </Alert>
+        )}
+
         {summary.excludedSectionCount > 0 && (
           <Box variant="small" color="text-body-secondary">
             {summary.excludedSectionCount} section{summary.excludedSectionCount === 1 ? '' : 's'} not evaluated (no extractable schema).
@@ -272,11 +302,6 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
         {sections.map((section: SectionResult) => {
           const attributes = onlyProblems ? mismatchedAttributes(section) : (section.attributes ?? []);
           const mismatchCount = mismatchedAttributes(section).length;
-          const classComparison = classificationComparisonForSection(
-            results as Record<string, unknown>,
-            section.section_id,
-            sections.length,
-          );
 
           return (
             <ExpandableSection
@@ -286,13 +311,6 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
               headerCounter={mismatchCount > 0 ? `(${mismatchCount} mismatched)` : undefined}
             >
               <SpaceBetween size="s">
-                {/* The class is model output too, and a wrong one makes the field
-                    table below it meaningless rather than merely wrong. */}
-                {classComparison && classComparison.verdict !== 'match' && (
-                  <Alert type="warning" header={`Classification: expected ${classComparison.expected ?? '—'}`}>
-                    {describeVerdict(classComparison)}
-                  </Alert>
-                )}
                 {onlyProblems && attributes.length === 0 ? (
                   <Box color="text-status-success">Every field in this section matched.</Box>
                 ) : (
