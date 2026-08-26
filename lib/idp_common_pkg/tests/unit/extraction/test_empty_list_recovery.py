@@ -188,6 +188,38 @@ class TestInLoopValidatorRejectsEmptyList:
         is_valid, _ = validator({"Account Number": "1234", "Transactions": None})
         assert is_valid
 
+    def test_the_check_is_not_gated_on_validation_enabled(self):
+        """THE fix that live verification forced. `validation.enabled` defaults to
+        FALSE — and the config that produced the bug has it false — so gating this
+        check on it left the safety net dead on exactly the configurations that
+        needed it. A guard against silent data loss cannot be off by default."""
+        svc = self._service(validation={"enabled": False})
+        validator = svc._build_schema_validator(ocr_analysis=OCR_WITH_TABLE)
+        assert validator is not None, (
+            "with schema validation off but table evidence present, the empty-list "
+            "check must still run — this returned None and did nothing"
+        )
+        is_valid, feedback = validator({"Account Number": "1234", "Transactions": None})
+        assert not is_valid
+        assert "Transactions" in feedback
+
+    def test_schema_violations_stay_gated_on_validation_enabled(self):
+        """Only the empty-list check is ungated. Full JSON-Schema validation keeps
+        its opt-in contract, so upgrading still changes no behaviour there."""
+        svc = self._service(validation={"enabled": False})
+        validator = svc._build_schema_validator(ocr_analysis=OCR_WITH_TABLE)
+        assert validator is not None
+        # A populated list satisfies the empty-list check; the bad `Amount` type
+        # would be a schema violation, but schema checks are off.
+        is_valid, _ = validator({"Transactions": [{"Amount": "not-a-number"}]})
+        assert is_valid, "schema validation must stay opt-in"
+
+        svc_on = self._service(validation={"enabled": True})
+        validator_on = svc_on._build_schema_validator(ocr_analysis=OCR_WITH_TABLE)
+        assert validator_on is not None
+        is_valid, _ = validator_on({"Transactions": [{"Amount": "not-a-number"}]})
+        assert not is_valid, "with validation on, the same result must fail"
+
     def test_a_populated_sibling_list_suppresses_the_check(self):
         """With one list populated, the detected tables plausibly belong to it and
         an empty sibling may be genuinely absent. Only the all-empty case fires."""
@@ -213,9 +245,12 @@ class TestInLoopValidatorRejectsEmptyList:
         is_valid, _ = validator({"Transactions": [{"Date": "2026-01-01"}]})
         assert is_valid
 
-    def test_disabled_validation_still_returns_none(self):
+    def test_returns_none_when_neither_check_applies(self):
+        """Nothing to check: schema validation off AND no table evidence. Building a
+        callback here would cost a pointless call per agent turn."""
         svc = self._service(validation={"enabled": False})
-        assert svc._build_schema_validator(ocr_analysis=OCR_WITH_TABLE) is None
+        assert svc._build_schema_validator() is None
+        assert svc._build_schema_validator(ocr_analysis=OCR_NO_TABLE) is None
 
 
 class TestCompletenessReportStopsContradictingItself:

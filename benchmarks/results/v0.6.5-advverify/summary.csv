@@ -1,0 +1,9 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,weighted_accuracy,parse_failures,mean_confidence,pct_conf_below_0.9,calibration_separation,wall_s,cost
+core-tt-adv-int,longdesc_100.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.6576,32.6,,264.631478,0.4639
+core-tt-adv-int,longdesc_100.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.6568,32.9,,321.008201,0.664
+core-tt-adv-int,longdesc_100.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,0.6813,32.9,,266.319173,0.4093
+core-tt-adv-int,longdesc_100.pdf,3,COMPLETED,True,3.0,1.0,100,1.0,,,0.6525,32.9,,253.352485,0.6914
+core-tt-adv-sep,longdesc_100.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.6633,33.2,,212.594945,0.7507
+core-tt-adv-sep,longdesc_100.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.9759,0.7,,216.056452,0.8816
+core-tt-adv-sep,longdesc_100.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,0.675,36.5,,154.455321,0.5875
+core-tt-adv-sep,longdesc_100.pdf,3,COMPLETED,True,3.0,1.0,100,1.0,,,0.6883,33.2,,189.675365,0.499
