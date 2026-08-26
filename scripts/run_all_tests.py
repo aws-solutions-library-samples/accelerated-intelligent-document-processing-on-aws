@@ -90,9 +90,10 @@ RUN_ROOTS = [
     # invariants that live in the state machine (retry policies, failure routing)
     # where no Python test can see them. Pure JSON parsing, no AWS clients.
     "patterns/unified/tests",
-    # Benchmark harness analysis code. It decides what a release report *claims*,
-    # so a bug here becomes a wrong published number — which is exactly what
-    # happened at v0.6.5. Pure arithmetic on summary dicts, no AWS.
+    # Benchmark harness analysis/orchestration code. It decides what a release
+    # report *claims* and which config a run actually executes, so a bug here
+    # becomes a wrong published number rather than a visible failure — which is
+    # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
