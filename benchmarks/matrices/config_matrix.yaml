@@ -112,8 +112,20 @@ suites:
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
   # assessment completes on v0.5.16 (see corefast group note). This is the clean
-  # apples-to-apples version A/B grid.
-  corefast: {cells: "core_cells", docs: "corefast", repeats: 1}
+  # apples-to-apples version A/B grid — the RELEASE GATE.
+  #
+  # repeats: 3 here even though accuracy is "stable at repeats=1" in the general
+  # note above, because this suite answers a different question: not "how accurate
+  # is this config" but "did the release change anything". At repeats=1 a single
+  # non-deterministic agentic outcome is indistinguishable from a regression, and
+  # that is not hypothetical — the v0.6.5 fix verification reported a NEW FAILURE
+  # (tt-simple-int on the 800-row doc) and a -0.143 accuracy drop from a
+  # single-sample grid, and NEITHER reproduced. Three samples let compare() use
+  # failure RATES and mean-vs-spread instead of one draw. The cost is bounded
+  # because corefast is deliberately the cheap doc subset: 10 cells x 3 docs x 3 =
+  # 90 runs per side. Do not raise the broad grids (core/coresynth/full) to match —
+  # those include the 400/800-row docs and the spend is not comparable.
+  corefast: {cells: "core_cells", docs: "corefast", repeats: 3}
   # coresynth: the cross-config grid the config-guidance paper reports — the full
   # 10-cell core grid over the exact-ground-truth SYNTHETIC list docs only. Same
   # cells as `core` but without the two reference corpora (realkie, ocr_bench),
