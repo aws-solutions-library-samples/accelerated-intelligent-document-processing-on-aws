@@ -636,6 +636,39 @@ per field, its **top-K guesses with probabilities** rather than a single value:
 Because `explainability_info` is already present in the saved `result.json`, the
 downstream Assessment Lambda **auto-skips**.
 
+**Shapes the resolver handles.** Three, plus a pass-through:
+
+| Shape | Example |
+|---|---|
+| Scalar candidate | `{"Agency": {"G1": …, "P1": …}}` |
+| Array, direct | `{"LineItems": [{"Rate": {"G1": …, "P1": …}}]}` |
+| Array, wrapped | `{"LineItems": {"G1": [ … ], "P1": …}}` |
+| **Group (object)** | `{"Address": {"City": {"G1": …, "P1": …}}}` |
+| Pass-through | a field the model returned as a plain value — kept verbatim, no confidence leaf |
+
+Groups recurse, so a group inside a group, and a list inside a group, both
+resolve; `$ref`s are dereferenced against `$defs` at every level so numeric
+coercion applies to nested sub-attributes too.
+
+> **Group handling was previously missing**, and the failure was silent: a group
+> fell through to pass-through, so the raw candidate dict became the *extracted
+> value* (`Address.City` came out as `{"G1": "Anytown", "P1": 0.95, …}` instead of
+> `"Anytown"`) and the group produced **no confidence leaves at all**, making its
+> fields invisible to threshold alerts and HITL. Observed on every group field of
+> every document processed in integrated mode.
+
+⚠️ **Cost/completeness caveat on long lists.** The TopK envelope costs several
+guesses per cell, so a list that fits comfortably in a plain extraction can exceed
+what the model will emit in one response — and it stops emitting rows rather than
+erroring. Measured on a 100-row list: `integrated` returned **10 of 100 rows**
+where `separate` returned 100 of 100 in every repeat. List cells are therefore
+asked for a **single** guess (`G1/P1` only, not four), which cuts list output
+roughly 4×, and the prompt no longer instructs the model to make guesses *"as
+short as possible"* — that wording was also causing it to return **shortened
+values**, with the document's actual text demoted to `G2`. The single-response
+limit is fundamental to this mode, so **prefer `separate` on list-bearing
+schemas**.
+
 **Why top-K.** Asking the model to enumerate and rank alternatives (instead of a
 single value + a single confidence number) forces it to distribute probability
 mass, yielding **better-calibrated, less-overconfident** scores. See Tian et al.,
