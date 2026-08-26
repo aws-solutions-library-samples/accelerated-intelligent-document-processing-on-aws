@@ -384,9 +384,51 @@ The evaluation framework provides different comparison methods optimized for var
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses document-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
+
+### ⚠️ Do not use `LLM` on a field inside a list
+
+Setting `x-aws-idp-evaluation-method: LLM` on a field **inside a list's items** is
+downgraded to that field's deterministic type default (string → Levenshtein,
+number → NumericExact, boolean → Exact), and a warning names the field.
+
+Lists are matched with the Hungarian algorithm, which compares **every**
+ground-truth row against **every** predicted row to find the best pairing. That
+means an item field's comparator runs `N × M` times, so one Bedrock call per
+comparison costs roughly **N² calls per document**: a 54-row invoice needs about
+3,000 sequential model calls (~45 minutes), which cannot complete inside the
+evaluation Lambda's 15-minute limit no matter how many times it retries. In a
+live deployment this stalled the whole document pipeline.
+
+Use a deterministic method on list fields — it is also the right choice for a
+matching cost function. If you have a genuinely small, bounded list and want the
+semantic comparison anyway, opt in explicitly:
+
+```yaml
+LineItems:
+  type: array
+  items:
+    type: object
+    properties:
+      Description:
+        type: string
+        x-aws-idp-evaluation-method: LLM
+        x-aws-idp-evaluation-allow-llm-in-list: true   # accepts the O(N²) cost
+```
+
+Setting an evaluation method on the **array itself** has no effect and never has
+(lists are scored through their item fields, and row pairing is Hungarian). That
+is now reported as a warning instead of being silently ignored.
+
+> **Scores from the `LLM` method changed in this release.** The comparison prompt
+> includes the document class, field name and field description, but those were
+> not being passed to the model — every comparison was sent with them blank, so
+> the model judged two bare values with no idea what field it was grading.
+> `LLM`-method scores from earlier releases are not directly comparable with
+> current ones. Identical values now also short-circuit to a match without calling
+> the model at all.
 
 ### Threshold Display in Reports
 
