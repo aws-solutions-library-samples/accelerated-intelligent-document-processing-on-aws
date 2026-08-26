@@ -16,7 +16,14 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import { LabelAccuracyLegend, QUALITY_TIER_COLORS, renderLabelAccuracy, renderQualityTier } from '../TestSetDetail';
+import {
+  LabelAccuracyLegend,
+  QUALITY_TIER_COLORS,
+  renderLabelAccuracy,
+  renderLabelSource,
+  renderLoadedLabelSource,
+  renderQualityTier,
+} from '../TestSetDetail';
 
 describe('renderQualityTier', () => {
   it('does not colour "unrated" as an error', () => {
@@ -133,5 +140,43 @@ describe('LabelAccuracyLegend', () => {
 
     expect(screen.queryByText(/carries no estimate/i)).not.toBeInTheDocument();
     expect(screen.getByText(/a statement about the confidence data behind the estimate/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Provenance of a baseline that has already been read off S3.
+ *
+ * Found on a live stack: one document read "Uploaded" in the review queue and
+ * "Unlabeled" in the ground-truth editor header, two lines below an alert saying
+ * "Already ground truth". Three statements, one document, two of them wrong.
+ */
+describe('renderLoadedLabelSource', () => {
+  it('treats a loaded baseline with no labelSource as uploaded ground truth', () => {
+    // The pipeline writes labelSource; a hand-uploaded ground-truth file does not.
+    // Once the bytes have parsed, absence means authored — not absent.
+    render(renderLoadedLabelSource(undefined));
+
+    expect(screen.getByText('Uploaded')).toBeInTheDocument();
+    expect(screen.queryByText('Unlabeled')).not.toBeInTheDocument();
+  });
+
+  it('agrees with the server, which applies the same fallback', () => {
+    // _attach_label_metadata: `result.get("labelSource") or LABEL_SOURCE_UPLOADED`.
+    render(renderLoadedLabelSource(''));
+
+    expect(screen.getByText('Uploaded')).toBeInTheDocument();
+  });
+
+  it('still reports a real labelSource as itself', () => {
+    render(renderLoadedLabelSource('draft-machine'));
+
+    expect(screen.getByText('Draft (machine)')).toBeInTheDocument();
+  });
+
+  it('leaves renderLabelSource alone, where absence really can mean no baseline', () => {
+    // A document row may have no baseline at all, so "Unlabeled" is right there.
+    render(renderLabelSource(undefined));
+
+    expect(screen.getByText('Unlabeled')).toBeInTheDocument();
   });
 });

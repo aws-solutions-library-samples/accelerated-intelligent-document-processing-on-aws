@@ -48,7 +48,7 @@ import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
 import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import useTestDocPages from '../../hooks/use-test-doc-pages';
-import { renderLabelSource } from './TestSetDetail';
+import { renderLoadedLabelSource } from './TestSetDetail';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
@@ -502,7 +502,10 @@ const GroundTruthVisualEditor = ({
           be mistaken on screen for confirmed work. */}
       {localData && (
         <SpaceBetween direction="horizontal" size="xs">
-          {renderLabelSource(localData.labelSource as string | undefined)}
+          {/* localData is only ever set from a baseline that loaded and parsed, so
+              a missing labelSource here means uploaded ground truth — not the
+              absence of labels. */}
+          {renderLoadedLabelSource(localData.labelSource as string | undefined)}
           {/* Always shown, including the fallback cases. Hiding it whenever the
               version resolved to 'default' is exactly what let #662 go unnoticed:
               the classes on offer were the built-in preset's and nothing said so. */}

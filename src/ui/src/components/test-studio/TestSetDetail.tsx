@@ -84,6 +84,21 @@ export const renderLabelSource = (labelSource?: string | null): React.JSX.Elemen
 };
 
 /**
+ * Provenance for a baseline whose bytes are already loaded.
+ *
+ * `renderLabelSource(undefined)` renders "Unlabeled", which is correct for a
+ * document row where the baseline may not exist at all. It is wrong once the file
+ * has been read: the pipeline writes `labelSource` and a hand-uploaded ground-truth
+ * file does not, so absence in a loaded baseline means authored ground truth.
+ *
+ * The server already codifies this — `_attach_label_metadata` falls back to
+ * `uploaded` for exactly this reason — and the editor did not, so the same document
+ * read "Uploaded" in the review queue and "Unlabeled" in the editor header, two
+ * lines below an alert saying "Already ground truth".
+ */
+export const renderLoadedLabelSource = (labelSource?: string | null): React.JSX.Element => renderLabelSource(labelSource || 'uploaded');
+
+/**
  * Confidence as a percentage, colored against the configured alert threshold: red
  * below it, amber within 10 points above it, otherwise plain. Fixed bands would
  * contradict the assessment config, where whether 0.85 passes depends on the

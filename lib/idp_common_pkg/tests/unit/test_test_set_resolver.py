@@ -2936,8 +2936,12 @@ class TestTestSetResolver:
             )
         table.update_item(
             Key={"PK": "testset#ts1", "SK": "metadata"},
-            UpdateExpression="SET labelJobId = :j, labelJobStatus = :s",
-            ExpressionAttributeValues={":j": "old-run", ":s": "COMPLETED"},
+            UpdateExpression=(
+                "SET labelJobId = :j, labelJobStatus = :s, labelProbedFileCount = :n"
+            ),
+            # Seeded, or the "marker is gone" assertion below passes against code that
+            # never removes it.
+            ExpressionAttributeValues={":j": "old-run", ":s": "COMPLETED", ":n": 3},
         )
 
         result = test_set_index.clear_draft_labels({"testSetId": "ts1"})
@@ -2968,6 +2972,79 @@ class TestTestSetResolver:
         assert "labelJobStatus" not in meta
         # Confirmation is returned, not stored — see the reset test for why.
         assert "lastAddResult" not in meta
+        # The probe marker must go, or _reconcile_label_state skips this set forever:
+        # it is keyed on fileCount, and clearing drafts removes baselines without
+        # changing membership. Observed on a dev stack as a cleared set permanently
+        # reporting "Draft (machine)" and a 97.6% estimate with no labels present.
+        assert "labelProbedFileCount" not in meta
+
+    def test_clear_draft_labels_returns_a_wholly_drafted_set_to_unlabeled(
+        self, labeling_env
+    ):
+        """Clearing every label must not leave the set claiming to have some.
+
+        The label state is what drives the Labels badge and whether the review-effort
+        estimator runs at all, so a set that reports "draft" with nothing under
+        baseline/ also gets an estimated accuracy inferred entirely from a cross-set
+        prior — a number about no labels.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps(
+                    {"labelSource": "draft-machine", "inference_result": {"f": "v"}}
+                ).encode(),
+            )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelState = :d, labelProbedFileCount = :n",
+            ExpressionAttributeValues={":d": "draft", ":n": 2},
+        )
+
+        test_set_index.clear_draft_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelState"] == "unlabeled"
+
+    def test_clear_draft_labels_leaves_state_to_the_reconciler_when_labels_survive(
+        self, labeling_env
+    ):
+        """`kept` counts label objects, not documents, so it cannot decide the state.
+
+        Some documents may have lost their only label while others keep theirs, which
+        is "unlabeled" by the coverage rule registration uses — a question only
+        _validate_test_set_files can answer. So the state is left alone and the probe
+        marker dropped, which is what lets the reconciler answer it.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name, src in (("draft.pdf", "draft-machine"), ("kept.pdf", None)):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+            body = {"inference_result": {"f": "v"}}
+            if src:
+                body["labelSource"] = src
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps(body).encode(),
+            )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelState = :d, labelProbedFileCount = :n",
+            ExpressionAttributeValues={":d": "draft", ":n": 2},
+        )
+
+        test_set_index.clear_draft_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        # Not asserted as "unlabeled": that would be guessing at coverage here.
+        assert meta["labelState"] == "draft"
+        # But the next list re-derives it, which is the whole point.
+        assert "labelProbedFileCount" not in meta
 
     def test_reset_discards_reviewed_labels_and_review_state(self, labeling_env):
         """The destructive counterpart to clearDraftLabels.

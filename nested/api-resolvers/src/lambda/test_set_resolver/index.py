@@ -2207,6 +2207,9 @@ def clear_draft_labels(args):
 
     Only ``draft-machine`` labels are removed. Reviewed, uploaded and generated
     ground truth survives, so a config retry cannot discard human work.
+
+    Also resets the set's ``labelState`` — see the comment at the update below for
+    why the reconciler cannot be left to do it.
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
@@ -2249,10 +2252,38 @@ def clear_draft_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
-    )
+    #
+    # labelState has to move too, and _reconcile_label_state cannot be relied on to
+    # move it: that probe is keyed on fileCount, and clearing drafts deletes baseline
+    # objects without changing membership, so labelProbedFileCount still matches and
+    # the set is skipped on every subsequent list. Observed on a dev stack — a set
+    # cleared for a retest kept reporting "Draft (machine)" and a 97.6% estimated
+    # accuracy while every one of its 100 documents read "Unlabeled", permanently.
+    #
+    # Dropping the probe marker is what makes the ambiguous case correct. With no
+    # drafts left the state is knowably "unlabeled"; with some non-draft labels
+    # surviving it depends on whether coverage is still complete across documents,
+    # which `kept` (a count of label objects) cannot answer. So invalidate the marker
+    # and let the reconciler re-derive it through _validate_test_set_files — the same
+    # helper registration uses, so the two cannot disagree about what "labeled" means.
+    if kept == 0:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "SET labelState = :u "
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount"
+            ),
+            expression_attribute_values={":u": "unlabeled"},
+        )
+    else:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount"
+            ),
+        )
 
     logger.info(
         f"Cleared {len(to_delete)} draft label section(s) from {test_set_id}; "
