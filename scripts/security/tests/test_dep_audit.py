@@ -232,3 +232,84 @@ class TestAshConfig:
             f"advisories suppressed for ASH but no longer in "
             f"dep_audit_allowlist.json: {sorted(stale)}"
         )
+
+
+class TestToolPreflight:
+    """The gate must not silently under-cover when a tool is missing.
+
+    A missing `jq` failed the real CI job (the Node manifest generator shells out
+    to it). Two things go wrong then: the error is a bare "jq: command not found"
+    buried in captured output, and `node-packages.txt` still EXISTS but is empty,
+    because the shell redirect creates it before jq runs. An empty manifest audits
+    clean, so this has to be caught, not shrugged off.
+    """
+
+    def test_required_tools_are_declared_with_reasons(self):
+        assert "jq" in dep_audit.REQUIRED_TOOLS
+        assert "uv" in dep_audit.REQUIRED_TOOLS
+        for tool, why in dep_audit.REQUIRED_TOOLS.items():
+            assert len(why) > 20, f"{tool}: explain why it is needed"
+
+    def test_missing_tools_reports_absent_tool(self, monkeypatch):
+        monkeypatch.setattr(
+            dep_audit.shutil, "which", lambda t: None if t == "jq" else "/usr/bin/" + t
+        )
+        assert [t for t, _ in dep_audit.missing_tools()] == ["jq"]
+
+    def test_missing_tools_empty_when_all_present(self, monkeypatch):
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda t: "/usr/bin/" + t)
+        assert dep_audit.missing_tools() == []
+
+    def test_generation_is_refused_when_a_tool_is_missing(self, monkeypatch, capsys):
+        """Exit 2, and never invoke the generator."""
+        monkeypatch.setattr(
+            dep_audit.shutil, "which", lambda t: None if t == "jq" else "/usr/bin/" + t
+        )
+
+        def _boom(*a, **k):  # pragma: no cover - must not be reached
+            raise AssertionError("generator must not run when a tool is missing")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", _boom)
+        assert dep_audit.main([]) == 2
+        out = capsys.readouterr().out
+        assert "jq" in out
+        assert "NOT treating this as a pass" in out
+
+
+class TestEmptyManifestIsNotAPass:
+    """An empty manifest is the gate's worst failure mode: it reports clean."""
+
+    @staticmethod
+    def _write(tmp_path, py_text, node_text, monkeypatch):
+        py = tmp_path / "python-packages.txt"
+        node = tmp_path / "node-packages.txt"
+        py.write_text(py_text, encoding="utf-8")
+        node.write_text(node_text, encoding="utf-8")
+        monkeypatch.setattr(dep_audit, "PYTHON_MANIFEST", py)
+        monkeypatch.setattr(dep_audit, "NODE_MANIFEST", node)
+
+        def _no_network(*a, **k):  # pragma: no cover - must not be reached
+            raise AssertionError("must bail out before querying OSV")
+
+        monkeypatch.setattr(dep_audit, "query_osv", _no_network)
+
+    def test_empty_node_manifest_exits_2(self, tmp_path, monkeypatch, capsys):
+        """The exact shape the jq failure produced: file exists, but empty."""
+        self._write(tmp_path, "pillow==12.3.0\n", "", monkeypatch)
+        assert dep_audit.main(["--no-generate"]) == 2
+        assert "Node manifest(s) contain no pinned packages" in capsys.readouterr().out
+
+    def test_empty_python_manifest_exits_2(self, tmp_path, monkeypatch, capsys):
+        self._write(tmp_path, "", "nanoid@3.3.18\n", monkeypatch)
+        assert dep_audit.main(["--no-generate"]) == 2
+        assert (
+            "Python manifest(s) contain no pinned packages" in capsys.readouterr().out
+        )
+
+    def test_both_populated_proceeds_to_the_audit(self, tmp_path, monkeypatch):
+        """Sanity check the guard does not block the normal path."""
+        self._write(tmp_path, "pillow==12.3.0\n", "nanoid@3.3.18\n", monkeypatch)
+        # query_osv raises AssertionError only if we get PAST the guard, which is
+        # what we want to prove here.
+        with pytest.raises(AssertionError, match="must bail out"):
+            dep_audit.main(["--no-generate"])

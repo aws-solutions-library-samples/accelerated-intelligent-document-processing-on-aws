@@ -32,9 +32,12 @@ USAGE
     python3 scripts/security/dep_audit.py --severity CRITICAL
     python3 scripts/security/dep_audit.py --json report.json
 
-Exits 1 when un-allowlisted findings remain at/above the threshold, 0 otherwise.
-Network failure against OSV is reported and exits 2 — an audit that could not run
-must never look like an audit that passed.
+Exits 1 when un-allowlisted findings remain at/above the threshold, 0 otherwise,
+and **2 whenever the audit could not actually be performed** — an audit that did
+not run must never look like an audit that passed. Exit 2 covers: OSV unreachable,
+a required tool missing from PATH (``REQUIRED_TOOLS``), the generator failing, and
+either manifest coming back with no packages (an empty manifest audits clean,
+which is this gate's most dangerous failure mode — see ``REQUIRED_TOOLS``).
 
 KNOWN LIMITS
 ------------
@@ -55,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess  # nosec B404 - fixed argv, runs the repo's own manifest script
 import sys
 import time
@@ -234,6 +238,22 @@ def is_allowlisted(
     return allowlist.get(f"{vid}|{name}") or allowlist.get(vid)
 
 
+# External tools `scripts/generate-dep-manifest.sh` shells out to. Checked up
+# front because a missing one otherwise surfaces as a bare
+# `line 194: jq: command not found` buried in that script's captured output —
+# and, worse, the Node half of the manifest comes out EMPTY, which would look
+# like "no Node vulnerabilities" if the generator's exit code were ignored.
+REQUIRED_TOOLS = {
+    "jq": "reads the committed package-lock.json files to build the Node manifest",
+    "uv": "resolves the loose Python pins the lockfiles do not cover",
+}
+
+
+def missing_tools() -> List[Tuple[str, str]]:
+    """Return [(tool, why_it_is_needed)] for each required tool not on PATH."""
+    return [(t, why) for t, why in REQUIRED_TOOLS.items() if shutil.which(t) is None]
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
@@ -251,6 +271,25 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     if not args.no_generate:
+        absent = missing_tools()
+        if absent:
+            print(
+                "ERROR: cannot generate the dependency manifests — required "
+                "tool(s) missing from PATH:",
+                flush=True,
+            )
+            for tool, why in absent:
+                print(f"  - {tool}: {why}", flush=True)
+            print(
+                "\nInstall them and re-run (Debian/Ubuntu: `apt-get install -y "
+                f"{' '.join(t for t, _ in absent)}`), or pass --no-generate to "
+                "audit manifests generated elsewhere.\n"
+                "NOT treating this as a pass: without these the manifest is "
+                "incomplete, and an incomplete manifest audits clean.",
+                flush=True,
+            )
+            return 2
+
         print("Generating dependency manifests...", flush=True)
         proc = subprocess.run(  # nosec B603 - fixed argv, repo-local script
             ["bash", str(GENERATE_SCRIPT)],
@@ -259,9 +298,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             text=True,
         )
         if proc.returncode != 0:
-            print(proc.stdout)
-            print(proc.stderr, file=sys.stderr)
-            print("ERROR: could not generate dependency manifests", file=sys.stderr)
+            # Everything on stdout, in order, flushed: interleaving a captured
+            # stderr onto the real stderr scrambles the ordering in a CI log and
+            # buries the actual cause (learned from a jq-missing failure whose
+            # error landed above the output it belonged to).
+            print("--- generate-dep-manifest.sh stdout ---", flush=True)
+            print(proc.stdout, flush=True)
+            print("--- generate-dep-manifest.sh stderr ---", flush=True)
+            print(proc.stderr, flush=True)
+            print(
+                f"ERROR: could not generate dependency manifests "
+                f"(exit {proc.returncode}). See the output above.",
+                flush=True,
+            )
             return 2
 
     missing = [p for p in (PYTHON_MANIFEST, NODE_MANIFEST) if not p.exists()]
@@ -274,10 +323,37 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         )
         return 2
 
-    packages = parse_python_manifest(PYTHON_MANIFEST) + parse_node_manifest(
-        NODE_MANIFEST
+    py_pkgs = parse_python_manifest(PYTHON_MANIFEST)
+    node_pkgs = parse_node_manifest(NODE_MANIFEST)
+
+    # An EMPTY manifest audits clean, which is the most dangerous way for this
+    # gate to fail: it reports success while covering nothing. That is not
+    # hypothetical — a missing `jq` left node-packages.txt empty (the file was
+    # still created by the shell redirect, so an exists() check passed). The
+    # generator also only warns, without failing, when a lockfile is absent. So
+    # require BOTH ecosystems to be represented and treat a shortfall as a broken
+    # audit rather than a passing one.
+    empty = [
+        name for name, pkgs in (("Python", py_pkgs), ("Node", node_pkgs)) if not pkgs
+    ]
+    if empty:
+        print(
+            f"ERROR: the {' and '.join(empty)} manifest(s) contain no pinned "
+            "packages, so this audit would cover nothing and report clean.\n"
+            f"       python-packages.txt: {len(py_pkgs)} packages\n"
+            f"       node-packages.txt:   {len(node_pkgs)} packages\n"
+            "       Usually a missing tool (see REQUIRED_TOOLS) or a lockfile the "
+            "generator skipped — check its output above.",
+            flush=True,
+        )
+        return 2
+
+    packages = py_pkgs + node_pkgs
+    print(
+        f"Auditing {len(packages)} pinned packages against OSV "
+        f"({len(py_pkgs)} Python, {len(node_pkgs)} Node)...",
+        flush=True,
     )
-    print(f"Auditing {len(packages)} pinned packages against OSV...", flush=True)
 
     try:
         hits = query_osv(packages)

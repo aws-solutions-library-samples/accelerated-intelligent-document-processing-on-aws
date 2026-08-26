@@ -475,7 +475,12 @@ dep_audit:
   before_script:
     - python --version
     - apt-get update -y
-    - apt-get install curl git -y
+    # jq is REQUIRED: generate-dep-manifest.sh builds the Node manifest by
+    # reading the committed package-lock.json files with jq. It is absent from
+    # the python:3.13-bookworm image (and preinstalled on GitHub's runners, which
+    # is why the sibling GitHub workflow never needed it) — without it the Node
+    # half of the manifest silently comes out empty.
+    - apt-get install curl git jq -y
     # uv provides the Python runtime + `packaging` that
     # scripts/generate-dep-manifest.sh needs to resolve the loose pins.
     - pip install --upgrade pip uv
