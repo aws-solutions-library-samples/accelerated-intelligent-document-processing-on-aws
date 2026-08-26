@@ -99,26 +99,44 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 |-------|-------|-----|
 | `smoke` | 2 cells × 2 tiny docs | Per-PR gate (minutes) |
 | `corefast` | 10 decision cells × 3 docs (≤100 rows) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see note) |
-| `core` | 10 decision cells × ~7 synthetic docs | Standard single-release run |
+| `coresynth` | 10 decision cells × 7 synthetic docs (**70 runs**) | **Standard single-release run** — the cross-config grid the Configuration Guidance paper reports |
+| `core` | `coresynth` + the two 20-document reference corpora (**470 runs**) | Adds real-world labeled accuracy; ~7× the cost of `coresynth`, so opt in deliberately |
 | `scaling` | simple vs advanced across the size series | The completeness-cliff study |
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
+| `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
+
+> **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
+> a **cross-version control** so the release A/B runs on a model every compared release can
+> invoke. A single-release study should instead use the product default —
+> `make_configs.py --set extraction_model=sonnet5`. Mixing the two is how a
+> model-dependent behaviour can look like a code change.
 
 > **Why `corefast` for release comparisons.** Advanced (agentic) mode + granular
 > assessment on ≥400-row list documents can exceed the 900 s assessment-Lambda timeout
 > on older releases (e.g. v0.5.16), which then retry for hours before failing. A grid
 > that must complete on **both** the old and new release therefore uses the ≤100-row
-> `corefast` docs. Larger-doc behavior is covered by the single-release `core`/`scaling`
+> `corefast` docs. Larger-doc behavior is covered by the single-release `coresynth`/`scaling`
 > suites against the current release only.
 
 ## Regression thresholds
 
 `aggregate.py --compare` flags, per matched (cell, doc): accuracy −0.02, cost +15%, any
 new failure, calibration-separation −0.03. Improvements ≥ +0.02 accuracy are also reported.
+A second, **variance-aware** pass then re-judges **cost** at the cell level, only flagging a
+change whose mean shift exceeds the combined sampling spread.
+
+> ⚠️ **Known limit: the variance-aware pass covers cost only.** Completeness and accuracy are
+> still compared per single sample, so a non-deterministic recall swing is reported as a
+> cell-level "improvement" or "regression" on n=1 evidence. This bit at v0.6.5 — see
+> [releases/v0.6.5.md §3.1](./releases/v0.6.5.md). Until it is fixed, re-measure any
+> recall/accuracy delta with repeats before believing it.
 
 ## Reproducibility & honesty rules
 
-- Each results directory records the exact commit, stack, model IDs, pricing hash, and date.
+- Each results directory records the exact commit, the deployed stack version (read from the
+  stack's CloudFormation `Description`, **not** the local git HEAD — those differ whenever a
+  run targets a published template), stack name, model IDs, pricing hash, and date.
 - Failures are reported explicitly; accuracy is never averaged over only the docs that
   completed without saying so (advanced/large runs are survivorship-sensitive).
 - Any cell capped or skipped for cost is logged in `meta.json`, never silently dropped.

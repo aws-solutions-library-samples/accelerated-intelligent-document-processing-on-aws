@@ -300,7 +300,61 @@ The service supports multiple evaluation methods that can be configured for each
   - `FUZZY`: Fuzzy string matching with configurable threshold
   - `NUMERIC`: Numeric comparison after normalizing currency symbols and formats
 - `SEMANTIC`: Efficient semantic similarity comparison using Bedrock Titan embeddings (amazon.titan-embed-text-v1)
-- `LLM`: LLM-based evaluation using Bedrock models (Claude or Titan) for semantically comparable values with detailed explanations
+- `LLM`: LLM-based evaluation using Bedrock models (Claude or Titan) for semantically comparable values with detailed explanations. **Not supported on fields inside a structured list — see below.**
+
+#### ⚠️ `LLM` is not usable inside a structured list
+
+An `LLM` method on a field **inside a list's items** is downgraded to that field's
+deterministic type default (string → Levenshtein, number → Numeric, boolean →
+Exact), with a warning naming the field.
+
+Structured lists are matched with the Hungarian algorithm, which builds a full
+`N_ground_truth × N_predicted` similarity matrix and invokes each item field's
+comparator **once per cell**, then scores the matched pairs — measured at
+`N² + 2N` comparator calls. One Bedrock round trip per cell means a 54-row
+invoice needs ~3,000 sequential calls (~45 minutes), so the 900 s evaluation
+Lambda can never finish it at any retry count. This was observed wedging an
+entire stack: every affected document burned 9 × 900 s attempts before failing,
+and the leaked workflow-concurrency slots stopped the pipeline accepting new
+documents.
+
+A matching cost function wants a cheap, deterministic similarity anyway, so the
+downgrade is also the right shape. To override on a small, bounded list:
+
+```yaml
+LineItems:
+  type: array
+  items:
+    type: object
+    properties:
+      Description:
+        type: string
+        x-aws-idp-evaluation-method: LLM
+        x-aws-idp-evaluation-allow-llm-in-list: true   # accepts the O(N²) cost
+```
+
+Note also that an evaluation method on the **array itself** has never had any
+effect (lists score through their item fields, and row matching is Hungarian).
+That is now logged as a warning rather than silently discarded.
+
+#### Field context in the `LLM` prompt
+
+The `LLM` prompt interpolates `{DOCUMENT_CLASS}`, `{ATTRIBUTE_NAME}` and
+`{ATTRIBUTE_DESCRIPTION}`. Stickler's comparator protocol is
+`compare(value1, value2)` and carries no field context, so `SticklerConfigMapper`
+supplies each LLM-method field's class, name and description through the same
+per-field `x-aws-stickler-comparator-config` channel the model config uses, and
+`LLMComparator` forwards them.
+
+> Before this was wired up, every judge call went out as
+> `for a document of class: . For the attribute named "" described as "":` — the
+> model was asked to decide whether two bare strings meant the same thing with no
+> idea what field it was grading. Scores produced by the `LLM` method before this
+> fix are context-free and not comparable with scores produced after it.
+
+Identical values (after case and whitespace normalization) short-circuit to a
+match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
+memoized per comparator instance.
 
 #### DATE method configuration
 
