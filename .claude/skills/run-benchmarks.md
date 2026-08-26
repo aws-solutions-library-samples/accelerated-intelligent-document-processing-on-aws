@@ -84,6 +84,10 @@ Procedure (drive it yourself — several steps need judgment):
 2. **Generate the `corefast` grid** (`gen_corpus.py`; `make_configs.py --suite corefast`).
    Use `corefast` (≤100-row docs) for the A/B — advanced-mode granular assessment on
    ≥400-row docs times out the 900s Lambda on older releases (retries ~2h then fails).
+   `corefast` runs **`repeats: 3`** (90 runs/side): at one sample a non-deterministic
+   agentic outcome is indistinguishable from a regression. The v0.6.5 verification
+   reported a new FAILURE and a −0.143 accuracy drop from a `repeats: 1` grid and
+   **neither reproduced** — do not lower this to save time.
 3. **Run on PREV with `--native-upload`** (`run_matrix.py --suite corefast --native-upload`).
    Native-upload is REQUIRED: idp-cli's config-upload force-migrates v0.5→v0.6 and drops
    the top-level `assessment` block older stacks need.
