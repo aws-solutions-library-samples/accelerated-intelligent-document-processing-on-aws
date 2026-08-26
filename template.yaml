@@ -6904,6 +6904,46 @@ Resources:
                   "title": "Save Reporting Data Tracker Lambda Errors",
                   "view": "table"
                 }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "ConcurrencyCounterActive",
+                      {
+                        "stat": "Maximum",
+                        "label": "Counter (claimed slots)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterDrift",
+                      {
+                        "stat": "Maximum",
+                        "label": "Drift (slots held by workflows that already ended)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; drift is sampled only when an increment is refused)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "annotations": {
+                    "horizontal": [
+                      {
+                        "value": ${MaxConcurrentWorkflows},
+                        "label": "MaxConcurrentWorkflows (${MaxConcurrentWorkflows}) — queue stops draining here",
+                        "color": "#ff0000"
+                      }
+                    ]
+                  }
+                }
               }
             ]
           }

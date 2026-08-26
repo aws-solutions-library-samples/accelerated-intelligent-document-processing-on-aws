@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 import boto3
+import time
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -45,6 +46,10 @@ sns = boto3.client("sns")
 document_service = create_document_service()
 concurrency_table: Table = dynamodb.Table(os.environ["CONCURRENCY_TABLE"])
 COUNTER_ID = "workflow_counter"
+# A lost decrement leaks a workflow slot permanently, so the realistic failure
+# (transient DynamoDB throttling) is retried in-process before the event is
+# handed back to EventBridge for its own retry.
+DECREMENT_MAX_ATTEMPTS = int(os.environ.get("DECREMENT_MAX_ATTEMPTS", "4"))
 CIRCUIT_BREAKER_ID = "circuit_breaker"
 CIRCUIT_BREAKER_ENABLED = (
     os.environ.get("CIRCUIT_BREAKER_ENABLED", "false").lower() == "true"
@@ -411,30 +416,97 @@ def put_latency_metrics(document: Document) -> None:
 
 def decrement_counter() -> Optional[int]:
     """
-    Decrement the concurrency counter
+    Decrement the concurrency counter.
+
+    A LOST decrement is permanent and unrecoverable-by-itself: the counter drifts
+    up, and once it reaches MaxConcurrentWorkflows the stack stops admitting
+    documents. This function used to swallow every failure and return None, and
+    the handler treated that as success and returned HTTP 200 — so a single
+    throttled DynamoDB write silently cost a slot forever, with no retry, no
+    alarm, and nothing in the response to say it had happened.
+
+    (For the record: reviewing the leak that motivated this found ZERO decrement
+    failures in the entire retained log history, and 177 decrements for 177
+    terminal executions across the incident window — so this is a latent gap
+    being closed, not the identified cause of that leak.)
+
+    Now: retried with backoff for the realistic failure (transient throttling),
+    and if it still cannot be done the exception propagates so EventBridge/Lambda
+    retry the whole event rather than losing the slot quietly.
 
     Returns:
-        The new counter value or None if operation failed
+        The new counter value.
 
-    Note: This function handles its own errors
+    Raises:
+        ClientError / Exception if the decrement could not be applied after
+        retries — deliberately, so the caller fails and the event is retried.
     """
-    try:
-        logger.info("Decrementing concurrency counter")
-        response = concurrency_table.update_item(
-            Key={"counter_id": COUNTER_ID},
-            UpdateExpression="ADD active_count :dec",
-            ExpressionAttributeValues={":dec": -1},
-            ReturnValues="UPDATED_NEW",
-        )
+    last_error: Optional[Exception] = None
+    for attempt in range(1, DECREMENT_MAX_ATTEMPTS + 1):
+        try:
+            logger.info(
+                f"Decrementing concurrency counter (attempt {attempt}/"
+                f"{DECREMENT_MAX_ATTEMPTS})"
+            )
+            response = concurrency_table.update_item(
+                Key={"counter_id": COUNTER_ID},
+                UpdateExpression="ADD active_count :dec",
+                ExpressionAttributeValues={":dec": -1},
+                ReturnValues="UPDATED_NEW",
+            )
+        except Exception as e:  # ClientError and anything else
+            last_error = e
+            logger.warning(
+                f"Decrement attempt {attempt}/{DECREMENT_MAX_ATTEMPTS} failed: {e}"
+            )
+            if attempt < DECREMENT_MAX_ATTEMPTS:
+                time.sleep(0.2 * (2 ** (attempt - 1)))
+            continue
+
+        # Past this point the decrement HAS been applied. Nothing below may
+        # re-enter the retry loop, or we would decrement a second time.
         new_count = response.get("Attributes", {}).get("active_count")
         logger.info(f"Counter decremented. New value: {new_count}")
+        try:
+            _emit_counter_metric(new_count)
+        except Exception as metric_error:
+            logger.warning(f"Could not emit concurrency counter metric: {metric_error}")
         return new_count
-    except ClientError as e:
-        logger.error(f"Failed to decrement counter: {e}", exc_info=True)
-        return None
+
+    logger.error(
+        "FAILED to decrement the concurrency counter after "
+        f"{DECREMENT_MAX_ATTEMPTS} attempts: {last_error}. Raising so this event "
+        "is retried — swallowing it would leak a workflow slot permanently.",
+        exc_info=True,
+    )
+    raise last_error if last_error else RuntimeError("decrement failed")
+
+
+def _emit_counter_metric(value) -> None:
+    """Publish the post-decrement counter value.
+
+    The leak that motivated this work could not be attributed to a moment in time
+    because nothing ever recorded the counter, so there was no history to inspect
+    — only the end state. One data point per completed document is a cheap,
+    continuous series that makes the next divergence attributable.
+
+    Never allowed to affect the decrement it reports on.
+    """
+    if value is None:
+        return
+    try:
+        boto3.client("cloudwatch").put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "ConcurrencyCounterActive",
+                    "Value": float(value),
+                    "Unit": "Count",
+                }
+            ],
+        )
     except Exception as e:
-        logger.error(f"Unexpected error decrementing counter: {e}", exc_info=True)
-        return None
+        logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
 def notify_circuit_breaker_success() -> None:
@@ -527,6 +599,7 @@ def notify_circuit_breaker_success() -> None:
 def handler(event, context):
     logger.info(f"Processing event: {json.dumps(event)}")
     counter_value = None
+    decrement_attempted = False
 
     try:
         # Extract data from event
@@ -598,6 +671,7 @@ def handler(event, context):
             )
 
         # Always decrement counter
+        decrement_attempted = True
         counter_value = decrement_counter()
 
         return {
@@ -612,9 +686,11 @@ def handler(event, context):
 
     except Exception as e:
         logger.error(f"Unexpected error in handler: {str(e)}", exc_info=True)
-        # Always try to decrement counter in case of any error
-        if (
-            counter_value is None
-        ):  # semgrep-ignore: identical-is-comparison - Correctly checking for None.
+        # Always try to decrement counter in case of any error — but only if we
+        # never got as far as trying. decrement_counter() now retries internally
+        # and raises when it truly cannot apply the write, so calling it a second
+        # time here would only risk a double-subtract (a write that landed but
+        # answered with an error) without adding a chance of success.
+        if not decrement_attempted:
             decrement_counter()
         raise
