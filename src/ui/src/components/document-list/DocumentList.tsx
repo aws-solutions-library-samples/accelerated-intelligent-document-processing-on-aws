@@ -5,7 +5,7 @@ import { Table, Pagination, TextFilter, Box, SpaceBetween } from '@cloudscape-de
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../../api/auth-session';
 import { useNavigate } from 'react-router-dom';
 
 interface DateRange {
@@ -67,7 +67,7 @@ const DocumentList = (): React.JSX.Element => {
   useEffect(() => {
     const getUsername = async () => {
       try {
-        const session = await fetchAuthSession();
+        const session = await fetchSharedAuthSession();
         setCurrentUsername((session?.tokens?.idToken?.payload?.['cognito:username'] as string) || '');
       } catch (e) {
         logger.error('Error getting username', e);
