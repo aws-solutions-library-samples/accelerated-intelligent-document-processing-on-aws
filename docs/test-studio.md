@@ -624,6 +624,15 @@ did. A run against a never-published test set records no version.
 
 ## Draft labeling: unlabeled documents → ground truth
 
+
+The **Generate draft labels** dialog pages through the set independently of the
+document list behind it, and a selection is kept as you page. Leaving *Extract
+labels for every document that needs them* checked covers the whole set — the
+server decides the scope, so no count from a single page is involved. Paging
+offers one page at a time rather than jumping to an arbitrary page, because the
+underlying listing is token-based and page N's position is only known once N-1
+has been read.
+
 Creating a test set normally requires ground truth up front, which is the
 expensive part. Draft labeling inverts that: upload documents **only**, run the
 active configuration over them to produce machine-generated ground-truth

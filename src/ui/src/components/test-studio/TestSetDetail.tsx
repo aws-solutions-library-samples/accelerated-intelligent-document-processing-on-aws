@@ -636,7 +636,6 @@ const TestSetDetail = (): React.JSX.Element => {
               setTotalCount={totalCount}
               visible={showLabelModal}
               testSetId={testSetId ?? ''}
-              documents={documents}
               submitting={isStartingLabels}
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}

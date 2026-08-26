@@ -20,13 +20,14 @@ import {
   Modal,
   Select,
   SpaceBetween,
+  Pagination,
   Spinner,
   Table,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getConfigVersions } from '../../graphql/generated';
+import { getConfigVersions, getTestSetDocuments } from '../../graphql/generated';
 import { renderConfidence, renderLabelSource } from './TestSetDetail';
 import type { TestSetDocumentItem } from './TestSetDetail';
 
@@ -35,17 +36,28 @@ const logger = new ConsoleLogger('GenerateDraftLabelsModal');
 
 const ACTIVE_CONFIG = '__active__';
 
+/**
+ * Documents per page inside this dialog.
+ *
+ * Deliberately its own paging rather than borrowing the caller's page: which
+ * documents you can *choose* should not depend on where the list behind the
+ * dialog happens to be scrolled to. Before this, picking a specific document
+ * meant it had to already be on the caller's page — document 75 of 100 was
+ * simply unreachable.
+ */
+const MODAL_PAGE_SIZE = 50;
+
 /** Ground truth the server will not overwrite, so it must not be selectable. */
 const isProtected = (doc: TestSetDocumentItem): boolean => Boolean(doc.labelSource) && doc.labelSource !== 'draft-machine';
 
 interface Props {
   visible: boolean;
   testSetId: string;
-  documents: TestSetDocumentItem[];
   /**
-   * Documents in the whole set, from the server. `documents` is only the page the
-   * caller has loaded, so counts derived from it understate a paginated set — a
-   * 100-document set was described here as 50.
+   * Documents in the whole set, from the server — used for the header count and
+   * to decide whether paging is needed. The dialog fetches its own pages, so it
+   * deliberately does NOT take the caller's page: what you can select must not
+   * depend on where the list behind the dialog is scrolled to.
    */
   setTotalCount?: number | null;
   onDismiss: () => void;
@@ -53,33 +65,71 @@ interface Props {
   submitting?: boolean;
 }
 
-const GenerateDraftLabelsModal = ({
-  visible,
-  testSetId,
-  documents,
-  setTotalCount,
-  onDismiss,
-  onSubmit,
-  submitting,
-}: Props): React.JSX.Element => {
+const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss, onSubmit, submitting }: Props): React.JSX.Element => {
   const [configVersion, setConfigVersion] = useState<SelectProps.Option>({
     label: 'Active configuration',
     value: ACTIVE_CONFIG,
   });
   const [versionOptions, setVersionOptions] = useState<SelectProps.Option[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
-  const [selected, setSelected] = useState<TestSetDocumentItem[]>([]);
+  // Selection is keyed by objectKey and kept OUTSIDE the current page, so paging
+  // does not silently drop what was already ticked. A Cloudscape Table only knows
+  // about the items it is given, so if this lived in the page it would look like
+  // the user had deselected everything the moment they turned the page.
+  const [selectedByKey, setSelectedByKey] = useState<Map<string, TestSetDocumentItem>>(new Map());
   const [selectAll, setSelectAll] = useState(true);
 
-  const labelable = useMemo(() => documents.filter((d) => !isProtected(d)), [documents]);
-  const protectedCount = documents.length - labelable.length;
-  // True when the loaded page is only part of the set, in which case no count
-  // derived from `documents` describes what select-all will actually do.
-  const isPartialView = typeof setTotalCount === 'number' && setTotalCount > documents.length;
-  // Must track what will actually be submitted: in select-all mode `selected` is
-  // empty, so keying the replace-warning on it would hide the warning.
-  const targeted = selectAll ? labelable : selected;
+  // The dialog's own page of documents.
+  const [pageDocs, setPageDocs] = useState<TestSetDocumentItem[]>([]);
+  const [pageTokens, setPageTokens] = useState<(string | null)[]>([null]);
+  const [pageIndex, setPageIndex] = useState(1);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [docsError, setDocsError] = useState<string | null>(null);
+
+  const selected = useMemo(() => [...selectedByKey.values()], [selectedByKey]);
+  // Only the current page can be shown as ticked; the rest of the selection is
+  // still counted and still submitted.
+  const selectedOnPage = useMemo(() => pageDocs.filter((d) => selectedByKey.has(d.objectKey)), [pageDocs, selectedByKey]);
+  const pageLabelable = useMemo(() => pageDocs.filter((d) => !isProtected(d)), [pageDocs]);
+  const protectedOnPage = pageDocs.length - pageLabelable.length;
+  // True when the dialog is showing part of the set, so no count derived from the
+  // page describes what select-all will actually do.
+  const isPartialView = typeof setTotalCount === 'number' && setTotalCount > pageDocs.length;
+  // S3 continuation tokens are SEQUENTIAL: page 5's token only exists once pages
+  // 1-4 have been fetched. So offer one page ahead and no arbitrary jumps —
+  // ceil(total / pageSize) would let a user click page 5 and be shown page 1's
+  // documents labelled as page 5. Same idiom as the list behind this dialog.
+  const hasMorePages = Boolean(pageTokens[pageIndex]);
+  // Must track what will actually be submitted: in select-all mode the selection
+  // is empty, so keying the replace-warning on it would hide the warning.
+  const targeted = selectAll ? pageLabelable : selected;
   const redoCount = useMemo(() => targeted.filter((d) => d.labelSource === 'draft-machine').length, [targeted]);
+
+  const fetchDocPage = useCallback(
+    async (index: number, tokens: (string | null)[]) => {
+      setLoadingDocs(true);
+      setDocsError(null);
+      try {
+        const response = await client.graphql({
+          query: getTestSetDocuments,
+          variables: { testSetId, limit: MODAL_PAGE_SIZE, nextToken: tokens[index - 1] ?? undefined },
+        });
+        const page = response.data?.getTestSetDocuments;
+        setPageDocs((page?.documents ?? []) as TestSetDocumentItem[]);
+        setPageTokens((prev) => {
+          const next = [...prev];
+          next[index] = page?.nextToken ?? null;
+          return next;
+        });
+      } catch (err) {
+        logger.error('Could not load documents for selection:', err);
+        setDocsError('Could not load documents. Close and reopen the dialog to retry.');
+      } finally {
+        setLoadingDocs(false);
+      }
+    },
+    [testSetId],
+  );
 
   const loadVersions = useCallback(async () => {
     setLoadingVersions(true);
@@ -108,11 +158,17 @@ const GenerateDraftLabelsModal = ({
     if (!visible) return;
     loadVersions();
     setSelectAll(true);
-    setSelected([]);
-  }, [visible, loadVersions]);
+    setSelectedByKey(new Map());
+    // Always start at page 1: the dialog's paging is its own, so it must not
+    // inherit whatever page the list behind it was on.
+    setPageTokens([null]);
+    setPageIndex(1);
+    setPageDocs([]);
+    fetchDocPage(1, [null]);
+  }, [visible, loadVersions, fetchDocPage]);
 
   const effectiveKeys = selectAll ? undefined : selected.map((d) => d.objectKey);
-  const targetCount = selectAll ? labelable.length : selected.length;
+  const targetCount = selectAll ? pageLabelable.length : selected.length;
   // Option.value is `string | undefined`, so the type guard is required: a
   // non-string reaching the API pins the run to a bogus config version.
   const rawConfigVersion = configVersion.value;
@@ -124,7 +180,7 @@ const GenerateDraftLabelsModal = ({
       onDismiss={onDismiss}
       size="large"
       header={
-        <Header variant="h2" description={`${testSetId} · ${setTotalCount ?? documents.length} document(s)`}>
+        <Header variant="h2" description={`${testSetId} · ${setTotalCount ?? pageDocs.length} document(s)`}>
           Generate draft labels
         </Header>
       }
@@ -151,7 +207,7 @@ const GenerateDraftLabelsModal = ({
       }
     >
       <SpaceBetween size="l">
-        {labelable.length === 0 && (
+        {pageLabelable.length === 0 && !loadingDocs && !isPartialView && (
           <Alert type="info" header="Every document already has ground truth">
             There is nothing to draft-label. Run a test to score the pipeline against this set instead.
           </Alert>
@@ -187,8 +243,8 @@ const GenerateDraftLabelsModal = ({
             <Checkbox checked={selectAll} onChange={({ detail }) => setSelectAll(detail.checked)}>
               {isPartialView
                 ? `Extract labels for every document in the set that needs them (of ${setTotalCount})`
-                : `Extract labels for every document that needs them (${labelable.length})`}
-              {!isPartialView && protectedCount > 0 ? ` — skipping ${protectedCount} with existing ground truth` : ''}
+                : `Extract labels for every document that needs them (${pageLabelable.length})`}
+              {!isPartialView && protectedOnPage > 0 ? ` — skipping ${protectedOnPage} with existing ground truth` : ''}
             </Checkbox>
             {selectAll && isPartialView && (
               <Box variant="small" color="text-body-secondary">
@@ -197,25 +253,56 @@ const GenerateDraftLabelsModal = ({
               </Box>
             )}
 
-            {!selectAll && isPartialView && (
-              <Alert type="info">
-                This list is the {documents.length} document(s) currently loaded, of {setTotalCount} in the set. To pick a document that is
-                not here, page to it first — or leave the box above checked to cover the whole set.
-              </Alert>
+            {!selectAll && docsError && <Alert type="error">{docsError}</Alert>}
+
+            {!selectAll && selected.length > 0 && (
+              <Box variant="small" color="text-body-secondary">
+                {selected.length} document(s) selected
+                {isPartialView ? ' across all pages' : ''}. Paging keeps your selection.
+              </Box>
             )}
 
             {!selectAll && (
               <Table
                 variant="embedded"
-                items={documents}
+                items={pageDocs}
+                loading={loadingDocs}
+                loadingText="Loading documents"
                 trackBy="objectKey"
                 selectionType="multi"
-                selectedItems={selected}
-                onSelectionChange={({ detail }) =>
-                  setSelected((detail.selectedItems as TestSetDocumentItem[]).filter((d) => !isProtected(d)))
-                }
+                selectedItems={selectedOnPage}
+                onSelectionChange={({ detail }) => {
+                  // Merge, never replace: the event reports only THIS page's
+                  // ticks, so assigning it would wipe every selection made on
+                  // another page.
+                  const nowSelected = new Set(
+                    (detail.selectedItems as TestSetDocumentItem[]).filter((d) => !isProtected(d)).map((d) => d.objectKey),
+                  );
+                  setSelectedByKey((prev) => {
+                    const next = new Map(prev);
+                    pageDocs.forEach((doc) => {
+                      if (nowSelected.has(doc.objectKey)) next.set(doc.objectKey, doc);
+                      else next.delete(doc.objectKey);
+                    });
+                    return next;
+                  });
+                }}
                 isItemDisabled={isProtected}
                 empty={<Box textAlign="center">No documents.</Box>}
+                pagination={
+                  hasMorePages || pageIndex > 1 ? (
+                    <Pagination
+                      currentPageIndex={pageIndex}
+                      pagesCount={hasMorePages ? pageIndex + 1 : pageIndex}
+                      openEnd={hasMorePages}
+                      disabled={loadingDocs}
+                      onChange={({ detail }) => {
+                        setPageIndex(detail.currentPageIndex);
+                        fetchDocPage(detail.currentPageIndex, pageTokens);
+                      }}
+                    />
+                  ) : undefined
+                }
                 columnDefinitions={[
                   {
                     id: 'name',
