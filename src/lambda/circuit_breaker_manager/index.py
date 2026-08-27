@@ -272,7 +272,7 @@ def publish_to_appsync(state: dict) -> None:
             headers=dict(request.headers),
             method="POST",
         )
-        with urlopen(urllib_request, timeout=10) as response:  # noqa: S310
+        with urlopen(urllib_request, timeout=10) as response:  # noqa: S310  # nosec B310 - APPSYNC_API_URL is a deployment-set env var (https), not user input
             body = json.loads(response.read().decode("utf-8"))
         if "errors" in body:
             logger.warning(f"AppSync publish errors: {body['errors']}")

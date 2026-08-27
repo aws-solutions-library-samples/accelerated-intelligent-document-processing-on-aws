@@ -104,6 +104,20 @@ make srt-fix       # Interactive fix mode
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
 
+**SRT does NOT cover dependency CVEs.** Its `syft` stage builds an SBOM
+(inventory only, no vulnerability matching), so a separate gate handles SCA:
+
+```bash
+make dep-audit        # audit every pinned Python + Node dep against OSV (fails on HIGH+)
+make dep-audit-fast   # reuse existing dist/manifests instead of regenerating
+```
+
+Gated in CI by the `dep_audit` job (`fast_checks`, every push and MR, no AWS
+needed). Triage unreachable advisories in
+`scripts/security/dep_audit_allowlist.json` with a justification — the same
+pattern `scripts/srt/issues.json` uses for SRT. See
+`.claude/skills/srt-security-scan.md`.
+
 ### IDP CLI Commands
 
 The IDP CLI is used for programmatic deployment and batch processing:

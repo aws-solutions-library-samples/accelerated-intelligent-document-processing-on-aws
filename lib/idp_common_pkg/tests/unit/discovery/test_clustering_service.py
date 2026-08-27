@@ -77,6 +77,84 @@ class TestClusterResult:
         assert len(serialized["cluster_labels"]) == 4
 
 
+class TestClusterArtifactRoundTrip:
+    """Tests for the to_artifact()/from_artifact() S3 hand-off.
+
+    The discovery workflow writes this artifact in the clustering step and reads
+    it back in the (separately invoked) analyze step. It used to be a pickle,
+    which made the load an arbitrary-code-execution sink; these tests pin the
+    JSON contract that replaced it, including the bits JSON cannot represent
+    natively — numpy arrays and integer dict keys.
+    """
+
+    @pytest.fixture
+    def result(self, clustering_service):
+        return clustering_service.cluster(_make_clustered_embeddings())
+
+    def test_artifact_is_json_serializable(self, result):
+        """No numpy scalars may leak through — json.dumps() rejects them."""
+        import json
+
+        blob = json.dumps(result.to_artifact())
+        assert json.loads(blob)["num_clusters"] == result.num_clusters
+
+    def test_round_trip_preserves_cluster_membership(self, result):
+        """A rebuilt result must answer every query identically to the source."""
+        import json
+
+        from scipy.spatial import KDTree
+
+        data = json.loads(json.dumps(result.to_artifact()))
+        restored = ClusterResult.from_artifact(
+            data, embeddings=result.embeddings, kdtree=KDTree(result.embeddings)
+        )
+
+        assert restored.num_clusters == result.num_clusters
+        assert restored.cluster_sizes == result.cluster_sizes
+        assert restored.get_cluster_ids() == result.get_cluster_ids()
+        for cluster_id in result.get_cluster_ids():
+            assert restored.get_cluster_indices(
+                cluster_id
+            ) == result.get_cluster_indices(cluster_id)
+            assert np.allclose(
+                restored.centroids[cluster_id], result.centroids[cluster_id]
+            )
+
+    def test_round_trip_restores_integer_keys(self, result):
+        """JSON stringifies dict keys; from_artifact() must cast them back.
+
+        get_cluster_ids() compares keys with ``cid >= 0``, which raises on str.
+        """
+        import json
+
+        from scipy.spatial import KDTree
+
+        data = json.loads(json.dumps(result.to_artifact()))
+        assert all(isinstance(k, str) for k in data["cluster_sizes"])
+        assert all(isinstance(k, str) for k in data["centroids"])
+
+        restored = ClusterResult.from_artifact(
+            data, embeddings=result.embeddings, kdtree=KDTree(result.embeddings)
+        )
+        assert all(isinstance(k, int) for k in restored.cluster_sizes)
+        assert all(isinstance(k, int) for k in restored.centroids)
+
+    def test_round_trip_supports_sampling(self, result, clustering_service):
+        """The analyze step samples off the restored object, so that must work."""
+        import json
+
+        from scipy.spatial import KDTree
+
+        data = json.loads(json.dumps(result.to_artifact()))
+        restored = ClusterResult.from_artifact(
+            data, embeddings=result.embeddings, kdtree=KDTree(result.embeddings)
+        )
+        cluster_id = result.get_cluster_ids()[0]
+        assert clustering_service.sample_cluster(
+            restored, cluster_id=cluster_id
+        ) == clustering_service.sample_cluster(result, cluster_id=cluster_id)
+
+
 class TestClusteringService:
     """Tests for ClusteringService."""
 

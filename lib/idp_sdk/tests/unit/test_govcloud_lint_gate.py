@@ -49,12 +49,12 @@ def test_cfn_lint_arg_order_is_file_then_region(monkeypatch):
     monkeypatch.setattr(pub.shutil, "which", lambda _: "/usr/bin/cfn-lint")
     monkeypatch.setattr(pub.subprocess, "run", fake)
 
-    _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")
+    _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")  # nosec B108 - test fixture path, cfn-lint is mocked (no file I/O)
 
     cmd = fake.last_cmd
     assert cmd[0] == "cfn-lint"
     # File comes before --region.
-    assert cmd.index("/tmp/t.yaml") < cmd.index("--region")
+    assert cmd.index("/tmp/t.yaml") < cmd.index("--region")  # nosec B108 - test fixture path, cfn-lint is mocked (no file I/O)
     assert cmd[cmd.index("--region") + 1] == "us-gov-west-1"
 
 
@@ -67,7 +67,7 @@ def test_cfn_lint_parses_only_e_codes(monkeypatch):
     monkeypatch.setattr(pub.shutil, "which", lambda _: "/usr/bin/cfn-lint")
     monkeypatch.setattr(pub.subprocess, "run", _fake_run(stdout=out, returncode=4))
 
-    ran, errors, _ = _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")
+    ran, errors, _ = _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")  # nosec B108 - test fixture path, cfn-lint is mocked (no file I/O)
     assert ran is True
     assert len(errors) == 2  # the two E-codes, not the W-code
     assert all(e.startswith("E") for e in errors)
@@ -75,7 +75,7 @@ def test_cfn_lint_parses_only_e_codes(monkeypatch):
 
 def test_cfn_lint_skips_gracefully_when_not_installed(monkeypatch):
     monkeypatch.setattr(pub.shutil, "which", lambda _: None)
-    ran, errors, note = _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")
+    ran, errors, note = _cfn_lint_region_errors("/tmp/t.yaml", "us-gov-west-1")  # nosec B108 - test fixture path, cfn-lint is mocked (no file I/O)
     assert ran is False
     assert errors == []
     assert "not installed" in note

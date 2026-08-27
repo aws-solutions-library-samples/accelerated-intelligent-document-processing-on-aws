@@ -137,6 +137,8 @@ The solution creates various IAM roles to run different components of the system
   * `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes`
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
   * `states:StartExecution`
+  * `states:ListExecutions` (read-only, scoped to this stack's state machine — used to reconcile the workflow-concurrency counter against the executions that are really running, so a leaked counter cannot permanently stop the stack admitting documents)
+  * `cloudwatch:PutMetricData` (restricted by an `IAM` condition to the stack's own metric namespace — publishes the concurrency-counter drift the `ConcurrencyCounterDriftAlarm` watches)
   * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
 
 * **Step Functions Execution Role**:

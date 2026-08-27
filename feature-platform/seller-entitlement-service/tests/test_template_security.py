@@ -47,7 +47,7 @@ _CfnLoader.add_multi_constructor("", _any_tag)
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    return yaml.load(_TEMPLATE.read_text(encoding="utf-8"), Loader=_CfnLoader)
+    return yaml.load(_TEMPLATE.read_text(encoding="utf-8"), Loader=_CfnLoader)  # nosec B506 - _CfnLoader subclasses yaml.SafeLoader; no arbitrary construction
 
 
 @pytest.fixture(scope="module")

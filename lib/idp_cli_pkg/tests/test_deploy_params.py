@@ -239,7 +239,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags={"Owner": "docs-team", "Environment": "prod"},
         )
@@ -255,7 +255,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags={"Owner": "docs-team"},
         )
@@ -269,7 +269,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags=None,
         )
@@ -282,7 +282,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
         )
 

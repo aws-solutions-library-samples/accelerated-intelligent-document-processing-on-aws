@@ -7,9 +7,14 @@
 # Audio deps (ffmpeg) are intentionally excluded — documents only in v1.
 pypdf>=5.1.0
 pypdfium2>=4.30.0
-pillow>=12.1.1,<12.3  # CVE-2026-25990 fix floor; cap because 12.3.0 has no
-                     # manylinux2014_aarch64 wheel yet (SAM arm64 build fails).
-                     # Raise the cap once an aarch64 12.3+ wheel is published.
+# Cap lifted. 12.3.0 fixes 9 HIGH advisories (heap OOB writes in
+# Image.paste/crop and ImageCmsTransform, decompression-bomb DoS in the PDF and
+# font parsers) that matter here because this hook renders untrusted customer
+# PDFs. It publishes no `manylinux2014_aarch64` wheel, which is the single tag
+# SAM's PythonPipBuilder asks for — so this function is built by hook/Makefile
+# (BuildMethod: makefile), which names `manylinux_2_28_aarch64` explicitly. See
+# that file before changing this pin or the build method.
+pillow>=12.3.0
 python-docx>=0.8.11
 openpyxl>=3.0.10
 faker>=30.0.0
