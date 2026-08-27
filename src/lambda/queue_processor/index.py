@@ -6,7 +6,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 import logging
 from typing import Any, Dict, Optional, Tuple
 from idp_common.models import Document, Status
@@ -138,7 +138,12 @@ def _count_running_executions() -> Optional[int]:
             token = page.get("nextToken")
             if not token:
                 return total
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # Round-16 review fix: BotoCoreError subclasses (endpoint /
+        # timeout / connection reset) bypass ClientError-only handlers
+        # and used to propagate, killing message processing on transient
+        # network blips. Same "return None → caller declines to act"
+        # semantics as the ClientError path.
         logger.warning(f"Could not list executions for reconciliation: {e}")
         return None
 
@@ -177,7 +182,8 @@ def reconcile_counter() -> Optional[int]:
             ).get("Item")
             or {}
         )
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # Round-16 review fix — see _count_running_executions above.
         logger.warning(f"Could not read counter for reconciliation: {e}")
         return None
 
@@ -278,17 +284,69 @@ def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
             concurrency_table.update_item(
                 Key={"counter_id": COUNTER_ID},
                 UpdateExpression="REMOVE drift_observed_at, drift_running",
+                # Round-16 review fix: only clear an existing sample.
+                # Without this, two racing refusal paths could clobber
+                # each other and leave a stale sample re-appearing.
+                ConditionExpression="attribute_exists(drift_observed_at)",
             )
         else:
+            # Round-16 review fix: two concurrent refused-message paths
+            # racing would previously clobber each other's sample. Only
+            # WRITE a fresh sample if none exists yet (respecting the
+            # existing "never overwrite" invariant from the round-3
+            # feedback-clock-reset regression). Any existing sample is
+            # kept — reconciliation logic already handles that path.
             concurrency_table.update_item(
                 Key={"counter_id": COUNTER_ID},
                 UpdateExpression=(
                     "SET drift_observed_at = :at, drift_running = :running"
                 ),
                 ExpressionAttributeValues={":at": when, ":running": running},
+                ConditionExpression="attribute_not_exists(drift_observed_at)",
             )
     except ClientError as e:
+        # ConditionalCheckFailedException here is EXPECTED (idempotent
+        # no-op path — another writer already recorded the sample or
+        # the sample doesn't exist to clear). Only warn on other codes,
+        # and re-raise persistent access issues so reconciliation
+        # doesn't silently get stuck in "first sample" mode.
+        code = e.response.get("Error", {}).get("Code")
+        if code == "ConditionalCheckFailedException":
+            logger.debug(f"drift-sample write no-op (condition guard): {e}")
+            return
         logger.warning(f"Could not record concurrency drift sample: {e}")
+        # Emit a metric so a stuck reconciliation is visible instead of
+        # silently invisible.
+        try:
+            boto3.client("cloudwatch").put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "ConcurrencyDriftSampleWriteFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass  # telemetry must not affect message processing
+    except BotoCoreError as e:
+        # Round-16 review fix: connection / timeout / endpoint errors
+        # bypass ClientError. Same handling: warn + metric.
+        logger.warning(f"Concurrency drift sample write hit BotoCoreError: {e}")
+        try:
+            boto3.client("cloudwatch").put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "ConcurrencyDriftSampleWriteFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass
 
 
 def _emit_drift_metric(drift: int, active: int, running: int) -> None:

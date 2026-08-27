@@ -249,7 +249,14 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         WHERE date = '{target_date}' AND hour = '{target_hour}'
         GROUP BY 1, 2, 3, 4
     """  # nosec B608
-    query_id = _run_athena(sql)
+    # Round-16 review fix: stable idempotency key per (table, date, hour).
+    # An async retry that fires while the first INSERT is still in flight
+    # (before Glue metadata propagates the new partition rows) will get
+    # the SAME QueryExecutionId back from Athena instead of starting a
+    # second, double-writing INSERT.
+    query_id = _run_athena(
+        sql, idempotency_key=f"metering_hourly-{target_date}-{target_hour}"
+    )
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -308,7 +315,10 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
         )
         GROUP BY 1, 2
     """  # nosec B608
-    query_id = _run_athena(sql)
+    # Round-16 review fix: idempotency key — see metering_hourly above.
+    query_id = _run_athena(
+        sql, idempotency_key=f"metering_docs_hourly-{target_date}-{target_hour}"
+    )
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -522,8 +532,11 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             GROUP BY 1, 2, 3, 4
         """  # nosec B608
         try:
+            # Round-16 idempotency key — same pattern as the hourly INSERTs.
             result["metering_daily"] = {
-                "query_execution_id": _run_athena(sql),
+                "query_execution_id": _run_athena(
+                    sql, idempotency_key=f"metering_daily-{target_date}"
+                ),
                 "skipped": False,
             }
         except Exception as e:
@@ -557,8 +570,11 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             GROUP BY 1, 2
         """  # nosec B608
         try:
+            # Round-16 idempotency key.
             result["metering_docs_daily"] = {
-                "query_execution_id": _run_athena(sql),
+                "query_execution_id": _run_athena(
+                    sql, idempotency_key=f"metering_docs_daily-{target_date}"
+                ),
                 "skipped": False,
             }
         except Exception as e:
@@ -621,17 +637,42 @@ def _hourly_ever_written(before_date: str) -> bool:
     # retries survive a single-transient throttle without moving to
     # the default. Falls back to True on persistent failure so we
     # don't accidentally write and lock a zero daily.
-    # Round-15 review fix: distinguish TABLE_NOT_FOUND from other
-    # exception classes — the sibling ``_partition_already_written``
-    # treats a missing table as "not written yet" (correct), but this
-    # function used to catch all exceptions and default to True. If an
-    # operator renamed or dropped ``metering_hourly`` (or ``metering``),
-    # every retry would raise TABLE_NOT_FOUND and this function would
-    # return True → is_deploy_day=False → the guard would fire and daily
-    # rollups would DLQ forever. Route the missing-table error to the
-    # "no prior data" branch (return False) so the deploy-day skip
-    # engages naturally; keep the retry-then-True default only for
-    # non-table-shaped errors (throttle, timeout, permissions).
+    # Round-15/16 review fix: TABLE_NOT_FOUND on the hourly probe alone
+    # doesn't prove day-1 — the operator could have dropped/renamed
+    # metering_hourly on a stack whose raw ``metering`` table still holds
+    # historical rows. Round-15 mistakenly returned False on hourly
+    # TABLE_NOT_FOUND without consulting raw. This fix falls through to
+    # the raw probe when hourly is missing; only if BOTH tables are
+    # missing (or hourly is missing AND raw is empty on prior dates) do
+    # we return False and let the caller treat it as day-1.
+    _TABLE_MISSING_MARKERS = (  # noqa: N806
+        "table_not_found",
+        "entitynotfoundexception",
+        "table not found",
+        "does not exist",
+    )
+
+    def _is_table_missing(exc: BaseException) -> bool:
+        m = str(exc).lower()
+        return any(marker in m for marker in _TABLE_MISSING_MARKERS)
+
+    def _probe_raw() -> Optional[bool]:
+        """Return True if raw metering has prior-date rows, False if it's
+        empty, None if the probe itself failed or the table is missing.
+        """
+        try:
+            rows = _run_athena_query_with_results(raw_sql, emit_self_cost=False)
+            return bool(rows)
+        except Exception as e:
+            if _is_table_missing(e):
+                logger.info(
+                    f"_hourly_ever_written: raw metering table also missing "
+                    f"({e}); no prior-date data possible."
+                )
+                return False  # missing raw ⇒ no prior data ⇒ day-1 signal
+            logger.warning(f"_hourly_ever_written: raw metering probe failed ({e})")
+            return None
+
     last_error: Optional[BaseException] = None
     for attempt in range(3):
         try:
@@ -640,33 +681,28 @@ def _hourly_ever_written(before_date: str) -> bool:
             )
             if hourly_rows:
                 return True
-            # Round-13 review fix: hourly might be empty for a real
-            # deploy-day OR for a multi-day outage. Only raw metering
-            # can settle that — if raw rows exist on prior dates, this
-            # can't be day-1.
+            # Hourly is present but has no prior rows. Consult raw.
             raw_rows = _run_athena_query_with_results(raw_sql, emit_self_cost=False)
             return bool(raw_rows)
         except Exception as e:
             last_error = e
-            # Missing-table check first — a missing hourly OR raw table
-            # means we cannot possibly have data on prior dates, which
-            # is exactly what the caller needs to treat as day-1.
-            msg = str(e).lower()
-            if any(
-                m in msg
-                for m in (
-                    "table_not_found",
-                    "entitynotfoundexception",
-                    "table not found",
-                    "does not exist",
-                )
-            ):
+            if _is_table_missing(e):
+                # Hourly table missing. STILL consult raw before deciding —
+                # raw metering may hold historical rows even if hourly was
+                # dropped, and that means we're NOT day-1.
                 logger.info(
-                    f"_hourly_ever_written: table missing ({e}); "
-                    f"treating as 'no prior data' so the deploy-day "
-                    f"guard skip can engage."
+                    f"_hourly_ever_written: hourly table missing ({e}); "
+                    f"falling through to raw-metering probe."
                 )
-                return False
+                raw = _probe_raw()
+                if raw is None:
+                    # Raw probe failed too — safest default is True
+                    # (guard will fire on empty hourly rather than
+                    # silently writing a zero daily).
+                    return True
+                # raw is True → prior data → not day-1
+                # raw is False → no prior data anywhere → day-1
+                return raw
             if attempt < 2:
                 time.sleep(1 + attempt)  # 1s, 2s
     logger.warning(
@@ -1066,25 +1102,38 @@ def _get_athena_bytes_sum(
             }
         )
     total = 0.0
+    # Round-16 review fix: get_metric_data response is paginated via
+    # NextToken. Chunking QUERIES at 500 per-call handles the per-request
+    # query limit, but each response can still return NextToken if the
+    # datapoint set spills past the response-size ceiling. Loop on
+    # NextToken so we don't silently drop tail datapoints.
     for chunk_start in range(0, len(queries), 500):
         chunk = queries[chunk_start : chunk_start + 500]
-        resp = cloudwatch_client.get_metric_data(
-            MetricDataQueries=chunk,
-            StartTime=hour_start,
-            EndTime=hour_end,
-        )
-        for r in resp.get("MetricDataResults", []):
-            # Filter NaN before summing — a broken metric occasionally yields
-            # NaN, which would poison the int() cast at the athena_bytes_sum
-            # cast site downstream (raises ValueError, aborts the rollup,
-            # lands in the DLQ). Sibling paths (_flatten_cw_response,
-            # _get_bedrock_tokens_by_model) filter — this one must too.
-            values = [
-                v
-                for v in (r.get("Values") or [])
-                if v is not None and not math.isnan(v)
-            ]
-            total += float(math.fsum(values))
+        next_token: Optional[str] = None
+        while True:
+            kwargs: Dict[str, Any] = {
+                "MetricDataQueries": chunk,
+                "StartTime": hour_start,
+                "EndTime": hour_end,
+            }
+            if next_token:
+                kwargs["NextToken"] = next_token
+            resp = cloudwatch_client.get_metric_data(**kwargs)
+            for r in resp.get("MetricDataResults", []):
+                # Filter NaN before summing — a broken metric occasionally yields
+                # NaN, which would poison the int() cast at the athena_bytes_sum
+                # cast site downstream (raises ValueError, aborts the rollup,
+                # lands in the DLQ). Sibling paths (_flatten_cw_response,
+                # _get_bedrock_tokens_by_model) filter — this one must too.
+                values = [
+                    v
+                    for v in (r.get("Values") or [])
+                    if v is not None and not math.isnan(v)
+                ]
+                total += float(math.fsum(values))
+            next_token = resp.get("NextToken")
+            if not next_token:
+                break
     return total
 
 
@@ -1181,26 +1230,36 @@ def _get_bedrock_tokens_by_model(
                     },
                 }
             )
-        # GetMetricData caps at 500 queries per call.
+        # GetMetricData caps at 500 queries per call AND per-response can
+        # paginate via NextToken — round-16 review fix: loop on NextToken
+        # so tail datapoints aren't silently dropped.
         for chunk_start in range(0, len(queries), 500):
             chunk = queries[chunk_start : chunk_start + 500]
-            resp = cloudwatch_client.get_metric_data(
-                MetricDataQueries=chunk,
-                StartTime=hour_start,
-                EndTime=hour_end,
-            )
-            for r in resp.get("MetricDataResults", []):
-                model = id_to_model.get(r["Id"])
-                if model is None:
-                    continue
-                values = [
-                    v
-                    for v in (r.get("Values") or [])
-                    if v is not None and not math.isnan(v)
-                ]
-                total = float(math.fsum(values))
-                bucket = result.setdefault(model, {"in": 0.0, "out": 0.0})
-                bucket[direction] += total
+            next_token: Optional[str] = None
+            while True:
+                kwargs: Dict[str, Any] = {
+                    "MetricDataQueries": chunk,
+                    "StartTime": hour_start,
+                    "EndTime": hour_end,
+                }
+                if next_token:
+                    kwargs["NextToken"] = next_token
+                resp = cloudwatch_client.get_metric_data(**kwargs)
+                for r in resp.get("MetricDataResults", []):
+                    model = id_to_model.get(r["Id"])
+                    if model is None:
+                        continue
+                    values = [
+                        v
+                        for v in (r.get("Values") or [])
+                        if v is not None and not math.isnan(v)
+                    ]
+                    total = float(math.fsum(values))
+                    bucket = result.setdefault(model, {"in": 0.0, "out": 0.0})
+                    bucket[direction] += total
+                next_token = resp.get("NextToken")
+                if not next_token:
+                    break
     return result
 
 
@@ -1685,7 +1744,11 @@ def _partition_already_written(
         raise
 
 
-def _run_athena(sql: str, emit_self_cost: bool = True) -> str:
+def _run_athena(
+    sql: str,
+    emit_self_cost: bool = True,
+    idempotency_key: Optional[str] = None,
+) -> str:
     """Start an Athena query and wait for completion. Returns QueryExecutionId.
 
     ``emit_self_cost=False`` skips the self-attribution CloudWatch metric
@@ -1693,17 +1756,31 @@ def _run_athena(sql: str, emit_self_cost: bool = True) -> str:
     (LIMIT 1 partition probes) use this to avoid emitting per-partition
     ``AthenaBytesScanned`` metrics for every rollup fire, which was noise
     on the ``rollup-lambda`` component. Round-9 review fix.
+
+    ``idempotency_key`` (round-16 review fix): if provided, passed to
+    Athena as ``ClientRequestToken``. On Lambda async retry, the same
+    token guarantees Athena returns the SAME QueryExecutionId instead
+    of starting a new query — otherwise the check-then-INSERT is not
+    atomic against Glue metadata propagation lag, and a slow first
+    INSERT + fast retry could double-write a partition. Only apply
+    to write queries (INSERT INTO ...); read queries don't need it
+    because they're safely re-runnable.
     """
     if not DATABASE:
         raise RuntimeError("REPORTING_DATABASE env var not set")
-    response = athena_client.start_query_execution(
-        QueryString=sql,
-        QueryExecutionContext={"Database": DATABASE},
-        WorkGroup=WORKGROUP,
-        ResultConfiguration={"OutputLocation": QUERY_OUTPUT_LOCATION}
-        if QUERY_OUTPUT_LOCATION
-        else {},
-    )
+    kwargs: Dict[str, Any] = {
+        "QueryString": sql,
+        "QueryExecutionContext": {"Database": DATABASE},
+        "WorkGroup": WORKGROUP,
+        "ResultConfiguration": (
+            {"OutputLocation": QUERY_OUTPUT_LOCATION} if QUERY_OUTPUT_LOCATION else {}
+        ),
+    }
+    if idempotency_key:
+        # Athena requires ClientRequestToken be 32-128 chars, letters/digits/dash.
+        # Truncate defensively; callers should already meet this.
+        kwargs["ClientRequestToken"] = idempotency_key[:128]
+    response = athena_client.start_query_execution(**kwargs)
     query_id = response["QueryExecutionId"]
     _wait_for_athena(query_id, emit_self_cost=emit_self_cost)
     return query_id
@@ -1764,8 +1841,51 @@ def _wait_for_athena(
     given up on it, and a retry starts a fresh one on top.
     """
     started = time.time()
+    # Round-16 review fix: back-off + jitter + throttle handling on the
+    # poll itself. Previously ``get_query_execution`` was called with no
+    # try/except — a ThrottlingException on the poll (Athena's poll rate
+    # limits are aggressive under high concurrency) was fatal to the
+    # rollup. Fixed 1s sleep exacerbated concurrent throttle. Now:
+    # exponential backoff capped at 5s + up to 500ms jitter, and
+    # ThrottlingException / RequestLimitExceeded / InternalServerError
+    # are retried in-place until the outer timeout_sec is exceeded.
+    from botocore.exceptions import ClientError as _AthenaClientError
+
+    _consecutive_throttles = 0
+    _RETRYABLE_POLL_CODES = (  # noqa: N806
+        "ThrottlingException",
+        "TooManyRequestsException",
+        "RequestLimitExceeded",
+        "InternalServerException",
+    )
     while True:
-        response = athena_client.get_query_execution(QueryExecutionId=query_id)
+        try:
+            response = athena_client.get_query_execution(QueryExecutionId=query_id)
+        except _AthenaClientError as poll_err:
+            code = poll_err.response.get("Error", {}).get("Code", "")
+            if code in _RETRYABLE_POLL_CODES:
+                _consecutive_throttles += 1
+                # 1s, 2s, 4s, capped at 5s + 0-500ms jitter.
+                backoff = min(2 ** (_consecutive_throttles - 1), 5.0)
+                # Time-derived jitter (no random module — deterministic
+                # under test) — take fractional seconds mod 1.
+                jitter = (time.time() % 1) * 0.5
+                sleep_for = backoff + jitter
+                logger.warning(
+                    f"Athena poll for {query_id} threw {code} "
+                    f"(consecutive={_consecutive_throttles}); sleeping "
+                    f"{sleep_for:.2f}s before retry."
+                )
+                time.sleep(sleep_for)
+                if time.time() - started > timeout_sec:
+                    raise TimeoutError(
+                        f"Athena poll for {query_id} exceeded {timeout_sec}s "
+                        f"of poll throttle; last error: {poll_err}"
+                    ) from poll_err
+                continue
+            # Non-throttle client error — propagate.
+            raise
+        _consecutive_throttles = 0
         state = response["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
             if emit_self_cost:

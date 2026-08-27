@@ -185,7 +185,7 @@ class TestMeteringHourlyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-123",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid-123",
             ),
         ):
             result = rollup._rollup_metering_hourly("2026-08-18", "13")
@@ -213,6 +213,30 @@ class TestMeteringHourlyRollup:
             "in metering_docs_hourly."
         )
 
+    def test_hourly_insert_passes_idempotency_key(self, rollup):
+        """Round-16 review fix: on Lambda async retry, ``start_query_execution``
+        must receive a stable ``ClientRequestToken`` so Athena returns the
+        SAME QueryExecutionId instead of double-writing the partition
+        against propagation-lagged Glue metadata.
+        """
+        captured_kwargs = {}
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql, **kw: captured_kwargs.update(kw) or "qid",
+            ),
+        ):
+            rollup._rollup_metering_hourly("2026-08-27", "13")
+        # A stable, deterministic idempotency key must have been passed,
+        # keyed on (table, date, hour).
+        assert "idempotency_key" in captured_kwargs
+        tok = captured_kwargs["idempotency_key"]
+        assert "metering_hourly" in tok
+        assert "2026-08-27" in tok
+        assert "13" in tok
+
 
 @pytest.mark.unit
 class TestMeteringDocsHourlyRollup:
@@ -234,7 +258,7 @@ class TestMeteringDocsHourlyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured.append(sql) or "qid-docs",
+                side_effect=lambda sql, **_kw: captured.append(sql) or "qid-docs",
             ),
         ):
             result = rollup._rollup_metering_docs_hourly("2026-08-18", "13")
@@ -279,7 +303,7 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-456",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid-456",
             ),
         ):
             rollup._run_daily()
@@ -355,7 +379,7 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-789",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid-789",
             ),
         ):
             result = rollup._run_daily()
@@ -381,7 +405,7 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-empty",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid-empty",
             ),
         ):
             result = rollup._run_daily()
@@ -432,7 +456,9 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-first-run",
+                side_effect=lambda sql, **_kw: (
+                    captured_sql.append(sql) or "qid-first-run"
+                ),
             ),
         ):
             result = rollup._run_daily()
@@ -502,7 +528,7 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid-scoped",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid-scoped",
             ),
         ):
             result = rollup._run_daily()
@@ -511,31 +537,40 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is False
         assert any("INSERT INTO" in s for s in captured_sql)
 
-    def test_dropped_hourly_table_is_treated_as_no_prior_data(self, rollup):
-        """Round-15 review fix #3: ``_hourly_ever_written`` used to
-        default to True on any exception (retry 3× then default), which
-        included TABLE_NOT_FOUND. If an operator dropped or renamed
-        ``metering_hourly``, the deploy-day skip path was blocked and
-        every daily rollup went to DLQ. Now the missing-table shape is
-        detected and treated as "no prior data" so day-1-like behavior
-        engages.
+    def test_dropped_hourly_and_empty_raw_treats_as_day_one(self, rollup):
+        """Round-16 review fix (regression of round-15): a dropped
+        hourly table with NO raw-metering history → day-1 signal
+        (return False so ``is_deploy_day`` becomes True).
         """
 
-        # Raw metering has data for the target date; metering_hourly's
-        # prior-date probe raises TABLE_NOT_FOUND. Should return False.
-        def raise_table_missing(sql, **_kwargs):
-            if 'FROM "reporting"."metering_hourly"' in sql:
-                raise RuntimeError(
-                    'TABLE_NOT_FOUND: Table "awsdatacatalog"."reporting"."metering_hourly" does not exist'
-                )
-            return []
+        def fake_query(sql, **_kwargs):
+            if "metering_hourly" in sql:
+                raise RuntimeError("TABLE_NOT_FOUND: metering_hourly does not exist")
+            return []  # raw metering has no prior-date rows either
 
         with patch.object(
-            rollup, "_run_athena_query_with_results", side_effect=raise_table_missing
+            rollup, "_run_athena_query_with_results", side_effect=fake_query
         ):
-            # Should return False (no prior data → not "already written")
-            # rather than retrying 3× and returning True.
             assert rollup._hourly_ever_written(before_date="2026-08-27") is False
+
+    def test_dropped_hourly_but_raw_has_history_returns_true(self, rollup):
+        """Round-16 review fix: if hourly is missing but raw metering
+        still has prior-date rows, we are NOT day-1. Round-15's fix
+        returned False here, misclassifying a real outage as deploy-day
+        and letting a 0-doc daily land. Now: fall through to raw probe;
+        raw with prior data → return True → guard fires as expected.
+        """
+
+        def fake_query(sql, **_kwargs):
+            if "metering_hourly" in sql:
+                raise RuntimeError("TABLE_NOT_FOUND: metering_hourly does not exist")
+            # Raw metering has prior-date history — NOT day-1.
+            return [["1"]]
+
+        with patch.object(
+            rollup, "_run_athena_query_with_results", side_effect=fake_query
+        ):
+            assert rollup._hourly_ever_written(before_date="2026-08-27") is True
 
     def test_daily_guards_only_sub_hourly_of_the_daily_being_written(self, rollup):
         """Round-15 review fix #4: when metering_daily is already
@@ -571,7 +606,7 @@ class TestMeteringDailyRollup:
             patch.object(
                 rollup,
                 "_run_athena",
-                side_effect=lambda sql: captured_sql.append(sql) or "qid",
+                side_effect=lambda sql, **_kw: captured_sql.append(sql) or "qid",
             ),
         ):
             result = rollup._run_daily()

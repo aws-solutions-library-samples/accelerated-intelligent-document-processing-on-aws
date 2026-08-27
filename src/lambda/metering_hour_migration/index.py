@@ -443,11 +443,32 @@ def _migrate_one(bucket: str, key: str) -> str:
         code = e.response.get("Error", {}).get("Code")
         if code not in ("404", "NoSuchKey", "NotFound"):
             raise
-    s3_client.copy_object(
-        Bucket=bucket,
-        Key=target,
-        CopySource={"Bucket": bucket, "Key": key},
-    )
+    # Round-16 review fix: copy_object below can NoSuchKey if a concurrent
+    # migrator (or the operator's manual retry script) deleted the source
+    # between our HEADs and the copy. Guard the call so we don't flip a
+    # fully-migrated file to FAILED. If target already exists (from a
+    # prior partial run) and source is now gone, the migration is done.
+    try:
+        s3_client.copy_object(
+            Bucket=bucket,
+            Key=target,
+            CopySource={"Bucket": bucket, "Key": key},
+        )
+    except s3_client.exceptions.ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            # Confirm target still exists — if so, this file was migrated
+            # by another actor and we can safely return "moved".
+            try:
+                s3_client.head_object(Bucket=bucket, Key=target)
+                logger.info(
+                    f"copy_object saw source gone but target exists: "
+                    f"{target}. Another migrator finished this file first."
+                )
+                return "moved"
+            except s3_client.exceptions.ClientError:
+                pass
+        raise
     s3_client.delete_object(Bucket=bucket, Key=key)
     return "moved"
 
