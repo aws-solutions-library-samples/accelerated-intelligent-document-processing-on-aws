@@ -138,6 +138,14 @@ suites:
   # non-deterministic and the failure is a partial list, not an error), so it gets
   # repeats and the `separate` cell alongside as a same-doc control.
   intconf: {cells: [core-tt-simple-int, core-tt-simple-sep], docs: [longdesc_100], repeats: 4}
+  # advverify: re-verifies the OTHER standing list-loss hazard — an ADVANCED-mode
+  # agent that declines the recommended table tool and returns the whole list as
+  # `null` (#666/#668). Same rationale as `intconf` above: the failure is
+  # non-deterministic and silent (schema-valid, scalar accuracy 1.000, status
+  # COMPLETED), so a single run cannot settle it. `core-tt-adv-sep` runs alongside
+  # as a same-doc control. Run it with `--set extraction_model=sonnet5`, the model
+  # the failure was observed on. Evidence: benchmarks/results/v0.6.5-advverify/.
+  advverify: {cells: [core-tt-adv-int, core-tt-adv-sep], docs: [longdesc_100], repeats: 4}
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}
   # cost: purpose-built to DETECT COST DIFFERENCES between configs with confidence.

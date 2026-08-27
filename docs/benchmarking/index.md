@@ -104,6 +104,7 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `scaling` | simple vs advanced across the size series | The completeness-cliff study |
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
+| `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
 
 > **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
