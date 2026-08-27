@@ -48,15 +48,48 @@ Layer 3 is confirmed working too: `completeness_check` now carries the new
 `unexplained_empty_lists` / `complete` fields, and `population_check` reports 4/4
 fields populated (it was 3/4 with `Transactions` empty).
 
-## Residual, NOT caused by these fixes
+## Residual, NOT caused by these fixes — and NOT yet a defect
 
 3 of 4 `core-tt-adv-int` runs raise `assessment_incomplete` (severity **error**):
 *"1 list row(s) could not be confidence-scored"* — 1 row of 100, confined to the
 **integrated** cell, absent from all four `separate` runs. This is confidence
-*coverage*, not extraction data loss, and it is consistent with the standing
-guidance to prefer `separate` on list-bearing schemas. It is not comparable to the
-pre-fix run, which had zero rows to score, so no before/after claim is made here —
-it needs its own investigation.
+*coverage*, not extraction data loss.
+
+⚠️ **Read with the config in hand: these cells ran with the escalation rung of the
+self-healing ladder switched OFF.**
+
+```
+escalation_enabled = False          # the model-escalation rung, disabled
+escalation_model   = us.anthropic.claude-sonnet-5:1m
+geometry.mode      = ocr_only       # the documented per-row-output remedy, already applied
+```
+
+`assessment_incomplete` fires only when rows remain unscored **after the full
+ladder** (shrink batch → retry → escalate model). With `escalation_enabled: false`,
+`batching.py` sets `ladder_escalation_model = None`, so the third rung never ran —
+the ladder had shrink+retry only. And that is not an accident of this run: the
+benchmark's `default_cell` sets `escalation: "off"` deliberately, so escalation cost
+does not confound cross-cell cost comparisons.
+
+So this is a reproducible **observation on a configuration that declines the
+recovery mechanism built for exactly this case** — not a demonstrated product
+defect, and not a demonstrated inherent limit either. The run that would settle it
+is `advverify` with `--set escalation=on`: if the row recovers it is a config
+artifact; if it does not, it is a real ceiling worth chasing.
+
+What the data *does* support: **integrated is more exposed than separate.** That is
+the expected direction — integrated carries confidence in one larger response, so a
+batch is likelier to hit the output ceiling, while `separate` gives the confidence
+model its own budget. It corroborates the standing guidance to prefer `separate` on
+list-bearing schemas rather than revealing anything new.
+
+No before/after claim is made against the pre-fix run either: it had zero rows to
+score.
+
+It **is** surfaced properly — `assessment_incomplete` is severity `error`, so the
+processing report's status line reads `COMPLETED WITH ERRORS`, the issue is listed
+with its root cause, and the section shows an `error` status indicator in the UI's
+Processing Issues column. Nothing here is silent.
 
 ## Cost note
 
