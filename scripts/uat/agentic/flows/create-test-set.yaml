@@ -1,0 +1,11 @@
+# Example flow file. See README.md in this directory.
+flow_id: create-test-set
+claim: |
+  Test Studio lets you create a test set so a configuration can be benchmarked
+  against known-good ground truth. Create one.
+# Read VERBATIM at run time for the WARM run — never paraphrased into this file, or the
+# finding would be about the paraphrase rather than the shipped documentation.
+docs_ref: docs/test-studio.md#creating-test-sets
+documented_steps: 4
+verify:
+  method: none   # TODO: ddb_item_exists once the TestSet oracle lands in verify.py

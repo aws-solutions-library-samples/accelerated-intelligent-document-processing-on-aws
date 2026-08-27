@@ -25,8 +25,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from playwright.async_api import Page, async_playwright
@@ -191,13 +191,19 @@ class BrowserSession:
             self.measured.collect_error = f"{type(exc).__name__}: {str(exc)[:160]}"
             return
         if m is None:
-            self.measured.collect_error = "window.__uat was undefined at collection time"
+            self.measured.collect_error = (
+                "window.__uat was undefined at collection time"
+            )
             return
         # Monotonic: never let a mid-navigation read (fresh page, counters back at 0)
         # overwrite a higher accumulated value.
         self.measured.clicks = max(self.measured.clicks, int(m.get("clicks", 0) or 0))
-        self.measured.field_edits = max(self.measured.field_edits, int(m.get("fieldEdits", 0) or 0))
-        self.measured.navigations = max(self.measured.navigations, int(m.get("navigations", 0) or 0))
+        self.measured.field_edits = max(
+            self.measured.field_edits, int(m.get("fieldEdits", 0) or 0)
+        )
+        self.measured.navigations = max(
+            self.measured.navigations, int(m.get("navigations", 0) or 0)
+        )
         routes = m.get("routes") or []
         if len(routes) >= len(self.measured.routes):
             self.measured.routes = routes
@@ -226,7 +232,9 @@ class BrowserSession:
                 index=idx,
                 tool=tool,
                 args=args,
-                agent_saw=agent_saw if len(agent_saw) <= 4000 else agent_saw[:4000] + " …[truncated]",
+                agent_saw=agent_saw
+                if len(agent_saw) <= 4000
+                else agent_saw[:4000] + " …[truncated]",
                 url=url,
                 clicks_so_far=self.measured.clicks,
                 elapsed_ms=int((time.monotonic() - self._t0) * 1000),
@@ -259,7 +267,9 @@ class BrowserSession:
         under /api/."""
         self.measured.tool_calls += 1
         try:
-            await self.page.goto(path.lstrip("/") or "./", wait_until="domcontentloaded")  # type: ignore[union-attr]
+            await self.page.goto(
+                path.lstrip("/") or "./", wait_until="domcontentloaded"
+            )  # type: ignore[union-attr]
             await self.page.wait_for_timeout(1500)  # type: ignore[union-attr]
             await self.sync_metrics()
             out = f"navigated to {self.page.url}"  # type: ignore[union-attr]

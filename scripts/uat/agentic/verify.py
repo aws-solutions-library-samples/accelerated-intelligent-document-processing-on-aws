@@ -24,7 +24,9 @@ from typing import Any
 import boto3
 
 
-def _table(ctx: dict, region: str, name_contains: str, exclude: tuple[str, ...] = ()) -> str | None:
+def _table(
+    ctx: dict, region: str, name_contains: str, exclude: tuple[str, ...] = ()
+) -> str | None:
     """Find a stack table by substring. The stack's logical names are not exposed in
     ctx, so match on the physical name prefix."""
     ddb = boto3.client("dynamodb", region_name=region)
@@ -54,7 +56,9 @@ def _configured_classes(ctx: dict, region: str) -> list[str]:
     if not tbl:
         return []
     ddb = boto3.client("dynamodb", region_name=region)
-    item = ddb.get_item(TableName=tbl, Key={"Configuration": {"S": "Config#default"}}).get("Item")
+    item = ddb.get_item(
+        TableName=tbl, Key={"Configuration": {"S": "Config#default"}}
+    ).get("Item")
     if not item:
         return []
     blob = item.get("_compressed_config", {}).get("B")
@@ -96,7 +100,9 @@ def _mentions(haystack: str, needle: str) -> bool:
     return norm(needle) in norm(haystack)
 
 
-def verify_claim(spec: dict, report: dict | None, ctx: dict, region: str) -> dict[str, Any]:
+def verify_claim(
+    spec: dict, report: dict | None, ctx: dict, region: str
+) -> dict[str, Any]:
     method = (spec.get("verify") or {}).get("method")
     if report is None:
         return {
@@ -122,8 +128,12 @@ def verify_claim(spec: dict, report: dict | None, ctx: dict, region: str) -> dic
     if method == "ddb_config_classes":
         truth = _configured_classes(ctx, region)
         if not truth:
-            return {"method": method, "confirmed": None,
-                    "evidence": "could not read configured classes", "detail": ""}
+            return {
+                "method": method,
+                "confirmed": None,
+                "evidence": "could not read configured classes",
+                "detail": "",
+            }
         found = [c for c in truth if _mentions(haystack, c)]
         recall = len(found) / len(truth)
         need = float((spec.get("verify") or {}).get("min_recall", 0.6))
@@ -131,16 +141,22 @@ def verify_claim(spec: dict, report: dict | None, ctx: dict, region: str) -> dic
             "method": method,
             "confirmed": recall >= need,
             "evidence": f"named {len(found)}/{len(truth)} configured classes (recall {recall:.2f}, need {need:.2f})",
-            "detail": {"ground_truth": truth, "named_by_agent": found,
-                       "missed": [c for c in truth if c not in found]},
+            "detail": {
+                "ground_truth": truth,
+                "named_by_agent": found,
+                "missed": [c for c in truth if c not in found],
+            },
         }
 
     if method == "ddb_document_status":
         truth = _document_statuses(ctx, region)
         if not truth:
-            return {"method": method, "confirmed": None,
-                    "evidence": "no documents in tracking table — nothing to verify",
-                    "detail": "precondition: deployment has no processed documents"}
+            return {
+                "method": method,
+                "confirmed": None,
+                "evidence": "no documents in tracking table — nothing to verify",
+                "detail": "precondition: deployment has no processed documents",
+            }
         statuses = sorted({s for _, s in truth})
         found = [s for s in statuses if _mentions(haystack, s)]
         need = float((spec.get("verify") or {}).get("min_recall", 0.5))
@@ -149,9 +165,16 @@ def verify_claim(spec: dict, report: dict | None, ctx: dict, region: str) -> dic
             "method": method,
             "confirmed": recall >= need,
             "evidence": f"named {len(found)}/{len(statuses)} distinct statuses present (recall {recall:.2f})",
-            "detail": {"ground_truth_statuses": statuses, "named_by_agent": found,
-                       "document_count": len(truth)},
+            "detail": {
+                "ground_truth_statuses": statuses,
+                "named_by_agent": found,
+                "document_count": len(truth),
+            },
         }
 
-    return {"method": method, "confirmed": None,
-            "evidence": f"no verifier implemented for method={method!r}", "detail": ""}
+    return {
+        "method": method,
+        "confirmed": None,
+        "evidence": f"no verifier implemented for method={method!r}",
+        "detail": "",
+    }

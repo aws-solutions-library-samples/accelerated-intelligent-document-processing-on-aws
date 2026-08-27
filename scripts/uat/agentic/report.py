@@ -108,42 +108,59 @@ def render(result: dict, out_dir: Path) -> Path:
     p.append("<!doctype html><meta charset=utf-8>")
     p.append(f"<title>UAT report card — {_esc(flow)} ({_esc(mode)})</title>")
     p.append(f"<style>{CSS}</style><div class=wrap>")
-    p.append(f"<h1>{_esc(flow)} <span class=badge style='background:{bg};color:{fg}'>{label}</span></h1>")
+    p.append(
+        f"<h1>{_esc(flow)} <span class=badge style='background:{bg};color:{fg}'>{label}</span></h1>"
+    )
     p.append(
         f"<p class=sub><b>{_esc(mode.upper())}</b> run &middot; "
-        + ("no documentation given — measuring discoverability" if mode == "cold"
-           else "documented procedure given — measuring documentation accuracy")
+        + (
+            "no documentation given — measuring discoverability"
+            if mode == "cold"
+            else "documented procedure given — measuring documentation accuracy"
+        )
         + "</p>"
     )
 
     # ---- KPIs -------------------------------------------------------------
-    p.append('<div class=grid>')
+    p.append("<div class=grid>")
     p.append(_kpi("Verified", label, ver.get("method", "")))
     p.append(_kpi("Agent difficulty", rep.get("difficulty", "?"), "self-reported"))
     p.append(_kpi("Clicks", meas.get("clicks", 0), "instrumented"))
     p.append(_kpi("Tool calls", meas.get("tool_calls", 0), "effort proxy"))
     p.append(_kpi("Confusions", len(rep.get("confusions") or []), "agent-reported"))
-    p.append(_kpi("Page errors", len(meas.get("page_errors") or []), "any > 0 is a defect"))
+    p.append(
+        _kpi("Page errors", len(meas.get("page_errors") or []), "any > 0 is a defect")
+    )
     p.append("</div>")
 
     if gap:
         p.append(f"<div class=note><b>Complexity gap:</b> {_esc(gap)}.</div>")
     if meas.get("collect_error"):
-        p.append(f"<div class=note><span class=err>Instrumentation problem:</span> "
-                 f"{_esc(meas['collect_error'])} — click counts below may be understated.</div>")
+        p.append(
+            f"<div class=note><span class=err>Instrumentation problem:</span> "
+            f"{_esc(meas['collect_error'])} — click counts below may be understated.</div>"
+        )
     if result.get("hit_tool_cap"):
-        p.append("<div class=note><b>Abandoned:</b> the agent exhausted its tool-call "
-                 "budget. Treat this as a finding, not an error.</div>")
+        p.append(
+            "<div class=note><b>Abandoned:</b> the agent exhausted its tool-call "
+            "budget. Treat this as a finding, not an error.</div>"
+        )
     if result.get("agent_error"):
-        p.append(f"<div class=note><span class=err>Agent error:</span> {_esc(result['agent_error'])}</div>")
+        p.append(
+            f"<div class=note><span class=err>Agent error:</span> {_esc(result['agent_error'])}</div>"
+        )
 
     # ---- verification -----------------------------------------------------
     p.append("<h2>External verification</h2>")
     p.append("<table><tr><th>Method</th><th>Confirmed</th><th>Evidence</th></tr>")
-    p.append(f"<tr><td><span class=tool>{_esc(ver.get('method'))}</span></td>"
-             f"<td>{_esc(ver.get('confirmed'))}</td><td>{_esc(ver.get('evidence'))}</td></tr></table>")
-    p.append("<p class=sub style='margin-top:8px'>The agent does not decide this. "
-             "Confirmation is deterministic Python reading the system of record.</p>")
+    p.append(
+        f"<tr><td><span class=tool>{_esc(ver.get('method'))}</span></td>"
+        f"<td>{_esc(ver.get('confirmed'))}</td><td>{_esc(ver.get('evidence'))}</td></tr></table>"
+    )
+    p.append(
+        "<p class=sub style='margin-top:8px'>The agent does not decide this. "
+        "Confirmation is deterministic Python reading the system of record.</p>"
+    )
     detail = ver.get("detail")
     if isinstance(detail, dict):
         p.append(f"<pre>{_esc(json.dumps(detail, indent=2))}</pre>")
@@ -156,37 +173,52 @@ def render(result: dict, out_dir: Path) -> Path:
         p.append("<h2>Findings</h2>")
         for c in confusions:
             p.append('<div class="finding bug"><h4>Confusion</h4>')
-            p.append(f"<div class=q>at <span class=tool>{_esc(c.get('where'))}</span></div>")
+            p.append(
+                f"<div class=q>at <span class=tool>{_esc(c.get('where'))}</span></div>"
+            )
             p.append(f"<p><b>Unclear:</b> {_esc(c.get('what_was_unclear'))}</p>")
             p.append(f"<p><b>Expected:</b> {_esc(c.get('what_i_expected'))}</p></div>")
         for m in mismatches:
-            p.append(f'<div class="finding bug"><h4>Documentation mismatch</h4><p>{_esc(m)}</p></div>')
+            p.append(
+                f'<div class="finding bug"><h4>Documentation mismatch</h4><p>{_esc(m)}</p></div>'
+            )
         for d in dead_ends:
-            p.append(f'<div class=finding><h4>Dead end</h4><p>{_esc(d)}</p></div>')
+            p.append(f"<div class=finding><h4>Dead end</h4><p>{_esc(d)}</p></div>")
 
     # ---- filmstrip --------------------------------------------------------
     p.append(f"<h2>Stage-by-stage ({len(stages)} stages)</h2>")
-    p.append("<p class=sub>Left: what a human would have seen. Right: the tool result the "
-             "agent actually consumed. A control that is visually obvious but has no "
-             "accessible name appears on the left and not the right — which is itself a finding.</p>")
+    p.append(
+        "<p class=sub>Left: what a human would have seen. Right: the tool result the "
+        "agent actually consumed. A control that is visually obvious but has no "
+        "accessible name appears on the left and not the right — which is itself a finding.</p>"
+    )
     for st in stages:
         res = st.get("agent_saw") or ""
         bad = res.startswith(("ERROR", "NOT FOUND", "AMBIGUOUS"))
         args = f" <span class=q>{_esc(st.get('args'))}</span>" if st.get("args") else ""
-        flag = ' <span class=err>&#9888;</span>' if bad else ""
+        flag = " <span class=err>&#9888;</span>" if bad else ""
         p.append("<details class=card>")
-        p.append(f"<summary><span class=idx>{st.get('index')}</span>"
-                 f"<span class=tool>{_esc(st.get('tool'))}</span>{args}{flag}"
-                 f"<span class=meta>{st.get('clicks_so_far')} clicks &middot; "
-                 f"{st.get('elapsed_ms')} ms</span></summary>")
+        p.append(
+            f"<summary><span class=idx>{st.get('index')}</span>"
+            f"<span class=tool>{_esc(st.get('tool'))}</span>{args}{flag}"
+            f"<span class=meta>{st.get('clicks_so_far')} clicks &middot; "
+            f"{st.get('elapsed_ms')} ms</span></summary>"
+        )
         p.append(f"<div class=url>{_esc(st.get('url'))}</div>")
         p.append("<div class=body>")
         shot = st.get("screenshot")
-        p.append('<div class=pane><h4>Screenshot (human view)</h4>'
-                 + (f'<img src="{_esc(shot)}" loading=lazy alt="stage {st.get("index")}">'
-                    if shot else "<pre>(no screenshot captured)</pre>")
-                 + "</div>")
-        p.append(f'<div class=pane><h4>What the agent saw</h4><pre>{_esc(res)}</pre></div>')
+        p.append(
+            "<div class=pane><h4>Screenshot (human view)</h4>"
+            + (
+                f'<img src="{_esc(shot)}" loading=lazy alt="stage {st.get("index")}">'
+                if shot
+                else "<pre>(no screenshot captured)</pre>"
+            )
+            + "</div>"
+        )
+        p.append(
+            f"<div class=pane><h4>What the agent saw</h4><pre>{_esc(res)}</pre></div>"
+        )
         p.append("</div></details>")
 
     # ---- narrative --------------------------------------------------------

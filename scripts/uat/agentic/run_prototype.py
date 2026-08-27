@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from browser import BrowserSession  # noqa: E402
-from flows import FLOWS  # noqa: E402
+from flows import ad_hoc, all_flows  # noqa: E402
 from report import render  # noqa: E402
 from verify import verify_claim  # noqa: E402
 from worker import Flow, run_worker  # noqa: E402
@@ -52,9 +52,12 @@ async def _sign_in_async(base_url: str, user: str, password: str, out: Path) -> 
         try:
             # The identity chip in the banner is the proof of auth. NOT the nav links:
             # a fresh user lands on the welcome interstitial, which has no nav.
-            await page.get_by_role("banner").get_by_role("button").filter(
-                has_text=user
-            ).wait_for(state="visible", timeout=60_000)
+            await (
+                page.get_by_role("banner")
+                .get_by_role("button")
+                .filter(has_text=user)
+                .wait_for(state="visible", timeout=60_000)
+            )
         except Exception as exc:  # noqa: BLE001
             log(f"ERROR: sign-in did not complete: {str(exc)[:200]}")
             return False
@@ -69,18 +72,51 @@ def sign_in_and_save_state(base_url: str, user: str, password: str, out: Path) -
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stack-name", required=True)
+    # Not required up front: --list-flows must work without AWS access.
+    ap.add_argument("--stack-name")
     ap.add_argument("--region", default="us-west-2")
-    ap.add_argument("--flow", required=True, choices=sorted(FLOWS))
-    ap.add_argument("--warm", action="store_true", help="Give the agent the documented procedure")
+    # No `choices=`: flow files under flows/*.yaml are discovered at run time, so a new
+    # target must not require editing this file.
+    ap.add_argument("--flow", help="Flow id (builtin or a flows/*.yaml file)")
+    ap.add_argument(
+        "--goal",
+        help='Ad-hoc target, e.g. --goal "create a test set and run it". '
+        "No oracle, so the verdict is `unverified`.",
+    )
+    ap.add_argument(
+        "--list-flows", action="store_true", help="List available flow ids and exit"
+    )
+    ap.add_argument(
+        "--warm", action="store_true", help="Give the agent the documented procedure"
+    )
     ap.add_argument("--role", default="Admin")
     ap.add_argument("--max-tool-calls", type=int, default=40)
-    ap.add_argument("--max-vision-calls", type=int, default=6,
-                    help="Image reads allowed (images cost far more tokens than a11y trees)")
+    ap.add_argument(
+        "--max-vision-calls",
+        type=int,
+        default=6,
+        help="Image reads allowed (images cost far more tokens than a11y trees)",
+    )
     ap.add_argument("--no-vision", action="store_true", help="Accessibility tree only")
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--out", default=str(REPO_ROOT / "scratch" / "agentic-uat"))
     args = ap.parse_args()
+
+    available = all_flows()
+    if args.list_flows:
+        for fid, spec in sorted(available.items()):
+            v = (spec.get("verify") or {}).get("method", "none")
+            src = "yaml" if spec.get("docs_ref") else "builtin"
+            print(f"  {fid:<38} verify={v:<22} [{src}]")
+        return 0
+    if not args.stack_name:
+        ap.error("--stack-name is required (except with --list-flows)")
+    if not args.flow and not args.goal:
+        ap.error('give --flow <id>, --goal "...", or --list-flows')
+    if args.flow and args.flow not in available:
+        ap.error(
+            f"unknown flow {args.flow!r}. Available: {', '.join(sorted(available))}"
+        )
 
     from rbac_common import create_cognito_user, delete_cognito_user, resolve_stack
 
@@ -94,10 +130,18 @@ def main() -> int:
 
     base_url = subprocess.check_output(  # nosec B603
         [
-            "aws", "cloudformation", "describe-stacks",
-            "--stack-name", args.stack_name, "--region", args.region,
-            "--query", "Stacks[0].Outputs[?OutputKey=='ApplicationWebURL'].OutputValue",
-            "--output", "text", "--no-cli-pager",
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            args.stack_name,
+            "--region",
+            args.region,
+            "--query",
+            "Stacks[0].Outputs[?OutputKey=='ApplicationWebURL'].OutputValue",
+            "--output",
+            "text",
+            "--no-cli-pager",
         ],
         text=True,
     ).strip()
@@ -116,7 +160,9 @@ def main() -> int:
         if not sign_in_and_save_state(base_url, email, password, state):
             return 2
 
-        spec = FLOWS[args.flow]
+        spec = available[args.flow] if args.flow else ad_hoc(args.goal)
+        if spec.get("ad_hoc"):
+            log("AD-HOC goal: no oracle, so the result will be `unverified` by design.")
         flow = Flow(
             flow_id=spec["flow_id"],
             claim=spec["claim"],
@@ -150,8 +196,10 @@ def main() -> int:
         log(f"report card: {report_path}")
         r = result.get("report") or {}
         v = result["verification"]
-        log(f"verdict: confirmed={v.get('confirmed')} difficulty={r.get('difficulty')} "
-            f"clicks={result['measured'].get('clicks')} stages={len(result.get('stages') or [])}")
+        log(
+            f"verdict: confirmed={v.get('confirmed')} difficulty={r.get('difficulty')} "
+            f"clicks={result['measured'].get('clicks')} stages={len(result.get('stages') or [])}"
+        )
     finally:
         log(f"deleting test user {email}")
         delete_cognito_user(ctx, email)

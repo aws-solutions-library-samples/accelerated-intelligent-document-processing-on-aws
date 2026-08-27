@@ -26,11 +26,10 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
+from browser import BrowserSession
 from pydantic import BaseModel, Field, field_validator
 from strands import Agent
 from strands.models import BedrockModel
-
-from browser import BrowserSession
 
 DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
@@ -51,7 +50,9 @@ class Flow:
 
 class Confusion(BaseModel):
     where: str = Field(description="URL or page name where the confusion occurred")
-    what_was_unclear: str = Field(description="What was ambiguous, missing or misleading")
+    what_was_unclear: str = Field(
+        description="What was ambiguous, missing or misleading"
+    )
     what_i_expected: str = Field(description="What you expected to happen instead")
 
 
@@ -173,7 +174,10 @@ async def _run_worker_async(
 ) -> dict:
     """Run one worker. Returns a dict ready for verify.py + the report."""
     async with BrowserSession(
-        base_url, storage_state=storage_state, headless=headless, capture_dir=capture_dir
+        base_url,
+        storage_state=storage_state,
+        headless=headless,
+        capture_dir=capture_dir,
     ) as sess:
         # Land the agent on the app root so it starts where a user would.
         await sess.goto("./")
@@ -236,7 +240,10 @@ async def _run_worker_async(
                 }
             png = await sess.screenshot_bytes()
             if png is None:
-                return {"status": "error", "content": [{"text": "could not capture a screenshot"}]}
+                return {
+                    "status": "error",
+                    "content": [{"text": "could not capture a screenshot"}],
+                }
             return {
                 "status": "success",
                 "content": [
@@ -257,8 +264,11 @@ async def _run_worker_async(
             # deterministic Playwright spec. `look` is OBSERVATION only. A control the
             # agent can see but cannot target by name then becomes an explicit finding
             # instead of being invisible.
-            tools=([snapshot, navigate, click, fill, read_text, look] if vision
-                   else [snapshot, navigate, click, fill, read_text]),
+            tools=(
+                [snapshot, navigate, click, fill, read_text, look]
+                if vision
+                else [snapshot, navigate, click, fill, read_text]
+            ),
             system_prompt=SYSTEM_WARM if flow.docs else SYSTEM_COLD,
         )
 
