@@ -49,7 +49,6 @@ class TestThrowawayCredentials:
         with (
             patch.object(module, "resolve_stack", return_value=ctx),
             patch.object(module, "_web_url", return_value="https://example.test/"),
-            patch.object(module, "enable_admin_auth"),
             patch.object(module, "create_cognito_user") as create,
         ):
             args = MagicMock(stack="s", group="Admin", region="us-east-1")
@@ -76,20 +75,45 @@ class TestThrowawayCredentials:
 
 
 @pytest.mark.unit
-class TestTeardownRestores:
-    def test_teardown_deletes_the_user_and_restores_auth_flows(self):
-        """Setup widens the app client's auth flows; teardown must undo that.
+class TestTheAppClientIsNeverWidened:
+    """The session must not modify the UI app client's auth flows at all.
 
-        Leaving ALLOW_ADMIN_USER_PASSWORD_AUTH enabled on a stack is a durable
-        weakening of its auth configuration, and it would be invisible.
-        """
+    It used to enable ALLOW_ADMIN_USER_PASSWORD_AUTH for the duration of the
+    session, on the theory that setting a known password non-interactively needed
+    it. It does not: admin-set-user-password is an admin API on the user pool and
+    ignores the client's ExplicitAuthFlows, and the browser then signs in over SRP,
+    which the UI client already allows. That flow is required only by
+    admin-initiate-auth, which this script never calls.
+
+    It mattered more here than in test_api_rbac.py, which reverts in a `finally`
+    even under --no-teardown: this is two separate invocations with an open-ended
+    agent session in between, guarded only by a printed reminder.
+    """
+
+    def test_setup_does_not_touch_the_app_client(self):
+        module = _load_module()
+        ctx = {"user_pool": "pool", "region": "us-east-1"}
+
+        with (
+            patch.object(module, "resolve_stack", return_value=ctx),
+            patch.object(module, "_web_url", return_value="https://example.test/"),
+            patch.object(module, "create_cognito_user"),
+        ):
+            args = MagicMock(stack="s", group="Admin", region="us-east-1")
+            module.cmd_setup(args)
+
+        # Not merely unused — not even imported, so it cannot be reintroduced by a
+        # stray call without this failing.
+        assert not hasattr(module, "enable_admin_auth")
+        assert not hasattr(module, "restore_auth_flows")
+
+    def test_teardown_deletes_the_user_and_restores_nothing(self):
         module = _load_module()
         ctx = {"user_pool": "pool", "region": "us-east-1"}
 
         with (
             patch.object(module, "resolve_stack", return_value=ctx),
             patch.object(module, "delete_cognito_user") as delete,
-            patch.object(module, "restore_auth_flows") as restore,
         ):
             args = MagicMock(
                 stack="s", email="ux-test-1@example.invalid", region="us-east-1"
@@ -98,7 +122,6 @@ class TestTeardownRestores:
 
         assert rc == 0
         delete.assert_called_once()
-        restore.assert_called_once_with(ctx)
 
     def test_setup_reports_its_own_teardown_command(self, capsys):
         """The user must not have to reconstruct it — an unrun teardown is the
@@ -108,7 +131,6 @@ class TestTeardownRestores:
         with (
             patch.object(module, "resolve_stack", return_value={}),
             patch.object(module, "_web_url", return_value="https://example.test/"),
-            patch.object(module, "enable_admin_auth"),
             patch.object(module, "create_cognito_user"),
         ):
             args = MagicMock(stack="my-stack", group="Admin", region="us-west-2")

@@ -107,6 +107,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
     displayPath = [], // Separate path for collapse tracking (includes "Document Data" and display keys)
     // Change tracking props
     predictionChanges = new Map(),
+    /**
+     * Edited field paths WITH array indices preserved, for the provenance and
+     * confidence decisions.
+     *
+     * `predictionChanges` is keyed on a path with array indices stripped — a
+     * convention shared by both of its producers and by `trackingPath` below. That
+     * is tolerable for the ✏️ badge it originally drove, but not for asserting
+     * authorship: editing `LineItems[3].Rate` sets the key `LineItems.Rate`, which
+     * every row's Rate cell also computes, so all of them would claim "Your value:"
+     * and lose the model's confidence on values nobody touched.
+     *
+     * Supplied only by the ground-truth editor. Callers that do not pass it keep
+     * the collapsed-key behaviour exactly, so the modal's own tracking (and
+     * `baselineChanges`, which shares the collapsed key) is untouched.
+     */
+    editedFieldPaths = null,
     baselineChanges = new Map(),
     _onRevertPrediction = null,
     _onRevertBaseline = null,
@@ -515,7 +531,12 @@ const FormFieldRenderer = memo<Record<string, any>>(
     // So we should NOT add fieldKey again - just filter the path to exclude array indices and structural keys
     const trackingPath = path.filter((p: unknown) => typeof p !== 'number' && p !== undefined && p !== 'Document Data');
     const fieldPathStr = trackingPath.join('.');
-    const isPredictionChanged = predictionChanges.has(fieldPathStr);
+    // Same path with indices kept, so one edited table row does not speak for the
+    // whole column. See the editedFieldPaths prop.
+    const exactPathStr = path.filter((p: unknown) => p !== undefined && p !== 'Document Data').join('.');
+    const isPredictionChanged = editedFieldPaths
+      ? (editedFieldPaths as { has: (key: string) => boolean }).has(exactPathStr)
+      : predictionChanges.has(fieldPathStr);
     const isBaselineChanged = baselineChanges.has(fieldPathStr);
     const hasLocalEdit = isPredictionChanged || isBaselineChanged;
 

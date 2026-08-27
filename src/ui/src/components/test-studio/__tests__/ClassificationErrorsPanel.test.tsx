@@ -63,6 +63,14 @@ describe('ClassificationErrorsPanel', () => {
     const link = screen.getByRole('link', { name: 'a b.pdf' });
     // Encoded, so a key with a space or '&' still resolves to the right document.
     expect(link).toHaveAttribute('href', expect.stringContaining('doc=a%20b.pdf'));
+    // The SHAPE, not just the query. A substring assertion passed happily against
+    // '##/test-studio/...', which HashRouter cannot route: everything after the
+    // first '#' is the fragment, so it matched nothing and dropped the ?doc=.
+    // This is the one route into the panel's whole purpose.
+    const href = link.getAttribute('href') ?? '';
+    expect(href.startsWith('#/'), `href must be a single-hash route, got ${href}`).toBe(true);
+    expect(href).not.toMatch(/^##/);
+    expect(href).toMatch(/^#\/test-studio\/sets\/ts1\/annotate\?doc=/);
   });
 
   it('renders the document as plain text when there is no test set to link to', () => {

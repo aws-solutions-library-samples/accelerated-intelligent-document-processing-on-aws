@@ -168,7 +168,12 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
   }, [visible, loadVersions, fetchDocPage]);
 
   const effectiveKeys = selectAll ? undefined : selected.map((d) => d.objectKey);
-  const targetCount = selectAll ? pageLabelable.length : selected.length;
+  // In select-all mode the SERVER decides the scope, so a count from this page
+  // cannot disable the button: on a 100-document set whose first page happens to
+  // be entirely protected, pageLabelable.length is 0 and the button read "Nothing
+  // to label" while documents 51-100 still needed labels — the same page-vs-set
+  // confusion this dialog exists to fix.
+  const targetCount = selectAll ? (isPartialView ? (setTotalCount ?? pageLabelable.length) : pageLabelable.length) : selected.length;
   // Option.value is `string | undefined`, so the type guard is required: a
   // non-string reaching the API pins the run to a bogus config version.
   const rawConfigVersion = configVersion.value;

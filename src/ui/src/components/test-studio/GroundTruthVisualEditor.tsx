@@ -221,7 +221,9 @@ const GroundTruthVisualEditor = ({
   // relabel the field as the reviewer's own and to drop the model's confidence,
   // which otherwise stayed attached to hand-typed text.
   const predictionChanges = useMemo(() => {
-    const changes = new Map<string, unknown>();
+    // A Set, not a Map: only membership is consulted, and the renderer's prop is
+    // a set of edited paths.
+    const changes = new Set<string>();
     if (!localData || originalJson === null) return changes;
     let original: Record<string, unknown>;
     try {
@@ -233,15 +235,19 @@ const GroundTruthVisualEditor = ({
       if (now !== null && typeof now === 'object') {
         const beforeObj = (before ?? {}) as Record<string, unknown>;
         if (Array.isArray(now)) {
-          // Array indices are dropped from the tracking key, matching the
-          // renderer's own path filter — so a changed row marks its field name.
-          now.forEach((item, i) => walk(item, Array.isArray(before) ? before[i] : undefined, trail));
+          // Indices ARE kept: an edit to LineItems[3].Rate must mark that row and
+          // no other. Dropping them produced the key LineItems.Rate, which every
+          // row computes too, so a single corrected cell relabelled the entire
+          // column "Your value:" and suppressed the model's confidence on values
+          // the reviewer never touched. The renderer looks these up with a
+          // matching index-preserving key (editedFieldPaths).
+          now.forEach((item, i) => walk(item, Array.isArray(before) ? before[i] : undefined, [...trail, String(i)]));
         } else {
           Object.entries(now as Record<string, unknown>).forEach(([k, v]) => walk(v, beforeObj[k], [...trail, k]));
         }
         return;
       }
-      if (now !== before) changes.set(trail.join('.'), now);
+      if (now !== before) changes.add(trail.join('.'));
     };
     walk(localData.inference_result ?? {}, original.inference_result ?? {}, []);
     return changes;
@@ -692,7 +698,7 @@ const GroundTruthVisualEditor = ({
                             onFieldFocus={handleFieldFocus}
                             onFieldDoubleClick={handleFieldFocus}
                             onFieldPathSelect={setSelectedFieldPath}
-                            predictionChanges={predictionChanges}
+                            editedFieldPaths={predictionChanges}
                             path={[]}
                             explainabilityInfo={explainabilityInfo}
                             collapsedPaths={collapsedPaths}

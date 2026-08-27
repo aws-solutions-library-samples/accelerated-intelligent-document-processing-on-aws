@@ -604,6 +604,7 @@ export type FinetuningJobStatus =
 
 export type GenerateDraftLabelsInput = {
   configVersion?: InputMaybe<Scalars['String']['input']>;
+  documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
 };

@@ -45,11 +45,16 @@ const formatPages = (pages: number[] | undefined): string => {
 const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: ClassificationErrorsPanelProps): React.JSX.Element | null => {
   const errors = classificationErrors?.errors ?? [];
   const total = classificationErrors?.total ?? errors.length;
+  const truncated = Boolean(classificationErrors?.truncated);
 
   // Nothing to say when a run classified everything correctly. Rendering an
   // empty table would read as "no data" rather than "no problems".
   if (total === 0) return null;
 
+  // Counted over the CAPPED list, since the backend reports only an overall
+  // `total` and no per-kind total (see MAX_CLASSIFICATION_ERRORS). So when the
+  // list is truncated this is a floor, and the footer has to say so rather than
+  // state it as the count.
   const classErrorCount = errors.filter((e) => e.kind === 'class').length;
 
   return (
@@ -93,7 +98,13 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
               testSetId && item.doc_key ? (
                 // Deep link so the row is actionable: correcting the class is
                 // done in the annotation queue, not here.
-                <Link href={`#${testSetAnnotateHref(testSetId)}?doc=${encodeURIComponent(item.doc_key)}`}>{item.doc_key}</Link>
+                //
+                // The helper supplies BOTH the leading '#' and the ?doc= param.
+                // Adding either here produced '##/test-studio/...', where
+                // everything after the first '#' is the fragment — so HashRouter
+                // saw a path of '#/test-studio/...', matched nothing, dropped the
+                // query, and every row landed on the app root.
+                <Link href={testSetAnnotateHref(testSetId, item.doc_key)}>{item.doc_key}</Link>
               ) : (
                 (item.doc_key ?? '—')
               ),
@@ -121,6 +132,7 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
         footer={
           classErrorCount > 0 ? (
             <Box variant="small" color="text-body-secondary">
+              {truncated ? 'At least ' : ''}
               {classErrorCount} section{classErrorCount === 1 ? '' : 's'} extracted under the wrong schema. Correct the class in the
               annotation queue and re-extract, then re-run to see the effect on accuracy.
             </Box>

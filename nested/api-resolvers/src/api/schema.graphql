@@ -999,6 +999,11 @@ input GenerateDraftLabelsInput {
   # Optional subset; omit to label every document in the set. Only these
   # documents are processed, and each must exist in the test set.
   objectKeys: [String!]
+  # Forces the class of every document in this run rather than classifying them,
+  # which is how a class correction is re-extracted. The resolver validates the
+  # shape (see validate_document_class) because the value is carried as S3 object
+  # user metadata. It was already honoured by the resolver and undeclared here.
+  documentClass: String
 }
 
 type SendTestRunToReviewResult @aws_cognito_user_pools @aws_iam {

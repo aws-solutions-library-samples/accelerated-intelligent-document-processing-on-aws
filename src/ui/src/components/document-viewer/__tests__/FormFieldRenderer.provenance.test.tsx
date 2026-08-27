@@ -63,6 +63,44 @@ describe('FormFieldRenderer value provenance', () => {
     expect(screen.getByText('Your value:')).toBeInTheDocument();
   });
 
+  it('marks only the edited table ROW, not every row in the column', () => {
+    // The bug this exists for: the edited-path key used to drop array indices, so
+    // LineItems[3].Rate became "LineItems.Rate" — which every row's Rate cell
+    // computes too. One corrected cell relabelled the whole column "Your value:"
+    // and suppressed the model's confidence on values nobody touched.
+    const edited = new Set(['LineItems.3.Rate']);
+    const explainability = [{ LineItems: [{ Rate: { confidence: 1.0 } }, { Rate: { confidence: 1.0 } }] }];
+
+    const row3 = render(
+      <FormFieldRenderer
+        fieldKey="Rate"
+        value="9.99"
+        onChange={vi.fn()}
+        isReadOnly={false}
+        explainabilityInfo={explainability}
+        path={['LineItems', 3, 'Rate']}
+        editedFieldPaths={edited}
+      />,
+    );
+    expect(row3.getByText('Your value:')).toBeInTheDocument();
+    row3.unmount();
+
+    const row4 = render(
+      <FormFieldRenderer
+        fieldKey="Rate"
+        value="4.50"
+        onChange={vi.fn()}
+        isReadOnly={false}
+        explainabilityInfo={explainability}
+        path={['LineItems', 4, 'Rate']}
+        editedFieldPaths={edited}
+      />,
+    );
+    // An untouched row keeps the model's claim, because it is still the model's value.
+    expect(row4.getByText('Predicted:')).toBeInTheDocument();
+    expect(row4.queryByText('Your value:')).not.toBeInTheDocument();
+  });
+
   it('does not suppress confidence on a field the user has not touched', () => {
     // The suppression must be per field, not per document: correcting one field
     // says nothing about the confidence of the other 277.

@@ -2910,6 +2910,64 @@ class TestTestSetResolver:
         assert written["labelSource"] == "reviewed-human"
         assert written["document_class"]["type"] == "bank-check"
 
+    def test_a_document_class_is_validated_before_it_reaches_s3_metadata(self):
+        """`documentClass` is Annotator-reachable and ends up as S3 user metadata.
+
+        It flows reviewer -> reextractTestSetDocument -> generate_draft_labels ->
+        SQS -> S3 object user metadata -> Document.from_s3_event -> a forced class
+        and a forced section, and the dispatcher deliberately does not
+        deep-validate nested input fields. S3 user metadata must be ASCII, so a
+        non-ASCII value surfaced as a botocore failure and a 500 instead of a
+        clean rejection.
+        """
+        v = test_set_index.validate_document_class
+
+        # The real vocabulary, taken from shipped configs.
+        # Real names, taken from config_library: all 120 shipped classes match this.
+        for good in (
+            "Bank Statement",
+            "Bank-Statement",
+            "Payslip",
+            "invoice",
+            "W-2",
+            "BANK_CHECK",
+            "PA-Claims-Evidence",
+        ):
+            assert v(good) is True, good
+
+        # Absent means "leave the class alone", which is a legitimate call.
+        assert v(None) is True
+        assert v("") is True
+
+        # Rejected.
+        # `\s` would admit these, and `$` matches before a trailing newline.
+        assert v("Bank\nStatement") is False
+        assert v("Bank Statement\n") is False
+        assert v("Bank\tStatement") is False
+        assert v("Ünicode Class") is False  # not ASCII: botocore 500, not a 400
+        assert v("x" * 101) is False
+        # Caught a first draft of the regex that allowed '.' and '/'.
+        assert v("../../etc/passwd") is False
+        assert v("a/b") is False
+        assert v({"not": "a string"}) is False
+        assert v(123) is False
+
+    def test_reextract_rejects_a_malformed_document_class(self, labeling_env):
+        """The check runs before anything is written, not after."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+
+        with pytest.raises(Exception, match="Invalid document class"):
+            test_set_index.reextract_test_set_document(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "a.pdf",
+                        "documentClass": "Ünicode",
+                    }
+                }
+            )
+
     def test_clear_draft_labels_keeps_human_and_authored_ground_truth(
         self, labeling_env
     ):

@@ -37,6 +37,49 @@ def validate_test_set_name(name):
     return re.match(r"^[a-zA-Z0-9\s_-]+$", name) and len(name) <= 50
 
 
+# Document class names come from a config's `classes`. All 120 shipped across
+# config_library use letters, digits, spaces, hyphens and underscores and nothing
+# else ("Bank Statement", "Bank-Statement", "PA-Claims-Evidence", "BANK_CHECK"),
+# so the character set is exactly that — no dot and no slash, which a first draft
+# allowed and which let "../../etc/passwd" through.
+#
+# A literal space rather than `\s`, which admits newlines and tabs. And matched with
+# `fullmatch`, not `match`: `$` matches BEFORE a trailing newline, so
+# "Bank Statement\n" passes `^...$` even with the space literal. A test caught that
+# after this comment had already claimed otherwise.
+#
+# ASCII-only matters concretely: the value is carried as S3 object *user metadata*,
+# where a non-ASCII class name surfaced as a botocore failure and a 500 rather
+# than a clean rejection.
+_DOCUMENT_CLASS_RE = re.compile(r"[a-zA-Z0-9 _-]+")
+_DOCUMENT_CLASS_MAX_LEN = 100
+
+
+def validate_document_class(document_class):
+    """Validate a caller-supplied document class before it reaches S3 metadata.
+
+    ``reextractTestSetDocument`` is reachable by the **Annotator** group, the
+    lowest-privilege role, and its ``documentClass`` flows reviewer → resolver →
+    ``generate_draft_labels`` → SQS → S3 user metadata → ``Document.from_s3_event``
+    → a forced class and a forced section. Nothing along that path constrained it,
+    and the dispatcher deliberately does not deep-validate nested input fields.
+
+    This bounds the shape only. It deliberately does NOT check membership of the
+    deployment's configured classes: this Lambda has no CONFIGURATION_TABLE grant,
+    so that check needs an env var and a read permission it does not currently
+    have. A well-formed but unconfigured class therefore still yields a section
+    with no schema and so no extracted fields — visibly wrong in the UI rather
+    than silently wrong. Worth closing separately.
+    """
+    if document_class is None or document_class == "":
+        return True  # Optional: absence means "leave the class alone".
+    if not isinstance(document_class, str):
+        return False
+    if len(document_class) > _DOCUMENT_CLASS_MAX_LEN:
+        return False
+    return bool(_DOCUMENT_CLASS_RE.fullmatch(document_class))
+
+
 def validate_description(description):
     """Validate description: max 500 chars only"""
     if description is None or description == "":
@@ -814,6 +857,11 @@ def generate_draft_labels(args, event=None):
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -943,6 +991,11 @@ def reextract_test_set_document(args, event=None):
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -2280,8 +2333,7 @@ def clear_draft_labels(args):
         db_client.update_item(
             key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
             update_expression=(
-                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
-                "labelProbedFileCount"
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, labelProbedFileCount"
             ),
         )
 

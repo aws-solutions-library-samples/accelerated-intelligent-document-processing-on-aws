@@ -23,12 +23,20 @@ Usage:
   ./scripts/ux_test_session.py teardown <STACK_NAME> --email <email> [--region us-east-1]
 
 ``setup`` prints a JSON blob with url / email / password / group. ``teardown``
-deletes the user and restores the app client's auth flows.
+deletes the user.
 
-Note: setup temporarily enables ALLOW_ADMIN_USER_PASSWORD_AUTH on the UI app
-client (needed to set a known password non-interactively) and teardown restores
-whatever was there before. Always run teardown — ``--json`` output includes the
-exact command.
+The app client's auth flows are deliberately NOT modified. Setting a known
+password non-interactively needs only ``admin-set-user-password --permanent``,
+which is an admin API on the user pool and does not depend on the client's
+``ExplicitAuthFlows``; the browser then signs in over SRP, which the UI client
+already allows. ``ALLOW_ADMIN_USER_PASSWORD_AUTH`` is required only by
+``admin-initiate-auth``, which this script never calls. Widening the client for
+the session bought nothing and left a live stack's UI client accepting
+password-based admin auth for as long as the agent session ran — worse here than
+in test_api_rbac.py, which reverts in a ``finally`` even under ``--no-teardown``,
+because this is two separate invocations with an open-ended session between them.
+
+Always run teardown — ``--json`` output includes the exact command.
 """
 
 from __future__ import annotations
@@ -46,9 +54,7 @@ from rbac_common import (  # noqa: E402
     aws,
     create_cognito_user,
     delete_cognito_user,
-    enable_admin_auth,
     resolve_stack,
-    restore_auth_flows,
 )
 
 # Groups a UX test might legitimately run as. Annotator is included because the
@@ -158,7 +164,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     # example.invalid is reserved by RFC 2606, so a stray invite email can never
     # reach a real mailbox. Delivery is suppressed anyway (see create_cognito_user).
-    enable_admin_auth(ctx)
+    #
+    # No enable_admin_auth: see the module docstring. The three admin APIs used
+    # here need no client auth flow, and the browser signs in over SRP.
     create_cognito_user(ctx, email, args.group, password)
 
     session = {
@@ -192,8 +200,8 @@ def cmd_url(args: argparse.Namespace) -> int:
 def cmd_teardown(args: argparse.Namespace) -> int:
     ctx = _resolve_or_explain(args.stack, args.region)
     delete_cognito_user(ctx, args.email)
-    restore_auth_flows(ctx)
-    print(f"Deleted {args.email} and restored app-client auth flows.")
+    # Nothing to restore: setup never widened the client.
+    print(f"Deleted {args.email}.")
     return 0
 
 
