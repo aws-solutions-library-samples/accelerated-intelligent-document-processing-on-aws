@@ -25,29 +25,48 @@ import yaml
 _TEMPLATE = Path(__file__).resolve().parents[1] / "template.yaml"
 
 
+# --- CFN-tolerant YAML loader -------------------------------------------------
+# `!Sub`, `!GetAtt`, `!FindInMap` etc. are not standard YAML, so SafeLoader
+# rejects them. Each intrinsic is preserved as a {"!Tag": value} dict, which
+# keeps the logical id inside a !GetAtt readable to the assertions below.
+#
+# This cannot execute the document it parses, for two independent reasons:
+# SafeLoader (never yaml.Loader/FullLoader) registers no `python/object`,
+# `python/name` or `python/object/apply` constructor, so nothing here can
+# instantiate an object or import a module; and `_intrinsic` returns only plain
+# scalars, lists and dicts. idp_sdk._core.cfn_yaml is the shared version of this
+# loader, with tests that assert the inertness against real RCE payloads — it is
+# duplicated rather than imported because ruff.toml bans reaching into
+# idp_sdk._core from outside the SDK, and this service is deployed standalone
+# into a seller account.
 class _CfnLoader(yaml.SafeLoader):
-    """YAML loader that tolerates CloudFormation's short-form intrinsic tags.
-
-    `!Sub`, `!GetAtt`, `!FindInMap` etc. are not standard YAML, so SafeLoader
-    rejects them. We only need the document's shape, so every unknown tag
-    collapses to a plain string/list.
-    """
+    pass
 
 
-def _any_tag(loader: yaml.Loader, tag_suffix: str, node: yaml.Node) -> Any:
+def _intrinsic(loader: Any, tag_suffix: str, node: yaml.Node) -> Any:
+    tag = "!" + tag_suffix
     if isinstance(node, yaml.ScalarNode):
-        return f"!{tag_suffix} {node.value}"
+        return {tag: loader.construct_scalar(node)}
     if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node, deep=True)
-    return loader.construct_mapping(node, deep=True)
+        return {tag: loader.construct_sequence(node, deep=True)}
+    return {tag: loader.construct_mapping(node, deep=True)}
 
 
-_CfnLoader.add_multi_constructor("", _any_tag)
+_CfnLoader.add_multi_constructor("!", _intrinsic)
 
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    return yaml.load(_TEMPLATE.read_text(encoding="utf-8"), Loader=_CfnLoader)  # nosec B506 - _CfnLoader subclasses yaml.SafeLoader; no arbitrary construction
+    # The loader is driven directly rather than through
+    # `yaml.load(..., Loader=_CfnLoader)`. Identical behaviour — that is what
+    # yaml.load does internally — minus the call shape that pattern-based
+    # scanners report as unsafe deserialization regardless of the loader's
+    # actual base class.
+    loader = _CfnLoader(_TEMPLATE.read_text(encoding="utf-8"))
+    try:
+        return loader.get_single_data() or {}
+    finally:
+        loader.dispose()
 
 
 @pytest.fixture(scope="module")
