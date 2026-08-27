@@ -16,6 +16,7 @@ violation would be a real vulnerability, and says why in the failure message.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -25,34 +26,38 @@ import yaml
 _TEMPLATE = Path(__file__).resolve().parents[1] / "template.yaml"
 
 
-# --- CFN-tolerant YAML loader -------------------------------------------------
-# `!Sub`, `!GetAtt`, `!FindInMap` etc. are not standard YAML, so SafeLoader
-# rejects them. Each intrinsic is preserved as a {"!Tag": value} dict, which
-# keeps the logical id inside a !GetAtt readable to the assertions below.
-#
-# This cannot execute the document it parses, for two independent reasons:
-# SafeLoader (never yaml.Loader/FullLoader) registers no `python/object`,
-# `python/name` or `python/object/apply` constructor, so nothing here can
-# instantiate an object or import a module; and `_intrinsic` returns only plain
-# scalars, lists and dicts. idp_sdk._core.cfn_yaml is the shared version of this
-# loader, with tests that assert the inertness against real RCE payloads — it is
-# duplicated rather than imported because ruff.toml bans reaching into
-# idp_sdk._core from outside the SDK, and this service is deployed standalone
-# into a seller account.
 class _CfnLoader(yaml.SafeLoader):
-    pass
+    """YAML loader that tolerates CloudFormation's short-form intrinsic tags.
+
+    `!Sub`, `!GetAtt`, `!FindInMap` etc. are not standard YAML, so SafeLoader
+    rejects them. We only need the document's shape, so every unknown tag
+    collapses to a plain string/list.
+
+    ⚠️ The flat-string rendering is load-bearing, not cosmetic. Several
+    assertions below read `str(value)` and match on its *ends* — e.g. the
+    `endswith("/*")` wildcard check on the resource policy. Wrapping an
+    intrinsic in a `{"!Tag": value}` dict (as the repo's other CFN loaders do)
+    silently makes those checks unfalsifiable, because `str()` of a dict always
+    ends in `}`. `test_the_wildcard_guard_is_live` pins that precondition.
+
+    This cannot execute the document it parses, for two independent reasons:
+    SafeLoader (never yaml.Loader/FullLoader) registers no `python/object`,
+    `python/name` or `python/object/apply` constructor, so nothing here can
+    instantiate an object or import a module; and `_any_tag` returns only plain
+    strings, lists and dicts. `test_loader_cannot_execute_its_input` asserts
+    both, since with the `yaml.load()` call shape gone no scanner will.
+    """
 
 
-def _intrinsic(loader: Any, tag_suffix: str, node: yaml.Node) -> Any:
-    tag = "!" + tag_suffix
+def _any_tag(loader: Any, tag_suffix: str, node: yaml.Node) -> Any:
     if isinstance(node, yaml.ScalarNode):
-        return {tag: loader.construct_scalar(node)}
+        return f"!{tag_suffix} {node.value}"
     if isinstance(node, yaml.SequenceNode):
-        return {tag: loader.construct_sequence(node, deep=True)}
-    return {tag: loader.construct_mapping(node, deep=True)}
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)
 
 
-_CfnLoader.add_multi_constructor("!", _intrinsic)
+_CfnLoader.add_multi_constructor("", _any_tag)
 
 
 @pytest.fixture(scope="module")
@@ -61,7 +66,10 @@ def template() -> dict:
     # `yaml.load(..., Loader=_CfnLoader)`. Identical behaviour — that is what
     # yaml.load does internally — minus the call shape that pattern-based
     # scanners report as unsafe deserialization regardless of the loader's
-    # actual base class.
+    # actual base class. See idp_sdk._core.cfn_yaml for the shared version of
+    # this loader; it is not imported here because ruff.toml bans reaching into
+    # idp_sdk._core from outside the SDK, and this service deploys standalone
+    # into a seller account.
     loader = _CfnLoader(_TEMPLATE.read_text(encoding="utf-8"))
     try:
         return loader.get_single_data() or {}
@@ -130,6 +138,58 @@ def test_api_does_not_invoke_the_backend_with_caller_credentials(resources):
         "the integration, which fails the deployment (resource policy conflict) and "
         "would require buyers to hold lambda:InvokeFunction on the seller's function"
     )
+
+
+def test_the_wildcard_guard_is_live(resources):
+    """Guard the guard: the wildcard check below can be silently neutered.
+
+    `test_resource_policy_is_scoped_to_the_activate_method_only` asserts
+    `not str(stmt["Resource"]).endswith("/*")`. That is only falsifiable while
+    the loader renders an intrinsic as a flat string. Switch the loader to the
+    `{"!Tag": value}` convention the repo's other CFN loaders use and `str()`
+    ends in `}` for every possible template — the check passes forever, on a
+    statement whose Principal is `*`.
+
+    This is not hypothetical: it happened during the review of PR #672 and was
+    caught by mutation-testing the template, not by the suite. Assert the
+    precondition directly so the next loader change fails here instead.
+    """
+    resource = resources["ActivationApi"]["Properties"]["Auth"]["ResourcePolicy"][
+        "CustomStatements"
+    ][0]["Resource"]
+    assert isinstance(resource, str), (
+        f"Resource parsed as {type(resource).__name__}, not str — the "
+        "endswith('/*') wildcard check below is now unfalsifiable. Either keep "
+        "the loader's flat-string rendering or rewrite that check to read the "
+        "intrinsic's value."
+    )
+
+
+def test_loader_cannot_execute_its_input():
+    """The `yaml.load()` call shape is gone, so no scanner watches this loader
+    any more. Assert the safety property it used to (over-)flag: SafeLoader
+    ancestry, and a real `python/object/apply` payload staying inert.
+
+    A future `class _CfnLoader(yaml.Loader)` — the tempting one-word fix when a
+    tag won't parse — turns this file into an actual RCE. This is what fails.
+    """
+    assert issubclass(_CfnLoader, yaml.SafeLoader)
+
+    marker = Path(tempfile.gettempdir()) / "seller_entitlement_yaml_probe"
+    marker.unlink(missing_ok=True)
+    payload = f"a: !!python/object/apply:os.system ['touch {marker}']"
+
+    loader = _CfnLoader(payload)
+    try:
+        result = loader.get_single_data()
+    finally:
+        loader.dispose()
+
+    assert isinstance(result["a"], (str, list, dict)), (
+        f"payload constructed a {type(result['a']).__name__} — the loader is "
+        "no longer inert"
+    )
+    assert not marker.exists(), "the loader executed its input — this is an RCE"
 
 
 def test_resource_policy_is_scoped_to_the_activate_method_only(resources):
