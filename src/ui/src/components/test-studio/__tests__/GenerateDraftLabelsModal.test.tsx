@@ -28,8 +28,17 @@ import GenerateDraftLabelsModal from '../GenerateDraftLabelsModal';
 
 const doc = (name: string) => ({ objectKey: name, inputKey: name, labelSource: null, minConfidence: null, confidenceThreshold: null });
 
-const PAGE_1 = Array.from({ length: 50 }, (_, i) => doc(`doc${i + 1}.pdf`));
-const PAGE_2 = Array.from({ length: 50 }, (_, i) => doc(`doc${i + 51}.pdf`));
+/**
+ * Three rows per page, not fifty.
+ *
+ * Paging is driven by the mock's `nextToken`, not by a page being full, and the
+ * bug these tests guard — Cloudscape reporting only the current page's ticks — is
+ * independent of row count. Fifty-row fixtures rendered a Cloudscape table twice
+ * per test and cost ~1s against a 5s timeout, which passed locally and timed out
+ * on CI's slower runner. The real page size is asserted directly instead, below.
+ */
+const PAGE_1 = Array.from({ length: 3 }, (_, i) => doc(`doc${i + 1}.pdf`));
+const PAGE_2 = Array.from({ length: 3 }, (_, i) => doc(`doc${i + 51}.pdf`));
 
 const mockPages = () => {
   graphql.mockImplementation((args: { query: string; variables?: { nextToken?: string } }) => {
@@ -73,6 +82,9 @@ describe('GenerateDraftLabelsModal', () => {
     expect(docCalls.length).toBeGreaterThan(0);
     // No continuation token: always page 1, whatever page the list behind it is on.
     expect(docCalls[0][0].variables.nextToken).toBeUndefined();
+    // The real MODAL_PAGE_SIZE, asserted here because the fixtures above are
+    // deliberately smaller than a page.
+    expect(docCalls[0][0].variables.limit).toBe(50);
   });
 
   it('keeps a selection made on page 1 after paging to page 2', async () => {
@@ -86,7 +98,10 @@ describe('GenerateDraftLabelsModal', () => {
     await waitFor(() => expect(screen.getByText('doc1.pdf')).toBeInTheDocument());
 
     // Tick one document on page 1.
-    const rowCheckboxes = screen.getAllByRole('checkbox').filter((c) => c !== screen.getByRole('checkbox', { name: /Extract labels/i }));
+    // Hoisted out of the filter: calling getByRole inside the callback re-scans the
+    // whole accessibility tree once per checkbox.
+    const selectAll = screen.getByRole('checkbox', { name: /Extract labels/i });
+    const rowCheckboxes = screen.getAllByRole('checkbox').filter((c) => c !== selectAll);
     fireEvent.click(rowCheckboxes[1]);
     await waitFor(() => expect(screen.getByText(/1 document\(s\) selected/)).toBeInTheDocument());
 
@@ -100,7 +115,7 @@ describe('GenerateDraftLabelsModal', () => {
     // And now tick one on page 2. This is the step that actually exercises the
     // merge: the change event reports only THIS page's ticks, so a handler that
     // assigned them would wipe doc1 and nothing on screen would say so.
-    const page2Checkboxes = screen.getAllByRole('checkbox').filter((c) => c !== screen.getByRole('checkbox', { name: /Extract labels/i }));
+    const page2Checkboxes = screen.getAllByRole('checkbox').filter((c) => c !== selectAll);
     fireEvent.click(page2Checkboxes[1]);
     await waitFor(() => expect(screen.getByText(/2 document\(s\) selected/)).toBeInTheDocument());
 
