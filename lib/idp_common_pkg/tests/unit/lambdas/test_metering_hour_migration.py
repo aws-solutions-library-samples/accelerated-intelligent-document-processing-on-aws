@@ -210,3 +210,43 @@ class TestSendCFNResponse:
         assert body["Reason"] == "done"
         assert body["StackId"] == event["StackId"]
         assert body["RequestId"] == event["RequestId"]
+
+
+@pytest.mark.unit
+class TestConcurrentMigrationRace:
+    """Round-15 review fix: when the source has already been deleted by
+    a concurrent migrator (or a prior successful run whose future
+    result was lost), the head-succeeds path must NOT fall through to
+    copy_object — that raises NoSuchKey on the missing source and flips
+    an already-migrated file to FAILED, wedging the custom resource.
+    """
+
+    def test_target_exists_and_source_already_deleted_returns_moved(self, mig):
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+
+        def head_side_effect(Bucket, Key):  # noqa: ARG001, N803
+            if Key == "metering/date=2026-08-18/hour=13/a.parquet":
+                return {"ContentLength": 12345}
+            # Source already deleted — the failure mode we're guarding.
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "HeadObject")
+
+        mock_s3.head_object.side_effect = head_side_effect
+        # The Lambda's ``s3_client.exceptions.ClientError`` reference is
+        # what the ``except`` clause catches — point it at the real
+        # botocore ClientError so ``raise`` and ``except`` match.
+        mock_s3.exceptions.ClientError = ClientError
+
+        with (
+            patch.object(mig, "s3_client", mock_s3),
+            patch.object(mig, "_infer_hour", return_value=("13", True)),
+        ):
+            result = mig._migrate_one(
+                "test-bucket", "metering/date=2026-08-18/a.parquet"
+            )
+        assert result == "moved"
+        # Must NOT have tried to copy from the missing source.
+        mock_s3.copy_object.assert_not_called()
+        # And must NOT have tried to delete a non-existent source.
+        mock_s3.delete_object.assert_not_called()

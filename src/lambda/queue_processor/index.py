@@ -92,13 +92,28 @@ def update_counter(increment: bool = True) -> bool:
         raise
 
 
-def _count_running_executions(limit: int = 1000) -> Optional[int]:
+def _count_running_executions() -> Optional[int]:
     """Count RUNNING executions of the document-processing state machine.
 
-    Returns None if the count could not be established (API error, or more
-    running executions than `limit`), so callers can decline to act rather than
-    act on a partial number.
+    Returns None if the count could not be established (API error) OR if the
+    count has definitively surpassed ``MAX_CONCURRENT`` — at that point the
+    counter (itself capped at ``MAX_CONCURRENT``) mathematically cannot have
+    leaked, so there is nothing to reconcile.
+
+    Round-15 review fix: the previous hardcoded ``limit=1000`` broke on large
+    stacks where the operator set ``MAX_CONCURRENT`` above 1000. In that
+    regime, a real leak could pin the counter high while actual running
+    executions were >1000, and this probe would return None → reconciliation
+    refused to act → the leak was permanent. Comparing against
+    ``MAX_CONCURRENT`` (with a small margin to survive races between listing
+    and the counter probe) makes the cap correct for any customer-configured
+    limit.
     """
+    # +100 margin: an execution may complete between the ListExecutions page
+    # and the subsequent counter read, so the counter can briefly be higher
+    # than the running count without being leaked. The margin absorbs that
+    # honest race so it doesn't trigger a spurious "already leak-proof" skip.
+    ceiling = MAX_CONCURRENT + 100
     try:
         total = 0
         token = None
@@ -112,13 +127,17 @@ def _count_running_executions(limit: int = 1000) -> Optional[int]:
                 kwargs["nextToken"] = token
             page = sfn.list_executions(**kwargs)
             total += len(page.get("executions", []))
+            if total > ceiling:
+                # Running > MAX_CONCURRENT + margin ⇒ counter can't be leaked
+                # (it is capped at MAX_CONCURRENT). Nothing to reconcile.
+                logger.info(
+                    f"Running executions > MAX_CONCURRENT + margin "
+                    f"({ceiling}); counter can't be leaked — skipping reconcile"
+                )
+                return None
             token = page.get("nextToken")
             if not token:
                 return total
-            if total > limit:
-                # More running than we care to page through; certainly not leaked.
-                logger.info(f"More than {limit} running executions; skipping reconcile")
-                return None
     except ClientError as e:
         logger.warning(f"Could not list executions for reconciliation: {e}")
         return None

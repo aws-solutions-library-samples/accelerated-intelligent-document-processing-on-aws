@@ -511,6 +511,85 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is False
         assert any("INSERT INTO" in s for s in captured_sql)
 
+    def test_dropped_hourly_table_is_treated_as_no_prior_data(self, rollup):
+        """Round-15 review fix #3: ``_hourly_ever_written`` used to
+        default to True on any exception (retry 3× then default), which
+        included TABLE_NOT_FOUND. If an operator dropped or renamed
+        ``metering_hourly``, the deploy-day skip path was blocked and
+        every daily rollup went to DLQ. Now the missing-table shape is
+        detected and treated as "no prior data" so day-1-like behavior
+        engages.
+        """
+
+        # Raw metering has data for the target date; metering_hourly's
+        # prior-date probe raises TABLE_NOT_FOUND. Should return False.
+        def raise_table_missing(sql, **_kwargs):
+            if 'FROM "reporting"."metering_hourly"' in sql:
+                raise RuntimeError(
+                    'TABLE_NOT_FOUND: Table "awsdatacatalog"."reporting"."metering_hourly" does not exist'
+                )
+            return []
+
+        with patch.object(
+            rollup, "_run_athena_query_with_results", side_effect=raise_table_missing
+        ):
+            # Should return False (no prior data → not "already written")
+            # rather than retrying 3× and returning True.
+            assert rollup._hourly_ever_written(before_date="2026-08-27") is False
+
+    def test_daily_guards_only_sub_hourly_of_the_daily_being_written(self, rollup):
+        """Round-15 review fix #4: when metering_daily is already
+        committed but metering_docs_daily is not, an unrelated gap in
+        ``metering_hourly`` must NOT block the docs-daily write. Guard
+        only ``metering_docs_hourly`` in that case.
+        """
+        raw_hours = [[f"{h:02d}"] for h in range(0, 5)]
+        docs_hourly_hours = [[f"{h:02d}"] for h in range(0, 5)]
+
+        def fake_query(sql, **_kwargs):
+            if "WHERE date <" in sql:
+                return []  # deploy-day-ish probe
+            if 'FROM "reporting"."metering_hourly"' in sql:
+                # Intentionally return a GAP — this should NOT be checked
+                # because metering_daily is already written.
+                return [["00"], ["04"]]
+            if 'FROM "reporting"."metering_docs_hourly"' in sql:
+                return docs_hourly_hours
+            return raw_hours  # raw
+
+        def partition_written(table, date, hour=None):  # noqa: ARG001
+            return table == "metering_daily"
+
+        captured_sql = []
+        with (
+            patch.object(
+                rollup, "_partition_already_written", side_effect=partition_written
+            ),
+            patch.object(
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
+            ),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql: captured_sql.append(sql) or "qid",
+            ),
+        ):
+            result = rollup._run_daily()
+        # metering_daily skipped (already written); docs-daily INSERT
+        # must have fired despite the fake gap in metering_hourly.
+        assert result["metering_daily"] == {"skipped": True}
+        assert result["metering_docs_daily"]["skipped"] is False
+        # DATABASE comes from the test fixture env var; assert only the
+        # table-name and INSERT verb.
+        assert any(
+            "INSERT INTO" in s and "metering_docs_daily" in s for s in captured_sql
+        )
+        # The metering_hourly gap MUST not have triggered a guard raise
+        # (its daily is idempotency-skipped, so the gap can't affect us).
+        assert not any(
+            "INSERT INTO" in s and '"metering_daily"' in s for s in captured_sql
+        )
+
 
 @pytest.mark.unit
 class TestControlPlaneDiscovery:
@@ -868,6 +947,56 @@ class TestControlPlaneRowBuilding:
         assert by_model["model-a"]["bedrock_tokens_in"] == 10
         assert by_model["model-b"]["bedrock_tokens_in"] == 20
         assert by_model["model-c"]["bedrock_tokens_in"] == 30
+
+    def test_empty_string_model_does_not_steal_shared_columns(
+        self, rollup, monkeypatch
+    ):
+        """Round-15 review fix #5: a malformed CW dimension can emit
+        ``Model=""``. That used to sort FIRST under
+        ``sorted(bedrock_by_model.keys())`` and steal invocations /
+        duration / athena_bytes / est_lambda_cost / est_athena_cost from
+        the real model rows, so a downstream
+        ``WHERE bedrock_model='us.anthropic.claude-opus-4-1'`` query
+        would see 0 for all shared cols. The fix filters empty-string
+        model keys before row construction; their tokens are dropped
+        (lesser evil) and the real model keeps its shared columns.
+        """
+        monkeypatch.setattr(
+            rollup,
+            "_bedrock_pricing_map",
+            {
+                "bedrock/us.anthropic.claude-opus-4-1": {
+                    "inputTokens": 15e-6,
+                    "outputTokens": 75e-6,
+                },
+            },
+        )
+        with patch.object(
+            rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")
+        ):
+            rows = rollup._build_control_plane_rows(
+                function_name="AgentWithMalformedMetric",
+                component="analytics-agent",
+                hour_ts=datetime(2026, 8, 27, 13, 0, tzinfo=timezone.utc),
+                metrics={
+                    "duration_ms": 60_000.0,
+                    "invocations": 5.0,
+                    "athena_bytes": 0.0,
+                    "bedrock_by_model": {
+                        "": {"in": 999, "out": 999},  # malformed Model dim
+                        "us.anthropic.claude-opus-4-1": {"in": 1000, "out": 500},
+                    },
+                },
+            )
+        # Exactly one row (empty-string model filtered), and the real
+        # model carries the shared columns.
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["bedrock_model"] == "us.anthropic.claude-opus-4-1"
+        assert r["invocations"] == 5  # NOT stolen by ""
+        assert r["duration_ms_sum"] == 60_000
+        assert r["bedrock_tokens_in"] == 1000
+        assert r["bedrock_tokens_out"] == 500
 
     def test_bedrock_cost_1M_input_sonnet_tokens_is_3_dollars(
         self, rollup, monkeypatch

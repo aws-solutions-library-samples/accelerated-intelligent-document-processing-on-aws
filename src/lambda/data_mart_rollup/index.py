@@ -473,8 +473,20 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     docs_daily_exists = _partition_already_written(
         table="metering_docs_daily", date=target_date
     )
-    if not (daily_exists and docs_daily_exists):
-        _require_hourly_matches_raw_metering(target_date)
+    # Round-15 review fix: only guard the sub-hourlies whose daily
+    # partition is about to be written. An already-committed daily is
+    # idempotency-locked, so its input hourly's gaps can never affect
+    # what we write here — blocking on them would only wedge the OTHER
+    # daily forever.
+    guard_tables: List[str] = []
+    if not daily_exists:
+        guard_tables.append("metering_hourly")
+    if not docs_daily_exists:
+        guard_tables.append("metering_docs_hourly")
+    if guard_tables:
+        _require_hourly_matches_raw_metering(
+            target_date, tables_to_guard=tuple(guard_tables)
+        )
 
     # --- metering_daily (cost per service/unit) ---
     # Round-13 review fix: per-INSERT try/except isolation to match
@@ -609,6 +621,17 @@ def _hourly_ever_written(before_date: str) -> bool:
     # retries survive a single-transient throttle without moving to
     # the default. Falls back to True on persistent failure so we
     # don't accidentally write and lock a zero daily.
+    # Round-15 review fix: distinguish TABLE_NOT_FOUND from other
+    # exception classes — the sibling ``_partition_already_written``
+    # treats a missing table as "not written yet" (correct), but this
+    # function used to catch all exceptions and default to True. If an
+    # operator renamed or dropped ``metering_hourly`` (or ``metering``),
+    # every retry would raise TABLE_NOT_FOUND and this function would
+    # return True → is_deploy_day=False → the guard would fire and daily
+    # rollups would DLQ forever. Route the missing-table error to the
+    # "no prior data" branch (return False) so the deploy-day skip
+    # engages naturally; keep the retry-then-True default only for
+    # non-table-shaped errors (throttle, timeout, permissions).
     last_error: Optional[BaseException] = None
     for attempt in range(3):
         try:
@@ -625,6 +648,25 @@ def _hourly_ever_written(before_date: str) -> bool:
             return bool(raw_rows)
         except Exception as e:
             last_error = e
+            # Missing-table check first — a missing hourly OR raw table
+            # means we cannot possibly have data on prior dates, which
+            # is exactly what the caller needs to treat as day-1.
+            msg = str(e).lower()
+            if any(
+                m in msg
+                for m in (
+                    "table_not_found",
+                    "entitynotfoundexception",
+                    "table not found",
+                    "does not exist",
+                )
+            ):
+                logger.info(
+                    f"_hourly_ever_written: table missing ({e}); "
+                    f"treating as 'no prior data' so the deploy-day "
+                    f"guard skip can engage."
+                )
+                return False
             if attempt < 2:
                 time.sleep(1 + attempt)  # 1s, 2s
     logger.warning(
@@ -635,16 +677,28 @@ def _hourly_ever_written(before_date: str) -> bool:
     return True
 
 
-def _require_hourly_matches_raw_metering(target_date: str) -> None:
+def _require_hourly_matches_raw_metering(
+    target_date: str,
+    tables_to_guard: Optional[Tuple[str, ...]] = None,
+) -> None:
     """Fail loudly if either hourly rollup is missing any hour that raw
     metering has data for (deploy-day exception below).
 
-    Guards **both** ``metering_hourly`` and ``metering_docs_hourly`` —
-    the rollup writes them sequentially, so a transient Athena outage
-    could leave one populated and the other empty for the same hour.
-    Checking only ``metering_hourly`` would let an incomplete
+    Guards **both** ``metering_hourly`` and ``metering_docs_hourly`` by
+    default — the rollup writes them sequentially, so a transient Athena
+    outage could leave one populated and the other empty for the same
+    hour. Checking only ``metering_hourly`` would let an incomplete
     ``metering_docs_daily`` land and become idempotently locked, silently
     under-counting ``n_docs``/``sum_pages`` for that day forever.
+
+    Round-15 review fix: callers can pass ``tables_to_guard`` to restrict
+    the check to only the sub-hourlies whose corresponding daily
+    partitions are ACTUALLY about to be written. Otherwise, a case where
+    ``metering_daily`` is already committed but only
+    ``metering_docs_daily`` is pending would be blocked forever if
+    ``metering_hourly`` had an unrelated gap — the gap can never affect
+    metering_daily (already committed, idempotency skip), yet it holds
+    up the docs-daily we could safely write.
 
     We compare each hourly against RAW metering rather than "all 24
     hours" — a day may legitimately have fewer than 24 hours of data (deploy
@@ -699,7 +753,8 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
         before_date=target_date
     )
 
-    for hourly_table in ("metering_hourly", "metering_docs_hourly"):
+    guard_tables = tables_to_guard or ("metering_hourly", "metering_docs_hourly")
+    for hourly_table in guard_tables:
         hourly_sql = (
             f'SELECT DISTINCT hour FROM "{DATABASE}"."{hourly_table}" '  # nosec B608
             f"WHERE date = '{target_date}'"  # nosec B608
@@ -1286,7 +1341,26 @@ def _build_control_plane_rows(
             "est_bedrock_cost": est_bedrock_cost,
         }
 
-    if not bedrock_by_model:
+    # Round-15 review fix: drop empty-string / falsy model keys entirely.
+    # A malformed CW dimension can emit ``Model=""`` — that used to sort
+    # FIRST under ``sorted(bedrock_by_model.keys())`` and steal the
+    # shared-columns row from the real model, so a downstream
+    # ``WHERE bedrock_model = 'us.anthropic.claude-opus-4-1'`` query
+    # would see 0 invocations / duration / athena_bytes for the real
+    # model. Filtering them out here means their tokens are lost, which
+    # is the lesser evil vs. mis-attributing shared columns to a
+    # non-identifiable model — the emitter-side WARN (see
+    # ``_get_bedrock_tokens_by_model``) already surfaces the malformed
+    # dim.
+    filtered = {m: v for m, v in bedrock_by_model.items() if m}
+    if len(filtered) != len(bedrock_by_model):
+        logger.warning(
+            f"Dropped {len(bedrock_by_model) - len(filtered)} bedrock model "
+            f"row(s) with empty-string Model dim for {function_name}: their "
+            f"shared-column values would otherwise be mis-attributed."
+        )
+
+    if not filtered:
         # Component didn't call Bedrock this hour — one row without a model.
         return [_row(None, 0, 0, include_shared=True)]
     # One row per Bedrock model, but shared columns only on the FIRST.
@@ -1297,8 +1371,8 @@ def _build_control_plane_rows(
     # consumer's LEFT JOIN could pick up different values across
     # rebuilds of the same partition.
     rows: List[Dict[str, Any]] = []
-    for i, model in enumerate(sorted(bedrock_by_model.keys())):
-        tokens = bedrock_by_model[model]
+    for i, model in enumerate(sorted(filtered.keys())):
+        tokens = filtered[model]
         rows.append(
             _row(model, int(tokens["in"]), int(tokens["out"]), include_shared=(i == 0))
         )
@@ -1402,23 +1476,32 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
                 f"Loaded {len(loaded)} pricing entries from ConfigurationTable."
             )
             return _bedrock_pricing_map
+        # Round-15 review fix: cache the empty result WITHIN this
+        # invocation so the CW fan-out's 10 worker threads don't each
+        # race back to _load_bedrock_pricing_from_config() and pile
+        # duplicate ConfigurationManager.get_merged_pricing() reads on
+        # the config DynamoDB table. Cross-invocation retry semantics
+        # are preserved because handler() resets
+        # ``_bedrock_pricing_map = None`` at the start of every fire.
         logger.warning(
-            "ConfigurationTable returned 0 pricing entries; not caching. "
-            "Next invocation will retry. This invocation falls back to "
-            "hardcoded default pricing."
+            "ConfigurationTable returned 0 pricing entries; caching empty "
+            "within THIS invocation so workers don't stampede DynamoDB. "
+            "Next invocation resets the cache and retries."
         )
-        return {}
+        _bedrock_pricing_map = {}
+        return _bedrock_pricing_map
     except Exception as e:
-        # DO NOT set _bedrock_pricing_map on failure — leave it as None
-        # so the NEXT invocation retries. Only this invocation degrades
-        # to the hardcoded default.
+        # Same reasoning as the empty-result path above: cache the empty
+        # result within this invocation to avoid worker-thread stampede,
+        # but the handler-level reset guarantees cross-invocation retry.
         logger.warning(
             f"Failed to load pricing from ConfigurationTable "
             f"({CONFIGURATION_TABLE_NAME!r}): {e}. Falling back to hardcoded "
             f"default pricing for Bedrock cost columns THIS INVOCATION; "
             f"next invocation will retry."
         )
-        return {}
+        _bedrock_pricing_map = {}
+        return _bedrock_pricing_map
 
 
 # Component-mapping rules — ORDER MATTERS. First match wins. Rules are

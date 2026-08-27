@@ -76,7 +76,10 @@ MAX_INLINE_FILES = 30_000
 # S3 CopyObject concurrency inside one Lambda.
 COPY_CONCURRENCY = 50
 
-HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
+# Round-9 review fix uses S3's ``Delimiter="/hour="`` to filter
+# hour-partitioned keys server-side, so no client-side hour pattern is
+# needed in this module. The standalone script
+# ``scripts/migrate_metering_hour_partition.py`` still uses one.
 DATE_PART_PATTERN = re.compile(r"^metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
 
 # Cap boto3 retries and per-call timeouts so a hung S3 API doesn't
@@ -180,10 +183,12 @@ def _migrate(event, context, bucket: str):
     # up to DRAIN_BUDGET_SEC before returning FAILED.
     DRAIN_BUDGET_SEC = 20  # noqa: N806 (local-scope const)
     executor = ThreadPoolExecutor(max_workers=COPY_CONCURRENCY)
+    deadline_exceeded = False  # round-15 review fix — see finally block below
     try:
         futures = {executor.submit(_migrate_one, bucket, key): key for key in old_keys}
         for future in as_completed(futures):
             if time.time() > deadline:
+                deadline_exceeded = True
                 # Wait briefly for any in-flight futures to complete their
                 # delete-after-copy so we don't leave source-and-target
                 # dupes.
@@ -226,7 +231,7 @@ def _migrate(event, context, bucket: str):
                 elif result == "fallback":
                     # File NOT copied — left at its original old-layout
                     # location. Operator retry will re-list it via the
-                    # lister's ``not HOUR_KEY_PATTERN`` filter.
+                    # lister's ``Delimiter="/hour="`` server-side filter.
                     hour_fallbacks += 1
                 else:
                     moved += 1
@@ -234,8 +239,21 @@ def _migrate(event, context, bucket: str):
                 logger.warning(f"Failed to migrate {key}: {e}")
                 errors += 1
     finally:
-        # Cancel pending, don't wait on running. Round-8 review fix.
-        executor.shutdown(wait=False, cancel_futures=True)
+        # Round-15 review fix: on the DEADLINE path we still want
+        # cancel_futures + wait=False so we can return FAILED promptly;
+        # the drain window above already gave in-flight futures 20s to
+        # finish their copy+delete pair. But on every OTHER exit path
+        # (natural completion, errors > 0, hour_fallbacks > 0), the
+        # ``as_completed`` loop has fully consumed the futures — so
+        # nothing is in flight and we can safely ``wait=True`` to be
+        # crisp about lifecycle. This also removes the last remaining
+        # window where a mid-``copy_object``/``delete_object`` future
+        # could be truncated on the graceful path if a caller ever
+        # ``return``ed early from inside the for-loop.
+        if deadline_exceeded:
+            executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor.shutdown(wait=True)
 
     if errors:
         return _send(
@@ -327,7 +345,7 @@ def _migrate_one(bucket: str, key: str) -> str:
     - **Mid-copy failure** — the target key doesn't land; original
       stays. Safe: original is still the sole location, projection
       (whichever version is committed) reads it correctly. Re-run picks
-      up the same key via the lister's ``not HOUR_KEY_PATTERN`` filter.
+      up the same key via the lister's ``Delimiter="/hour="`` filter.
     - **Copy-succeeded-delete-failed** — the target key AND original
       both exist for this one file. Same double-count risk as the
       "leave originals" design, but scoped to one file rather than the
@@ -383,7 +401,25 @@ def _migrate_one(bucket: str, key: str) -> str:
         # Compare ContentLength against the source; if they mismatch,
         # DO NOT delete — copy over the existing target (S3 CopyObject
         # replaces) and only then delete the source.
-        source_head = s3_client.head_object(Bucket=bucket, Key=key)
+        try:
+            source_head = s3_client.head_object(Bucket=bucket, Key=key)
+        except s3_client.exceptions.ClientError as e:
+            src_code = e.response.get("Error", {}).get("Code")
+            if src_code in ("404", "NoSuchKey", "NotFound"):
+                # Round-15 review fix: target exists AND source is gone —
+                # this file is fully migrated. A concurrent migrator (or
+                # a prior successful run whose future result was lost)
+                # already did the copy+delete, so we have nothing to do
+                # and MUST NOT fall through to copy_object below (which
+                # would fail with NoSuchKey on the source and flip this
+                # file to FAILED, wedging the custom resource).
+                logger.info(
+                    f"Target exists and source is already deleted "
+                    f"({key} → {target}): another migrator got here "
+                    f"first. Nothing to do."
+                )
+                return "moved"
+            raise
         target_size = target_head.get("ContentLength")
         source_size = source_head.get("ContentLength")
         if (

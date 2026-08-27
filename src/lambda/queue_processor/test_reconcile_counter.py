@@ -172,7 +172,9 @@ class TestTwoSampleRequirement:
         """
         with patch.object(index_module.time, "time", return_value=100_000):
             index_module.concurrency_table.get_item.return_value = _counter(
-                100, drift_at=1_000, drift_running=29  # ~99,000s old
+                100,
+                drift_at=1_000,
+                drift_running=29,  # ~99,000s old
             )
             index_module.sfn.list_executions.return_value = _running(29)
             assert index_module.reconcile_counter() is None
@@ -250,3 +252,76 @@ class TestFailsSafe:
             {"executions": [{"name": "x"}]},
         ]
         assert index_module._count_running_executions() == 101
+
+    def test_stops_paging_once_ceiling_exceeded(self, index_module, monkeypatch):
+        """Round-15 review fix: the cap must scale with MAX_CONCURRENT.
+        The previous hardcoded ``limit=1000`` blocked reconciliation on
+        large stacks with MAX_CONCURRENT > 1000. Now once we have counted
+        MAX_CONCURRENT + margin running executions, the counter (capped
+        at MAX_CONCURRENT) mathematically cannot have leaked, so we
+        return None and stop paging — regardless of the absolute
+        threshold.
+        """
+        # Test-scoped MAX_CONCURRENT is 100; ceiling = 100 + 100 = 200.
+        # Two pages of 100 pushes total to 200 (not yet > ceiling) → keeps
+        # paging. A third page of 1 pushes it to 201 → return None.
+        index_module.sfn.list_executions.side_effect = [
+            {"executions": [{"name": str(i)} for i in range(100)], "nextToken": "t1"},
+            {"executions": [{"name": str(i)} for i in range(100)], "nextToken": "t2"},
+            {"executions": [{"name": "over"}], "nextToken": "t3"},
+            # Fourth page should never be called — we returned already.
+            {"executions": [{"name": "should-not-see"}]},
+        ]
+        assert index_module._count_running_executions() is None
+        # 3 calls, not 4 — we short-circuited.
+        assert index_module.sfn.list_executions.call_count == 3
+
+    def test_ceiling_scales_with_configured_max_concurrent(self, monkeypatch):
+        """Regression pin for the round-15 bug: a customer running a large
+        stack with MAX_CONCURRENT=2000 previously hit the hardcoded 1000
+        cap and reconciliation refused to act on a real leak. With the
+        ceiling now derived from MAX_CONCURRENT, 1500 running executions
+        must return the actual count (leak still detectable) rather than
+        None.
+        """
+        env_vars = {
+            "CONCURRENCY_TABLE": "test-concurrency",
+            "STATE_MACHINE_ARN": SM_ARN,
+            "MAX_CONCURRENT": "2000",
+            "RECONCILE_GRACE_SECONDS": "300",
+            "METRIC_NAMESPACE": "TestStack",
+        }
+        fake_docs_service = MagicMock()
+        fake_docs_service.create_document_service = MagicMock(return_value=MagicMock())
+        fake_xray_core = MagicMock()
+        for name, mod in {
+            "idp_common": MagicMock(),
+            "idp_common.models": MagicMock(),
+            "idp_common.docs_service": fake_docs_service,
+            "idp_common.config": MagicMock(),
+            "aws_xray_sdk": MagicMock(),
+            "aws_xray_sdk.core": fake_xray_core,
+        }.items():
+            monkeypatch.setitem(sys.modules, name, mod)
+
+        with (
+            patch.dict(os.environ, env_vars, clear=False),
+            patch("boto3.client"),
+            patch("boto3.resource"),
+        ):
+            spec = importlib.util.spec_from_file_location(
+                "queue_processor_large_stack", _INDEX_PATH
+            )
+            assert spec and spec.loader
+            large_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(large_mod)
+        large_mod.concurrency_table = MagicMock()
+        large_mod.sfn = MagicMock()
+        # 15 pages of 100 = 1500 running — well past the old 1000 cap
+        # but comfortably under the new 2000 + 100 ceiling.
+        pages = [
+            {"executions": [{"name": str(i)} for i in range(100)], "nextToken": "t"}
+            for _ in range(14)
+        ] + [{"executions": [{"name": "last"}]}]
+        large_mod.sfn.list_executions.side_effect = pages
+        assert large_mod._count_running_executions() == 1401
