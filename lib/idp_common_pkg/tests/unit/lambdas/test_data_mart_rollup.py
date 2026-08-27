@@ -320,7 +320,7 @@ class TestMeteringDailyRollup:
         raw_hours = [[f"{h:02d}"] for h in range(24)]
         hourly_hours = [[f"{h:02d}"] for h in range(23)]
 
-        def fake_query(sql):
+        def fake_query(sql, **_kwargs):
             return (
                 raw_hours
                 if '"metering"' in sql and "hourly" not in sql
@@ -344,7 +344,7 @@ class TestMeteringDailyRollup:
         partial_hours = [[f"{h:02d}"] for h in range(12, 20)]
         captured_sql = []
 
-        def fake_query(_sql):
+        def fake_query(_sql, **_kwargs):
             return partial_hours  # both queries return the same partial set
 
         with (
@@ -369,7 +369,7 @@ class TestMeteringDailyRollup:
         partition is 'sealed' with a legitimate empty result."""
         empty = []
 
-        def fake_query(_sql):
+        def fake_query(_sql, **_kwargs):
             return empty
 
         captured_sql = []
@@ -404,7 +404,7 @@ class TestMeteringDailyRollup:
 
         calls = {"n": 0}
 
-        def fake_query(sql):
+        def fake_query(sql, **_kwargs):
             # First query is against raw metering, second against hourly.
             calls["n"] += 1
             if 'FROM "reporting"."metering_hourly"' in sql or "metering_hourly" in sql:
@@ -438,7 +438,7 @@ class TestMeteringDailyRollup:
         raw_hours = [[f"{h:02d}"] for h in range(0, 10)]
         hourly_hours = [[f"{h:02d}"] for h in range(5, 10)]
 
-        def fake_query(sql):
+        def fake_query(sql, **_kwargs):
             if "metering_hourly" in sql:
                 return hourly_hours
             return raw_hours

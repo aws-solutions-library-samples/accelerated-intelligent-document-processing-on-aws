@@ -1154,6 +1154,15 @@ class SaveReportingData:
                     f"{document.initial_event_time}. Error: {str(e)}"
                 )
         if initial_event_time is None:
+            # Log the fallback — downstream queue-latency computations
+            # (initial_event_time → timestamp) would otherwise silently
+            # read as 0 duration, indistinguishable from truly-instant
+            # processing. Round-11 review fix.
+            logger.warning(
+                f"Document {document.id!r} has no initial_event_time; "
+                f"falling back to completion timestamp {timestamp.isoformat()}. "
+                f"Queue-latency metrics for this doc will read as 0."
+            )
             initial_event_time = timestamp
         elif initial_event_time.tzinfo is None:
             # Naive datetime — assume UTC (matches the queue-time

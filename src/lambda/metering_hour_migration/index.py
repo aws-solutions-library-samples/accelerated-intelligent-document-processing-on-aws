@@ -170,20 +170,50 @@ def _migrate(event, context, bucket: str):
     # block on shutdown(wait=True) at context exit — a hung boto3 retry
     # could extend the Lambda run toward its 900s timeout, past the
     # deadline. Round-8 review fix.
+    # Bounded drain window on deadline exceeded — round-11 review fix.
+    # Each _migrate_one is atomic per file (copy_object → delete_object
+    # sequentially), so an in-flight future that already did the copy
+    # but not the delete would leave both source and target present. On
+    # CFN rollback (Glue projection reverts to date=X/*), Athena would
+    # recursively read BOTH — a transient double-count until manual
+    # cleanup. To keep the window tight, we drain in-flight futures for
+    # up to DRAIN_BUDGET_SEC before returning FAILED.
+    DRAIN_BUDGET_SEC = 20  # noqa: N806 (local-scope const)
     executor = ThreadPoolExecutor(max_workers=COPY_CONCURRENCY)
     try:
         futures = {executor.submit(_migrate_one, bucket, key): key for key in old_keys}
         for future in as_completed(futures):
             if time.time() > deadline:
-                # Return the FAILED response and let the finally-block
-                # shut the executor down without waiting.
+                # Wait briefly for any in-flight futures to complete their
+                # delete-after-copy so we don't leave source-and-target
+                # dupes.
+                drain_deadline = time.time() + DRAIN_BUDGET_SEC
+                in_flight = [f for f in futures if not f.done()]
+                logger.warning(
+                    f"Copy budget exceeded. Draining {len(in_flight)} "
+                    f"in-flight future(s) for up to {DRAIN_BUDGET_SEC}s "
+                    f"to avoid mid-copy dupes."
+                )
+                for f in in_flight:
+                    remaining = drain_deadline - time.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        f.result(timeout=remaining)
+                    except Exception:
+                        # Best-effort drain; count is reported below.
+                        pass
+                still_in_flight = sum(1 for f in futures if not f.done())
                 return _send(
                     event,
                     context,
                     "FAILED",
                     reason=(
                         f"Migration budget of {COPY_BUDGET_SEC}s exceeded after "
-                        f"moving {moved}/{total} files. Run "
+                        f"moving {moved}/{total} files "
+                        f"({still_in_flight} in-flight during drain — a small "
+                        f"number of source-and-target dupes may remain if the "
+                        f"stack rolls back). Run "
                         f"scripts/migrate_metering_hour_partition.py --bucket {bucket} "
                         f"manually to finish, then retry the stack update."
                     ),
@@ -305,11 +335,12 @@ def _migrate_one(bucket: str, key: str) -> str:
       (``delete_object`` on a missing key is a no-op).
     - **Files parked at hour=00 by a prior run** — the lister excludes
       any key already under ``/hour=NN/``, so those files are NOT
-      re-attempted here. If a v1.0-like bad run parked files at
-      hour=00, they stay there until an operator runs
-      ``scripts/migrate_metering_hour_partition.py --rescan-hour-00``
-      (not yet shipped). Since no v1.0 has shipped to any customer,
-      this is a Phase-2 hazard, not a live one.
+      re-attempted here. If a hypothetical v1.0-like bad run parked
+      files at hour=00, they stay there permanently — no rescue path
+      exists today. Since no such shipped v1.0 exists, this is a
+      documented Phase-2 hardening gap. A future rescue script would
+      need to explicitly list the ``hour=00`` subprefix and re-infer
+      hour from each file's own timestamp column.
     """
     # Sanity-check the key shape BEFORE reading the parquet body: a
     # stray non-metering file (legacy Athena query output, etc.) has
@@ -512,15 +543,35 @@ def _send(event, context, status: str, data=None, reason: str = ""):
     # stall the Lambda until its 15-min ceiling. Round-6 review fix.
     # 15s connect + 30s read is generous vs. S3's typical low-second
     # response, and bounded well under Lambda's own timeout.
+    # Round-11 review fix: retry the PUT twice on transient failure
+    # before giving up. A silent single-shot failure left CFN waiting
+    # for the ServiceTimeout ceiling; retries recover from a flaky
+    # connection while still bounded to a few seconds.
     http = urllib3.PoolManager(timeout=urllib3.Timeout(connect=15.0, read=30.0))
-    try:
-        http.request(
-            "PUT",
-            response_url,
-            body=json.dumps(response_body).encode("utf-8"),
-            headers={"Content-Type": ""},
-        )
-        logger.info(f"CFN response sent: {status} — {reason}")
-    except Exception as e:
-        logger.error(f"Failed to send CFN response: {e}")
+    last_error: Optional[BaseException] = None
+    for attempt in range(3):
+        try:
+            http.request(
+                "PUT",
+                response_url,
+                body=json.dumps(response_body).encode("utf-8"),
+                headers={"Content-Type": ""},
+            )
+            logger.info(f"CFN response sent: {status} — {reason}")
+            return {"status": status, "reason": reason}
+        except Exception as e:
+            last_error = e
+            logger.warning(f"CFN response PUT failed (attempt {attempt + 1}/3): {e}")
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))  # 2s, 4s
+    # All three attempts failed. Log with maximum detail so the operator
+    # has enough to diagnose from CloudWatch when CFN eventually hits
+    # ServiceTimeout. We don't re-raise — the Lambda invocation is done
+    # regardless, and raising here would just show up as a Lambda error
+    # to CFN, which STILL waits for the ServiceTimeout ceiling.
+    logger.error(
+        f"CFN response PUT failed on all retries — CFN will wait for "
+        f"the ServiceTimeout ceiling before rolling back. Last error: "
+        f"{last_error!r}. Status was: {status}, reason: {reason}"
+    )
     return {"status": status, "reason": reason}

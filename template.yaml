@@ -250,6 +250,17 @@ Parameters:
       (Optional) Existing bucket used for analytics. (Currently used for evaluation analytics)
       Provide the name of an existing bucket here or leave blank to automatically create a new bucket.
 
+  ReportingBucketKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) KMS key ARN that encrypts the existing ReportingBucketName. Required when
+      ReportingBucketName is provided AND that bucket is encrypted with a customer-owned KMS
+      key different from this stack's CustomerManagedEncryptionKey. The MeteringHour migration
+      Lambda needs kms:Decrypt/GenerateDataKey on this key to read historical metering parquet
+      files during upgrade. Leave blank if using the auto-created reporting bucket or if the
+      existing bucket uses SSE-S3 / a key this stack's role already accesses.
+
   DocumentSectionsCrawlerFrequency:
     Type: String
     Default: "EveryDay"
@@ -1152,6 +1163,7 @@ Conditions:
   ShouldCreateEvaluationBaselineBucket:
     !Equals [ !Ref EvaluationBaselineBucketName, "" ]
   ShouldCreateReportingBucket: !Equals [ !Ref ReportingBucketName, "" ]
+  HasReportingBucketKmsKey: !Not [!Equals [!Ref ReportingBucketKmsKeyArn, ""]]
   # NOTE: the old WAF apparatus (IsWafEnabled / IsWafEnabledAndApi) and the
   # private DNS condition (IsPrivateApiAndApi) existed solely to protect /
   # expose the former GraphQL API and were removed along with it. The REST API
@@ -5070,7 +5082,18 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              # Round-11 review fix: also grant on a customer-supplied
+              # KMS key when ReportingBucketName is a BYO bucket
+              # encrypted with the customer's own key. We can't inline
+              # ``!If`` inside a list-of-strings in a SAM Statement
+              # cleanly, so we use ``AWS::NoValue`` — the resulting
+              # Resource list drops the extra ARN when it's empty.
+              Resource:
+                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If
+                  - HasReportingBucketKmsKey
+                  - !Ref ReportingBucketKmsKeyArn
+                  - !Ref AWS::NoValue
 
   MeteringHourMigrationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -5094,17 +5117,24 @@ Resources:
         - !Ref ReportingBucketName
       # MigrationVersion — CFN only sends an Update to a custom resource
       # when one of its properties changes. Bump this string when the
-      # migration logic itself changes (e.g., a new hour-inference rule)
-      # so existing stacks re-run against any files that might need
-      # re-processing. Ordinary version bumps of the accelerator don't
-      # need to touch this — the migration is idempotent (already-migrated
-      # keys carry `/hour=` and are skipped by the lister).
+      # migration logic itself changes so existing stacks re-run against
+      # NEW old-layout files (those still lacking ``/hour=`` in their
+      # key). The migration is idempotent for those — ``_iter_old_layout_keys``
+      # uses S3 ``Delimiter="/hour="`` to server-side-exclude any key
+      # already under a ``/hour=NN/`` subprefix.
       #
-      # 1.1: bumped alongside the layer fix (Base → Reporting) — the 1.0
-      # deploy silently parked every file at hour=00 because pyarrow was
-      # absent from the base layer. The handler now fails loudly if
-      # pyarrow is missing; this version bump forces existing stacks to
-      # re-attempt the migration against files that may need re-hour-ing.
+      # 1.1: bumped alongside the layer fix (Base → Reporting). The 1.0
+      # deploy silently parked every file at hour=00 because pyarrow
+      # was absent from the base layer; the handler now fails loudly if
+      # pyarrow is missing (round-3 fix). Round-11 review clarification:
+      # a bump does NOT rescue files ALREADY parked at hour=00 by a bad
+      # 1.0 run — the same ``Delimiter="/hour="`` filter that makes
+      # re-runs idempotent excludes those files. Since 1.0 never shipped
+      # to any customer, this is a documented Phase-2 hardening gap
+      # rather than a live-fire recovery path. If a customer ever needs
+      # to rescue hour=00 files, they will need a purpose-built script
+      # that lists the ``hour=00`` prefix and re-infers hour from each
+      # file's own timestamp column (not shipped today).
       MigrationVersion: "1.1-hour-partition-inference-fix"
 
   ##########################################################################
@@ -5367,9 +5397,18 @@ Resources:
     # the entire update, so its cron can fire while the MeteringTable's new
     # ``hour`` partition-key change (and the raw-file migration) is still in
     # progress — the rollup's INSERT queries reference ``metering.hour`` and
-    # would fail with "column not found". Wait for the migration custom
-    # resource, which the MeteringTable already DependsOn.  Round-6 review fix.
-    DependsOn: MeteringHourMigrationCustomResource
+    # would fail with "column not found". Round-11 review fix: also wait
+    # for every rollup TARGET table (fresh install can otherwise fire the
+    # first cron before the write-target tables commit — INSERT would
+    # then fail with TABLE_NOT_FOUND which fail-open masks, then re-INSERT
+    # against the freshly-created table on the retry).
+    DependsOn:
+      - MeteringHourMigrationCustomResource
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+      - ControlPlaneHourlyTable
     Properties:
       Description: Hourly trigger for the data-mart rollup Lambda.
       ScheduleExpression: "cron(5 * * * ? *)"
@@ -5400,7 +5439,13 @@ Resources:
   DataMartRollupDailySchedule:
     Type: AWS::Events::Rule
     # See the hourly schedule above for the DependsOn rationale.
-    DependsOn: MeteringHourMigrationCustomResource
+    DependsOn:
+      - MeteringHourMigrationCustomResource
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+      - ControlPlaneHourlyTable
     Properties:
       Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
       ScheduleExpression: "cron(15 0 * * ? *)"

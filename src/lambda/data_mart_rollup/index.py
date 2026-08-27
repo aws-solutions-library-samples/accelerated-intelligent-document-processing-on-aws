@@ -482,6 +482,41 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     return result
 
 
+def _hourly_ever_written(before_date: str) -> bool:
+    """Return True if ``metering_hourly`` has ANY row on a date strictly
+    before ``before_date``.
+
+    Distinguishes true deploy-day (never rolled up anything, anywhere)
+    from a total-outage day (metering_hourly empty for THIS date but
+    healthy on prior dates). Round-11 review fix — using "metering_hourly
+    empty for target_date" as the sole deploy-day signal mis-classified
+    an outage day and silently wrote a 0-doc daily that idempotency then
+    locked in forever.
+
+    Fast SELECT: LIMIT 1 with partition-pruned WHERE date < '{X}'.
+    ``emit_self_cost=False`` — this is a bookkeeping probe, not a
+    genuine cost-attribution query.
+    """
+    # nosec B608 — before_date is from datetime.strftime, not user input.
+    sql = (
+        f'SELECT 1 FROM "{DATABASE}"."metering_hourly" '  # nosec B608
+        f"WHERE date < '{before_date}' LIMIT 1"  # nosec B608
+    )
+    try:
+        rows = _run_athena_query_with_results(sql, emit_self_cost=False)
+        return bool(rows)
+    except Exception as e:
+        # If the query itself fails (table missing, transient), assume
+        # NOT deploy-day so the guard fires on empty hourly — safer to
+        # fail loudly than to accidentally lock in a zero daily.
+        logger.warning(
+            f"_hourly_ever_written probe failed ({e}); assuming hourly "
+            f"has been written before (defensive: guard will fire on "
+            f"empty hourly for target date)."
+        )
+        return True
+
+
 def _require_hourly_matches_raw_metering(target_date: str) -> None:
     """Fail loudly if either hourly rollup is missing any hour that raw
     metering has data for (deploy-day exception below).
@@ -534,7 +569,17 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
         f"WHERE date = '{target_date}'"  # nosec B608
     )
     primary_hourly_hours = {r[0] for r in primary_hourly_rows if r and r[0]}
-    is_deploy_day = not primary_hourly_hours
+    # Round-11 review fix: a "deploy-day" signal for THIS date isn't
+    # sufficient — a day where every hour's rollup failed (Athena outage,
+    # DLQ episode) also has metering_hourly empty for the date. To
+    # distinguish, look for ANY metering_hourly row on a PRIOR date. If
+    # any exist, the hourly rollup has been running before — an empty
+    # target-date is a real outage, not deploy-day. If none exist across
+    # any prior date, this really is the first day the rollup has
+    # attempted to write.
+    is_deploy_day = not primary_hourly_hours and not _hourly_ever_written(
+        before_date=target_date
+    )
 
     for hourly_table in ("metering_hourly", "metering_docs_hourly"):
         hourly_sql = (
@@ -547,22 +592,23 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
             if is_deploy_day:
                 logger.info(
                     f"{hourly_table} for date={target_date} is empty AND "
-                    f"metering_hourly is also empty — deploy-day, skipping "
-                    f"raw-vs-hourly guard for this table. raw hours: "
-                    f"{sorted(raw_hours)}"
+                    f"no prior date has hourly rows either — deploy-day, "
+                    f"skipping raw-vs-hourly guard for this table. raw "
+                    f"hours: {sorted(raw_hours)}"
                 )
                 continue
-            # metering_hourly has rows for the day but THIS hourly is
-            # empty → the sibling INSERT failed for every hour. NOT
-            # deploy-day. Fail loudly so async-retry can replay before
-            # the daily locks in zero doc counts forever.
+            # Either metering_hourly has rows for THIS date, or hourly
+            # has data on some PRIOR date → this isn't deploy-day. An
+            # empty hourly for this date means every hour's rollup
+            # failed. Fail loudly so async-retry can replay before the
+            # daily locks in zero forever.
             raise RuntimeError(
-                f"{hourly_table} for date={target_date} is empty while "
-                f"metering_hourly has {len(primary_hourly_hours)} hour(s) "
-                f"of data — systematic failure of {hourly_table} sibling "
-                f"INSERTs. Refusing to write an incomplete daily; async "
-                f"retry will replay once the sibling recovers. raw hours: "
-                f"{sorted(raw_hours)}"
+                f"{hourly_table} for date={target_date} is empty but "
+                f"hourly rollups have run before (primary_hourly this date "
+                f"= {len(primary_hourly_hours)}) — systematic failure of "
+                f"{hourly_table} INSERTs for the day. Refusing to write "
+                f"an incomplete daily; async retry will replay once the "
+                f"hourly rollup catches up. raw hours: {sorted(raw_hours)}"
             )
         earliest_hourly = min(hourly_hours)
         in_window_raw = {h for h in raw_hours if h >= earliest_hourly}
@@ -860,7 +906,11 @@ def _get_athena_bytes_sum(
             # cast site downstream (raises ValueError, aborts the rollup,
             # lands in the DLQ). Sibling paths (_flatten_cw_response,
             # _get_bedrock_tokens_by_model) filter — this one must too.
-            values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+            values = [
+                v
+                for v in (r.get("Values") or [])
+                if v is not None and not math.isnan(v)
+            ]
             total += float(math.fsum(values))
     return total
 
@@ -970,7 +1020,11 @@ def _get_bedrock_tokens_by_model(
                 model = id_to_model.get(r["Id"])
                 if model is None:
                     continue
-                values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+                values = [
+                    v
+                    for v in (r.get("Values") or [])
+                    if v is not None and not math.isnan(v)
+                ]
                 total = float(math.fsum(values))
                 bucket = result.setdefault(model, {"in": 0.0, "out": 0.0})
                 bucket[direction] += total
@@ -987,7 +1041,9 @@ def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
     """
     result: Dict[str, float] = {}
     for r in response.get("MetricDataResults", []):
-        values = [v for v in (r.get("Values") or []) if not math.isnan(v)]
+        values = [
+            v for v in (r.get("Values") or []) if v is not None and not math.isnan(v)
+        ]
         result[r["Id"]] = float(math.fsum(values))
     return result
 
@@ -1392,6 +1448,10 @@ def _partition_already_written(
             # the segment BEFORE `tbl` ends in `"."` and the segment
             # AROUND tbl is `"tbl"`. Round-8 review fix.
             f'."{tbl}" does not exist',
+            # Hive/backtick fully-qualified form:
+            # `catalog`.`db`.`tbl` — the segment before tbl ends in
+            # `` `.` `` (backtick-dot-backtick). Round-11 review fix.
+            f".`{tbl}` does not exist",
         )
         if any(m in msg for m in table_missing_markers):
             logger.info(
