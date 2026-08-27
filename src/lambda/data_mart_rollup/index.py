@@ -213,6 +213,42 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     return results
 
 
+# Athena's ClientRequestToken requires 32-128 characters. The natural
+# per-partition key (e.g. ``metering_hourly-2026-08-27-13``) is only 29
+# chars, which boto3 rejects client-side before the query is even sent —
+# round-17 review fix. This helper prepends a stable stack-scoped
+# prefix so every generated token clears the 32-char floor regardless
+# of the (table, date, hour) triple.
+#
+# The prefix MUST be stable across Lambda invocations (both the initial
+# and any async-retry attempts must produce the exact same token for
+# Athena to dedupe them) so it is derived from the stack name only —
+# NOT invocation-scoped state like time or random.
+_IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME or 'unknown'}"
+
+
+def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
+    """Build a per-partition Athena ClientRequestToken.
+
+    Guarantees:
+    - 32–128 chars (Athena hard limit).
+    - Deterministic on (table, date, hour) so async retry dedupes.
+    - Contains only letters/digits/dash — Athena's allowed alphabet.
+    """
+    core = f"{table}-{date}"
+    if hour:
+        core = f"{core}-{hour}"
+    key = f"{_IDEMPOTENCY_KEY_PREFIX}-{core}"
+    # Sanitize: replace anything outside [A-Za-z0-9_-] with '-' so weird
+    # stack names or dates can't sneak invalid chars in. Underscores are
+    # allowed in Athena's ClientRequestToken alphabet and appear in our
+    # canonical table names (metering_hourly etc.), so keep them.
+    key = re.sub(r"[^A-Za-z0-9_-]", "-", key)
+    # Truncate to the 128 upper bound; _run_athena also truncates, but
+    # doing it here keeps the value predictable at the callsite.
+    return key[:128]
+
+
 def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
     """Write ``metering_hourly`` (cost per service/unit) for the given hour
     if not already written.
@@ -255,7 +291,8 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
     # the SAME QueryExecutionId back from Athena instead of starting a
     # second, double-writing INSERT.
     query_id = _run_athena(
-        sql, idempotency_key=f"metering_hourly-{target_date}-{target_hour}"
+        sql,
+        idempotency_key=_idempotency_key("metering_hourly", target_date, target_hour),
     )
     return {"query_execution_id": query_id, "skipped": False}
 
@@ -317,7 +354,10 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
     """  # nosec B608
     # Round-16 review fix: idempotency key — see metering_hourly above.
     query_id = _run_athena(
-        sql, idempotency_key=f"metering_docs_hourly-{target_date}-{target_hour}"
+        sql,
+        idempotency_key=_idempotency_key(
+            "metering_docs_hourly", target_date, target_hour
+        ),
     )
     return {"query_execution_id": query_id, "skipped": False}
 
@@ -535,7 +575,8 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             # Round-16 idempotency key — same pattern as the hourly INSERTs.
             result["metering_daily"] = {
                 "query_execution_id": _run_athena(
-                    sql, idempotency_key=f"metering_daily-{target_date}"
+                    sql,
+                    idempotency_key=_idempotency_key("metering_daily", target_date),
                 ),
                 "skipped": False,
             }
@@ -573,7 +614,10 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             # Round-16 idempotency key.
             result["metering_docs_daily"] = {
                 "query_execution_id": _run_athena(
-                    sql, idempotency_key=f"metering_docs_daily-{target_date}"
+                    sql,
+                    idempotency_key=_idempotency_key(
+                        "metering_docs_daily", target_date
+                    ),
                 ),
                 "skipped": False,
             }
@@ -645,11 +689,23 @@ def _hourly_ever_written(before_date: str) -> bool:
     # the raw probe when hourly is missing; only if BOTH tables are
     # missing (or hourly is missing AND raw is empty on prior dates) do
     # we return False and let the caller treat it as day-1.
+    # Round-17 review fix: a bare ``"does not exist"`` marker matches
+    # column / bucket / database / role / permission errors too. Bind
+    # the phrase to the specific table names we probe so a
+    # ColumnNotFound error can't sneak through as "day-1 signal".
     _TABLE_MISSING_MARKERS = (  # noqa: N806
         "table_not_found",
         "entitynotfoundexception",
         "table not found",
-        "does not exist",
+        # Bind "does not exist" to the specific hourly/raw table names
+        # this probe uses, so unrelated does-not-exist errors don't
+        # false-positive.
+        "metering_hourly` does not exist",
+        'metering_hourly" does not exist',
+        "metering_hourly' does not exist",
+        "metering` does not exist",
+        'metering" does not exist',
+        "metering' does not exist",
     )
 
     def _is_table_missing(exc: BaseException) -> bool:
@@ -1849,7 +1905,10 @@ def _wait_for_athena(
     # exponential backoff capped at 5s + up to 500ms jitter, and
     # ThrottlingException / RequestLimitExceeded / InternalServerError
     # are retried in-place until the outer timeout_sec is exceeded.
-    from botocore.exceptions import ClientError as _AthenaClientError
+    from botocore.exceptions import (
+        BotoCoreError as _AthenaBotoCoreError,
+        ClientError as _AthenaClientError,
+    )
 
     _consecutive_throttles = 0
     _RETRYABLE_POLL_CODES = (  # noqa: N806
@@ -1861,6 +1920,29 @@ def _wait_for_athena(
     while True:
         try:
             response = athena_client.get_query_execution(QueryExecutionId=query_id)
+        except _AthenaBotoCoreError as poll_err:
+            # Round-17 review fix: BotoCoreError subclasses
+            # (EndpointConnectionError, ReadTimeoutError,
+            # ConnectTimeoutError) bypass the ClientError handler and
+            # used to be fatal. Same in-place backoff+retry as the
+            # throttle path — connection resets to Athena are the
+            # exact case async retry can heal.
+            _consecutive_throttles += 1
+            backoff = min(2 ** (_consecutive_throttles - 1), 5.0)
+            jitter = (time.time() % 1) * 0.5
+            sleep_for = backoff + jitter
+            logger.warning(
+                f"Athena poll for {query_id} threw BotoCoreError "
+                f"({type(poll_err).__name__}: {poll_err}) — sleeping "
+                f"{sleep_for:.2f}s before retry."
+            )
+            time.sleep(sleep_for)
+            if time.time() - started > timeout_sec:
+                raise TimeoutError(
+                    f"Athena poll for {query_id} exceeded {timeout_sec}s "
+                    f"of BotoCoreError retries; last: {poll_err}"
+                ) from poll_err
+            continue
         except _AthenaClientError as poll_err:
             code = poll_err.response.get("Error", {}).get("Code", "")
             if code in _RETRYABLE_POLL_CODES:

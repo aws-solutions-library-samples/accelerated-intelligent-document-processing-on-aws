@@ -229,7 +229,11 @@ def reconcile_counter() -> Optional[int]:
             f"Discarding stale concurrency drift sample ({age}s old) and "
             f"restarting the observation window."
         )
-        _put_drift_sample(now, running)
+        # Round-17 review fix: pass replace_older_than so the CaS write
+        # can overwrite this specific stale sample. Without it, the
+        # round-16 ``attribute_not_exists`` guard silently no-oped and
+        # the stale sample sat forever.
+        _put_drift_sample(now, running, replace_older_than=prev_at)
         return None
 
     if age < RECONCILE_GRACE_SECONDS:
@@ -277,8 +281,23 @@ def reconcile_counter() -> Optional[int]:
     return target
 
 
-def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
-    """Record (or clear) the observation that the counter looks too high."""
+def _put_drift_sample(
+    when: Optional[int],
+    running: Optional[int],
+    replace_older_than: Optional[int] = None,
+) -> None:
+    """Record (or clear) the observation that the counter looks too high.
+
+    Round-17 review fix: the round-16 ``attribute_not_exists`` guard on
+    the SET path silently blocked the round-14 stale-discard flow
+    (``if age > RECONCILE_SAMPLE_MAX_AGE_SECONDS: _put_drift_sample(now, running)``)
+    because that path REQUIRES overwriting the existing stale sample.
+    Now the caller can optionally pass ``replace_older_than`` — the
+    timestamp of the stale sample it already read — and the write
+    fires if the sample is either absent OR still the exact stale one
+    the caller observed (compare-and-swap). A concurrent fresh sample
+    from another refusal path fails the condition and is left alone.
+    """
     try:
         if when is None:
             concurrency_table.update_item(
@@ -288,6 +307,22 @@ def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
                 # Without this, two racing refusal paths could clobber
                 # each other and leave a stale sample re-appearing.
                 ConditionExpression="attribute_exists(drift_observed_at)",
+            )
+        elif replace_older_than is not None:
+            # Compare-and-swap overwrite: replace ONLY if the existing
+            # sample is still the one the caller saw. Guards against a
+            # concurrent fresh sample from another refusal path.
+            concurrency_table.update_item(
+                Key={"counter_id": COUNTER_ID},
+                UpdateExpression=(
+                    "SET drift_observed_at = :at, drift_running = :running"
+                ),
+                ExpressionAttributeValues={
+                    ":at": when,
+                    ":running": running,
+                    ":prev": replace_older_than,
+                },
+                ConditionExpression="drift_observed_at = :prev",
             )
         else:
             # Round-16 review fix: two concurrent refused-message paths
@@ -628,7 +663,11 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             return False, message_id
 
         # X-Ray annotations
-        xray_recorder.put_annotation("document_id", {document.id})
+        # Round-17 review fix: this was ``{document.id}`` — a Python set
+        # literal, not the ID itself. X-Ray annotations accept only
+        # scalar values (str/int/bool/float), so the SDK either rejected
+        # this or recorded a set-repr string instead of the doc ID.
+        xray_recorder.put_annotation("document_id", document.id)
         xray_recorder.put_annotation("processing_stage", "queue_processor")
         current_segment = xray_recorder.current_segment()
         if current_segment:

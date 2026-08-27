@@ -218,6 +218,11 @@ class TestMeteringHourlyRollup:
         must receive a stable ``ClientRequestToken`` so Athena returns the
         SAME QueryExecutionId instead of double-writing the partition
         against propagation-lagged Glue metadata.
+
+        Round-17 review fix: the key MUST also be 32-128 chars —
+        Athena's ClientRequestToken rejects shorter tokens at boto3
+        client-side validation before the query ever reaches Athena,
+        which turned every hourly/daily rollup into a total outage.
         """
         captured_kwargs = {}
         with (
@@ -236,6 +241,37 @@ class TestMeteringHourlyRollup:
         assert "metering_hourly" in tok
         assert "2026-08-27" in tok
         assert "13" in tok
+        # Athena's hard requirement: 32-128 chars.
+        assert 32 <= len(tok) <= 128, (
+            f"ClientRequestToken length {len(tok)} outside Athena's 32-128 range: {tok!r}"
+        )
+        # Alphabet: letters, digits, dash, underscore. Anything else
+        # (whitespace, dots from dates, colons from timestamps) has to
+        # have been sanitized out.
+        import re as _re
+
+        assert _re.fullmatch(r"[A-Za-z0-9_-]+", tok), (
+            f"ClientRequestToken has invalid chars: {tok!r}"
+        )
+
+    def test_all_four_rollup_idempotency_keys_clear_athena_length_floor(self, rollup):
+        """Round-17 blocker regression pin: all four rollup INSERTs
+        (metering_hourly, metering_docs_hourly, metering_daily,
+        metering_docs_daily) must produce ClientRequestToken values in
+        Athena's 32-128 range. The round-16 f-string keys built 25-34
+        chars, so 3 of 4 rollup fires threw ParamValidationError at
+        boto3 client-side validation on every scheduled invocation.
+        """
+        for table, date, hour in [
+            ("metering_hourly", "2026-08-27", "13"),
+            ("metering_docs_hourly", "2026-08-27", "13"),
+            ("metering_daily", "2026-08-27", None),
+            ("metering_docs_daily", "2026-08-27", None),
+        ]:
+            k = rollup._idempotency_key(table, date, hour)
+            assert 32 <= len(k) <= 128, (
+                f"Idempotency key for {table} ({len(k)} chars): {k!r}"
+            )
 
 
 @pytest.mark.unit

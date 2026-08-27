@@ -169,6 +169,12 @@ class TestTwoSampleRequirement:
         the sample stops being revisited and lingers. If a LATER leak then found
         that stale sample already past the grace window, it would be corrected on
         its very first observation — defeating the two-sample safeguard.
+
+        Round-17 review fix: the round-16 ``attribute_not_exists`` guard
+        silently no-oped this stale-discard replacement because the
+        stale sample DID exist. Now the discard path uses compare-and-
+        swap on the observed timestamp, so the write actually fires
+        while still protecting against concurrent writers.
         """
         with patch.object(index_module.time, "time", return_value=100_000):
             index_module.concurrency_table.get_item.return_value = _counter(
@@ -178,11 +184,20 @@ class TestTwoSampleRequirement:
             )
             index_module.sfn.list_executions.return_value = _running(29)
             assert index_module.reconcile_counter() is None
-        expr = index_module.concurrency_table.update_item.call_args.kwargs[
-            "UpdateExpression"
-        ]
+        # The write MUST have been issued (not silently blocked by the
+        # round-16 guard) and MUST carry the compare-and-swap condition
+        # against the stale sample's timestamp.
+        kwargs = index_module.concurrency_table.update_item.call_args.kwargs
+        expr = kwargs["UpdateExpression"]
         assert "SET drift_observed_at" in expr, "should restart the window"
         assert "active_count" not in expr, "must not correct on a stale sample"
+        # CaS: only replace the sample we actually observed. Guards the
+        # write against a concurrent fresh sample from another refusal
+        # path clobbering us — the ``attribute_not_exists`` from
+        # round-16 alone would silently no-op here (stale sample DOES
+        # exist), which the round-17 review flagged as a total no-op.
+        assert "drift_observed_at = :prev" in kwargs["ConditionExpression"]
+        assert kwargs["ExpressionAttributeValues"][":prev"] == 1_000
 
     def test_second_observation_after_grace_corrects(self, index_module):
         with patch.object(index_module.time, "time", return_value=2_000):
