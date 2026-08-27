@@ -809,8 +809,10 @@ class TestControlPlaneRowBuilding:
         total_athena = sum(r["est_athena_cost"] for r in rows)
         # 60s * 1GB @ arm64 $1.3334e-5/GB-s + 5 * ($0.20/1M) = ~$0.0008
         assert total_lambda > 0
-        # 50 GB / 1 TiB * $5 = ~$0.227
-        assert 0.22 < total_athena < 0.23
+        # 50 GB / 1 TB (decimal, matches AWS billing) * $5 = 0.25.
+        # Round-10 review fix: was using TiB (1024**4 ≈ 1.0995e12) and
+        # under-counting by ~9.5%. Test now pins the corrected math.
+        assert 0.24 < total_athena < 0.26
         # Every model's own per-model column carries its own value on every row.
         by_model = {r["bedrock_model"]: r for r in rows}
         assert by_model["model-a"]["bedrock_tokens_in"] == 10

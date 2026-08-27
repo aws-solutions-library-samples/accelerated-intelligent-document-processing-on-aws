@@ -4602,6 +4602,13 @@ Resources:
     # table's new projection template takes effect. Without the barrier,
     # dashboards would show a data hole for the duration of the migration.
     # See docs/reporting-sql-layer.md §2.3.
+    #
+    # Round-10 note: the DependsOn also applies on FRESH installs (no
+    # legacy files), where the migration Lambda is a ~2-second no-op —
+    # accepted tradeoff. A CFN-native alternative (Condition on
+    # "IsFreshInstall") would need an operator-supplied parameter
+    # since CFN can't infer bucket contents at template time. The
+    # cost/benefit doesn't justify the parameter's UX friction.
     DependsOn: MeteringHourMigrationCustomResource
     Properties:
       CatalogId: !Ref AWS::AccountId
@@ -4616,7 +4623,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4688,7 +4695,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4750,7 +4757,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4810,7 +4817,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4871,7 +4878,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4925,7 +4932,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "NOW-7YEARS,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEAR"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -5231,6 +5238,18 @@ Resources:
               # stack's aws:cloudformation:stack-name tag, not the root's,
               # so a tag query on just STACK_NAME misses 57 of 68 Lambdas
               # on a typical topology. Scoped to this stack's tree.
+              #
+              # Round-10 note: the ``${AWS::StackName}-*`` wildcard is
+              # necessary — CFN generates nested-stack names as
+              # ``<parent>-<LogicalId>-<random>`` and we don't know the
+              # random suffixes at IaC time. Side effect: any
+              # co-existing TOP-LEVEL stack whose name starts with
+              # ``${AWS::StackName}-`` would also be listable by this
+              # role. There's no cleaner IAM alternative (ListStack-
+              # Resources doesn't support resource conditions), and the
+              # blast radius is read-only listing of resource names.
+              # Deploy convention: don't name coexisting stacks with the
+              # same prefix.
               Resource:
                 - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
                 - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-*/*"

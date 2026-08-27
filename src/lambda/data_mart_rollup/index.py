@@ -50,7 +50,12 @@ STACK_NAME = os.environ.get("STACK_NAME", "")
 # Pricing constants — US-East-1 defaults. Sub-cent precision doesn't
 # matter; these are best-effort estimates surfaced on the dashboard's
 # Control Plane KPI, not billing-grade numbers.
-ATHENA_PRICE_PER_TB = 5.0  # $5 per TB scanned
+# $5 per TB scanned. AWS Athena bills per DECIMAL TB (10**12 bytes),
+# not per binary TiB (1024**4 = 1.0995e12). Under-counted every cost
+# row by ~9.05% pre-round-10; the ``_BYTES_PER_TB`` constant makes the
+# unit explicit at the callsite.
+ATHENA_PRICE_PER_TB = 5.0
+_BYTES_PER_TB = 10**12  # decimal TB — matches AWS billing.
 # Lambda Duration is billed in GB-seconds; the rate depends on the function's
 # architecture. Missing invocation request pricing before → ~20% under-count
 # on any control-plane Lambda that isn't ARM64 (most of the root-stack
@@ -336,8 +341,15 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
         return {"skipped": True, "reason": "no_control_lambdas"}
 
     hour_start, hour_end = _hour_window(target_date, target_hour)
-    rows: List[Dict[str, Any]] = []
-    for function_arn in control_arns:
+    # Parallelize CW fetches — round-10 review fix. Each per-function
+    # call round-trips 5+ CloudWatch APIs (Duration, Invocations,
+    # AthenaBytes ListMetrics + GetMetricData, BedrockTokens ×2). At
+    # ~68 stack Lambdas that was ~340 blocking calls per rollup and
+    # dominated wall time (~19-20s observed). 10 workers cuts that to
+    # ~2-3s while staying well under CW's per-account TPS ceiling.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_one(function_arn: str) -> List[Dict[str, Any]]:
         function_name = function_arn.rsplit(":", 1)[-1]
         component = _component_for_function(function_name)
         metrics = _get_cw_metrics_for_function(
@@ -345,14 +357,20 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
             hour_start=hour_start,
             hour_end=hour_end,
         )
-        rows.extend(
-            _build_control_plane_rows(
-                function_name=function_name,
-                component=component,
-                hour_ts=hour_start,
-                metrics=metrics,
-            )
+        return _build_control_plane_rows(
+            function_name=function_name,
+            component=component,
+            hour_ts=hour_start,
+            metrics=metrics,
         )
+
+    rows: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        # Order is deterministic (control_arns is sorted upstream); the
+        # ordered map preserves that across the parallel fan-out so the
+        # written parquet's row order is stable across reruns.
+        for per_fn_rows in pool.map(_fetch_one, control_arns):
+            rows.extend(per_fn_rows)
 
     if not rows:
         logger.info(f"No control-plane activity for {target_date} hour={target_hour}")
@@ -661,10 +679,42 @@ def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
                     visited.add(nested_name)
                     result.append(nested_name)
                     to_visit.append(nested_name)
-        except Exception as e:
-            # A single nested-stack listing failure shouldn't tank
-            # discovery — log and continue with what we have.
-            logger.warning(f"Failed to list resources of stack {current!r}: {e}")
+        except cfn.exceptions.ClientError as e:
+            # Distinguish retryable errors (Throttling, InternalError,
+            # ServiceUnavailable) from expected non-fatal ones (stack
+            # deleted between discovery and listing → ValidationError
+            # "Stack ... does not exist"). Round-10 review fix: the
+            # previous ``except Exception`` swallowed retryable throttles
+            # too, silently dropping nested-stack Lambdas from the
+            # control-plane discovery set — the rollup would then miss
+            # ~57 of 68 Lambdas.
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = str(e).lower()
+            is_retryable = code in (
+                "Throttling",
+                "ThrottlingException",
+                "TooManyRequestsException",
+                "RequestLimitExceeded",
+                "InternalError",
+                "InternalFailure",
+                "ServiceUnavailable",
+            )
+            is_stack_gone = code == "ValidationError" and "does not exist" in msg
+            if is_stack_gone:
+                logger.info(
+                    f"Skipping {current!r} — stack no longer exists (deleted "
+                    f"between discovery hops)."
+                )
+                continue
+            if is_retryable:
+                # Re-raise so Lambda's async retry replays the whole
+                # rollup after a back-off; a partial tree = a partial
+                # control-plane row set = under-count.
+                raise
+            logger.warning(
+                f"Failed to list resources of stack {current!r} "
+                f"({code}): {e}. Continuing with partial tree."
+            )
     return result
 
 
@@ -1016,7 +1066,7 @@ def _build_control_plane_rows(
     est_lambda_cost = (
         lambda_gb_seconds * gb_second_rate + invocations * LAMBDA_REQUEST_PRICE
     )
-    est_athena_cost = (athena_bytes / (1024**4)) * ATHENA_PRICE_PER_TB
+    est_athena_cost = (athena_bytes / _BYTES_PER_TB) * ATHENA_PRICE_PER_TB
 
     bedrock_by_model = metrics.get("bedrock_by_model") or {}
 
@@ -1451,8 +1501,52 @@ def _wait_for_athena(
             reason = response["QueryExecution"]["Status"].get(
                 "StateChangeReason", "unknown"
             )
+            # Route by reason so Lambda's async retry doesn't burn its
+            # two attempts on a permanent syntax error. Round-10 review
+            # fix. Athena's error text is well-known (documented at
+            # https://docs.aws.amazon.com/athena/latest/ug/error-reference.html).
+            reason_lc = reason.lower()
+            permanent_markers = (
+                "syntax_error",
+                "syntax error",
+                "semantic_error",
+                "column_not_found",
+                "no viable alternative",
+                "hive_metastore_error",  # schema mismatch
+                "invalid_view",
+            )
+            retryable_markers = (
+                "throttling",
+                "internal_error_query_engine",
+                "internal_error",
+                "service_unavailable",
+                "resource_exhausted",
+                "network_error",
+            )
+            if any(m in reason_lc for m in permanent_markers):
+                # Permanent → operator intervention needed; async retry
+                # is wasted budget. Raise ValueError so DLQ sees a
+                # distinctly non-retryable class.
+                raise ValueError(
+                    f"Athena query {query_id} PERMANENT failure ({state}): {reason}"
+                )
+            if any(m in reason_lc for m in retryable_markers):
+                # Retryable → RuntimeError, async retry will replay
+                # after back-off.
+                raise RuntimeError(
+                    f"Athena query {query_id} TRANSIENT failure "
+                    f"({state}, will retry): {reason}"
+                )
+            # Unknown reason → default to retryable (safer than
+            # skipping an hour). Log for the operator to classify.
+            logger.warning(
+                f"Athena query {query_id} failed with unclassified reason: "
+                f"{reason!r}. Treating as retryable. Consider adding this "
+                f"reason to permanent/retryable_markers if you see it "
+                f"repeatedly."
+            )
             raise RuntimeError(
-                f"Athena query {query_id} ended in state {state}: {reason}"
+                f"Athena query {query_id} UNCLASSIFIED failure ({state}): {reason}"
             )
         if time.time() - started > timeout_sec:
             try:
@@ -1549,7 +1643,14 @@ def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:
 
     schema = pa.schema(
         [
-            ("hour_ts", pa.timestamp("ms")),
+            # Explicit UTC tz — round-10 review fix. hour_ts values are
+            # tz-aware datetimes from ``_hour_window`` (timezone.utc); the
+            # previous ``pa.timestamp("ms")`` (naive) silently stripped
+            # the tz on write. Newer pyarrow versions raise ArrowInvalid
+            # on the mismatch, so declaring tz explicitly future-proofs
+            # the write and preserves UTC in the parquet metadata for
+            # non-Athena readers.
+            ("hour_ts", pa.timestamp("ms", tz="UTC")),
             ("function_name", pa.string()),
             ("component", pa.string()),
             ("bedrock_model", pa.string()),
