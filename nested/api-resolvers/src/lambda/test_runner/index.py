@@ -162,6 +162,7 @@ def handler(event, context):
             files_to_process,
             effective_config_version,
             test_set_version,
+            purpose=purpose,
         )
 
         # Send file copying job to SQS queue
@@ -458,6 +459,7 @@ def _store_test_run_metadata(
     file_count=0,
     config_version=None,
     test_set_version=None,
+    purpose="scoring",
 ):
     """Store test run metadata in tracking table"""
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
@@ -485,6 +487,10 @@ def _store_test_run_metadata(
         # CREATES the baseline. Without it the only marker was the free-text
         # Context string ("Draft labeling run"), which a user can type themselves
         # and which nothing guarantees.
+        #
+        # A PARAMETER, not a read of the caller's local. It was written as the
+        # latter, which is a NameError on every call — and since the except below
+        # re-raises, that failed every test run start outright.
         item["Purpose"] = purpose
 
         if context:
