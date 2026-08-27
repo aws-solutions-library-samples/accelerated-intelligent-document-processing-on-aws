@@ -104,14 +104,32 @@ def make_cfn_loader(
 
 def load_cfn_yaml(
     text: str,
-    loader_cls: type[yaml.SafeLoader] | None = None,
+    # Deliberately `type[Any]` rather than `type[yaml.SafeLoader]`: the point of
+    # the check below is to catch callers who pass something else, and a narrower
+    # annotation makes a type checker read the guard as unreachable code.
+    loader_cls: type[Any] | None = None,
 ) -> Any:
     """Parse one CloudFormation YAML document from `text`.
 
     Equivalent to `yaml.load(text, Loader=loader_cls)`; see the module
     docstring for why the loader is driven directly instead.
+
+    A `loader_cls` that is not a `SafeLoader` subclass is refused. This module's
+    contract is that it cannot execute the document it parses, and that has to
+    hold for callers passing their own loader too — otherwise
+    `load_cfn_yaml(text, yaml.UnsafeLoader)` would be an RCE reached through an
+    entry point documented as safe.
     """
-    loader = (loader_cls or make_cfn_loader())(text)
+    if loader_cls is None:
+        loader_cls = make_cfn_loader()
+    elif not issubclass(loader_cls, yaml.SafeLoader):
+        raise TypeError(
+            f"{loader_cls.__name__} is not a yaml.SafeLoader subclass; it can "
+            "construct arbitrary Python objects from the document. Build the "
+            "loader with make_cfn_loader() instead."
+        )
+
+    loader = loader_cls(text)
     try:
         return loader.get_single_data()
     finally:
@@ -120,7 +138,7 @@ def load_cfn_yaml(
 
 def load_cfn_template(
     path: str | Path,
-    loader_cls: type[yaml.SafeLoader] | None = None,
+    loader_cls: type[Any] | None = None,
 ) -> dict:
     """Parse a CloudFormation template file into a dict.
 

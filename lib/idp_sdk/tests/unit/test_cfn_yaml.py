@@ -86,9 +86,40 @@ def test_a_payload_that_would_write_a_file_does_not(tmp_path: Path):
 
 def test_loader_subclasses_safeloader():
     """Asserted directly so a base-class change fails here with a clear reason,
-    not as a confusing downstream parse error."""
+    not as a confusing downstream parse error.
+
+    Note there is deliberately no `assert not issubclass(..., yaml.UnsafeLoader)`
+    here: in PyYAML `Loader`, `FullLoader` and `UnsafeLoader` are siblings rather
+    than ancestors of each other, so such an assertion holds for every loader —
+    including an unsafe one — and would read as coverage it does not provide.
+    """
     assert issubclass(make_cfn_loader(), yaml.SafeLoader)
-    assert not issubclass(make_cfn_loader(), yaml.UnsafeLoader)
+    # The constructors that make yaml.load dangerous must be absent.
+    for unsafe in (
+        "tag:yaml.org,2002:python/object/apply:os.system",
+        "tag:yaml.org,2002:python/name:os.system",
+    ):
+        assert unsafe not in make_cfn_loader().yaml_constructors
+
+
+def test_an_unsafe_loader_class_is_refused():
+    """The whole point of this module is that its entry points cannot execute a
+    document, so they must not accept a loader that can.
+
+    Without this, `load_cfn_yaml(text, yaml.UnsafeLoader)` executes its input
+    while sitting behind a module documented as safe — the exact confusion this
+    module exists to end.
+    """
+    for unsafe in (yaml.UnsafeLoader, yaml.Loader, yaml.FullLoader):
+        with pytest.raises(TypeError, match="SafeLoader"):
+            load_cfn_yaml("a: 1", unsafe)
+
+
+def test_the_file_entry_point_refuses_an_unsafe_loader_too(tmp_path: Path):
+    path = tmp_path / "t.yaml"
+    path.write_text("a: 1", encoding="utf-8")
+    with pytest.raises(TypeError, match="SafeLoader"):
+        load_cfn_template(path, yaml.UnsafeLoader)
 
 
 # --- Behaviour: intrinsics stay inspectable -----------------------------------
