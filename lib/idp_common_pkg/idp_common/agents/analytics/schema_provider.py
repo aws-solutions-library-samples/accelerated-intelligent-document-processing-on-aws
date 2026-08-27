@@ -80,39 +80,88 @@ partition-prune tail queries scoped to a specific hour.
 
 ### Sample Queries:
 ```sql
--- Total documents processed
+-- Total documents processed (last 24 h — MUST filter on date to prune)
 SELECT COUNT(DISTINCT "document_id") FROM metering
+WHERE date >= date_format(current_date - interval '1' day, '%Y-%m-%d')
 
--- Total pages processed (correct aggregation)
+-- Total pages processed (correct aggregation — bound with date filter)
 SELECT SUM(max_pages) FROM (
-  SELECT "document_id", MAX("number_of_pages") as max_pages 
-  FROM metering 
+  SELECT "document_id", MAX("number_of_pages") as max_pages
+  FROM metering
+  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
   GROUP BY "document_id"
 )
 
--- Cost breakdown by processing context
+-- Cost breakdown by processing context (bounded)
 SELECT "context", SUM("estimated_cost") as total_cost
-FROM metering 
+FROM metering
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "context"
 ORDER BY total_cost DESC
 
--- Token usage by model
+-- Token usage by model (bounded)
 SELECT "service_api",
        SUM(CASE WHEN "unit" = 'inputTokens' THEN "value" ELSE 0 END) as input_tokens,
        SUM(CASE WHEN "unit" = 'outputTokens' THEN "value" ELSE 0 END) as output_tokens
 FROM metering
 WHERE "unit" IN ('inputTokens', 'outputTokens')
+  AND date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "service_api"
 
--- Cost by configuration version
+-- Cost by configuration version (bounded)
 SELECT "config_version",
        SUM("estimated_cost") as total_cost,
        COUNT(DISTINCT "document_id") as document_count,
        SUM("estimated_cost") / COUNT(DISTINCT "document_id") as avg_cost_per_doc
 FROM metering
+WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
 GROUP BY "config_version"
 ORDER BY total_cost DESC
 ```
+
+### Prefer Rollup Tables for Wide Time Ranges
+
+For queries spanning **> 2 hours** of history, prefer the reporting rollup
+tables — they aggregate the raw `metering` table hourly/daily so a
+question like "cost this month" scans a few hundred rows instead of
+millions. See `docs/reporting-sql-layer.md`.
+
+- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`,
+  `config_version`, `service_api`, `unit`. Columns: `sum_value`,
+  `sum_cost`, `n_docs`, `sum_pages`. Partitioned by `date`.
+- **`metering_daily`** — same shape, aggregated to the day grain.
+- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain volume
+  (`n_docs`, `sum_pages`) per `config_version`. Use these for
+  "how many docs / pages did config X process?" rollup questions.
+
+Query patterns:
+```sql
+-- Cost this week by service (fast — scans ~7 daily rows per service)
+SELECT service_api, SUM(sum_cost) AS total_cost
+FROM metering_daily
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY service_api
+ORDER BY total_cost DESC
+
+-- Docs processed by config version, last 30 days
+SELECT config_version, SUM(n_docs) AS docs, SUM(sum_pages) AS pages
+FROM metering_docs_daily
+WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+GROUP BY config_version
+ORDER BY docs DESC
+
+-- Hour-of-day cost pattern for the last 7 days
+SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
+FROM metering_hourly
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY hour(hour_ts)
+ORDER BY hod
+```
+
+**Fallback rule**: for the *current* hour (before the hourly rollup
+fires) OR when the question needs `document_id`-grain detail (per-doc
+cost, join to sections/evaluations), you MUST query raw `metering`
+with a partition filter.
 """
 
 

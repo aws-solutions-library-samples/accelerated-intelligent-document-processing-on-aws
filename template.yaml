@@ -5320,7 +5320,19 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              # Round-13 review fix: match the sibling
+              # MeteringHourMigrationFunction grant — a BYO
+              # ReportingBucketName encrypted with a customer-owned
+              # KMS key needs decrypt on that key for the rollup to
+              # write control_plane_hourly parquet and read the query
+              # output. AWS::NoValue drops the extra Resource entry
+              # when no BYO key is supplied.
+              Resource:
+                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If
+                  - HasReportingBucketKmsKey
+                  - !Ref ReportingBucketKmsKeyArn
+                  - !Ref AWS::NoValue
         # Read pricing from the ConfigurationTable (same source data-plane
         # cost math uses) so Bedrock per-token prices in control_plane_hourly
         # cannot drift from a hardcoded rollup-side map.

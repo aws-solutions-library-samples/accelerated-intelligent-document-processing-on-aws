@@ -397,16 +397,28 @@ class TestMeteringDailyRollup:
         and skip — a strict guard here would poison the first-ever daily
         rollup forever (idempotency skip). Regression pin for round-3
         review finding: first-daily-after-deploy fails permanently.
+
+        Round-13 review fix: ``_hourly_ever_written`` now also probes raw
+        metering on PRIOR dates — a stack running >24h with a broken
+        hourly rollup would previously mask as deploy-day (both hourly
+        and target-date-only signals empty). This test simulates the
+        genuine day-1 deploy: raw has target-date-only data, and NEITHER
+        the hourly-prior probe NOR the raw-prior probe returns anything.
         """
-        # Raw metering: 5 hours worth. Hourly: EMPTY.
+        # Raw metering: 5 hours on TARGET date. Hourly: EMPTY. Prior-date
+        # probes (WHERE date < 'X') return empty in the true day-1 case.
         raw_hours = [[f"{h:02d}"] for h in range(0, 5)]
         hourly_hours = []
 
         calls = {"n": 0}
 
         def fake_query(sql, **_kwargs):
-            # First query is against raw metering, second against hourly.
             calls["n"] += 1
+            # Prior-date probes (LIMIT 1 with WHERE date < ...) — the
+            # round-13 fix probes BOTH metering_hourly and raw metering
+            # here. A genuine day-1 deploy has zero rows on both.
+            if "WHERE date <" in sql:
+                return []
             if 'FROM "reporting"."metering_hourly"' in sql or "metering_hourly" in sql:
                 return hourly_hours
             return raw_hours
@@ -427,6 +439,44 @@ class TestMeteringDailyRollup:
         assert result["skipped"] is False
         # The INSERT must actually run — the guard must not have blocked us.
         assert any("INSERT INTO" in s for s in captured_sql)
+
+    def test_daily_check_fires_on_multi_day_outage_masking_as_deploy_day(self, rollup):
+        """Round-13 review fix: a multi-day hourly outage would previously
+        look identical to a legitimate deploy-day (metering_hourly empty
+        on target AND on every prior date), and the guard would
+        incorrectly SKIP, letting a 0-doc daily land and lock idempotently.
+
+        The fix: ``_hourly_ever_written`` also probes raw ``metering`` on
+        prior dates — if raw shows the stack was processing docs before
+        the target date, this can't be day-1, so the guard MUST fire on
+        empty target-date hourly.
+        """
+        raw_hours = [[f"{h:02d}"] for h in range(0, 5)]
+        hourly_hours = []  # target-date hourly empty
+
+        def fake_query(sql, **_kwargs):
+            # Prior-date HOURLY probe (day-1 signal 1) — empty.
+            if 'FROM "reporting"."metering_hourly"' in sql and "WHERE date <" in sql:
+                return []
+            # Prior-date RAW probe (day-1 signal 2) — POPULATED, so we're
+            # NOT day-1. The stack was up on prior dates but the hourly
+            # rollup wasn't running (outage). Guard MUST fire.
+            if 'FROM "reporting"."metering"' in sql and "WHERE date <" in sql:
+                return [["1"]]
+            if 'FROM "reporting"."metering_hourly"' in sql or "metering_hourly" in sql:
+                return hourly_hours
+            return raw_hours
+
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_run_athena_query_with_results", side_effect=fake_query
+            ),
+            patch.object(rollup, "_run_athena") as mock_athena,
+        ):
+            with pytest.raises(RuntimeError, match="systematic failure"):
+                rollup._run_daily()
+        mock_athena.assert_not_called()  # INSERT must not fire
 
     def test_daily_check_ignores_raw_hours_before_earliest_hourly(self, rollup):
         """Round-3 fix: the guard scopes its "raw ⊆ hourly" check to hours

@@ -240,7 +240,14 @@ class SaveReportingData:
         for record in records:
             all_fields.update(record.keys())
 
-        # Create schema with conservative typing
+        # Create schema with conservative typing. Schema stays naive
+        # ``pa.timestamp("ms")`` because ``_convert_schema_to_glue_columns``
+        # maps that exact type to Glue Hive ``timestamp``; a tz-aware
+        # variant would fall through the mapping and become
+        # ``string``, breaking Athena time-range queries on
+        # dynamically-created document-sections tables. The sanitizer
+        # below coerces tz-aware datetimes to naive UTC to keep pyarrow
+        # happy while preserving the wall-clock semantics.
         schema_fields = []
         for field_name in sorted(all_fields):  # Sort for consistent ordering
             if field_name in TIMESTAMP_FIELDS:
@@ -283,22 +290,30 @@ class SaveReportingData:
                     # Convert all values to strings for string fields
                     sanitized_record[field_name] = self._convert_value_to_string(value)
                 elif field.type == pa.timestamp("ms"):
-                    # Handle timestamp fields
+                    # Handle timestamp fields.
+                    # Round-13 review fix: pyarrow rejects tz-AWARE
+                    # datetimes against a NAIVE column; ``datetime.now()``
+                    # historically returned naive so this worked, but any
+                    # caller (e.g. an updated save_rule_validation) now
+                    # passing ``datetime.now(timezone.utc)`` would raise
+                    # ``TypeError: Cannot use naive schema for a tz-aware
+                    # datetime`` at pa.Table.from_pylist. Normalize to
+                    # naive UTC before write so both shapes survive.
+                    parsed: Optional[datetime.datetime] = None
                     if isinstance(value, datetime.datetime):
-                        sanitized_record[field_name] = value
-                    else:
-                        # Try to parse string timestamps
+                        parsed = value
+                    elif isinstance(value, str):
                         try:
-                            if isinstance(value, str):
-                                sanitized_record[field_name] = (
-                                    datetime.datetime.fromisoformat(
-                                        value.replace("Z", "+00:00")
-                                    )
-                                )
-                            else:
-                                sanitized_record[field_name] = None
+                            parsed = datetime.datetime.fromisoformat(
+                                value.replace("Z", "+00:00")
+                            )
                         except (ValueError, TypeError):
-                            sanitized_record[field_name] = None
+                            parsed = None
+                    if parsed is not None and parsed.tzinfo is not None:
+                        parsed = parsed.astimezone(datetime.timezone.utc).replace(
+                            tzinfo=None
+                        )
+                    sanitized_record[field_name] = parsed
                 else:
                     # For any other types, convert to string as fallback
                     sanitized_record[field_name] = self._convert_value_to_string(value)
@@ -1500,7 +1515,11 @@ class SaveReportingData:
             logger.error(error_msg)
             return {"statusCode": 500, "body": error_msg}
 
-        # Define schemas
+        # Define schemas. Schema stays naive to keep the Glue column
+        # mapping stable (naive pa.timestamp("ms") → Hive "timestamp"; the
+        # tz-aware variant maps to a different type Athena would see as
+        # ``timestamp with time zone`` and existing Glue tables were
+        # created without tz). Round-13 review fix strips tz on write below.
         document_summary_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -1527,19 +1546,35 @@ class SaveReportingData:
             ]
         )
 
-        # Get timestamp
+        # Get timestamp. Round-13 review fix: compute UTC deliberately
+        # (datetime.now(timezone.utc)) so the wall-clock is unambiguous —
+        # datetime.now() previously returned the container's local time,
+        # which on non-Lambda hosts (unit tests, local reproducers) drifts
+        # from UTC. Then STRIP tz to match the naive parquet schema —
+        # changing the schema to tz-aware would flip Glue's column type
+        # to ``timestamp with time zone`` and break already-existing
+        # rule_validation Glue tables. UTC-then-strip keeps semantics
+        # correct and Athena reads the naive timestamp back as UTC.
         if document.initial_event_time:
             try:
                 doc_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
                 )
+                if doc_time.tzinfo is not None:
+                    doc_time = doc_time.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
                 validation_date = doc_time
                 date_partition = doc_time.strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                validation_date = datetime.datetime.now()
+                validation_date = datetime.datetime.now(datetime.timezone.utc).replace(
+                    tzinfo=None
+                )
                 date_partition = validation_date.strftime("%Y-%m-%d")
         else:
-            validation_date = datetime.datetime.now()
+            validation_date = datetime.datetime.now(datetime.timezone.utc).replace(
+                tzinfo=None
+            )
             date_partition = validation_date.strftime("%Y-%m-%d")
 
         # Round-12 review fix: dict.get() only returns the default when the

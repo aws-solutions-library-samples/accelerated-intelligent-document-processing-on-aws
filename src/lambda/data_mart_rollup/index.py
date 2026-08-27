@@ -355,7 +355,7 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
     # ~68 stack Lambdas that was ~340 blocking calls per rollup and
     # dominated wall time (~19-20s observed). 10 workers cuts that to
     # ~2-3s while staying well under CW's per-account TPS ceiling.
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def _fetch_one(function_arn: str) -> List[Dict[str, Any]]:
         function_name = function_arn.rsplit(":", 1)[-1]
@@ -372,13 +372,39 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
             metrics=metrics,
         )
 
+    # Round-13 review fix: `pool.map` raises on the FIRST exception and
+    # skips every subsequent function — a single throttled CW call would
+    # blank out control_plane_hourly for the whole stack. Switch to
+    # `submit` + `as_completed` so each per-function fetch is isolated:
+    # a failure logs a warning and drops that function's rows, the rest
+    # of the fleet still lands in the parquet. Deterministic order is
+    # restored by sorting rows on function_name after collection (the
+    # arns list was sorted upstream, so this reproduces the prior order).
     rows: List[Dict[str, Any]] = []
+    failed: List[str] = []
     with ThreadPoolExecutor(max_workers=10) as pool:
-        # Order is deterministic (control_arns is sorted upstream); the
-        # ordered map preserves that across the parallel fan-out so the
-        # written parquet's row order is stable across reruns.
-        for per_fn_rows in pool.map(_fetch_one, control_arns):
-            rows.extend(per_fn_rows)
+        futures = {pool.submit(_fetch_one, arn): arn for arn in control_arns}
+        for future in as_completed(futures):
+            arn = futures[future]
+            try:
+                rows.extend(future.result())
+            except Exception as e:
+                function_name = arn.rsplit(":", 1)[-1]
+                failed.append(function_name)
+                logger.warning(
+                    f"control-plane fetch failed for {function_name}: "
+                    f"{type(e).__name__}: {e} — dropping this function's "
+                    f"row(s), rollup continues for the rest of the fleet"
+                )
+    if failed:
+        logger.warning(
+            f"control_plane_hourly partition {target_date}/{target_hour}: "
+            f"{len(failed)} function(s) failed to fetch metrics: "
+            f"{sorted(failed)[:10]}{'...' if len(failed) > 10 else ''}"
+        )
+    # Restore deterministic order (function_name is the natural sort key —
+    # component/hour are shared across rows within this partition).
+    rows.sort(key=lambda r: (r.get("function_name") or "", r.get("model") or ""))
 
     if not rows:
         logger.info(f"No control-plane activity for {target_date} hour={target_hour}")
@@ -425,6 +451,16 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         _require_hourly_matches_raw_metering(target_date)
 
     # --- metering_daily (cost per service/unit) ---
+    # Round-13 review fix: per-INSERT try/except isolation to match
+    # ``_run_hourly``. Before this, a transient Athena failure on the
+    # first INSERT would raise and skip the second one entirely; the
+    # async-retry would then re-run the succeeded one (idempotent skip)
+    # AND retry the failed one. That's fine per-day, but on a
+    # both-failed run the caller would only see the first error.
+    # Isolating each INSERT records BOTH errors in the result dict so
+    # CloudWatch logs and the (re-raised) final exception carry the
+    # union.
+    errors: List[str] = []
     if daily_exists:
         logger.info(
             f"metering_daily partition date={target_date} already exists — "
@@ -447,10 +483,15 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             WHERE date = '{target_date}'
             GROUP BY 1, 2, 3, 4
         """  # nosec B608
-        result["metering_daily"] = {
-            "query_execution_id": _run_athena(sql),
-            "skipped": False,
-        }
+        try:
+            result["metering_daily"] = {
+                "query_execution_id": _run_athena(sql),
+                "skipped": False,
+            }
+        except Exception as e:
+            logger.exception("metering_daily INSERT failed")
+            errors.append(f"metering_daily: {type(e).__name__}: {e}")
+            result["metering_daily"] = {"error": str(e), "skipped": False}
 
     # --- metering_docs_daily (doc-grain volume/pages) ---
     if docs_daily_exists:
@@ -477,37 +518,62 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             WHERE date = '{target_date}'
             GROUP BY 1, 2
         """  # nosec B608
-        result["metering_docs_daily"] = {
-            "query_execution_id": _run_athena(sql),
-            "skipped": False,
-        }
+        try:
+            result["metering_docs_daily"] = {
+                "query_execution_id": _run_athena(sql),
+                "skipped": False,
+            }
+        except Exception as e:
+            logger.exception("metering_docs_daily INSERT failed")
+            errors.append(f"metering_docs_daily: {type(e).__name__}: {e}")
+            result["metering_docs_daily"] = {"error": str(e), "skipped": False}
 
     # Legacy top-level keys for backward-compat with the existing test
     # + operator invocation shape (skipped/query_execution_id flags).
     result["skipped"] = bool(result["metering_daily"].get("skipped"))
     if "query_execution_id" in result["metering_daily"]:
         result["query_execution_id"] = result["metering_daily"]["query_execution_id"]
+    # Raise AFTER both INSERTs have had a chance to run so a partial
+    # success is recorded in the result dict and the async-retry only
+    # replays the truly-failed table (idempotency skip on the succeeded
+    # one).
+    if errors:
+        raise RuntimeError(
+            f"Daily rollup for date={target_date} failed on "
+            f"{len(errors)} table(s): {'; '.join(errors)}"
+        )
     return result
 
 
 def _hourly_ever_written(before_date: str) -> bool:
-    """Return True if ``metering_hourly`` has ANY row on a date strictly
-    before ``before_date``.
+    """Return True if ``metering_hourly`` OR raw ``metering`` has ANY row
+    on a date strictly before ``before_date``.
 
-    Distinguishes true deploy-day (never rolled up anything, anywhere)
-    from a total-outage day (metering_hourly empty for THIS date but
-    healthy on prior dates). Round-11 review fix — using "metering_hourly
-    empty for target_date" as the sole deploy-day signal mis-classified
-    an outage day and silently wrote a 0-doc daily that idempotency then
-    locked in forever.
+    Distinguishes true deploy-day (never rolled up anything AND no raw
+    data older than today) from a total-outage day (hourly rows exist
+    on prior dates, or raw metering shows the stack was actively
+    processing documents on prior dates so an empty hourly-for-target
+    isn't day-1).
 
-    Fast SELECT: LIMIT 1 with partition-pruned WHERE date < '{X}'.
-    ``emit_self_cost=False`` — this is a bookkeeping probe, not a
-    genuine cost-attribution query.
+    Round-11 fix used only prior-hourly-row existence. Round-13 review
+    fix: a multi-day hourly outage would leave ``metering_hourly`` empty
+    on every prior date even though raw metering shows the stack
+    processed documents on those days — ``is_deploy_day`` would still
+    return True and skip the guard, letting a legitimately incomplete
+    daily write and lock idempotently. Extend the probe to also check
+    raw metering on prior dates; either signal proves we're past day-1.
+
+    Fast SELECTs: LIMIT 1 with partition-pruned WHERE date < '{X}'.
+    ``emit_self_cost=False`` — bookkeeping probe, not a genuine
+    cost-attribution query.
     """
     # nosec B608 — before_date is from datetime.strftime, not user input.
-    sql = (
+    hourly_sql = (
         f'SELECT 1 FROM "{DATABASE}"."metering_hourly" '  # nosec B608
+        f"WHERE date < '{before_date}' LIMIT 1"  # nosec B608
+    )
+    raw_sql = (
+        f'SELECT 1 FROM "{DATABASE}"."metering" '  # nosec B608
         f"WHERE date < '{before_date}' LIMIT 1"  # nosec B608
     )
     # Retry a couple times before the defensive default-True — round-12
@@ -520,8 +586,17 @@ def _hourly_ever_written(before_date: str) -> bool:
     last_error: Optional[BaseException] = None
     for attempt in range(3):
         try:
-            rows = _run_athena_query_with_results(sql, emit_self_cost=False)
-            return bool(rows)
+            hourly_rows = _run_athena_query_with_results(
+                hourly_sql, emit_self_cost=False
+            )
+            if hourly_rows:
+                return True
+            # Round-13 review fix: hourly might be empty for a real
+            # deploy-day OR for a multi-day outage. Only raw metering
+            # can settle that — if raw rows exist on prior dates, this
+            # can't be day-1.
+            raw_rows = _run_athena_query_with_results(raw_sql, emit_self_cost=False)
+            return bool(raw_rows)
         except Exception as e:
             last_error = e
             if attempt < 2:
@@ -1223,7 +1298,14 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     # and a callee accidentally mutating `price["in"] = ...` would poison
     # every subsequent lookup for the container's lifetime. Round-9
     # review fix.
-    if not model:
+    # Round-13 review fix: distinguish "no Bedrock activity" (model is
+    # None) from "empty-string model name from a malformed metric
+    # dimension". `if not model:` treated both the same and let empty
+    # strings sneak the DEFAULT price. Now: None returns the neutral
+    # default; a non-None empty string falls through to the pricing-map
+    # lookup, misses (no `bedrock/` entry with empty tail), and emits
+    # the same ERROR + zero-cost path any unknown model gets.
+    if model is None:
         return dict(DEFAULT_BEDROCK_PRICE_PER_TOKEN)
     pricing_map = _load_bedrock_pricing_from_config()
     key = f"bedrock/{model}"

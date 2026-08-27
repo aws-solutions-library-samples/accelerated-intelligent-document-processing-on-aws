@@ -120,7 +120,13 @@ class TestKeyRewriting:
 class TestLister:
     def test_iter_old_layout_skips_already_migrated(self, mig):
         """The lister must NOT yield keys that carry `/hour=` — otherwise
-        we'd try to migrate them again on a repeat run."""
+        we'd try to migrate them again on a repeat run.
+
+        Round-9 review fix uses ``Delimiter="/hour="`` so S3 filters
+        hour-partitioned keys into ``CommonPrefixes`` server-side. This
+        mock simulates that: Contents holds only pre-migration keys and
+        CommonPrefixes holds the collapsed hour partitions.
+        """
         mock_s3 = MagicMock()
         mock_paginator = MagicMock()
         mock_s3.get_paginator.return_value = mock_paginator
@@ -128,14 +134,20 @@ class TestLister:
             {
                 "Contents": [
                     {"Key": "metering/date=2026-08-18/a.parquet"},  # old layout
-                    {"Key": "metering/date=2026-08-18/hour=13/b.parquet"},  # migrated
                     {"Key": "metering/date=2026-08-18/c.parquet"},  # old layout
                     {"Key": "metering/date=2026-08-18/README.txt"},  # not parquet
-                ]
+                ],
+                "CommonPrefixes": [
+                    # b.parquet lives under this collapsed prefix.
+                    {"Prefix": "metering/date=2026-08-18/hour="},
+                ],
             }
         ]
         with patch.object(mig, "s3_client", mock_s3):
             keys = list(mig._iter_old_layout_keys("test-bucket"))
+        # Delimiter kwarg was passed so S3 does the filter server-side.
+        _, kwargs = mock_paginator.paginate.call_args
+        assert kwargs.get("Delimiter") == "/hour="
         assert keys == [
             "metering/date=2026-08-18/a.parquet",
             "metering/date=2026-08-18/c.parquet",
@@ -175,11 +187,19 @@ class TestSendCFNResponse:
     def test_send_response_puts_to_response_url(self, mig, cfn_ctx):
         """The response must PUT to the presigned ResponseURL — that's how
         CFN unblocks itself. A missing PUT is why "stack update stuck for
-        60 min" happens."""
+        60 min" happens.
+
+        Round-13 review fix: _send now checks resp.status; the mock must
+        return status=200 to route through the success path (otherwise
+        the retry loop runs and asserts fail).
+        """
         event = _make_event("Update", ReportingBucket="test-bucket")
         with patch("urllib3.PoolManager") as pool_cls:
             pool = MagicMock()
             pool_cls.return_value = pool
+            ok_resp = MagicMock()
+            ok_resp.status = 200
+            pool.request.return_value = ok_resp
             mig._send(event, cfn_ctx, "SUCCESS", reason="done")
         pool.request.assert_called_once()
         args, kwargs = pool.request.call_args

@@ -176,13 +176,17 @@ Clears the cached pricing data to force reload from configuration.
 reporter.clear_pricing_cache()
 ```
 
-#### `_create_or_update_metering_glue_table(schema: pa.Schema) -> bool`
-Creates or updates the AWS Glue table for metering data with the enhanced schema including cost fields.
-
-**Parameters**:
-- `schema`: PyArrow schema including unit_cost and estimated_cost columns
-
-**Returns**: True if table was created or updated, False otherwise
+> **Glue table lifecycle**: the `metering` Glue table is now managed
+> declaratively by CloudFormation (`AWS::Glue::Table` in `template.yaml`)
+> with a `date`+`hour` partition-projection over
+> `s3://<reporting-bucket>/metering/date=YYYY-MM-DD/hour=HH/`. The
+> previously-documented in-code `_create_or_update_metering_glue_table`
+> helper has been removed — `SaveReportingData` writes parquet under
+> that same layout and the table becomes queryable in Athena
+> automatically. For any additional custom tables (e.g. document-section
+> tables, rule-validation tables) the class still creates Glue entries
+> on-demand via `_create_or_update_glue_table` and
+> `_create_or_update_rule_validation_glue_table`.
 
 ### Cost Analysis Examples
 

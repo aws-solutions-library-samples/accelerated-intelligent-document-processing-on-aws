@@ -375,16 +375,34 @@ def _migrate_one(bucket: str, key: str) -> str:
     # HeadObject is cheap and turns a silent overwrite into an
     # observable skip.
     try:
-        s3_client.head_object(Bucket=bucket, Key=target)
-        # Target already exists. Trust it (idempotent) and just delete
-        # the leftover source — matches the "delete idempotently on
-        # re-run" comment in the copy-then-delete design note.
-        logger.info(
-            f"Target already exists (prior copy succeeded, delete may "
-            f"have failed): {target}. Cleaning up source and moving on."
+        target_head = s3_client.head_object(Bucket=bucket, Key=target)
+        # Round-13 review fix: verify target integrity BEFORE deleting
+        # source. A prior partial run could have written a truncated
+        # or corrupt target; blindly trusting HEAD-succeeds and
+        # deleting the source would make that corruption permanent.
+        # Compare ContentLength against the source; if they mismatch,
+        # DO NOT delete — copy over the existing target (S3 CopyObject
+        # replaces) and only then delete the source.
+        source_head = s3_client.head_object(Bucket=bucket, Key=key)
+        target_size = target_head.get("ContentLength")
+        source_size = source_head.get("ContentLength")
+        if (
+            target_size is not None
+            and source_size is not None
+            and target_size == source_size
+        ):
+            logger.info(
+                f"Target already exists with matching size ({target_size} bytes): "
+                f"{target}. Cleaning up leftover source."
+            )
+            s3_client.delete_object(Bucket=bucket, Key=key)
+            return "moved"
+        logger.warning(
+            f"Target exists but size mismatch (source={source_size}, "
+            f"target={target_size}): {target}. Overwriting target with "
+            f"a fresh copy to prevent data loss on truncated prior run."
         )
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        return "moved"
+        # Fall through to the copy + delete path below.
     except s3_client.exceptions.ClientError as e:
         code = e.response.get("Error", {}).get("Code")
         if code not in ("404", "NoSuchKey", "NotFound"):
@@ -486,6 +504,20 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
             if len(col) > 0:
                 ts = col[0].as_py()
                 if ts is not None:
+                    # Round-13 review fix: a naive datetime coming out of
+                    # legacy parquet means the writer's local wall-clock
+                    # is being read as UTC. Lambda always runs in UTC so
+                    # this happens to be correct today, but log a warning
+                    # so a schema drift (e.g., pyarrow reading a tz-less
+                    # column written by a non-UTC producer) is visible in
+                    # CloudWatch instead of silently mis-placing the file.
+                    if ts.tzinfo is None:
+                        logger.warning(
+                            f"infer_hour: {key} column {candidate} returned "
+                            f"a naive datetime ({ts.isoformat()}). Assuming "
+                            f"UTC. If the writer wrote wall-clock in another "
+                            f"tz, the file will land under the wrong hour."
+                        )
                     return (ts.strftime("%H"), True)
     except Exception as e:
         # Log with enough detail for the operator to correlate — a
@@ -538,14 +570,23 @@ def _send(event, context, status: str, data=None, reason: str = ""):
     last_error: Optional[BaseException] = None
     for attempt in range(3):
         try:
-            http.request(
+            resp = http.request(
                 "PUT",
                 response_url,
                 body=json.dumps(response_body).encode("utf-8"),
                 headers={"Content-Type": ""},
             )
-            logger.info(f"CFN response sent: {status} — {reason}")
-            return {"status": status, "reason": reason}
+            # Round-13 review fix: urllib3 doesn't raise on HTTP error
+            # codes — a 4xx/5xx from the CFN presigned S3 endpoint used
+            # to look like success. Treat only 2xx as success; anything
+            # else is a real failure that should trigger the retry loop
+            # or surface via the final error log.
+            if 200 <= resp.status < 300:
+                logger.info(f"CFN response sent: {status} — {reason}")
+                return {"status": status, "reason": reason}
+            raise RuntimeError(
+                f"CFN response PUT returned HTTP {resp.status}: {resp.data[:512]!r}"
+            )
         except Exception as e:
             last_error = e
             logger.warning(f"CFN response PUT failed (attempt {attempt + 1}/3): {e}")
