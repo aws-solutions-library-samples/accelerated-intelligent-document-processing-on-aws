@@ -2263,6 +2263,20 @@ Resources:
         - Statement:
             - Effect: Allow
               Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls (via analytics_tool). Scoped
+                # to the IDPControlPlane namespace via condition. Round-6
+                # review fix — was missing, so every analytics-agent query
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
+        - Statement:
+            - Effect: Allow
+              Action:
                 - athena:StartQueryExecution
                 - athena:GetQueryExecution
                 - athena:GetQueryResults
@@ -5325,6 +5339,13 @@ Resources:
   # doc-completions a moment to land in metering before the aggregation reads.
   DataMartRollupHourlySchedule:
     Type: AWS::Events::Rule
+    # Guard against a race during stack UPDATE: this rule stays ACTIVE across
+    # the entire update, so its cron can fire while the MeteringTable's new
+    # ``hour`` partition-key change (and the raw-file migration) is still in
+    # progress — the rollup's INSERT queries reference ``metering.hour`` and
+    # would fail with "column not found". Wait for the migration custom
+    # resource, which the MeteringTable already DependsOn.  Round-6 review fix.
+    DependsOn: MeteringHourMigrationCustomResource
     Properties:
       Description: Hourly trigger for the data-mart rollup Lambda.
       ScheduleExpression: "cron(5 * * * ? *)"
@@ -5354,6 +5375,8 @@ Resources:
   # Fires at 00:15 to allow the 23:xx hourly rollup to complete first.
   DataMartRollupDailySchedule:
     Type: AWS::Events::Rule
+    # See the hourly schedule above for the DependsOn rationale.
+    DependsOn: MeteringHourMigrationCustomResource
     Properties:
       Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
       ScheduleExpression: "cron(15 0 * * ? *)"
@@ -8099,6 +8122,19 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
             - Effect: Allow
               Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls. Scoped to the
+                # IDPControlPlane namespace. Round-6 review fix — was
+                # missing on Agent*ProcessorFunction, so every Athena call
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
+            - Effect: Allow
+              Action:
                 - glue:GetTable
                 - glue:GetTables
                 - glue:GetDatabase
@@ -8925,6 +8961,19 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+            - Effect: Allow
+              Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls. Scoped to the
+                # IDPControlPlane namespace. Round-6 review fix — was
+                # missing on Agent*ProcessorFunction, so every Athena call
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable

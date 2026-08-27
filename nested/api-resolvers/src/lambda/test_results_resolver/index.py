@@ -1561,10 +1561,19 @@ def _get_cost_data_from_athena(test_run_id):
     like_prefix = _sql_like_prefix(test_run_id, "test_run_id")
     _validate_sql_input(database, "database")
 
-    # Extract date from test_run_id (format: name-YYYYMMDD-HHMMSS)
-    # Convert to date partition format: YYYY-MM-DD
-    # NOTE: Test runs spanning midnight UTC may have documents in next day's partition.
-    # We query both run_date and run_date+1 to catch cross-midnight documents.
+    # Extract date from test_run_id (format: name-YYYYMMDD-HHMMSS).
+    # Convert to date partition format: YYYY-MM-DD.
+    #
+    # As of Phase 1 (Reporting SQL layer), the `metering` table's `date`
+    # partition means COMPLETION time (write time), not queue time. A doc
+    # that pauses in HITL review, gets queued during a backup, or crosses
+    # a weekend can complete arbitrarily many days after the run started.
+    # The previous {run_date, run_date+1} window would silently miss
+    # those and under-count the test run's cost. We now widen the
+    # partition filter to a generous window (14 days) and preserve the
+    # test_run_id LIKE filter as the actual scoping predicate — the
+    # LIKE prefix is unique per run so the widened partition read
+    # scans more Parquet but returns no false rows. Round-6 review fix.
     date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
@@ -1572,12 +1581,21 @@ def _get_cost_data_from_athena(test_run_id):
 
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
-        next_date = run_date + timedelta(days=1)
-        date_str = run_date.strftime("%Y-%m-%d")
-        next_date_str = next_date.strftime("%Y-%m-%d")
-        date_filter = f"AND date IN ('{date_str}', '{next_date_str}')"
+        # Widen to +14 days forward to cover HITL / queue-delay tails.
+        # Preserving 1 day BACK too, defensively — a doc queued at 23:59
+        # and completed at 00:01 has queue-time == run_date but its
+        # metering row's `date` may be run_date+1 pre-Phase-1, or
+        # sometimes run_date-1 for the reverse edge case at cutover.
+        window_days = [
+            (run_date + timedelta(days=offset)).strftime("%Y-%m-%d")
+            for offset in range(-1, 15)
+        ]
+        date_str_list = ",".join(f"'{d}'" for d in window_days)
+        date_filter = f"AND date IN ({date_str_list})"
         logger.info(
-            f"Using date filter for cost query: date IN ('{date_str}', '{next_date_str}')"
+            f"Using date filter for cost query: {len(window_days)}-day window "
+            f"around {run_date.strftime('%Y-%m-%d')} "
+            f"(Phase 1 metering.date = completion time)"
         )
 
     query = f"""

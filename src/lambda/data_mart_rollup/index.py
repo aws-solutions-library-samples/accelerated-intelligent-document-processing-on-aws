@@ -332,10 +332,20 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 
     result: Dict[str, Any] = {"mode": "daily", "target_date": target_date}
 
-    _require_hourly_matches_raw_metering(target_date)
+    # Check idempotency FIRST so the guard doesn't fire on an already-
+    # committed partition (round-6 review fix — an operator emptying
+    # metering_hourly to reset a bad rollup while metering_daily is
+    # already written would previously raise unnecessarily). Only run
+    # the guard when we're actually about to write.
+    daily_exists = _partition_already_written(table="metering_daily", date=target_date)
+    docs_daily_exists = _partition_already_written(
+        table="metering_docs_daily", date=target_date
+    )
+    if not (daily_exists and docs_daily_exists):
+        _require_hourly_matches_raw_metering(target_date)
 
     # --- metering_daily (cost per service/unit) ---
-    if _partition_already_written(table="metering_daily", date=target_date):
+    if daily_exists:
         logger.info(
             f"metering_daily partition date={target_date} already exists — "
             f"skipping (idempotent)"
@@ -363,7 +373,7 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         }
 
     # --- metering_docs_daily (doc-grain volume/pages) ---
-    if _partition_already_written(table="metering_docs_daily", date=target_date):
+    if docs_daily_exists:
         logger.info(
             f"metering_docs_daily partition date={target_date} already exists — "
             f"skipping (idempotent)"
@@ -442,6 +452,18 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
     if not raw_hours:
         # No raw data for the day → nothing to check either hourly against.
         return
+    # Determine deploy-day baseline from the PRIMARY hourly table.
+    # metering_hourly and metering_docs_hourly are written by the SAME
+    # rollup invocation — if one is empty for the date and the other has
+    # data, that's a systematic failure (not deploy-day), and we must
+    # NOT skip the guard on the empty one. Round-6 review fix.
+    primary_hourly_rows = _run_athena_query_with_results(
+        f'SELECT DISTINCT hour FROM "{DATABASE}"."metering_hourly" '  # nosec B608
+        f"WHERE date = '{target_date}'"  # nosec B608
+    )
+    primary_hourly_hours = {r[0] for r in primary_hourly_rows if r and r[0]}
+    is_deploy_day = not primary_hourly_hours
+
     for hourly_table in ("metering_hourly", "metering_docs_hourly"):
         hourly_sql = (
             f'SELECT DISTINCT hour FROM "{DATABASE}"."{hourly_table}" '  # nosec B608
@@ -450,12 +472,26 @@ def _require_hourly_matches_raw_metering(target_date: str) -> None:
         hourly_rows = _run_athena_query_with_results(hourly_sql)
         hourly_hours = {r[0] for r in hourly_rows if r and r[0]}
         if not hourly_hours:
-            logger.info(
-                f"{hourly_table} for date={target_date} is empty — treating "
-                f"as first-run/deploy-day and skipping raw-vs-hourly guard "
-                f"for this table. raw hours present: {sorted(raw_hours)}"
+            if is_deploy_day:
+                logger.info(
+                    f"{hourly_table} for date={target_date} is empty AND "
+                    f"metering_hourly is also empty — deploy-day, skipping "
+                    f"raw-vs-hourly guard for this table. raw hours: "
+                    f"{sorted(raw_hours)}"
+                )
+                continue
+            # metering_hourly has rows for the day but THIS hourly is
+            # empty → the sibling INSERT failed for every hour. NOT
+            # deploy-day. Fail loudly so async-retry can replay before
+            # the daily locks in zero doc counts forever.
+            raise RuntimeError(
+                f"{hourly_table} for date={target_date} is empty while "
+                f"metering_hourly has {len(primary_hourly_hours)} hour(s) "
+                f"of data — systematic failure of {hourly_table} sibling "
+                f"INSERTs. Refusing to write an incomplete daily; async "
+                f"retry will replay once the sibling recovers. raw hours: "
+                f"{sorted(raw_hours)}"
             )
-            continue
         earliest_hourly = min(hourly_hours)
         in_window_raw = {h for h in raw_hours if h >= earliest_hourly}
         missing = in_window_raw - hourly_hours
@@ -855,17 +891,19 @@ def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
 def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
     """Return the Lambda's configured (MemorySize MB, architecture).
 
-    Cached per invocation so we don't spam get_function_configuration —
-    both properties are static per deployed function. Falls back to
-    (128 MB, "x86_64") on lookup failure — x86_64 is the AWS default
-    architecture, so this errs on the side of *slightly higher* per-GB
-    -second cost (safer than under-estimating).
+    Cached across warm-container invocations so we don't spam
+    get_function_configuration — both properties are static per deployed
+    function. Falls back to (128 MB, "x86_64") on lookup failure — x86_64
+    is the AWS default architecture, so this errs on the side of
+    *slightly higher* per-GB-second cost (safer than under-estimating).
+
+    On lookup FAILURE the fallback is used for this call but NOT cached
+    — a transient throttle should not poison the warm container for its
+    entire life. Round-6 review fix.
     """
     cached = _lambda_memory_cache.get(function_name)
     if cached is not None:
         return cached
-    memory_mb = 128
-    architecture = "x86_64"
     try:
         response = lambda_client.get_function_configuration(FunctionName=function_name)
         memory_mb = int(response.get("MemorySize", 128))
@@ -874,8 +912,12 @@ def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
     except Exception as e:
         logger.warning(
             f"get_function_configuration failed for {function_name}: {e}. "
-            f"Assuming default 128 MB x86_64 — cost estimate may be low."
+            f"Assuming default 128 MB x86_64 — cost estimate may be low. "
+            f"Not caching; next call retries."
         )
+        # DO NOT cache the fallback — a transient throttle would else
+        # lock this Lambda's cost estimate wrong for the container's life.
+        return (128, "x86_64")
     result = (memory_mb, architecture)
     _lambda_memory_cache[function_name] = result
     return result
@@ -1006,25 +1048,31 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
 
     Uses ``idp_common.config.ConfigurationManager.get_merged_pricing()`` —
     the same helper every data-plane cost-writer uses. Returns
-    ``{service_name: {unit_name: price_per_token_usd}}``; on any failure
-    (missing env var, DynamoDB throttling, malformed config), returns an
-    empty dict — callers see the DEFAULT_BEDROCK_PRICE_PER_TOKEN fallback.
+    ``{service_name: {unit_name: price_per_token_usd}}`` populated on
+    success. On failure (missing env var, DynamoDB throttling, malformed
+    config), returns an empty dict for THIS invocation but does NOT cache
+    that empty dict — the next invocation retries. Round-6 review fix
+    for the "empty dict cached on failure poisons the warm container"
+    class.
     """
     global _bedrock_pricing_map
     if _bedrock_pricing_map is not None:
         return _bedrock_pricing_map
-    _bedrock_pricing_map = {}
     if not CONFIGURATION_TABLE_NAME:
         logger.warning(
             "CONFIGURATION_TABLE_NAME env var not set; Bedrock cost columns "
             "will use hardcoded default pricing."
         )
+        # Env var never appears mid-lifetime — this IS a "cache the empty"
+        # result: no retry will help.
+        _bedrock_pricing_map = {}
         return _bedrock_pricing_map
     try:
         from idp_common.config import ConfigurationManager
 
         manager = ConfigurationManager(table_name=CONFIGURATION_TABLE_NAME)
         merged = manager.get_merged_pricing()
+        loaded: Dict[str, Dict[str, float]] = {}
         for service in getattr(merged, "pricing", None) or []:
             units: Dict[str, float] = {}
             for unit in getattr(service, "units", None) or []:
@@ -1033,19 +1081,25 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
                 except (TypeError, ValueError):
                     continue
             if units:
-                _bedrock_pricing_map[service.name] = units
-        logger.info(
-            f"Loaded {len(_bedrock_pricing_map)} pricing entries from "
-            f"ConfigurationTable."
-        )
+                loaded[service.name] = units
+        # ONLY cache on success — if the DynamoDB read returned zero
+        # entries, don't lock the container into $0/undefined pricing.
+        # A subsequent invocation retries and may find the table
+        # populated (e.g. after eventual consistency catches up).
+        _bedrock_pricing_map = loaded
+        logger.info(f"Loaded {len(loaded)} pricing entries from ConfigurationTable.")
+        return _bedrock_pricing_map
     except Exception as e:
-        # Never crash the rollup over pricing telemetry — degrade to default.
+        # DO NOT set _bedrock_pricing_map on failure — leave it as None
+        # so the NEXT invocation retries. Only this invocation degrades
+        # to the hardcoded default.
         logger.warning(
             f"Failed to load pricing from ConfigurationTable "
             f"({CONFIGURATION_TABLE_NAME!r}): {e}. Falling back to hardcoded "
-            f"default pricing for Bedrock cost columns."
+            f"default pricing for Bedrock cost columns THIS INVOCATION; "
+            f"next invocation will retry."
         )
-    return _bedrock_pricing_map
+        return {}
 
 
 # Component-mapping rules — ORDER MATTERS. First match wins. Rules are
@@ -1172,11 +1226,17 @@ def _partition_already_written(
         # Athena creates partitions on demand, so treating this as
         # not-written is correct on the first-invocation-after-deploy path.
         msg = str(e).lower()
+        # Narrow markers ONLY — earlier "does not exist" catch-all was too
+        # broad and would let a missing bucket / database / column / role
+        # error trigger fail-open, resulting in a duplicate INSERT against
+        # a populated partition. Round-6 review fix. If Athena/Glue adds a
+        # new error shape for missing tables, add it here explicitly.
         table_missing_markers = (
             "table_not_found",
             "entitynotfoundexception",
-            "does not exist",
             "table not found",
+            f"table `{table.lower()}` does not exist",
+            f'table "{table.lower()}" does not exist',
         )
         if any(m in msg for m in table_missing_markers):
             logger.info(
@@ -1214,14 +1274,34 @@ def _run_athena(sql: str) -> str:
 
 
 def _run_athena_query_with_results(sql: str) -> List[List[str]]:
-    """Run a query and return result rows (as string lists)."""
+    """Run a query and return result rows (as string lists).
+
+    Paginates ``get_query_results`` — Athena caps a single response at
+    ~1000 rows. Header row is only on the FIRST page; paginating naively
+    while always stripping ``Rows[0]`` would drop the first data row of
+    every page ≥2 (round-6 review fix — silent truncation + naive
+    pagination retrofit hazard).
+    """
     query_id = _run_athena(sql)
-    result = athena_client.get_query_results(QueryExecutionId=query_id)
-    # Skip header row.
-    return [
-        [c.get("VarCharValue", "") for c in r.get("Data", [])]
-        for r in result.get("ResultSet", {}).get("Rows", [])[1:]
-    ]
+    all_rows: List[List[str]] = []
+    next_token: Optional[str] = None
+    first_page = True
+    while True:
+        kwargs: Dict[str, Any] = {"QueryExecutionId": query_id}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        result = athena_client.get_query_results(**kwargs)
+        page_rows = result.get("ResultSet", {}).get("Rows", [])
+        if first_page:
+            page_rows = page_rows[1:]  # strip header on first page only
+            first_page = False
+        all_rows.extend(
+            [c.get("VarCharValue", "") for c in r.get("Data", [])] for r in page_rows
+        )
+        next_token = result.get("NextToken")
+        if not next_token:
+            break
+    return all_rows
 
 
 def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
@@ -1295,14 +1375,29 @@ def _emit_self_athena_cost(query_execution_response: Dict[str, Any]) -> None:
 
 
 def _s3_object_exists(key: str) -> bool:
-    """Return True if a bucket key already exists."""
+    """Return True if a bucket key already exists.
+
+    Only treats a real 404 as "not present". Any other error (KMS blip,
+    throttling, transient network) is re-raised so the rollup aborts
+    and Lambda's async retry can replay — a bare "return False" on
+    everything defeats the idempotency guard: a transient error would
+    let us overwrite an already-committed control_plane_hourly partition.
+    Round-6 review fix.
+    """
     if not REPORTING_BUCKET:
         return False
     try:
         s3_client.head_object(Bucket=REPORTING_BUCKET, Key=key)
         return True
-    except Exception:
-        return False
+    except s3_client.exceptions.ClientError as e:
+        # boto3 exception classes vary by service; head_object raises
+        # ClientError with 404 Not Found for a missing key.
+        code = e.response.get("Error", {}).get("Code")
+        status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code in ("404", "NoSuchKey", "NotFound") or status == 404:
+            return False
+        # Everything else — propagate so async-retry can recover.
+        raise
 
 
 def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:

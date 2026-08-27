@@ -155,6 +155,8 @@ def _migrate(event, context, bucket: str):
     deadline = time.time() + COPY_BUDGET_SEC
     moved = 0
     errors = 0
+    skipped_stray = 0
+    hour_fallbacks = 0
 
     with ThreadPoolExecutor(max_workers=COPY_CONCURRENCY) as executor:
         futures = {executor.submit(_migrate_one, bucket, key): key for key in old_keys}
@@ -178,8 +180,14 @@ def _migrate(event, context, bucket: str):
                 )
             key = futures[future]
             try:
-                future.result()
-                moved += 1
+                result = future.result()
+                if result == "stray":
+                    skipped_stray += 1
+                elif result == "fallback":
+                    hour_fallbacks += 1
+                    moved += 1
+                else:
+                    moved += 1
             except Exception as e:
                 logger.warning(f"Failed to migrate {key}: {e}")
                 errors += 1
@@ -194,12 +202,36 @@ def _migrate(event, context, bucket: str):
                 f"Check CloudWatch logs, fix root cause, then re-run manually."
             ),
         )
+    # A file whose hour we couldn't infer is a systemic hazard (KMS role
+    # broken, schema drift, wrong pyarrow) — every such file lands in
+    # hour=00 permanently, hiding hour-precision on real data. Round-6
+    # fix: fail loudly rather than silently parking. Operator can rerun
+    # after fixing the underlying issue (already-copied hour=00 files
+    # will need `scripts/migrate_metering_hour_partition.py --rescan`
+    # once we ship it; today, the error message points at CloudWatch
+    # logs for per-file details).
+    if hour_fallbacks:
+        return _send(
+            event,
+            context,
+            "FAILED",
+            reason=(
+                f"Migrated {moved}/{total} files but {hour_fallbacks} had "
+                f"unreadable hour data and were parked at hour=00. This "
+                f"usually means KMS/IAM misconfiguration, schema drift, or "
+                f"corrupted parquet. Check per-file WARN logs, fix the root "
+                f"cause, then re-run the migration."
+            ),
+        )
+    reason = f"Migrated {moved} metering parquet files into hour-partitioned layout"
+    if skipped_stray:
+        reason += f" ({skipped_stray} stray non-metering parquet key(s) skipped)"
     return _send(
         event,
         context,
         "SUCCESS",
-        data={"Migrated": moved},
-        reason=f"Migrated {moved} metering parquet files into hour-partitioned layout",
+        data={"Migrated": moved, "SkippedStray": skipped_stray},
+        reason=reason,
     )
 
 
@@ -213,9 +245,11 @@ def _iter_old_layout_keys(bucket: str) -> Iterator[str]:
                 yield key
 
 
-def _migrate_one(bucket: str, key: str) -> None:
+def _migrate_one(bucket: str, key: str) -> str:
     """Copy ``key`` to its hour-partitioned target, then delete the
-    original.
+    original. Returns ``"moved"``, ``"stray"`` (non-metering key,
+    skipped), or ``"fallback"`` (hour couldn't be inferred, parked at
+    ``hour=00`` — caller escalates).
 
     Copy-then-delete is the correct rollback behavior. Athena reads a
     partition location recursively — if we left originals in place and
@@ -229,57 +263,92 @@ def _migrate_one(bucket: str, key: str) -> None:
     Failure modes:
     - **Mid-copy failure** — the target key doesn't land; original
       stays. Safe: original is still the sole location, projection
-      (whichever version is committed) reads it correctly. Retry via
-      MigrationVersion bump; the lister re-yields un-hour-partitioned
-      keys.
+      (whichever version is committed) reads it correctly. Re-run picks
+      up the same key via the lister's ``not HOUR_KEY_PATTERN`` filter.
     - **Copy-succeeded-delete-failed** — the target key AND original
       both exist for this one file. Same double-count risk as the
       "leave originals" design, but scoped to one file rather than the
       whole dataset. A re-run picks up the delete idempotently
       (``delete_object`` on a missing key is a no-op).
-
-    CopyObject is atomic per-key; DeleteObject is idempotent. A re-run
-    treats already-migrated files (``/hour=`` in the key) as no-ops
-    via the lister's filter.
+    - **Files parked at hour=00 by a prior run** — the lister excludes
+      any key already under ``/hour=NN/``, so those files are NOT
+      re-attempted here. If a v1.0-like bad run parked files at
+      hour=00, they stay there until an operator runs
+      ``scripts/migrate_metering_hour_partition.py --rescan-hour-00``
+      (not yet shipped). Since no v1.0 has shipped to any customer,
+      this is a Phase-2 hazard, not a live one.
     """
-    hour = _infer_hour(bucket, key)
+    # Sanity-check the key shape BEFORE reading the parquet body: a
+    # stray non-metering file (legacy Athena query output, etc.) has
+    # nothing to migrate and shouldn't block the upgrade. Pass a
+    # placeholder hour just to run the shape check; the real hour
+    # comes from the parquet body below.
+    if _new_key(key, "00") is None:
+        # Stray parquet under metering/ that doesn't match
+        # date=YYYY-MM-DD/*.parquet (e.g. legacy Athena query output
+        # accidentally written under this prefix). Skipping is safer
+        # than raising: the file isn't a metering row, so it can't be
+        # affected by the partitioning change, and blowing up the
+        # migration would block every stack upgrade because of one
+        # unrelated object. Log so an operator can inspect. Round-6
+        # review fix.
+        logger.info(
+            f"Skipping stray non-metering parquet key: {key} "
+            f"(no date=YYYY-MM-DD/ prefix)"
+        )
+        return "stray"
+    hour, inferred = _infer_hour(bucket, key)
     target = _new_key(key, hour)
-    if target is None:
-        raise ValueError(f"key does not match expected shape: {key}")
+    assert target is not None, "shape re-check should not fail after placeholder passed"
     if target == key:
-        return  # already migrated (defensive)
+        return "moved"  # already migrated (defensive)
     s3_client.copy_object(
         Bucket=bucket,
         Key=target,
         CopySource={"Bucket": bucket, "Key": key},
     )
     s3_client.delete_object(Bucket=bucket, Key=key)
+    return "fallback" if not inferred else "moved"
 
 
-def _infer_hour(bucket: str, key: str) -> str:
-    """Read the first row's timestamp column and return its UTC hour as HH.
+def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
+    """Read the first row's timestamp column and return
+    ``(hour_HH, inferred)``. ``inferred=False`` means we couldn't read
+    a real timestamp and parked at ``"00"`` — the caller escalates that
+    to a migration-failure so the operator sees it rather than silently
+    losing hour precision.
 
-    Falls back to ``initial_event_time`` if ``timestamp`` isn't present,
-    and then to ``"00"`` if neither is readable — better to park an
-    uncertain single file in ``hour=00`` (still visible to the new
-    projection) than fail the whole migration on one corrupt file. The
-    handler already fails loudly on the *systemic* case (pyarrow entirely
-    absent — that's a layer misconfiguration), so a fallback here can
-    only fire on real per-file data issues.
+    Reads only the ``timestamp`` and ``initial_event_time`` columns via
+    ``pq.read_table(..., columns=[...])`` and then, if that returns no
+    rows, no-ops the fallback — avoids downloading the whole 50 MB
+    parquet body just to peek at row 0 of one column. Round-6 review
+    fix for OOM risk at 50 concurrent 50 MB reads in a 3008 MB Lambda.
     """
     assert _pq is not None, "pyarrow import guard should have caught this"
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=key)
         body = obj["Body"].read()
-        table = _pq.read_table(io.BytesIO(body))
+        # Only read the two columns we care about — pyarrow skips the
+        # rest at Parquet-column granularity, so this is O(size of
+        # timestamp columns) not O(whole file).
+        table = _pq.read_table(
+            io.BytesIO(body),
+            columns=["timestamp", "initial_event_time"],
+        )
         for candidate in ("timestamp", "initial_event_time"):
             if candidate in table.column_names and table.num_rows > 0:
                 ts = table.column(candidate)[0].as_py()
                 if ts is not None:
-                    return ts.strftime("%H")
+                    return (ts.strftime("%H"), True)
     except Exception as e:
-        logger.warning(f"infer_hour failed for {key} ({e}) — parking in hour=00")
-    return "00"
+        # Log with enough detail for the operator to correlate — a
+        # KMS/IAM issue looks identical to a corrupted-parquet issue in
+        # the log summary otherwise.
+        logger.warning(
+            f"infer_hour failed for {key} ({type(e).__name__}: {e}) — "
+            f"parking in hour=00 pending migration-failure escalation"
+        )
+    return ("00", False)
 
 
 def _new_key(old_key: str, hour: str) -> Optional[str]:
@@ -310,7 +379,11 @@ def _send(event, context, status: str, data=None, reason: str = ""):
         "Data": data or {},
     }
 
-    http = urllib3.PoolManager()
+    # Timeout on the PUT so a hung CFN presigned-S3 endpoint doesn't
+    # stall the Lambda until its 15-min ceiling. Round-6 review fix.
+    # 15s connect + 30s read is generous vs. S3's typical low-second
+    # response, and bounded well under Lambda's own timeout.
+    http = urllib3.PoolManager(timeout=urllib3.Timeout(connect=15.0, read=30.0))
     try:
         http.request(
             "PUT",
