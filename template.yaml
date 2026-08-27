@@ -5075,6 +5075,11 @@ Resources:
     Type: Custom::MeteringHourMigration
     Properties:
       ServiceToken: !GetAtt MeteringHourMigrationFunction.Arn
+      # Match the Lambda's own Timeout (900s) — the CFN default is 3600s,
+      # so if the Lambda died mid-migration the stack update would stall
+      # for up to an hour waiting for a response the dead worker never
+      # sent. Round-8 review fix.
+      ServiceTimeout: 900
       # Reporting bucket the migration walks.
       ReportingBucket: !If
         - ShouldCreateReportingBucket

@@ -1112,8 +1112,15 @@ class SaveReportingData:
                 ("number_of_pages", pa.int32()),
                 ("unit_cost", pa.float64()),
                 ("estimated_cost", pa.float64()),
-                ("timestamp", pa.timestamp("ms")),
-                ("initial_event_time", pa.timestamp("ms")),
+                # Explicit UTC tz — round-8 review fix. Values are
+                # written from tz-aware datetimes (datetime.now(UTC),
+                # fromisoformat with '+00:00'), so declaring the pyarrow
+                # schema as tz="UTC" preserves the tz metadata in the
+                # parquet file instead of silently stripping it. Athena
+                # treats both forms as UTC on read, but readers outside
+                # Athena (Pandas, DuckDB) now see the correct tz too.
+                ("timestamp", pa.timestamp("ms", tz="UTC")),
+                ("initial_event_time", pa.timestamp("ms", tz="UTC")),
                 ("config_version", pa.string()),
             ]
         )

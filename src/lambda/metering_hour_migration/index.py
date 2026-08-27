@@ -79,7 +79,14 @@ COPY_CONCURRENCY = 50
 HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
 DATE_PART_PATTERN = re.compile(r"^metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
 
-s3_client = boto3.client("s3")
+# Cap boto3 retries and per-call timeouts so a hung S3 API doesn't
+# stretch a single worker past the outer deadline. Round-8 review fix.
+_boto_config = boto3.session.Config(
+    retries={"max_attempts": 3, "mode": "standard"},
+    connect_timeout=5,
+    read_timeout=15,
+)
+s3_client = boto3.client("s3", config=_boto_config)
 
 
 def handler(event, context):
@@ -158,15 +165,18 @@ def _migrate(event, context, bucket: str):
     skipped_stray = 0
     hour_fallbacks = 0
 
-    with ThreadPoolExecutor(max_workers=COPY_CONCURRENCY) as executor:
+    # Manual shutdown so we can return without waiting on running futures
+    # after the copy-budget deadline. ``with ThreadPoolExecutor`` would
+    # block on shutdown(wait=True) at context exit — a hung boto3 retry
+    # could extend the Lambda run toward its 900s timeout, past the
+    # deadline. Round-8 review fix.
+    executor = ThreadPoolExecutor(max_workers=COPY_CONCURRENCY)
+    try:
         futures = {executor.submit(_migrate_one, bucket, key): key for key in old_keys}
         for future in as_completed(futures):
             if time.time() > deadline:
-                # Cancel remaining work — the executor will still finish any
-                # already-running tasks, but we won't schedule new ones.
-                for pending in futures:
-                    if not pending.done():
-                        pending.cancel()
+                # Return the FAILED response and let the finally-block
+                # shut the executor down without waiting.
                 return _send(
                     event,
                     context,
@@ -193,6 +203,9 @@ def _migrate(event, context, bucket: str):
             except Exception as e:
                 logger.warning(f"Failed to migrate {key}: {e}")
                 errors += 1
+    finally:
+        # Cancel pending, don't wait on running. Round-8 review fix.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if errors:
         return _send(
@@ -309,6 +322,28 @@ def _migrate_one(bucket: str, key: str) -> str:
     assert target is not None, "shape re-check should not fail after placeholder passed"
     if target == key:
         return "moved"  # already migrated (defensive)
+    # Defensive collision check — round-8 review fix. If a prior run
+    # copied source→target and its delete failed, then the same source
+    # still lives at the old-layout location; a re-run would copy over
+    # the existing target. Metering filenames include a UUID so a
+    # collision on DISTINCT sources is astronomically unlikely, but the
+    # HeadObject is cheap and turns a silent overwrite into an
+    # observable skip.
+    try:
+        s3_client.head_object(Bucket=bucket, Key=target)
+        # Target already exists. Trust it (idempotent) and just delete
+        # the leftover source — matches the "delete idempotently on
+        # re-run" comment in the copy-then-delete design note.
+        logger.info(
+            f"Target already exists (prior copy succeeded, delete may "
+            f"have failed): {target}. Cleaning up source and moving on."
+        )
+        s3_client.delete_object(Bucket=bucket, Key=key)
+        return "moved"
+    except s3_client.exceptions.ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code not in ("404", "NoSuchKey", "NotFound"):
+            raise
     s3_client.copy_object(
         Bucket=bucket,
         Key=target,
@@ -350,17 +385,27 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
                 f"infer hour; leaving file in place for operator to inspect"
             )
             return ("00", False)
-        table = pf.read(columns=wanted)
+        # Read only the FIRST batch of ONLY the wanted columns — this
+        # is O(one row group × wanted-columns) not O(whole file). Round-8
+        # review fix: pf.read(columns=wanted) loaded all rows of the
+        # wanted columns even though only row 0 is consumed; on
+        # multi-MB legacy files at 50-worker concurrency that was a
+        # 50× larger memory footprint than needed.
+        try:
+            batch = next(pf.iter_batches(batch_size=1, columns=wanted))
+        except StopIteration:
+            # No rows at all — treat as un-inferrable.
+            logger.warning(
+                f"infer_hour: {key} has zero rows in {wanted} — cannot "
+                f"infer hour; leaving file in place for operator to inspect"
+            )
+            return ("00", False)
         for candidate in wanted:  # honours the wanted-order preference
-            if table.num_rows > 0:
-                ts = table.column(candidate)[0].as_py()
+            col = batch.column(candidate)
+            if len(col) > 0:
+                ts = col[0].as_py()
                 if ts is not None:
                     return (ts.strftime("%H"), True)
-        # Empty table (no rows) — can't infer.
-        logger.warning(
-            f"infer_hour: {key} has zero rows in {wanted} — cannot "
-            f"infer hour; leaving file in place for operator to inspect"
-        )
     except Exception as e:
         # Log with enough detail for the operator to correlate — a
         # KMS/IAM issue looks identical to a corrupted-parquet issue in

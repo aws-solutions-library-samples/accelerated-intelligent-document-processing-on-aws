@@ -101,13 +101,16 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     console test) do the more common thing without needing to remember
     the payload shape.
     """
-    # Reset per-invocation caches — round-7 review fix. The Lambda-memory
-    # cache is module-scope for per-invocation dedup (avoids N GetFunction
-    # calls when computing rows for N Lambdas within one rollup), but
-    # DOES NOT survive across invocations: a CFN update between rollups
-    # can change a function's MemorySize/Architecture, and the warm
-    # container would otherwise cache the stale value forever.
+    # Reset per-invocation caches — round-7+round-8 review fixes. Both
+    # module-scope caches persist within a rollup (dedup dozens of
+    # GetFunction / DynamoDB reads across N Lambdas × 1 hour) but MUST
+    # NOT survive across invocations: a CFN update between rollup fires
+    # can change a Lambda's MemorySize/Architecture, and an operator
+    # editing pricing.yaml must see the change on the next rollup, not
+    # after the container recycles.
+    global _bedrock_pricing_map
     _lambda_memory_cache.clear()
+    _bedrock_pricing_map = None
 
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
@@ -159,18 +162,49 @@ def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
 
 def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     """Rollup the previous fully-sealed UTC hour relative to ``anchor``
-    (defaults to now — see ``_parse_anchor_time`` for the retry-safe path)."""
+    (defaults to now — see ``_parse_anchor_time`` for the retry-safe path).
+
+    Round-8 review fix: each of the three rollups runs independently in
+    its own try/except so a transient failure on one (e.g. Athena
+    partial-region outage affecting the metering table) doesn't couple
+    the fates of the others. ``control_plane_hourly`` in particular
+    reads CloudWatch (not the metering table) and was previously killed
+    by any metering-side raise. If ANY rollup raises, this function
+    re-raises AFTER all three have been attempted, so async retry can
+    replay whichever ones failed — the successful writes are idempotent.
+    """
     target_date, target_hour = _previous_hour(anchor)
     logger.info(f"Hourly rollup targeting date={target_date} hour={target_hour}")
-    results = {
+
+    results: Dict[str, Any] = {
         "mode": "hourly",
         "target_date": target_date,
         "target_hour": target_hour,
-        "metering_hourly": _rollup_metering_hourly(target_date, target_hour),
-        "metering_docs_hourly": _rollup_metering_docs_hourly(target_date, target_hour),
-        "control_plane_hourly": _rollup_control_plane_hourly(target_date, target_hour),
     }
+    failures: List[str] = []
+    for label, fn in (
+        ("metering_hourly", _rollup_metering_hourly),
+        ("metering_docs_hourly", _rollup_metering_docs_hourly),
+        ("control_plane_hourly", _rollup_control_plane_hourly),
+    ):
+        try:
+            results[label] = fn(target_date, target_hour)
+        except Exception as e:
+            logger.exception(
+                f"{label} rollup failed for {target_date} hour={target_hour}"
+            )
+            results[label] = {"skipped": False, "error": str(e)}
+            failures.append(f"{label}: {e}")
+
     logger.info(f"Hourly rollup complete: {results}")
+    if failures:
+        # Raise AFTER the two independent siblings have run. The
+        # successful ones' partitions are idempotency-locked, so async
+        # retry only replays the failed ones.
+        raise RuntimeError(
+            f"Hourly rollup for {target_date} hour={target_hour} had "
+            f"{len(failures)} of 3 sub-rollups fail: {'; '.join(failures)}"
+        )
     return results
 
 
@@ -238,8 +272,15 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
 
     # nosec B608 — target_date/target_hour are derived from datetime, not user input.
     # Inner subquery: one row per (hour_ts, config_version, document_id)
-    # with MAX(number_of_pages) — pages is stamped identically across
-    # every metering row for a doc, so MAX is the doc's page count.
+    # with MAX(number_of_pages). Round-8 note: the invariant assumes
+    # number_of_pages is stamped identically across every metering row
+    # for the same doc — true in practice because OCR sets it once,
+    # and a same-hour reprocess re-runs OCR on the same PDF (same page
+    # count). If a doc were somehow reprocessed within the same hour
+    # against a materially different file (different page count), MAX
+    # picks the LARGER value — a slight over-count but bounded to that
+    # doc, not systematic. MIN/AVG/ANY_VALUE have equally-defensible
+    # semantics; MAX chosen so the count is not silently rounded down.
     # Outer aggregate: COUNT(*) of docs, SUM of the MAX-per-doc pages.
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_docs_hourly"
@@ -1019,13 +1060,15 @@ def _build_control_plane_rows(
         # Component didn't call Bedrock this hour — one row without a model.
         return [_row(None, 0, 0, include_shared=True)]
     # One row per Bedrock model, but shared columns only on the FIRST.
-    # Ordering: dict insertion order is deterministic (Python 3.7+), so
-    # the row assigned the shared columns is stable across runs of the
-    # same input — consumers that filter to `bedrock_model = X` and rely
-    # on the shared columns being non-zero on any specific model row are
-    # doing the wrong query and would need to aggregate anyway.
+    # Round-8 review fix: sort by model name so the shared-column row is
+    # the same one every time regardless of the (undocumented)
+    # ListMetrics traversal order — otherwise a re-run of the same hour
+    # could put shared columns on a different row and (if unlucky) a
+    # consumer's LEFT JOIN could pick up different values across
+    # rebuilds of the same partition.
     rows: List[Dict[str, Any]] = []
-    for i, (model, tokens) in enumerate(bedrock_by_model.items()):
+    for i, model in enumerate(sorted(bedrock_by_model.keys())):
+        tokens = bedrock_by_model[model]
         rows.append(
             _row(model, int(tokens["in"]), int(tokens["out"]), include_shared=(i == 0))
         )
@@ -1285,6 +1328,11 @@ def _partition_already_written(
             f".{tbl}' does not exist",
             f".{tbl}` does not exist",
             f'.{tbl}" does not exist',
+            # Trino/Athena engine v3 also emits the fully-quoted-per-
+            # segment form: Table "catalog"."db"."tbl" does not exist —
+            # the segment BEFORE `tbl` ends in `"."` and the segment
+            # AROUND tbl is `"tbl"`. Round-8 review fix.
+            f'."{tbl}" does not exist',
         )
         if any(m in msg for m in table_missing_markers):
             logger.info(
@@ -1449,9 +1497,28 @@ def _s3_object_exists(key: str) -> bool:
 
 
 def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:
-    """Serialize rows to Parquet and upload to the reporting bucket."""
+    """Serialize rows to Parquet and upload to the reporting bucket.
+
+    Round-8 review fix: re-checks target-key existence immediately
+    before PUT, so a manual invoke concurrent with an in-flight async
+    retry can't double-write (belt-and-braces on top of the caller's
+    earlier ``_s3_object_exists`` check plus the function's
+    ``ReservedConcurrentExecutions: 1``). The check + PUT still isn't
+    strictly atomic — S3 has no conditional-put on this write path —
+    but the second-writer window shrinks to the PUT itself, which is
+    orders of magnitude tighter than the previous "check at start of
+    handler, PUT at end".
+    """
     import pyarrow as pa
     import pyarrow.parquet as pq
+
+    if _s3_object_exists(key):
+        logger.info(
+            f"_write_parquet: s3://{REPORTING_BUCKET}/{key} already exists "
+            f"(race: idempotency check passed at start of rollup but a "
+            f"concurrent writer landed the partition first). Skipping PUT."
+        )
+        return
 
     schema = pa.schema(
         [

@@ -59,6 +59,19 @@ from typing import Iterator, Optional
 
 import boto3
 
+# pyarrow imported at module scope so a missing dep fails the OPERATOR
+# process cleanly at startup instead of being caught by
+# ThreadPoolExecutor's worker→future.result() plumbing as SystemExit.
+# Round-8 review fix.
+try:
+    import pyarrow.parquet as _pq
+except ImportError:
+    print(
+        "ERROR: pyarrow required. `pip install pyarrow`.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
 DATE_PART_PATTERN = re.compile(r"metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
 
@@ -88,23 +101,23 @@ def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
     Returns ``None`` if the file has no readable timestamp — caller
     MUST NOT copy it to hour=00 (physical move would be irrecoverable).
     """
-    try:
-        import pyarrow.parquet as pq
-    except ImportError:
-        print("ERROR: pyarrow required. pip install pyarrow", file=sys.stderr)
-        sys.exit(2)
-
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj["Body"].read()
-    pf = pq.ParquetFile(io.BytesIO(body))
+    pf = _pq.ParquetFile(io.BytesIO(body))
     available_names = set(pf.schema_arrow.names)
     wanted = [c for c in ("timestamp", "initial_event_time") if c in available_names]
     if not wanted:
         return None
-    table = pf.read(columns=wanted)
+    # First batch of ONLY the wanted columns — O(one row group ×
+    # wanted-columns) not O(whole file). Round-8 review fix.
+    try:
+        batch = next(pf.iter_batches(batch_size=1, columns=wanted))
+    except StopIteration:
+        return None
     for candidate in wanted:
-        if table.num_rows > 0:
-            ts = table.column(candidate)[0].as_py()
+        col = batch.column(candidate)
+        if len(col) > 0:
+            ts = col[0].as_py()
             if ts is not None:
                 return ts.strftime("%H")
     return None
