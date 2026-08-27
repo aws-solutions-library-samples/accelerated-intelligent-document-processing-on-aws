@@ -759,7 +759,8 @@ const AnnotationWorkspace = (): React.JSX.Element => {
               {selected && !selected.reviewObjectKey && selected.labelSource && (
                 <Alert type="success" header="Already ground truth">
                   This document carries authored ground truth, so there is nothing to draft-label or review — draft labeling skips it
-                  deliberately, and nothing here will overwrite it. You can still open it below to inspect or correct the values.
+                  deliberately, and nothing here will overwrite it. You can still correct it below, including its class; saving writes the
+                  ground truth directly rather than recording a review, because there is no draft here to confirm.
                 </Alert>
               )}
               {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}
@@ -770,8 +771,26 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                   inputKey={selected.inputKey}
                   objectKey={selected.objectKey}
                   sections={selected.sections ?? []}
-                  isReadOnly={!canAnnotate || !selected.reviewObjectKey}
-                  onSave={handleSave}
+                  /* Role only, matching TestSetDocumentDetail. A missing review
+                     record used to force read-only here too, so an Admin opening a
+                     document that already carries authored ground truth got a
+                     disabled class dropdown reading "You do not have permission to
+                     change this class" — attributing a queue-state condition to
+                     permissions, two lines under an alert promising they could
+                     "correct the values" ([#674]). The review record gates the
+                     review WORKFLOW (claim, release, mark reviewed), which is
+                     handled separately above; it does not gate editing. */
+                  isReadOnly={!canAnnotate}
+                  /* Route through the review API only when there IS a review to
+                     complete. completeSectionReview requires reviewObjectKey, so
+                     leaving it wired for an authored-ground-truth document would let
+                     someone edit and then lose the work to "no review record yet" on
+                     save. Falling back to the editor's direct-to-S3 write is what
+                     TestSetDocumentDetail already does, and it is the semantically
+                     correct path here: there is no draft to confirm, nothing to tag
+                     reviewed-human, and no confidence-curve signal to record for a
+                     label a human authored in the first place. */
+                  onSave={selected.reviewObjectKey ? handleSave : undefined}
                   onSaved={handleSaved}
                   saveButtonText="Save & next in queue"
                   testSetId={testSetId}
