@@ -4635,7 +4635,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4707,7 +4707,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4769,7 +4769,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4829,7 +4829,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -4890,7 +4890,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           storage.location.template: !Sub
@@ -4944,7 +4944,7 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,NOW+1YEAR"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
           projection.hour.type: "integer"
@@ -5404,6 +5404,7 @@ Resources:
     # against the freshly-created table on the retry).
     DependsOn:
       - MeteringHourMigrationCustomResource
+      - MeteringTable
       - MeteringHourlyTable
       - MeteringDailyTable
       - MeteringDocsHourlyTable
@@ -5441,6 +5442,7 @@ Resources:
     # See the hourly schedule above for the DependsOn rationale.
     DependsOn:
       - MeteringHourMigrationCustomResource
+      - MeteringTable
       - MeteringHourlyTable
       - MeteringDailyTable
       - MeteringDocsHourlyTable

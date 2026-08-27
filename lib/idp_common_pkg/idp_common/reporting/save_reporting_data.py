@@ -902,143 +902,19 @@ class SaveReportingData:
         self._pricing_cache = pricing_map
         return pricing_map
 
-    def _create_or_update_metering_glue_table(self, schema: pa.Schema) -> bool:
-        """
-        Create or update a Glue table specifically for metering data.
-
-        Args:
-            schema: PyArrow schema for the metering table
-
-        Returns:
-            True if table was created or updated, False otherwise
-        """
-        if not self.glue_client or not self.database_name:
-            logger.debug(
-                "Glue client or database name not configured, skipping table creation"
-            )
-            return False
-
-        table_name = "metering"
-
-        # Convert schema to Glue columns
-        columns = self._convert_schema_to_glue_columns(schema)
-
-        # Table input for create/update
-        table_input = {
-            "Name": table_name,
-            "Description": "Metering data table for document processing costs and usage",
-            "StorageDescriptor": {
-                "Columns": columns,
-                "Location": f"s3://{self.reporting_bucket}/metering/",
-                "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
-                "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
-                "Compressed": True,
-                "SerdeInfo": {
-                    "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
-                },
-            },
-            "PartitionKeys": [
-                {"Name": "date", "Type": "string"},
-                {"Name": "hour", "Type": "string"},
-            ],
-            "TableType": "EXTERNAL_TABLE",
-            "Parameters": {
-                "projection.enabled": "true",
-                "projection.date.type": "date",
-                "projection.date.format": "yyyy-MM-dd",
-                "projection.date.range": "2020-01-01,NOW",
-                "projection.date.interval": "1",
-                "projection.date.interval.unit": "DAYS",
-                "projection.hour.type": "integer",
-                "projection.hour.range": "0,23",
-                "projection.hour.digits": "2",
-                "storage.location.template": (
-                    f"s3://{self.reporting_bucket}/metering/"
-                    f"date=${{date}}/hour=${{hour}}/"
-                ),
-            },
-        }
-
-        try:
-            # Check if table exists
-            existing_table_response = self.glue_client.get_table(
-                DatabaseName=self.database_name, Name=table_name
-            )
-
-            # Table exists, check if we need to update it
-            existing_table = existing_table_response["Table"]
-            existing_columns = existing_table["StorageDescriptor"]["Columns"]
-
-            # Check if new columns need to be added
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
-
-            # Check if location has changed
-            existing_location = existing_table["StorageDescriptor"].get("Location", "")
-            new_location = table_input["StorageDescriptor"]["Location"]
-
-            # Check if columns or location have changed
-            columns_changed = not new_column_names.issubset(existing_column_names)
-            location_changed = existing_location != new_location
-
-            if columns_changed or location_changed:
-                if columns_changed:
-                    logger.info(f"Updating Glue table {table_name} with new columns")
-                if location_changed:
-                    logger.info(
-                        f"Updating Glue table {table_name} with new location: {existing_location} -> {new_location}"
-                    )
-
-                self.glue_client.update_table(
-                    DatabaseName=self.database_name, TableInput=table_input
-                )
-                logger.info(f"Successfully updated Glue table {table_name}")
-                return True
-            else:
-                logger.debug(f"Glue table {table_name} already up to date")
-                return True
-
-        except Exception as e:
-            if "EntityNotFoundException" in str(e):
-                # Table doesn't exist, create it
-                logger.info(f"Creating new Glue table {table_name} for metering data")
-                try:
-                    self.glue_client.create_table(
-                        DatabaseName=self.database_name, TableInput=table_input
-                    )
-                    logger.info(f"Successfully created Glue table {table_name}")
-                    return True
-                except Exception as create_error:
-                    if "AlreadyExistsException" in str(create_error):
-                        # Race condition - table was created by another process
-                        logger.info(
-                            f"Glue table {table_name} already exists (created by another process)"
-                        )
-                        return True
-                    else:
-                        logger.error(
-                            f"Error creating Glue table {table_name}: {str(create_error)}"
-                        )
-                        return False
-            else:
-                logger.error(
-                    f"Error checking/updating Glue table {table_name}: {str(e)}"
-                )
-                return False
-
     def _get_unit_cost(self, service_api: str, unit: str) -> float:
         """
-        Get the unit cost for a specific service API and unit using the configuration dictionary
-        (same source as the UI).
+        Get the unit cost for a specific service API and unit using the
+        configuration dictionary (same source as the UI).
 
         Args:
-            service_api: The AWS service API (e.g., 'bedrock/model-id', 'textract/operation')
+            service_api: The AWS service API (e.g., 'bedrock/model-id',
+                'textract/operation')
             unit: The unit of measurement (e.g., 'inputTokens', 'pages')
 
         Returns:
             Unit cost in USD, or 0.0 if not found
         """
-        # Get pricing from configuration dictionary
         pricing_map = self._get_pricing_from_config()
 
         # Try exact match first
@@ -1063,13 +939,14 @@ class SaveReportingData:
                         or unit_lower in unit_key_lower
                     ):
                         logger.info(
-                            f"Using partial match for {service_api}/{unit}: {service_key}/{unit_key} = ${cost}"
+                            f"Using partial match for {service_api}/{unit}: "
+                            f"{service_key}/{unit_key} = ${cost}"
                         )
                         return cost
 
-        # Log when no cost mapping is found
         logger.warning(
-            f"No unit cost mapping found for service_api='{service_api}', unit='{unit}'. Using $0.0"
+            f"No unit cost mapping found for service_api='{service_api}', "
+            f"unit='{unit}'. Using $0.0"
         )
         return 0.0
 
@@ -1665,7 +1542,14 @@ class SaveReportingData:
             validation_date = datetime.datetime.now()
             date_partition = validation_date.strftime("%Y-%m-%d")
 
-        document_id = rule_validation_data.get("document_id", document.id)
+        # Round-12 review fix: dict.get() only returns the default when the
+        # KEY is absent; if the JSON payload has ``"document_id": null``,
+        # dict.get returns None even with a fallback. And document.id itself
+        # can be None. Coalesce explicitly so re.sub() below doesn't
+        # TypeError on None and abort rule-validation saving for the doc.
+        document_id = (
+            rule_validation_data.get("document_id") or document.id or "unknown"
+        )
         escaped_doc_id = re.sub(r"[/\\]", "_", document_id)
 
         # Prepare document summary

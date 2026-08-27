@@ -628,41 +628,9 @@ class TestMeteringWriteTimePartitioning:
         for r in records:
             assert r["initial_event_time"] == r["timestamp"]
 
-    def test_glue_table_declares_date_and_hour_partitions(self, reporting):
-        """Regression guard on the Glue table schema: both ``date`` and
-        ``hour`` must be partition keys, with partition projection
-        configured for both — otherwise Athena can't discover the new
-        hour=HH sub-partitions.
-        """
-        mock_glue = MagicMock()
-        # Force the create path (module's except branch keys on the
-        # EntityNotFoundException substring).
-        mock_glue.get_table.side_effect = Exception(
-            "EntityNotFoundException: table does not exist"
-        )
-        reporting.glue_client = mock_glue
-        reporting.database_name = "test-db"
-
-        import pyarrow as pa
-
-        schema = pa.schema(
-            [
-                ("document_id", pa.string()),
-                ("timestamp", pa.timestamp("ms")),
-                ("initial_event_time", pa.timestamp("ms")),
-            ]
-        )
-        reporting._create_or_update_metering_glue_table(schema)
-
-        call = mock_glue.create_table.call_args
-        table_input = call.kwargs["TableInput"]
-        partition_keys = {p["Name"] for p in table_input["PartitionKeys"]}
-        assert partition_keys == {"date", "hour"}, (
-            f"Expected {{'date', 'hour'}} partition keys, got {partition_keys!r}"
-        )
-        params = table_input["Parameters"]
-        assert params.get("projection.hour.type") == "integer"
-        assert params.get("projection.hour.range") == "0,23"
-        assert "hour=${hour}" in params.get("storage.location.template", ""), (
-            "storage.location.template must include hour"
-        )
+    # Round-12 cleanup: removed test_glue_table_declares_date_and_hour_partitions
+    # — the `_create_or_update_metering_glue_table` method it exercised was
+    # dead code (metering table is now managed by CFN in template.yaml as
+    # `MeteringTable`). The partition-keys invariant is now guarded by
+    # CloudFormation lint on the template rather than by a Python-side unit
+    # test. See docs/reporting-database.md for the authoritative shape.

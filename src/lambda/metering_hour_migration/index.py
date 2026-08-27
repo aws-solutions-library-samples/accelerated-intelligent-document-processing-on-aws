@@ -342,20 +342,12 @@ def _migrate_one(bucket: str, key: str) -> str:
       need to explicitly list the ``hour=00`` subprefix and re-infer
       hour from each file's own timestamp column.
     """
-    # Sanity-check the key shape BEFORE reading the parquet body: a
+    # Sanity-check the key shape BEFORE reading the parquet body — a
     # stray non-metering file (legacy Athena query output, etc.) has
-    # nothing to migrate and shouldn't block the upgrade. Pass a
-    # placeholder hour just to run the shape check; the real hour
-    # comes from the parquet body below.
-    if _new_key(key, "00") is None:
-        # Stray parquet under metering/ that doesn't match
-        # date=YYYY-MM-DD/*.parquet (e.g. legacy Athena query output
-        # accidentally written under this prefix). Skipping is safer
-        # than raising: the file isn't a metering row, so it can't be
-        # affected by the partitioning change, and blowing up the
-        # migration would block every stack upgrade because of one
-        # unrelated object. Log so an operator can inspect. Round-6
-        # review fix.
+    # nothing to migrate and shouldn't cost an S3 GetObject to
+    # discover. Cheap regex match on the key string; no S3 call.
+    # Round-6 + round-12 review fixes.
+    if not DATE_PART_PATTERN.match(key):
         logger.info(
             f"Skipping stray non-metering parquet key: {key} "
             f"(no date=YYYY-MM-DD/ prefix)"
@@ -371,13 +363,8 @@ def _migrate_one(bucket: str, key: str) -> str:
         # Round-6 review fix.
         return "fallback"
     target = _new_key(key, hour)
-    if target is None:
-        # Round-9 review fix: was ``assert target is not None`` which is
-        # a no-op under PYTHONOPTIMIZE. Raising RuntimeError keeps the
-        # invariant enforced regardless of the interpreter flags.
-        raise RuntimeError(
-            f"shape re-check failed after placeholder-hour probe passed: {key!r}"
-        )
+    # ``target`` is guaranteed non-None here (same DATE_PART_PATTERN
+    # as the shape check above), so we don't guard for None.
     if target == key:
         return "moved"  # already migrated (defensive)
     # Defensive collision check — round-8 review fix. If a prior run

@@ -341,6 +341,14 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
         return {"skipped": True, "reason": "no_control_lambdas"}
 
     hour_start, hour_end = _hour_window(target_date, target_hour)
+
+    # Warm the pricing cache in the main thread BEFORE fan-out. Round-12
+    # review fix: without this, the first 10 worker threads all see
+    # `_bedrock_pricing_map is None` and race to load, doing up to 10
+    # duplicate ConfigurationManager.get_merged_pricing() calls. A single
+    # main-thread load populates the cache before the pool starts.
+    _load_bedrock_pricing_from_config()
+
     # Parallelize CW fetches — round-10 review fix. Each per-function
     # call round-trips 5+ CloudWatch APIs (Duration, Invocations,
     # AthenaBytes ListMetrics + GetMetricData, BedrockTokens ×2). At
@@ -502,19 +510,28 @@ def _hourly_ever_written(before_date: str) -> bool:
         f'SELECT 1 FROM "{DATABASE}"."metering_hourly" '  # nosec B608
         f"WHERE date < '{before_date}' LIMIT 1"  # nosec B608
     )
-    try:
-        rows = _run_athena_query_with_results(sql, emit_self_cost=False)
-        return bool(rows)
-    except Exception as e:
-        # If the query itself fails (table missing, transient), assume
-        # NOT deploy-day so the guard fires on empty hourly — safer to
-        # fail loudly than to accidentally lock in a zero daily.
-        logger.warning(
-            f"_hourly_ever_written probe failed ({e}); assuming hourly "
-            f"has been written before (defensive: guard will fire on "
-            f"empty hourly for target date)."
-        )
-        return True
+    # Retry a couple times before the defensive default-True — round-12
+    # review fix. On the first-daily-after-deploy path, an Athena
+    # throttle would otherwise mis-classify a legitimate deploy-day as
+    # "hourly-has-been-written", spuriously firing the guard. Two
+    # retries survive a single-transient throttle without moving to
+    # the default. Falls back to True on persistent failure so we
+    # don't accidentally write and lock a zero daily.
+    last_error: Optional[BaseException] = None
+    for attempt in range(3):
+        try:
+            rows = _run_athena_query_with_results(sql, emit_self_cost=False)
+            return bool(rows)
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(1 + attempt)  # 1s, 2s
+    logger.warning(
+        f"_hourly_ever_written probe failed after 3 attempts ({last_error!r}); "
+        f"defaulting to True (guard will fire on empty hourly for target "
+        f"date rather than silently writing a 0-doc daily)."
+    )
+    return True
 
 
 def _require_hourly_matches_raw_metering(target_date: str) -> None:
@@ -1038,13 +1055,19 @@ def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
     yields NaN, which would poison an int() cast downstream. Empty
     Values (Lambda didn't hit that stat this hour) collapse to 0.0.
     All queries use ``Period=3600``, so at most one value per query.
+
+    Round-12 review fix: ACCUMULATES on same Id rather than overwriting.
+    We don't paginate GetMetricData today so duplicates don't happen in
+    practice, but if pagination is added later, splitting one query's
+    values across pages would silently drop everything but the last
+    page under the previous overwrite semantic.
     """
     result: Dict[str, float] = {}
     for r in response.get("MetricDataResults", []):
         values = [
             v for v in (r.get("Values") or []) if v is not None and not math.isnan(v)
         ]
-        result[r["Id"]] = float(math.fsum(values))
+        result[r["Id"]] = result.get(r["Id"], 0.0) + float(math.fsum(values))
     return result
 
 
@@ -1574,6 +1597,12 @@ def _wait_for_athena(
                 "no viable alternative",
                 "hive_metastore_error",  # schema mismatch
                 "invalid_view",
+                # Target table missing → CFN dependency ordering issue,
+                # not a transient failure. DLQ immediately instead of
+                # burning both async retries. Round-12 review fix.
+                "table_not_found",
+                "does not exist",
+                "entitynotfoundexception",
             )
             retryable_markers = (
                 "throttling",
