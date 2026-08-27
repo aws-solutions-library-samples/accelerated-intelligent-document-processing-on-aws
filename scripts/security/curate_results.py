@@ -238,8 +238,22 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
         s = i.get("status", "unknown")
         matrix[p][s] = matrix[p].get(s, 0) + 1
 
-    open_high = [i for i in issues if prio(i) == "HIGH" and i.get("status") == "Open"]
-    gate = "PASS ✅" if not open_high else f"FAIL ❌ ({len(open_high)} open HIGH)"
+    # 'reopened' blocks the same as 'Open'. SRT assigns it when a finding it
+    # previously recorded as resolved/suppressed is detected again, and counts
+    # it in its own "N issues need attention" total — so treating only 'Open'
+    # as gate-blocking published a PASS while a re-detected HIGH sat in the
+    # priority × status matrix one section below. Only 'suppressed'/'resolved'
+    # are accepted dispositions. Matches the CI gate in `scripts/srt/run.py`.
+    open_high = [
+        i
+        for i in issues
+        if prio(i) == "HIGH" and (i.get("status") or "").lower() in ("open", "reopened")
+    ]
+    gate = (
+        "PASS ✅"
+        if not open_high
+        else f"FAIL ❌ ({len(open_high)} open/reopened HIGH)"
+    )
 
     # Which analyzers actually ran, and how much each contributed — the
     # "what was tested" record for a static-analysis aggregate.
@@ -265,12 +279,13 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
         "Static analysis (Bandit, Semgrep, Checkov), dependency inventory "
         "(Syft), and the security-matrix review, aggregated by the "
         "[Sample Security Review Tool](https://github.com/aws-samples/sample-security-review-tool). "
-        "The gate is **open HIGH** findings only; lower tiers are reported as "
-        "counts (they are dominated by tracked third-party/vendored code).",
+        "The gate is HIGH findings that are **open or reopened** (i.e. not "
+        "suppressed or resolved); lower tiers are reported as counts (they are "
+        "dominated by tracked third-party/vendored code).",
         "",
         "## Summary",
         "",
-        f"- **Gate (open HIGH findings):** {gate}",
+        f"- **Gate (open/reopened HIGH findings):** {gate}",
         f"- **CI-visible findings:** {len(issues)}",
         f"- **Source:** {source_desc}"
         + (
@@ -322,7 +337,8 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
             "## HIGH findings by check (disposition)",
             "",
             "Every HIGH check-ID flagged, with how many are in each status. "
-            "A green gate means all are resolved or suppressed (0 Open).",
+            "A green gate means all are resolved or suppressed (0 Open and "
+            "0 reopened).",
             "",
             "| Source | Check | " + " | ".join(statuses) + " |",
             "|--------|-------|" + "|".join(["--:"] * len(statuses)) + "|",
@@ -335,7 +351,7 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
 
     if open_high:
         lines += [
-            "## ❌ Open HIGH findings (gate-blocking)",
+            "## ❌ Open/reopened HIGH findings (gate-blocking)",
             "",
             "| Source | Check | Path | Line | Issue |",
             "|--------|-------|------|-----:|-------|",
@@ -938,7 +954,7 @@ def write_manifest(out_dir: Path, version: str, date: str, per_test: dict) -> No
         "| Test | Gate | Detail |",
         "|------|------|--------|",
         f"| [SRT — SAST & deps](./srt.md) | {gate_of('srt')} | "
-        f"{per_test.get('srt', {}).get('open_high', '?')} open HIGH of "
+        f"{per_test.get('srt', {}).get('open_high', '?')} open/reopened HIGH of "
         f"{per_test.get('srt', {}).get('total', '?')} tracked |",
         f"| [RBAC — static](./rbac-static.md) | {gate_of('rbac_static')} | "
         f"{per_test.get('rbac_static', {}).get('fail', '?')} fail, "

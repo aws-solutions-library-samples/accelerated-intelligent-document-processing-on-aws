@@ -114,6 +114,18 @@ suites:
   # assessment completes on v0.5.16 (see corefast group note). This is the clean
   # apples-to-apples version A/B grid.
   corefast: {cells: "core_cells", docs: "corefast", repeats: 1}
+  # coresynth: the cross-config grid the config-guidance paper reports — the full
+  # 10-cell core grid over the exact-ground-truth SYNTHETIC list docs only. Same
+  # cells as `core` but without the two reference corpora (realkie, ocr_bench),
+  # which are 20-doc test sets and add 400 document runs for accuracy numbers the
+  # paper reports separately.
+  coresynth: {cells: "core_cells", docs: "core_synth", repeats: 1}
+  # intconf: re-verifies THE standing hazard this study warns about — integrated
+  # confidence + simple extraction silently dropping list rows (config-guidance
+  # §2/§5/§6). It is the one finding a single run cannot settle (extraction is
+  # non-deterministic and the failure is a partial list, not an error), so it gets
+  # repeats and the `separate` cell alongside as a same-doc control.
+  intconf: {cells: [core-tt-simple-int, core-tt-simple-sep], docs: [longdesc_100], repeats: 4}
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}
   # cost: purpose-built to DETECT COST DIFFERENCES between configs with confidence.
