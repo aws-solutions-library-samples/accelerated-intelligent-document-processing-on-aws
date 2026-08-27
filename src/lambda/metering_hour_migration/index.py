@@ -184,8 +184,10 @@ def _migrate(event, context, bucket: str):
                 if result == "stray":
                     skipped_stray += 1
                 elif result == "fallback":
+                    # File NOT copied — left at its original old-layout
+                    # location. Operator retry will re-list it via the
+                    # lister's ``not HOUR_KEY_PATTERN`` filter.
                     hour_fallbacks += 1
-                    moved += 1
                 else:
                     moved += 1
             except Exception as e:
@@ -202,25 +204,22 @@ def _migrate(event, context, bucket: str):
                 f"Check CloudWatch logs, fix root cause, then re-run manually."
             ),
         )
-    # A file whose hour we couldn't infer is a systemic hazard (KMS role
-    # broken, schema drift, wrong pyarrow) — every such file lands in
-    # hour=00 permanently, hiding hour-precision on real data. Round-6
-    # fix: fail loudly rather than silently parking. Operator can rerun
-    # after fixing the underlying issue (already-copied hour=00 files
-    # will need `scripts/migrate_metering_hour_partition.py --rescan`
-    # once we ship it; today, the error message points at CloudWatch
-    # logs for per-file details).
+    # A file whose hour we couldn't infer stays at its original old-layout
+    # location — we deliberately do NOT copy it to hour=00 because a
+    # mis-placed file is unrescuable (the lister's /hour= exclusion won't
+    # yield it on a re-run). Round-6+round-7 review fixes.
     if hour_fallbacks:
         return _send(
             event,
             context,
             "FAILED",
             reason=(
-                f"Migrated {moved}/{total} files but {hour_fallbacks} had "
-                f"unreadable hour data and were parked at hour=00. This "
-                f"usually means KMS/IAM misconfiguration, schema drift, or "
-                f"corrupted parquet. Check per-file WARN logs, fix the root "
-                f"cause, then re-run the migration."
+                f"Migrated {moved}/{total} files; {hour_fallbacks} files "
+                f"could not have their hour inferred and were LEFT IN PLACE "
+                f"(not copied). This usually means KMS/IAM misconfiguration, "
+                f"schema drift, or corrupted parquet. Check per-file WARN "
+                f"logs, fix the root cause, then re-run the migration — the "
+                f"leftover files will be re-listed and retried."
             ),
         )
     reason = f"Migrated {moved} metering parquet files into hour-partitioned layout"
@@ -298,6 +297,14 @@ def _migrate_one(bucket: str, key: str) -> str:
         )
         return "stray"
     hour, inferred = _infer_hour(bucket, key)
+    if not inferred:
+        # DO NOT copy — leave the file at its original location. A copy
+        # to hour=00 would be a physical, irrecoverable data-loss event
+        # (the lister excludes /hour=NN/ keys on retry so the mis-placed
+        # file could not be rescued). The outer loop escalates to
+        # FAILED; operator fixes the underlying issue and re-runs.
+        # Round-6 review fix.
+        return "fallback"
     target = _new_key(key, hour)
     assert target is not None, "shape re-check should not fail after placeholder passed"
     if target == key:
@@ -308,45 +315,59 @@ def _migrate_one(bucket: str, key: str) -> str:
         CopySource={"Bucket": bucket, "Key": key},
     )
     s3_client.delete_object(Bucket=bucket, Key=key)
-    return "fallback" if not inferred else "moved"
+    return "moved"
 
 
 def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
     """Read the first row's timestamp column and return
     ``(hour_HH, inferred)``. ``inferred=False`` means we couldn't read
-    a real timestamp and parked at ``"00"`` — the caller escalates that
-    to a migration-failure so the operator sees it rather than silently
-    losing hour precision.
+    a real timestamp — caller MUST NOT copy this file; the outer loop
+    escalates to a migration-failure so the operator sees it rather
+    than silently losing hour precision.
 
-    Reads only the ``timestamp`` and ``initial_event_time`` columns via
-    ``pq.read_table(..., columns=[...])`` and then, if that returns no
-    rows, no-ops the fallback — avoids downloading the whole 50 MB
-    parquet body just to peek at row 0 of one column. Round-6 review
-    fix for OOM risk at 50 concurrent 50 MB reads in a 3008 MB Lambda.
+    Uses ``pq.ParquetFile`` to inspect the schema first, then reads only
+    the timestamp column(s) that actually exist. Pre-Phase-1 metering
+    parquets have only ``timestamp`` (queue-time); Phase-1+ have both
+    ``timestamp`` (completion-time) and ``initial_event_time``.
+    Requesting a missing column raises ArrowInvalid, which would fail
+    every legacy file — the round-6 blocker fix uses runtime schema
+    detection instead. Also keeps the memory-savings intent: pyarrow
+    reads only the requested column at Parquet-column granularity.
     """
     assert _pq is not None, "pyarrow import guard should have caught this"
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=key)
         body = obj["Body"].read()
-        # Only read the two columns we care about — pyarrow skips the
-        # rest at Parquet-column granularity, so this is O(size of
-        # timestamp columns) not O(whole file).
-        table = _pq.read_table(
-            io.BytesIO(body),
-            columns=["timestamp", "initial_event_time"],
-        )
-        for candidate in ("timestamp", "initial_event_time"):
-            if candidate in table.column_names and table.num_rows > 0:
+        pf = _pq.ParquetFile(io.BytesIO(body))
+        available_names = set(pf.schema_arrow.names)
+        wanted = [
+            c for c in ("timestamp", "initial_event_time") if c in available_names
+        ]
+        if not wanted:
+            logger.warning(
+                f"infer_hour: {key} has no timestamp/initial_event_time "
+                f"column (schema: {sorted(available_names)}) — cannot "
+                f"infer hour; leaving file in place for operator to inspect"
+            )
+            return ("00", False)
+        table = pf.read(columns=wanted)
+        for candidate in wanted:  # honours the wanted-order preference
+            if table.num_rows > 0:
                 ts = table.column(candidate)[0].as_py()
                 if ts is not None:
                     return (ts.strftime("%H"), True)
+        # Empty table (no rows) — can't infer.
+        logger.warning(
+            f"infer_hour: {key} has zero rows in {wanted} — cannot "
+            f"infer hour; leaving file in place for operator to inspect"
+        )
     except Exception as e:
         # Log with enough detail for the operator to correlate — a
         # KMS/IAM issue looks identical to a corrupted-parquet issue in
         # the log summary otherwise.
         logger.warning(
             f"infer_hour failed for {key} ({type(e).__name__}: {e}) — "
-            f"parking in hour=00 pending migration-failure escalation"
+            f"leaving file in place for operator to inspect"
         )
     return ("00", False)
 

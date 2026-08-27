@@ -1114,9 +1114,15 @@ class TestBedrockPricing:
         p = rollup._bedrock_price_for_model("us.anthropic.claude-sonnet-4-20250514")
         assert p["in"] == 3.0e-6
 
-    def test_unknown_model_falls_back(self, rollup):
+    def test_unknown_model_falls_back_to_zero(self, rollup):
+        """Round-7 review fix: an unknown model must NOT get Sonnet
+        defaults (which silently overcounts Nova-Lite by 50× and
+        undercounts Opus by 5×). Instead it gets 0.0 — the missing
+        row / zero cost is a clearer signal than a wrong-by-1×-to-50×
+        number. An ERROR log surfaces the config gap.
+        """
         p = rollup._bedrock_price_for_model("some-brand-new-model")
-        assert p == rollup.DEFAULT_BEDROCK_PRICE_PER_TOKEN
+        assert p == {"in": 0.0, "out": 0.0}
 
     def test_none_model_falls_back(self, rollup):
         p = rollup._bedrock_price_for_model(None)

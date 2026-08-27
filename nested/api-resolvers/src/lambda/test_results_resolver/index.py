@@ -1561,19 +1561,24 @@ def _get_cost_data_from_athena(test_run_id):
     like_prefix = _sql_like_prefix(test_run_id, "test_run_id")
     _validate_sql_input(database, "database")
 
-    # Extract date from test_run_id (format: name-YYYYMMDD-HHMMSS).
-    # Convert to date partition format: YYYY-MM-DD.
+    # Date filter: partition-prune metering to a window around run_date.
     #
-    # As of Phase 1 (Reporting SQL layer), the `metering` table's `date`
-    # partition means COMPLETION time (write time), not queue time. A doc
-    # that pauses in HITL review, gets queued during a backup, or crosses
-    # a weekend can complete arbitrarily many days after the run started.
-    # The previous {run_date, run_date+1} window would silently miss
-    # those and under-count the test run's cost. We now widen the
-    # partition filter to a generous window (14 days) and preserve the
-    # test_run_id LIKE filter as the actual scoping predicate — the
-    # LIKE prefix is unique per run so the widened partition read
-    # scans more Parquet but returns no false rows. Round-6 review fix.
+    # As of Phase 1 (Reporting SQL layer), `metering.date` means
+    # COMPLETION time (write time), not queue time. A doc that pauses
+    # in HITL review, gets queued during a backup, crosses a weekend,
+    # or is retried much later can complete arbitrarily far after the
+    # run started. The previous 2-day window silently under-counted
+    # any such run.
+    #
+    # Round-7 review fix: use a BOUNDED-BUT-GENEROUS lower edge
+    # (run_date-1) and an UNBOUNDED upper edge (>= run_date-1). The
+    # test_run_id LIKE prefix is unique per run, so scanning all
+    # partitions from run_date-1 forward returns exactly the run's
+    # rows with no false positives — the LIKE is the scoping
+    # predicate, not the date window. `date >= X` prunes partitions
+    # older than the run's start (which cannot contain its metering
+    # rows) without capping the completion-tail. Athena partition
+    # projection uses this range for pruning.
     date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
@@ -1581,21 +1586,16 @@ def _get_cost_data_from_athena(test_run_id):
 
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
-        # Widen to +14 days forward to cover HITL / queue-delay tails.
-        # Preserving 1 day BACK too, defensively — a doc queued at 23:59
-        # and completed at 00:01 has queue-time == run_date but its
-        # metering row's `date` may be run_date+1 pre-Phase-1, or
-        # sometimes run_date-1 for the reverse edge case at cutover.
-        window_days = [
-            (run_date + timedelta(days=offset)).strftime("%Y-%m-%d")
-            for offset in range(-1, 15)
-        ]
-        date_str_list = ",".join(f"'{d}'" for d in window_days)
-        date_filter = f"AND date IN ({date_str_list})"
+        # -1 day defends the reverse edge case (a doc queued 23:59 UTC
+        # on run_date-1 completed at 00:01 — its metering row's `date`
+        # may be run_date-1). No upper bound so a 3-month HITL tail is
+        # still included.
+        lower_edge = (run_date - timedelta(days=1)).strftime("%Y-%m-%d")
+        date_filter = f"AND date >= '{lower_edge}'"
         logger.info(
-            f"Using date filter for cost query: {len(window_days)}-day window "
-            f"around {run_date.strftime('%Y-%m-%d')} "
-            f"(Phase 1 metering.date = completion time)"
+            f"Using date filter for cost query: date >= '{lower_edge}' "
+            f"(unbounded upper edge to catch HITL / long-tail completions; "
+            f"test_run_id LIKE is the actual scoping predicate)"
         )
 
     query = f"""

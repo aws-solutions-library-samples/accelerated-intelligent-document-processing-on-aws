@@ -86,6 +86,11 @@ lambda_client = boto3.client("lambda")
 # re-issuing get_function_configuration per (function, hour) call.
 # Cache: function_name -> (memory_mb, architecture). Architecture defaults
 # to "x86_64" when the SDK doesn't return it or the lookup fails.
+#
+# Cleared at the start of every ``handler`` invocation so a CFN update
+# that changes a function's MemorySize/Architecture between rollups is
+# picked up on the next fire — see the ``_lambda_memory_cache.clear()``
+# call in ``handler``.
 _lambda_memory_cache: Dict[str, Tuple[int, str]] = {}
 
 
@@ -96,6 +101,14 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     console test) do the more common thing without needing to remember
     the payload shape.
     """
+    # Reset per-invocation caches — round-7 review fix. The Lambda-memory
+    # cache is module-scope for per-invocation dedup (avoids N GetFunction
+    # calls when computing rows for N Lambdas within one rollup), but
+    # DOES NOT survive across invocations: a CFN update between rollups
+    # can change a function's MemorySize/Architecture, and the warm
+    # container would otherwise cache the stale value forever.
+    _lambda_memory_cache.clear()
+
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
     # field on scheduled events) rather than wall-clock. This matters on
@@ -910,14 +923,20 @@ def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
         archs = response.get("Architectures") or ["x86_64"]
         architecture = archs[0] if archs else "x86_64"
     except Exception as e:
+        # Fallback tuned to median of this stack's Lambdas (512 MB), not
+        # the AWS floor (128 MB). Round-7 review fix — 128 was up to
+        # ~24× under-count when a transient throttle hit a 3008 MB
+        # function; 512 is closer to typical and errs less. Still
+        # imperfect (exact memory varies), but bounded within ~2-3×
+        # rather than an order of magnitude.
         logger.warning(
             f"get_function_configuration failed for {function_name}: {e}. "
-            f"Assuming default 128 MB x86_64 — cost estimate may be low. "
+            f"Assuming default 512 MB x86_64 — cost estimate approximate. "
             f"Not caching; next call retries."
         )
         # DO NOT cache the fallback — a transient throttle would else
         # lock this Lambda's cost estimate wrong for the container's life.
-        return (128, "x86_64")
+        return (512, "x86_64")
     result = (memory_mb, architecture)
     _lambda_memory_cache[function_name] = result
     return result
@@ -1020,9 +1039,13 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     Lookup key is ``bedrock/<model>`` — matches the ``pricing[].name`` shape
     in ``config_library/pricing.yaml`` and the ``service_api`` written by
     ``save_reporting_data.save_metering_data``. If the model is missing
-    from the config or the config load itself failed, falls back to
-    ``DEFAULT_BEDROCK_PRICE_PER_TOKEN`` (Sonnet defaults) with a WARNING —
-    surfaces drift instead of silently pricing at $0.
+    from the config, returns ``{in: 0.0, out: 0.0}`` and emits an ERROR
+    log with a per-invocation CloudWatch metric — round-7 review fix:
+    previously fell back to Sonnet defaults (3e-6 in / 15e-6 out) which
+    silently OVER-counted Nova-Lite by ~50× and UNDER-counted Opus by
+    ~5×. 0.0 is a deliberate under-count so the dashboard's cost KPI
+    is never inflated by an unknown model — the ERROR + missing row
+    surfaces the config gap without misleading the dashboard.
     """
     if not model:
         return DEFAULT_BEDROCK_PRICE_PER_TOKEN
@@ -1031,15 +1054,16 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     entry = pricing_map.get(key)
     if entry:
         return {
-            "in": entry.get("inputTokens", DEFAULT_BEDROCK_PRICE_PER_TOKEN["in"]),
-            "out": entry.get("outputTokens", DEFAULT_BEDROCK_PRICE_PER_TOKEN["out"]),
+            "in": entry.get("inputTokens", 0.0),
+            "out": entry.get("outputTokens", 0.0),
         }
-    logger.warning(
-        f"No pricing entry for {key!r} in ConfigurationTable; falling back "
-        f"to Sonnet default. Add an entry to config_library/pricing.yaml "
-        f"to remove this warning."
+    logger.error(
+        f"No pricing entry for {key!r} in ConfigurationTable. "
+        f"control_plane_hourly will under-count this model's cost by the "
+        f"actual per-token rate. Add an entry to config_library/pricing.yaml "
+        f"and redeploy to fix."
     )
-    return DEFAULT_BEDROCK_PRICE_PER_TOKEN
+    return {"in": 0.0, "out": 0.0}
 
 
 def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
@@ -1082,13 +1106,24 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
                     continue
             if units:
                 loaded[service.name] = units
-        # ONLY cache on success — if the DynamoDB read returned zero
-        # entries, don't lock the container into $0/undefined pricing.
-        # A subsequent invocation retries and may find the table
-        # populated (e.g. after eventual consistency catches up).
-        _bedrock_pricing_map = loaded
-        logger.info(f"Loaded {len(loaded)} pricing entries from ConfigurationTable.")
-        return _bedrock_pricing_map
+        # ONLY cache on success WITH content — if the DynamoDB read
+        # returned zero entries (eventual consistency, empty custom
+        # config), don't lock the container into $0/undefined pricing.
+        # Next invocation retries. Round-7 review fix — the earlier
+        # comment said "only on success" but the code assigned
+        # unconditionally.
+        if loaded:
+            _bedrock_pricing_map = loaded
+            logger.info(
+                f"Loaded {len(loaded)} pricing entries from ConfigurationTable."
+            )
+            return _bedrock_pricing_map
+        logger.warning(
+            "ConfigurationTable returned 0 pricing entries; not caching. "
+            "Next invocation will retry. This invocation falls back to "
+            "hardcoded default pricing."
+        )
+        return {}
     except Exception as e:
         # DO NOT set _bedrock_pricing_map on failure — leave it as None
         # so the NEXT invocation retries. Only this invocation degrades
@@ -1131,13 +1166,17 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     ),
     (re.compile(r"chatwithdocument|chatstream"), "doc-chat"),
     # Policy discovery (more specific than 'config').
-    # Multi-doc discovery — an admin batch tool, distinct from schema
-    # (policy) discovery. Must precede the generic 'discovery' rule so
-    # MultiDocDiscoveryPrepareFunction / MultiDocDiscoveryEmbedFunction
-    # / etc. don't get lumped into policy-discovery.
+    # Multi-doc discovery — an admin batch tool.
     (re.compile(r"multidocdiscovery"), "multi-doc-discovery"),
-    # Policy (schema) discovery (more specific than 'config').
-    (re.compile(r"policydiscovery|discovery"), "policy-discovery"),
+    # Policy (schema) discovery. Round-7 review fix: tightened to match
+    # ONLY the specific ``policydiscovery`` / ``discoveryprocessor``
+    # shapes this codebase actually uses. The earlier bare ``discovery``
+    # fallback was a silent trap — any future Lambda with "discovery"
+    # in its logical ID (a doc-discovery agent, a resource-discovery
+    # cron, etc.) would get mis-labeled and have its cost attributed to
+    # policy-discovery. Add a more-specific rule ABOVE this one when a
+    # new discovery Lambda appears.
+    (re.compile(r"policydiscovery|discoveryprocessor"), "policy-discovery"),
     # Config CRUD — narrower than 'config' alone, requires 'resolver' suffix.
     (re.compile(r"config.*resolver"), "config-mgmt"),
     (re.compile(r"capacity"), "capacity-planner"),
@@ -1226,17 +1265,26 @@ def _partition_already_written(
         # Athena creates partitions on demand, so treating this as
         # not-written is correct on the first-invocation-after-deploy path.
         msg = str(e).lower()
-        # Narrow markers ONLY — earlier "does not exist" catch-all was too
-        # broad and would let a missing bucket / database / column / role
-        # error trigger fail-open, resulting in a duplicate INSERT against
-        # a populated partition. Round-6 review fix. If Athena/Glue adds a
-        # new error shape for missing tables, add it here explicitly.
+        # Match ONLY the specific table-missing error shapes Athena/Glue
+        # actually emit. Round-7 fix: added the single-quote
+        # fully-qualified form Athena uses in practice
+        # (`Table 'awsdatacatalog.<db>.<name>' does not exist`) —
+        # the round-6 narrowing only had backtick/double-quote forms,
+        # which never matched real Athena output. A broader "does not
+        # exist" substring would fail-open on missing bucket / database /
+        # column / role, so we still bind the phrase to the table name.
+        tbl = table.lower()
         table_missing_markers = (
             "table_not_found",
             "entitynotfoundexception",
             "table not found",
-            f"table `{table.lower()}` does not exist",
-            f'table "{table.lower()}" does not exist',
+            f"table `{tbl}` does not exist",
+            f'table "{tbl}" does not exist',
+            f"table '{tbl}' does not exist",
+            # Athena's real form includes the catalog+db prefix:
+            f".{tbl}' does not exist",
+            f".{tbl}` does not exist",
+            f'.{tbl}" does not exist',
         )
         if any(m in msg for m in table_missing_markers):
             logger.info(

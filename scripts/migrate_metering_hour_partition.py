@@ -59,7 +59,6 @@ from typing import Iterator, Optional
 
 import boto3
 
-
 HOUR_KEY_PATTERN = re.compile(r"/hour=\d{2}/")
 DATE_PART_PATTERN = re.compile(r"metering/date=(\d{4}-\d{2}-\d{2})/([^/]+\.parquet)$")
 
@@ -77,23 +76,34 @@ def iter_metering_parquet_keys(s3, bucket: str) -> Iterator[str]:
 def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
     """Read the first row's timestamp column and return its UTC hour as HH.
 
-    Falls back to ``initial_event_time`` if ``timestamp`` isn't present.
-    Returns ``None`` if the file has no rows or the columns are absent —
-    the caller decides whether to skip or park the file in ``hour=00``.
+    Uses ``ParquetFile.schema_arrow.names`` to detect which of
+    ``timestamp``/``initial_event_time`` actually exists in this file
+    (pre-Phase-1 parquets have only ``timestamp``, Phase-1+ have both),
+    then reads only the wanted column via ``columns=[...]``. Round-7
+    review fix: previously read the WHOLE parquet body with
+    ``columns=None``, holding up to 50 × full-parquet in memory at
+    50-worker concurrency; column projection makes memory O(timestamp
+    column) not O(whole file).
+
+    Returns ``None`` if the file has no readable timestamp — caller
+    MUST NOT copy it to hour=00 (physical move would be irrecoverable).
     """
     try:
         import pyarrow.parquet as pq
     except ImportError:
-        print(
-            "ERROR: pyarrow required. pip install pyarrow", file=sys.stderr
-        )
+        print("ERROR: pyarrow required. pip install pyarrow", file=sys.stderr)
         sys.exit(2)
 
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj["Body"].read()
-    table = pq.read_table(io.BytesIO(body), columns=None)
-    for candidate in ("timestamp", "initial_event_time"):
-        if candidate in table.column_names and table.num_rows > 0:
+    pf = pq.ParquetFile(io.BytesIO(body))
+    available_names = set(pf.schema_arrow.names)
+    wanted = [c for c in ("timestamp", "initial_event_time") if c in available_names]
+    if not wanted:
+        return None
+    table = pf.read(columns=wanted)
+    for candidate in wanted:
+        if table.num_rows > 0:
             ts = table.column(candidate)[0].as_py()
             if ts is not None:
                 return ts.strftime("%H")
@@ -109,13 +119,17 @@ def new_key(old_key: str, hour: str) -> Optional[str]:
     return f"metering/date={date_part}/hour={hour}/{filename}"
 
 
-def _process_one(
-    s3, bucket: str, key: str, dry_run: bool, default_hour: str
-) -> str:
+def _process_one(s3, bucket: str, key: str, dry_run: bool, default_hour: str) -> str:
     """Migrate a single key (called from the parallel pool).
 
     Returns one of: ``"moved"`` (or ``"dry-moved"``), ``"skipped"``,
-    ``"error"``. Errors log to stderr; they don't abort other workers.
+    ``"error"``, ``"unreadable"``. Errors and unreadable-hour cases log
+    to stderr; they don't abort other workers, but the top-level caller
+    treats a non-zero unreadable count as failure. Round-7 review fix:
+    previously silently parked unreadable files at ``default_hour``
+    ("00" by default), losing hour precision with no operator signal.
+    Now the file is LEFT IN PLACE and reported so the operator can fix
+    the underlying issue and re-run.
     """
     if HOUR_KEY_PATTERN.search(key):
         return "skipped"
@@ -125,7 +139,12 @@ def _process_one(
         print(f"  WARN read failed for {key}: {e}", file=sys.stderr)
         hour = None
     if hour is None:
-        hour = default_hour
+        print(
+            f"  UNREADABLE {key} — cannot infer hour; leaving in place. "
+            f"Fix the underlying issue (KMS/IAM/corruption) and re-run.",
+            file=sys.stderr,
+        )
+        return "unreadable"
 
     target = new_key(key, hour)
     if target is None:
@@ -158,19 +177,21 @@ def migrate(
     dry_run: bool,
     default_hour: str = "00",
     concurrency: int = 50,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Move every un-hour-partitioned metering parquet under ``bucket`` to
     its ``date=X/hour=HH/`` target — in parallel (copy-then-delete).
 
-    Returns (moved, skipped, errors).
+    Returns (moved, skipped, errors, unreadable). Files whose hour
+    cannot be inferred are LEFT IN PLACE and reported as unreadable —
+    operator must fix the underlying issue and re-run. See
+    ``_process_one`` for rationale.
     """
     s3 = boto3.client("s3")
     keys = list(iter_metering_parquet_keys(s3, bucket))
-    moved = skipped = errors = 0
+    moved = skipped = errors = unreadable = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = [
-            ex.submit(_process_one, s3, bucket, k, dry_run, default_hour)
-            for k in keys
+            ex.submit(_process_one, s3, bucket, k, dry_run, default_hour) for k in keys
         ]
         for f in as_completed(futures):
             outcome = f.result()
@@ -178,9 +199,11 @@ def migrate(
                 moved += 1
             elif outcome == "skipped":
                 skipped += 1
+            elif outcome == "unreadable":
+                unreadable += 1
             else:
                 errors += 1
-    return moved, skipped, errors
+    return moved, skipped, errors, unreadable
 
 
 def main() -> int:
@@ -198,7 +221,12 @@ def main() -> int:
     parser.add_argument(
         "--default-hour",
         default="00",
-        help="Fallback hour partition when a file has no readable timestamp column (default: 00)",
+        help=(
+            "Retained for backward compatibility with older callers; the "
+            "script no longer parks unreadable files at this hour. "
+            "Unreadable files are left in place and the migration exits "
+            "non-zero."
+        ),
     )
     parser.add_argument(
         "--concurrency",
@@ -211,14 +239,23 @@ def main() -> int:
     if args.profile:
         boto3.setup_default_session(profile_name=args.profile)
 
-    moved, skipped, errors = migrate(
+    moved, skipped, errors, unreadable = migrate(
         bucket=args.bucket,
         dry_run=args.dry_run,
         default_hour=args.default_hour,
         concurrency=args.concurrency,
     )
-    print(f"\nSummary: moved={moved} skipped={skipped} errors={errors}")
-    return 1 if errors else 0
+    print(
+        f"\nSummary: moved={moved} skipped={skipped} errors={errors} "
+        f"unreadable={unreadable}"
+    )
+    if unreadable:
+        print(
+            f"\nERROR: {unreadable} files could not have their hour inferred "
+            f"and were LEFT IN PLACE. Fix the underlying issue and re-run.",
+            file=sys.stderr,
+        )
+    return 1 if errors or unreadable else 0
 
 
 if __name__ == "__main__":
