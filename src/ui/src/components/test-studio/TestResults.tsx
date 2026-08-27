@@ -1683,8 +1683,10 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Container>
         )}
 
-        {/* Lowest Scoring Documents Table */}
-        {results?.weightedOverallScores && (
+        {/* Lowest Scoring Documents Table. Suppressed for a draft-labeling run:
+            nothing was scored, so the table rendered its headers over an empty
+            body — directly under an alert explaining that there are no scores. */}
+        {results?.weightedOverallScores && !results.isDraftLabeling && (
           <Container
             header={
               <Header
@@ -1758,16 +1760,20 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             field numbers below it, so it should be read first. */}
         <ClassificationErrorsPanel classificationErrors={classificationErrors} testSetId={results.testSetId as string | undefined} />
 
-        {/* Breakdown Tables */}
+        {/* Breakdown Tables. A draft-labeling run keeps its COST breakdown — it
+            spends real money and that is worth seeing — but not the accuracy
+            tables, which the backend fills with structural zeros. "Classification:
+            Page Level Accuracy 0.000" on a run that scored nothing asserts total
+            failure where the honest answer is "not applicable". */}
         {(costBreakdown || accuracyBreakdown || splitClassificationMetrics || gradedPacketMetrics || fieldMetrics) && (
           <ComprehensiveBreakdown
             costBreakdown={costBreakdown}
-            accuracyBreakdown={accuracyBreakdown}
-            splitClassificationMetrics={splitClassificationMetrics}
-            gradedPacketMetrics={gradedPacketMetrics}
-            fieldMetrics={fieldMetrics}
-            averageWeightedScore={averageWeightedScore}
-            confidenceMetrics={results.confidenceMetrics}
+            accuracyBreakdown={results.isDraftLabeling ? null : accuracyBreakdown}
+            splitClassificationMetrics={results.isDraftLabeling ? null : splitClassificationMetrics}
+            gradedPacketMetrics={results.isDraftLabeling ? null : gradedPacketMetrics}
+            fieldMetrics={results.isDraftLabeling ? null : fieldMetrics}
+            averageWeightedScore={results.isDraftLabeling ? null : averageWeightedScore}
+            confidenceMetrics={results.isDraftLabeling ? null : results.confidenceMetrics}
           />
         )}
       </SpaceBetween>
