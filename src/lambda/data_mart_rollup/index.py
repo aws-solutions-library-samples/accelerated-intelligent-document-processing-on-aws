@@ -1083,15 +1083,19 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     in ``config_library/pricing.yaml`` and the ``service_api`` written by
     ``save_reporting_data.save_metering_data``. If the model is missing
     from the config, returns ``{in: 0.0, out: 0.0}`` and emits an ERROR
-    log with a per-invocation CloudWatch metric — round-7 review fix:
-    previously fell back to Sonnet defaults (3e-6 in / 15e-6 out) which
-    silently OVER-counted Nova-Lite by ~50× and UNDER-counted Opus by
-    ~5×. 0.0 is a deliberate under-count so the dashboard's cost KPI
-    is never inflated by an unknown model — the ERROR + missing row
-    surfaces the config gap without misleading the dashboard.
+    log — round-7 review fix (previously fell back to Sonnet defaults
+    3e-6 / 15e-6, which silently OVER-counted Nova-Lite by ~50× and
+    UNDER-counted Opus by ~5×). 0.0 is a deliberate under-count so the
+    dashboard's cost KPI is never inflated by an unknown model — the
+    ERROR log + zero-cost row surfaces the config gap without misleading
+    the dashboard.
     """
+    # Return a fresh dict each time — the module-level default is mutable,
+    # and a callee accidentally mutating `price["in"] = ...` would poison
+    # every subsequent lookup for the container's lifetime. Round-9
+    # review fix.
     if not model:
-        return DEFAULT_BEDROCK_PRICE_PER_TOKEN
+        return dict(DEFAULT_BEDROCK_PRICE_PER_TOKEN)
     pricing_map = _load_bedrock_pricing_from_config()
     key = f"bedrock/{model}"
     entry = pricing_map.get(key)
@@ -1299,7 +1303,12 @@ def _partition_already_written(
         where += f" AND hour = '{hour}'"
     sql = f'SELECT 1 FROM "{DATABASE}"."{table}" WHERE {where} LIMIT 1'  # nosec B608
     try:
-        rows = _run_athena_query_with_results(sql)
+        # emit_self_cost=False — these idempotency probes are tiny
+        # LIMIT-1 partition-pruned SELECTs and would otherwise emit one
+        # AthenaBytesScanned metric per rollup fire per table, drowning
+        # the rollup-lambda component's real Athena cost signal in noise.
+        # Round-9 review fix.
+        rows = _run_athena_query_with_results(sql, emit_self_cost=False)
         return bool(rows)
     except Exception as e:
         # Only "table does not exist" is safe to swallow — Athena reports
@@ -1352,8 +1361,15 @@ def _partition_already_written(
         raise
 
 
-def _run_athena(sql: str) -> str:
-    """Start an Athena query and wait for completion. Returns QueryExecutionId."""
+def _run_athena(sql: str, emit_self_cost: bool = True) -> str:
+    """Start an Athena query and wait for completion. Returns QueryExecutionId.
+
+    ``emit_self_cost=False`` skips the self-attribution CloudWatch metric
+    for the query's ``DataScannedInBytes``. Idempotency-check SELECTs
+    (LIMIT 1 partition probes) use this to avoid emitting per-partition
+    ``AthenaBytesScanned`` metrics for every rollup fire, which was noise
+    on the ``rollup-lambda`` component. Round-9 review fix.
+    """
     if not DATABASE:
         raise RuntimeError("REPORTING_DATABASE env var not set")
     response = athena_client.start_query_execution(
@@ -1365,12 +1381,16 @@ def _run_athena(sql: str) -> str:
         else {},
     )
     query_id = response["QueryExecutionId"]
-    _wait_for_athena(query_id)
+    _wait_for_athena(query_id, emit_self_cost=emit_self_cost)
     return query_id
 
 
-def _run_athena_query_with_results(sql: str) -> List[List[str]]:
+def _run_athena_query_with_results(
+    sql: str, emit_self_cost: bool = True
+) -> List[List[str]]:
     """Run a query and return result rows (as string lists).
+
+    See ``_run_athena`` for the ``emit_self_cost`` flag.
 
     Paginates ``get_query_results`` — Athena caps a single response at
     ~1000 rows. Header row is only on the FIRST page; paginating naively
@@ -1378,7 +1398,7 @@ def _run_athena_query_with_results(sql: str) -> List[List[str]]:
     every page ≥2 (round-6 review fix — silent truncation + naive
     pagination retrofit hazard).
     """
-    query_id = _run_athena(sql)
+    query_id = _run_athena(sql, emit_self_cost=emit_self_cost)
     all_rows: List[List[str]] = []
     next_token: Optional[str] = None
     first_page = True
@@ -1400,7 +1420,9 @@ def _run_athena_query_with_results(sql: str) -> List[List[str]]:
     return all_rows
 
 
-def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
+def _wait_for_athena(
+    query_id: str, timeout_sec: int = 300, emit_self_cost: bool = True
+) -> None:
     """Poll get_query_execution until the query terminates.
 
     On success, emit the query's ``DataScannedInBytes`` under
@@ -1408,6 +1430,10 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
     shows up in ``control_plane_hourly``. The rollup is likely the
     single largest control-plane Athena consumer — leaving it out
     would understate its own cost line to zero.
+
+    ``emit_self_cost=False`` opts out — used by
+    ``_partition_already_written`` so a per-partition LIMIT-1 probe
+    doesn't emit one AthenaBytesScanned metric per idempotency check.
 
     On timeout, call StopQueryExecution before raising — otherwise an
     orphaned Athena query keeps scanning (and billing) after we've
@@ -1418,7 +1444,8 @@ def _wait_for_athena(query_id: str, timeout_sec: int = 300) -> None:
         response = athena_client.get_query_execution(QueryExecutionId=query_id)
         state = response["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
-            _emit_self_athena_cost(response)
+            if emit_self_cost:
+                _emit_self_athena_cost(response)
             return
         if state in ("FAILED", "CANCELLED"):
             reason = response["QueryExecution"]["Status"].get(

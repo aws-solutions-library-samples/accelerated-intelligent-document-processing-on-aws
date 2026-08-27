@@ -1136,6 +1136,12 @@ class SaveReportingData:
 
         # Parse initial_event_time for the column value (best-effort — falls
         # back to timestamp if parsing fails or the field is missing).
+        # Round-9 review fix: the metering parquet schema now declares
+        # ``tz="UTC"``, which requires timezone-AWARE datetimes. A naive
+        # ISO string like ``"2026-08-27T12:34:56"`` (no Z, no offset)
+        # parses to a naive datetime; the previous None-fallback didn't
+        # catch it. Force UTC on any naive result so pyarrow doesn't
+        # raise ArrowInvalid at write.
         initial_event_time: Optional[datetime.datetime] = None
         if document.initial_event_time:
             try:
@@ -1149,6 +1155,12 @@ class SaveReportingData:
                 )
         if initial_event_time is None:
             initial_event_time = timestamp
+        elif initial_event_time.tzinfo is None:
+            # Naive datetime — assume UTC (matches the queue-time
+            # convention used everywhere else in the pipeline).
+            initial_event_time = initial_event_time.replace(
+                tzinfo=datetime.timezone.utc
+            )
 
         # Escape document ID by replacing slashes with underscores
         document_id = document.id or document.input_key or "unknown"

@@ -753,13 +753,16 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             # Distinguish an unverifiable opaque resource (a legitimate
             # application-inference-profile UUID / provisioned-throughput ARN
             # whose underlying model can only be known via a Bedrock API call)
-            # from a probably-typo'd ARN whose resource DOES look like a model
-            # ID but doesn't match anything in valid_models. Only the former
-            # should be a warning. Round-7 review fix.
-            _looks_like_model_id_shape = "." in resolved and not (
-                resolved.startswith("application-inference-profile/")
-                or resolved.startswith("provisioned-model/")
-                or _looks_like_uuid(resolved)
+            # from a probably-typo'd ARN whose resource DOES look like a
+            # model ID but doesn't match anything in valid_models. Round-7
+            # review fix; round-9 cleanup: dropped dead
+            # ``resolved.startswith("application-inference-profile/")`` and
+            # ``"provisioned-model/"`` guards — ``resolve_model_id_from_arn``
+            # strips those type prefixes, so ``resolved`` never carries
+            # them. UUIDs (which lack dots) fall through to the warning
+            # path naturally via the ``"." in resolved`` check.
+            _looks_like_model_id_shape = "." in resolved and not _looks_like_uuid(
+                resolved
             )
             if _looks_like_model_id_shape:
                 # The ARN resolved to a string that looks like a model ID

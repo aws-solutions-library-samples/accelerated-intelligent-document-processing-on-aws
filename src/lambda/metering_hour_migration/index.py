@@ -248,12 +248,33 @@ def _migrate(event, context, bucket: str):
 
 
 def _iter_old_layout_keys(bucket: str) -> Iterator[str]:
-    """Yield metering/*.parquet keys that lack ``/hour=`` in their path."""
+    """Yield metering/*.parquet keys that lack ``/hour=`` in their path.
+
+    Uses S3's ``Delimiter=/hour=`` so hour-partitioned keys collapse into
+    ``CommonPrefixes`` server-side and don't appear in ``Contents`` at
+    all. On a mostly-migrated bucket this cuts the list cost from
+    O(all-keys) to O(un-migrated-keys + partition-prefixes). Round-9
+    review fix.
+
+    S3 behavior: with ``Prefix=metering/`` and ``Delimiter=/hour=``, a
+    key like ``metering/date=X/hour=00/foo.parquet`` matches the
+    delimiter after the prefix and is grouped into a common prefix; a
+    key like ``metering/date=X/foo.parquet`` has no ``/hour=`` after
+    the prefix and lands in Contents — exactly the old-layout set we
+    want to yield.
+    """
     paginator = s3_client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix="metering/"):
+    for page in paginator.paginate(
+        Bucket=bucket, Prefix="metering/", Delimiter="/hour="
+    ):
         for obj in page.get("Contents") or []:
             key = obj["Key"]
-            if key.endswith(".parquet") and not HOUR_KEY_PATTERN.search(key):
+            # Server-side filter already excluded hour-partitioned keys.
+            # Client-side .parquet suffix check remains as a defensive
+            # guard against any non-parquet debris under metering/
+            # (e.g. Athena query result manifests if someone points a
+            # workgroup output at this bucket).
+            if key.endswith(".parquet"):
                 yield key
 
 
@@ -319,7 +340,13 @@ def _migrate_one(bucket: str, key: str) -> str:
         # Round-6 review fix.
         return "fallback"
     target = _new_key(key, hour)
-    assert target is not None, "shape re-check should not fail after placeholder passed"
+    if target is None:
+        # Round-9 review fix: was ``assert target is not None`` which is
+        # a no-op under PYTHONOPTIMIZE. Raising RuntimeError keeps the
+        # invariant enforced regardless of the interpreter flags.
+        raise RuntimeError(
+            f"shape re-check failed after placeholder-hour probe passed: {key!r}"
+        )
     if target == key:
         return "moved"  # already migrated (defensive)
     # Defensive collision check — round-8 review fix. If a prior run
@@ -353,6 +380,33 @@ def _migrate_one(bucket: str, key: str) -> str:
     return "moved"
 
 
+def _open_parquet_range_read(bucket: str, key: str):
+    """Return a ``pyarrow.parquet.ParquetFile`` backed by S3 range reads.
+
+    Prefers ``pyarrow.fs.S3FileSystem`` (reads footer, then only the
+    needed row-groups over HTTP range requests). Falls back to loading
+    the whole body via boto3 into a BytesIO if pyarrow.fs isn't
+    importable — bundled pyarrow wheels include it, so the fallback is
+    a paranoia belt-and-braces, not an expected path.
+    """
+    if _pq is None:  # pragma: no cover
+        raise RuntimeError("pyarrow not importable")
+    try:
+        import pyarrow.fs as _pafs
+    except ImportError:
+        _pafs = None  # type: ignore[assignment]
+    if _pafs is not None:
+        # Region is required for S3FileSystem to pick the right endpoint
+        # inside a Lambda; default region falls back to AWS_REGION env
+        # which Lambda sets.
+        fs = _pafs.S3FileSystem(region=os.environ.get("AWS_REGION"))
+        return _pq.ParquetFile(fs.open_input_file(f"{bucket}/{key}"))
+    # Fallback: load full body (memory-heavy but functional).
+    obj = s3_client.get_object(Bucket=bucket, Key=key)
+    body = obj["Body"].read()
+    return _pq.ParquetFile(io.BytesIO(body))
+
+
 def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
     """Read the first row's timestamp column and return
     ``(hour_HH, inferred)``. ``inferred=False`` means we couldn't read
@@ -369,11 +423,20 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
     detection instead. Also keeps the memory-savings intent: pyarrow
     reads only the requested column at Parquet-column granularity.
     """
-    assert _pq is not None, "pyarrow import guard should have caught this"
+    if _pq is None:  # pragma: no cover — handler guards this at entry
+        raise RuntimeError("pyarrow import guard should have caught this")
     try:
-        obj = s3_client.get_object(Bucket=bucket, Key=key)
-        body = obj["Body"].read()
-        pf = _pq.ParquetFile(io.BytesIO(body))
+        # Round-9 review fix: read via pyarrow.fs.S3FileSystem instead of
+        # ``obj["Body"].read() → io.BytesIO``. The BytesIO path loaded the
+        # WHOLE parquet body into memory before we could stream row groups;
+        # at 50-worker concurrency × multi-MB legacy files this was
+        # 50× the necessary footprint. pyarrow.fs issues range reads
+        # (footer first, then only the first row-group's column chunks),
+        # so memory stays O(footer + one row-group × wanted-columns).
+        # Falls back to the BytesIO path if pyarrow.fs isn't available
+        # (unusual — bundled with pyarrow) so an install without S3FS
+        # still works.
+        pf = _open_parquet_range_read(bucket, key)
         available_names = set(pf.schema_arrow.names)
         wanted = [
             c for c in ("timestamp", "initial_event_time") if c in available_names
