@@ -1,0 +1,125 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# UI acceptance tests (UAT) against a DEPLOYED stack.
+#
+# CREDENTIAL MODEL — read before changing the triggers.
+# This workflow needs NO AWS credentials at all. Playwright drives the already
+# deployed UI over the public internet and signs in with a Cognito
+# username/password, so the only secrets involved are those two values.
+#
+# That is a deliberate choice, not an oversight: OIDC federation into the AWS
+# account is intentionally NOT used, because some AWS organizations restrict or
+# prohibit third-party OIDC identity providers. Keeping this workflow
+# credential-free means it works regardless of that policy, and there is no IAM
+# role to scope, rotate or audit.
+#
+# THIS REPO IS PUBLIC. Secrets must never be exposed to unreviewed code, so:
+#   * there is no `pull_request` trigger — a fork PR must never reach these secrets;
+#   * every job that touches secrets runs in the `uat` Environment, which should be
+#     configured with required reviewers in repo Settings → Environments;
+#   * `pull_request_target` and `issue_comment` are deliberately NOT used (the
+#     classic pwn-request vectors).
+#
+# The stack lifecycle is NOT managed here. CI tests a persistent UAT stack; use
+# `make uat-testing ADMIN_EMAIL=...` locally for the deploy→test→teardown cycle,
+# which is far too slow (~30-70 min deploy) to belong on this path.
+name: UI Acceptance Tests
+
+on:
+  schedule:
+    # Drift detection against the persistent UAT stack. 06:23 UTC daily.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "UI URL to test (defaults to the UAT_BASE_URL variable)"
+        type: string
+        required: false
+      grep:
+        description: "Only run scenarios matching this pattern"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # The target stack is shared mutable state; never run two UAT jobs at once.
+  group: ui-uat
+  cancel-in-progress: false
+
+jobs:
+  uat:
+    name: UI acceptance tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Gate on a protected Environment so the credentials are only ever handed to
+    # a run a maintainer has approved.
+    environment: uat
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/e2e/package-lock.json
+
+      - name: Install harness
+        working-directory: src/ui/e2e
+        run: npm ci --no-audit --no-fund
+
+      # Cache the browser rather than re-downloading ~95 MB every run. Keyed on
+      # the lockfile because the required Chromium build is tied to the
+      # @playwright/test version.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('src/ui/e2e/package-lock.json') }}
+
+      - name: Install Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        working-directory: src/ui/e2e
+        run: npx playwright install chromium --with-deps
+
+      - name: Run UAT
+        working-directory: src/ui/e2e
+        env:
+          # Repository/Environment variable; the workflow input overrides it.
+          UAT_BASE_URL: ${{ inputs.base_url || vars.UAT_BASE_URL }}
+          UAT_ADMIN_USER: ${{ secrets.UAT_ADMIN_USER }}
+          UAT_ADMIN_PASSWORD: ${{ secrets.UAT_ADMIN_PASSWORD }}
+          UAT_VIEWER_USER: ${{ secrets.UAT_VIEWER_USER }}
+          UAT_VIEWER_PASSWORD: ${{ secrets.UAT_VIEWER_PASSWORD }}
+          UAT_COMMIT: ${{ github.sha }}
+        run: |
+          if [ -z "$UAT_BASE_URL" ]; then
+            echo "::error::UAT_BASE_URL is not set. Add a repository variable" \
+                 "UAT_BASE_URL pointing at the persistent UAT stack's" \
+                 "ApplicationWebURL, or pass base_url on workflow_dispatch."
+            exit 1
+          fi
+          npx playwright test ${{ inputs.grep && format('--grep "{0}"', inputs.grep) || '' }}
+
+      # The custom reporter appends its markdown to $GITHUB_STEP_SUMMARY itself,
+      # so the run's headline (pass/fail per scenario + interaction cost) is on the
+      # job page without opening an artifact.
+      - name: Upload UAT report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uat-report-${{ github.run_id }}
+          path: |
+            src/ui/e2e/test-results/uat-report.md
+            src/ui/e2e/test-results/uat-results.json
+            src/ui/e2e/test-results/junit.xml
+            src/ui/e2e/playwright-report/
+          retention-days: 30

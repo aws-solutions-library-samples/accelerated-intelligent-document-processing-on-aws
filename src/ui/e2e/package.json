@@ -1,0 +1,22 @@
+{
+  "name": "genaiidp-ui-uat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UI acceptance tests (Playwright) for the GenAIIDP accelerator. Deliberately a SEPARATE package from src/ui so Playwright and its ~95MB browser download stay out of the three CI paths that run `npm ci` in src/ui (ui-lint, ui-build-only, codegen-check).",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "install-browser": "playwright install chromium --with-deps",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  }
+}

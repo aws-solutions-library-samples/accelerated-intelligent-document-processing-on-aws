@@ -432,6 +432,42 @@ stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchm
 
 # In-place stack upgrade validation (X→Y). No standalone harness in-repo yet —
 # see .claude/skills/test-upgrade.md for the procedure.
+# UI acceptance testing (UAT). The one tier that renders a page: it drives the
+# deployed Web UI in a real browser and asserts that TASKS ARE COMPLETABLE, which
+# neither the offline suites (jsdom, mocked API), the RBAC matrix (REST only), nor
+# the primary suite (idp-cli/boto3) can observe. Closes the open item in
+# scripts/sdlc/docs/CI_TEST_COVERAGE.md ("Browser/e2e UI test").
+#
+# Full lifecycle, one command: deploy -> provision Cognito users -> Playwright ->
+# report -> ALWAYS tear down (users + stack). TEARDOWN IS UNCONDITIONAL unless
+# KEEP=1. A stack you pass via STACK_NAME is never deleted -- you own its lifecycle.
+#
+#   make uat-testing ADMIN_EMAIL=me@example.com            # deploy, test, destroy
+#   make uat-testing STACK_NAME=my-stack                   # existing stack, kept
+#   make uat-testing BASE_URL=https://d123.cloudfront.net/ # no AWS calls at all
+#   make uat-testing ADMIN_EMAIL=... KEEP=1                # leave the stack up
+uat-testing: ## UI acceptance test: deploy -> Playwright -> report -> teardown (STACK_NAME=... | BASE_URL=... | ADMIN_EMAIL=...) [KEEP=1] [GREP=...] [REPORT_DIR=...]
+	$(PYTHON) scripts/uat/run_uat.py \
+	    $(if $(STACK_NAME),--stack-name $(STACK_NAME)) \
+	    $(if $(BASE_URL),--base-url $(BASE_URL)) \
+	    $(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL)) \
+	    $(if $(REGION),--region $(REGION)) \
+	    $(if $(TEMPLATE_URL),--template-url $(TEMPLATE_URL)) \
+	    $(if $(PUBLISH),--publish) \
+	    $(if $(BUCKET_BASENAME),--bucket-basename $(BUCKET_BASENAME)) \
+	    $(if $(REPORT_DIR),--report-dir $(REPORT_DIR)) \
+	    $(if $(GREP),--grep "$(GREP)") \
+	    $(if $(HEADED),--headed) \
+	    $(if $(KEEP),--keep) \
+	    $(EXTRA_ARGS)
+
+# Alias under the stacktest-* family, since that is where every other
+# live-stack test lives.
+stacktest-uat: uat-testing ## UI acceptance test (alias: uat-testing)
+
+uat-lint: ## Typecheck the UAT harness (no browser, no stack needed)
+	cd src/ui/e2e && npm install --no-audit --no-fund && npm run typecheck
+
 stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrade skill)
 	@echo "Upgrade testing is documented in .claude/skills/test-upgrade.md"
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"

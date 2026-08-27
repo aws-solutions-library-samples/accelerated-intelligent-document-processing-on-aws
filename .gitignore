@@ -42,6 +42,9 @@ package-lock.json
 # source; bundled OSS features like sample-feature are built in CI with
 # `npm ci`, which requires a committed lock file)
 !feature-platform/*/feature-ui/package-lock.json
+# Allow the UAT harness lock file (the ui-uat workflow and `make uat-lint` run
+# `npm ci`, which fails outright without a committed lock file)
+!src/ui/e2e/package-lock.json
 
 # Jupyter
 .ipynb_checkpoints/
@@ -132,3 +135,10 @@ insurance-underwriting-demo/
 notebook/
 test_z3/
 *.whl
+
+# UI acceptance test (UAT) artifacts. .state/ holds Playwright storageState, which
+# contains live Cognito session tokens for the test users — never commit it.
+src/ui/e2e/node_modules/
+src/ui/e2e/fixtures/.state/
+src/ui/e2e/test-results/
+src/ui/e2e/playwright-report/
