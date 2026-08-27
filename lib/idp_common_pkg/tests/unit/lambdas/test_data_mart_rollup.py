@@ -1210,3 +1210,115 @@ class TestBedrockPricing:
         # $0.30/M input, $2.50/M output → 3.0e-7 / 2.5e-6 per token.
         assert p["in"] == 3.0e-7
         assert p["out"] == 2.5e-6
+
+
+@pytest.mark.unit
+class TestControlPlaneRollupFanOut:
+    """Round-14 review fixes — total-outage detection and stable row order."""
+
+    def test_total_fetch_failure_raises_instead_of_locking_empty_partition(
+        self, rollup
+    ):
+        """Round-14 finding #1: when EVERY per-function CloudWatch fetch
+        fails, ``rows`` stays empty and the old ``no_activity`` skip path
+        masked the total outage as a legitimate zero-activity hour. The
+        idempotency guard would then lock the partition forever and no
+        async retry / DLQ ever fires. Fix: raise so Lambda's retry policy
+        replays the hour and the DLQ alarm eventually pages oncall.
+        """
+        arns = [
+            "arn:aws:lambda:us-east-1:1:function:FnA",
+            "arn:aws:lambda:us-east-1:1:function:FnB",
+        ]
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_control_plane_lambdas", return_value=arns),
+            patch.object(
+                rollup,
+                "_get_cw_metrics_for_function",
+                side_effect=RuntimeError("CW throttled"),
+            ),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            with pytest.raises(RuntimeError, match="all .* function fetches failed"):
+                rollup._rollup_control_plane_hourly("2026-08-27", "13")
+        write.assert_not_called()
+
+    def test_partial_fetch_failure_still_writes_surviving_rows(self, rollup):
+        """A single flaky function must NOT tank the whole partition —
+        the survivor rows still write to parquet."""
+        arns = [
+            "arn:aws:lambda:us-east-1:1:function:FnGood",
+            "arn:aws:lambda:us-east-1:1:function:FnBad",
+        ]
+
+        def cw_side_effect(function_name, hour_start, hour_end):  # noqa: ARG001
+            if function_name == "FnBad":
+                raise RuntimeError("throttled")
+            return {"duration_ms": 100.0, "invocations": 1.0, "bedrock_by_model": {}}
+
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_control_plane_lambdas", return_value=arns),
+            patch.object(
+                rollup,
+                "_get_cw_metrics_for_function",
+                side_effect=cw_side_effect,
+            ),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            result = rollup._rollup_control_plane_hourly("2026-08-27", "13")
+        assert result["skipped"] is False
+        assert result["rows"] >= 1
+        write.assert_called_once()
+        # Written rows come from FnGood only.
+        written_rows = write.call_args[0][0]
+        assert all(r["function_name"] == "FnGood" for r in written_rows)
+
+    def test_rows_are_sorted_by_function_name_then_bedrock_model(self, rollup):
+        """Round-14 finding #2: sort must key on ``bedrock_model``, not the
+        non-existent ``model`` field. A wrong key silently collapsed the
+        sort to function-name-only, hiding a future divergence in
+        ``_build_control_plane_rows`` iteration order that would break
+        the round-8 shared-columns-on-first-model invariant.
+        """
+        arns = [
+            "arn:aws:lambda:us-east-1:1:function:ZFunction",
+            "arn:aws:lambda:us-east-1:1:function:AFunction",
+        ]
+
+        def cw_side_effect(function_name, hour_start, hour_end):  # noqa: ARG001
+            return {
+                "duration_ms": 100.0,
+                "invocations": 1.0,
+                "bedrock_by_model": {
+                    "zz.model": {"in": 1, "out": 1},
+                    "aa.model": {"in": 1, "out": 1},
+                },
+            }
+
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_control_plane_lambdas", return_value=arns),
+            patch.object(
+                rollup,
+                "_get_cw_metrics_for_function",
+                side_effect=cw_side_effect,
+            ),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")),
+            patch.object(
+                rollup,
+                "_bedrock_pricing_map",
+                {"bedrock/zz.model": {"inputTokens": 0.0, "outputTokens": 0.0}},
+            ),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            rollup._rollup_control_plane_hourly("2026-08-27", "13")
+        written_rows = write.call_args[0][0]
+        # AFunction rows come before ZFunction; within each function
+        # bedrock_model=aa.model precedes zz.model.
+        ordered = [(r["function_name"], r["bedrock_model"]) for r in written_rows]
+        assert ordered == sorted(ordered)
+        assert ordered[0][0] == "AFunction"
+        assert ordered[-1][0] == "ZFunction"

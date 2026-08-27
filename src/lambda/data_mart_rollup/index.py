@@ -403,8 +403,34 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
             f"{sorted(failed)[:10]}{'...' if len(failed) > 10 else ''}"
         )
     # Restore deterministic order (function_name is the natural sort key —
-    # component/hour are shared across rows within this partition).
-    rows.sort(key=lambda r: (r.get("function_name") or "", r.get("model") or ""))
+    # component/hour are shared across rows within this partition). Round-14
+    # review fix: sort key is ``bedrock_model``, not ``model`` — the latter
+    # is always None and silently collapsed the sort to function-name-only.
+    # This is currently masked by ``_build_control_plane_rows`` iterating
+    # ``sorted(bedrock_by_model.keys())`` internally so per-function rows
+    # already come out in model order, but the round-8
+    # shared-columns-on-first-model invariant would silently break if that
+    # inner iteration ever changed.
+    rows.sort(
+        key=lambda r: (r.get("function_name") or "", r.get("bedrock_model") or "")
+    )
+
+    # Round-14 review fix: if EVERY function's fetch failed, ``rows`` is
+    # empty and the "no_activity" skip path masks the total outage as a
+    # legitimate zero-activity hour — the idempotency guard then locks the
+    # empty partition forever and no async retry / DLQ ever fires. Raise
+    # so Lambda's async-retry policy can replay the hour; the DLQ alarm
+    # eventually surfaces the outage to oncall. We DO tolerate partial
+    # failure (some functions succeeded → still write a partial parquet):
+    # only the "0 successes + N failures" case is treated as fatal.
+    if failed and not rows:
+        raise RuntimeError(
+            f"control_plane_hourly {target_date}/{target_hour}: all "
+            f"{len(failed)} control-plane function fetches failed and no "
+            f"rows were produced. Refusing to write an empty parquet — the "
+            f"idempotency skip would lock this hour into a permanent hole. "
+            f"Sample failures: {sorted(failed)[:5]}"
+        )
 
     if not rows:
         logger.info(f"No control-plane activity for {target_date} hour={target_hour}")
