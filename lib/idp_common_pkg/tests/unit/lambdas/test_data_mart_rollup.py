@@ -83,6 +83,49 @@ class TestModeDispatch:
         with pytest.raises(ValueError, match="Unknown rollup mode"):
             rollup.handler({"mode": "weekly"}, None)
 
+    def test_hourly_permanent_failure_reraises_as_valueerror(self, rollup):
+        """Round-18 review fix (#209): the ``_run_hourly`` aggregator
+        used to ``except Exception → raise RuntimeError`` which
+        demoted ValueError (PERMANENT — DLQ immediately) to
+        RuntimeError (RETRYABLE — burn both async-retry attempts).
+        Now the class is preserved: if ANY sub-rollup raised
+        ValueError, the aggregate raises ValueError.
+        """
+        with (
+            patch.object(
+                rollup, "_rollup_metering_hourly", side_effect=ValueError("permanent")
+            ),
+            patch.object(
+                rollup, "_rollup_metering_docs_hourly", return_value={"skipped": False}
+            ),
+            patch.object(
+                rollup, "_rollup_control_plane_hourly", return_value={"skipped": False}
+            ),
+        ):
+            with pytest.raises(ValueError, match="permanent"):
+                rollup._run_hourly()
+
+    def test_hourly_retryable_failure_stays_runtimeerror(self, rollup):
+        """Complement to the permanent test above: a RuntimeError from
+        a sub-rollup (transient throttle, etc.) must remain
+        RuntimeError so async retry replays.
+        """
+        with (
+            patch.object(
+                rollup,
+                "_rollup_metering_hourly",
+                side_effect=RuntimeError("throttled"),
+            ),
+            patch.object(
+                rollup, "_rollup_metering_docs_hourly", return_value={"skipped": False}
+            ),
+            patch.object(
+                rollup, "_rollup_control_plane_hourly", return_value={"skipped": False}
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="throttled"):
+                rollup._run_hourly()
+
 
 @pytest.mark.unit
 class TestTimeWindows:
@@ -272,6 +315,49 @@ class TestMeteringHourlyRollup:
             assert 32 <= len(k) <= 128, (
                 f"Idempotency key for {table} ({len(k)} chars): {k!r}"
             )
+
+    def test_idempotency_key_distinct_partitions_never_collide_with_long_stack_name(
+        self, rollup, monkeypatch
+    ):
+        """Round-18 review fix (#249): the round-17 implementation
+        prepended the (long) stack-scoped prefix and truncated the
+        whole key at 128 chars. On a stack whose name is long enough
+        (well within CFN's 128-char stack-name limit), truncation
+        would chop the trailing (table, date, hour) discriminator and
+        distinct partitions could collide on the same Athena
+        ClientRequestToken. Athena's dedup would then return the
+        earlier query's SUCCEEDED QueryExecutionId and the second
+        INSERT would silently no-op — the rollup would appear healthy
+        while some partitions were missing.
+
+        Fix: place the discriminator FIRST, then the prefix. Any
+        truncation eats stack-name bloat, not distinguishing state.
+        """
+        # A worst-case stack name that would definitely blow the 128
+        # cap if the prefix went first.
+        long_stack = "idp-dev-" + ("verylongname" * 12)
+        monkeypatch.setattr(rollup, "STACK_NAME", long_stack)
+        monkeypatch.setattr(
+            rollup, "_IDEMPOTENCY_KEY_PREFIX", f"idp-rollup-{long_stack}"
+        )
+        keys = set()
+        for table, date, hour in [
+            ("metering_hourly", "2026-08-27", "13"),
+            ("metering_hourly", "2026-08-27", "14"),
+            ("metering_hourly", "2026-08-28", "13"),
+            ("metering_docs_hourly", "2026-08-27", "13"),
+            ("metering_daily", "2026-08-27", None),
+            ("metering_docs_daily", "2026-08-27", None),
+        ]:
+            k = rollup._idempotency_key(table, date, hour)
+            assert 32 <= len(k) <= 128, (
+                f"{table}/{date}/{hour}: length {len(k)} outside 32-128: {k!r}"
+            )
+            assert k not in keys, (
+                f"COLLISION on {table}/{date}/{hour}: {k!r} — long-stack "
+                f"truncation just chopped the discriminator (round-18 #249)"
+            )
+            keys.add(k)
 
 
 @pytest.mark.unit

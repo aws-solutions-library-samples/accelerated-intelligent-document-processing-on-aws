@@ -114,12 +114,20 @@ def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
         batch = next(pf.iter_batches(batch_size=1, columns=wanted))
     except StopIteration:
         return None
+    # Round-18 review fix: scan for the first non-null row (row 0 can be
+    # NULL) and convert tz-aware datetimes to UTC before strftime — the
+    # hour partition contract is UTC and a tz-aware non-UTC datetime
+    # would otherwise silently land in the local-tz hour.
+    from datetime import timezone as _tz
+
     for candidate in wanted:
         col = batch.column(candidate)
-        if len(col) > 0:
-            ts = col[0].as_py()
-            if ts is not None:
-                return ts.strftime("%H")
+        for row_idx in range(len(col)):
+            ts = col[row_idx].as_py()
+            if ts is None:
+                continue
+            ts_utc = ts if ts.tzinfo is None else ts.astimezone(_tz.utc)
+            return ts_utc.strftime("%H")
     return None
 
 

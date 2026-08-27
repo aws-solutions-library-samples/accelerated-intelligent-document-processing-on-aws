@@ -556,26 +556,38 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
                 f"infer hour; leaving file in place for operator to inspect"
             )
             return ("00", False)
+        # Round-18 review fix (#551): scan through nulls to find the first
+        # non-null row, not just row 0. A legacy parquet whose row 0 has
+        # NULL timestamp AND NULL initial_event_time would previously
+        # return "un-inferrable" and the whole migration would FAIL, even
+        # though later rows have valid timestamps. Iterate row 0..N; if
+        # every row is null across every wanted column, only THEN fall
+        # through as un-inferrable.
         for candidate in wanted:  # honours the wanted-order preference
             col = batch.column(candidate)
-            if len(col) > 0:
-                ts = col[0].as_py()
-                if ts is not None:
-                    # Round-13 review fix: a naive datetime coming out of
-                    # legacy parquet means the writer's local wall-clock
-                    # is being read as UTC. Lambda always runs in UTC so
-                    # this happens to be correct today, but log a warning
-                    # so a schema drift (e.g., pyarrow reading a tz-less
-                    # column written by a non-UTC producer) is visible in
-                    # CloudWatch instead of silently mis-placing the file.
-                    if ts.tzinfo is None:
-                        logger.warning(
-                            f"infer_hour: {key} column {candidate} returned "
-                            f"a naive datetime ({ts.isoformat()}). Assuming "
-                            f"UTC. If the writer wrote wall-clock in another "
-                            f"tz, the file will land under the wrong hour."
-                        )
-                    return (ts.strftime("%H"), True)
+            for row_idx in range(len(col)):
+                ts = col[row_idx].as_py()
+                if ts is None:
+                    continue
+                # Round-18 review fix (#578): a tz-AWARE non-UTC datetime
+                # would silently return the LOCAL-tz hour; the partition
+                # contract is UTC. Convert to UTC before strftime so
+                # non-UTC-tz producers still land in the correct hour
+                # subdirectory. The naive branch keeps its "assume UTC"
+                # warning (Lambda always runs UTC, so real drift is rare).
+                if ts.tzinfo is None:
+                    logger.warning(
+                        f"infer_hour: {key} column {candidate} row {row_idx} "
+                        f"returned a naive datetime ({ts.isoformat()}). "
+                        f"Assuming UTC. If the writer wrote wall-clock in "
+                        f"another tz, the file will land under the wrong hour."
+                    )
+                    ts_utc = ts
+                else:
+                    from datetime import timezone as _tz
+
+                    ts_utc = ts.astimezone(_tz.utc)
+                return (ts_utc.strftime("%H"), True)
     except Exception as e:
         # Log with enough detail for the operator to correlate — a
         # KMS/IAM issue looks identical to a corrupted-parquet issue in

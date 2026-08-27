@@ -250,3 +250,60 @@ class TestConcurrentMigrationRace:
         mock_s3.copy_object.assert_not_called()
         # And must NOT have tried to delete a non-existent source.
         mock_s3.delete_object.assert_not_called()
+
+
+@pytest.mark.unit
+class TestInferHourRoundEighteen:
+    """Round-18 review fixes for _infer_hour (#551 NULL-row-0, #578 tz)."""
+
+    def test_scans_past_null_row_zero_to_find_first_non_null(self, mig):
+        """Round-18 fix (#551): _infer_hour used to only read row 0 of
+        the wanted columns and give up if it was NULL, even when later
+        rows had valid timestamps. Now it scans until it finds a
+        non-null value.
+        """
+        import datetime as _dt
+        from unittest.mock import MagicMock
+
+        fake_pf = MagicMock()
+        fake_pf.schema_arrow.names = ["timestamp", "initial_event_time"]
+        # Row 0 null, row 1 null, row 2 valid.
+        col_ts = MagicMock()
+        col_ts.__len__ = lambda _self: 3
+        col_ts.__getitem__ = lambda _self, i: MagicMock(
+            as_py=lambda: None if i < 2 else _dt.datetime(2026, 8, 27, 15, 0)
+        )
+        batch = MagicMock()
+        batch.column.return_value = col_ts
+        fake_pf.iter_batches.return_value = iter([batch])
+        with patch.object(mig, "_open_parquet_range_read", return_value=fake_pf):
+            hour, inferred = mig._infer_hour("bucket", "key")
+        assert inferred is True
+        assert hour == "15"
+
+    def test_tz_aware_non_utc_datetime_returns_utc_hour(self, mig):
+        """Round-18 fix (#578): a tz-aware non-UTC datetime used to
+        return its LOCAL-tz hour via ``ts.strftime('%H')``. The hour
+        partition contract is UTC — files would silently land under
+        the wrong hour subdirectory. Now: convert to UTC first.
+        """
+        import datetime as _dt
+        from unittest.mock import MagicMock
+
+        # 15:00 in a UTC-5 tz == 20:00 UTC.
+        tz_minus5 = _dt.timezone(_dt.timedelta(hours=-5))
+        aware_ts = _dt.datetime(2026, 8, 27, 15, 0, tzinfo=tz_minus5)
+
+        fake_pf = MagicMock()
+        fake_pf.schema_arrow.names = ["timestamp"]
+        col_ts = MagicMock()
+        col_ts.__len__ = lambda _self: 1
+        col_ts.__getitem__ = lambda _self, i: MagicMock(as_py=lambda: aware_ts)
+        batch = MagicMock()
+        batch.column.return_value = col_ts
+        fake_pf.iter_batches.return_value = iter([batch])
+        with patch.object(mig, "_open_parquet_range_read", return_value=fake_pf):
+            hour, inferred = mig._infer_hour("bucket", "key")
+        assert inferred is True
+        # 15:00 UTC-5 = 20:00 UTC — must be the UTC hour, NOT '15'.
+        assert hour == "20"

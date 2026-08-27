@@ -197,9 +197,13 @@ def reconcile_counter() -> Optional[int]:
 
     if running >= active:
         # No drift. Clear any stale suspicion so a later real leak needs two
-        # fresh samples of its own.
-        if item.get("drift_observed_at"):
-            _put_drift_sample(None, None)
+        # fresh samples of its own. Round-18 review fix (#202): pass the
+        # observed timestamp so the REMOVE is CaS-guarded — a concurrent
+        # refusal path that just wrote a FRESH drift sample must NOT be
+        # clobbered by our clear.
+        prev_at = item.get("drift_observed_at")
+        if prev_at:
+            _put_drift_sample(None, None, replace_older_than=prev_at)
         return None
 
     drift = active - running
@@ -300,14 +304,28 @@ def _put_drift_sample(
     """
     try:
         if when is None:
-            concurrency_table.update_item(
-                Key={"counter_id": COUNTER_ID},
-                UpdateExpression="REMOVE drift_observed_at, drift_running",
-                # Round-16 review fix: only clear an existing sample.
-                # Without this, two racing refusal paths could clobber
-                # each other and leave a stale sample re-appearing.
-                ConditionExpression="attribute_exists(drift_observed_at)",
-            )
+            # Round-18 review fix (#202): compare-and-swap on the observed
+            # timestamp when clearing. Between the caller's get_item and
+            # this REMOVE, a concurrent refusal path can write a FRESH
+            # drift sample — the round-16 ``attribute_exists`` guard
+            # doesn't distinguish "the sample I saw is still there" from
+            # "some sample is there", so the clear would wipe the fresh
+            # one. Passing ``replace_older_than`` (repurposed here as
+            # "the sample the caller observed") makes the REMOVE fire
+            # only when that specific sample is still present.
+            expr_values: Dict[str, Any] = {}
+            condition = "attribute_exists(drift_observed_at)"
+            if replace_older_than is not None:
+                condition = "drift_observed_at = :prev"
+                expr_values[":prev"] = replace_older_than
+            kwargs_: Dict[str, Any] = {
+                "Key": {"counter_id": COUNTER_ID},
+                "UpdateExpression": "REMOVE drift_observed_at, drift_running",
+                "ConditionExpression": condition,
+            }
+            if expr_values:
+                kwargs_["ExpressionAttributeValues"] = expr_values
+            concurrency_table.update_item(**kwargs_)
         elif replace_older_than is not None:
             # Compare-and-swap overwrite: replace ONLY if the existing
             # sample is still the one the caller saw. Guards against a

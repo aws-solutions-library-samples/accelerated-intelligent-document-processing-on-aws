@@ -30,6 +30,7 @@ import io
 import logging
 import math
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -187,6 +188,15 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         "target_hour": target_hour,
     }
     failures: List[str] = []
+    # Round-18 review fix (#209): preserve permanent-vs-retryable
+    # classification. ``_wait_for_athena`` raises ValueError for permanent
+    # failures and RuntimeError for retryable — but blindly re-raising
+    # RuntimeError from this aggregator downgraded permanent failures to
+    # retryable and burned Lambda async-retry attempts on truly permanent
+    # errors. Track whether ANY sub-failure was a ValueError and re-raise
+    # ValueError from the aggregator if so, so async-retry recognizes
+    # the permanent class.
+    any_permanent = False
     for label, fn in (
         ("metering_hourly", _rollup_metering_hourly),
         ("metering_docs_hourly", _rollup_metering_docs_hourly),
@@ -194,6 +204,13 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     ):
         try:
             results[label] = fn(target_date, target_hour)
+        except ValueError as e:
+            logger.exception(
+                f"{label} PERMANENT rollup failure for {target_date} hour={target_hour}"
+            )
+            results[label] = {"skipped": False, "error": str(e)}
+            failures.append(f"{label}(permanent): {e}")
+            any_permanent = True
         except Exception as e:
             logger.exception(
                 f"{label} rollup failed for {target_date} hour={target_hour}"
@@ -206,10 +223,11 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         # Raise AFTER the two independent siblings have run. The
         # successful ones' partitions are idempotency-locked, so async
         # retry only replays the failed ones.
-        raise RuntimeError(
+        msg = (
             f"Hourly rollup for {target_date} hour={target_hour} had "
             f"{len(failures)} of 3 sub-rollups fail: {'; '.join(failures)}"
         )
+        raise (ValueError if any_permanent else RuntimeError)(msg)
     return results
 
 
@@ -227,26 +245,92 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 _IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME or 'unknown'}"
 
 
+# Round-18 review fix (finding #1985): single source of truth for
+# "is this Athena/Glue error a table-not-found error?". Round 6/7/8/11/
+# 15/16/17 each edited one of three drifted copies of this logic (in
+# ``_partition_already_written``, ``_hourly_ever_written``, and
+# ``_wait_for_athena``'s permanent classifier). Consolidating removes
+# the drift and lets us bind the "does not exist" phrase to the SPECIFIC
+# table name so unrelated column/bucket/database/role/view errors
+# don't false-positive.
+def _is_athena_table_missing(exc_or_msg: Any, table: Optional[str] = None) -> bool:
+    """Return True iff the Athena/Glue error indicates the given table
+    doesn't exist. Accepts either an Exception or a raw message string.
+
+    If ``table`` is supplied, the phrase ``does not exist`` must appear
+    bound to that table name (backtick / quoted / catalog-qualified
+    forms). If ``table`` is None, only unambiguous shape markers
+    (``TABLE_NOT_FOUND``, ``EntityNotFoundException``) match — falling
+    back to bare ``does not exist`` here would false-positive on column
+    or bucket errors.
+    """
+    msg = str(exc_or_msg).lower()
+    # Unambiguous markers — safe without table binding.
+    if any(
+        m in msg
+        for m in (
+            "table_not_found",
+            "entitynotfoundexception",
+            "table not found",
+        )
+    ):
+        return True
+    if not table:
+        return False
+    tbl = table.lower()
+    return any(
+        marker in msg
+        for marker in (
+            # Backtick / double-quote / single-quote table forms.
+            f"table `{tbl}` does not exist",
+            f'table "{tbl}" does not exist',
+            f"table '{tbl}' does not exist",
+            # Fully-qualified variants Athena/Trino emit — catalog.db.table
+            # segment ending in the specific table name.
+            f".{tbl}' does not exist",
+            f".{tbl}` does not exist",
+            f'.{tbl}" does not exist',
+            f'."{tbl}" does not exist',
+            f".`{tbl}` does not exist",
+        )
+    )
+
+
 def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
     """Build a per-partition Athena ClientRequestToken.
 
     Guarantees:
     - 32–128 chars (Athena hard limit).
     - Deterministic on (table, date, hour) so async retry dedupes.
-    - Contains only letters/digits/dash — Athena's allowed alphabet.
+    - Contains only letters/digits/dash/underscore.
+    - Distinct (table, date, hour) tuples NEVER collide, even when
+      ``STACK_NAME`` is long enough to force truncation. Round-18
+      review fix — the previous ordering ``prefix-<discriminator>``
+      then ``[:128]`` chopped the trailing discriminator, so two
+      partitions from a long-stack-name deployment could hash to the
+      same token and the second INSERT silently no-oped (Athena's
+      dedup returns the earlier QueryExecutionId).
     """
     core = f"{table}-{date}"
     if hour:
         core = f"{core}-{hour}"
-    key = f"{_IDEMPOTENCY_KEY_PREFIX}-{core}"
-    # Sanitize: replace anything outside [A-Za-z0-9_-] with '-' so weird
-    # stack names or dates can't sneak invalid chars in. Underscores are
-    # allowed in Athena's ClientRequestToken alphabet and appear in our
-    # canonical table names (metering_hourly etc.), so keep them.
-    key = re.sub(r"[^A-Za-z0-9_-]", "-", key)
-    # Truncate to the 128 upper bound; _run_athena also truncates, but
-    # doing it here keeps the value predictable at the callsite.
-    return key[:128]
+    # Round-18 fix: put the DISCRIMINATOR FIRST, then the stack-scoped
+    # prefix. If the total exceeds 128 chars, truncation lops off the
+    # stack-name suffix (bloat), not the (table, date, hour) tuple that
+    # actually distinguishes partitions. Even the shortest core value
+    # ("metering_daily-2026-08-27" = 25 chars) still needs SOME prefix
+    # to clear the 32-char floor, so we place the prefix after and let
+    # truncation eat into it if necessary — never into the core.
+    sanitized_core = re.sub(r"[^A-Za-z0-9_-]", "-", core)
+    sanitized_prefix = re.sub(r"[^A-Za-z0-9_-]", "-", _IDEMPOTENCY_KEY_PREFIX)
+    key = f"{sanitized_core}-{sanitized_prefix}"
+    # Truncate the TAIL (prefix side) at 128; the discriminator survives.
+    key = key[:128]
+    # Pad short cores (empty stack name in local tests) so we still
+    # clear Athena's 32-char floor by appending fixed padding.
+    if len(key) < 32:
+        key = (key + "-idempotency-pad-idempotency-pad")[:64]
+    return key
 
 
 def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
@@ -549,6 +633,9 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     # CloudWatch logs and the (re-raised) final exception carry the
     # union.
     errors: List[str] = []
+    # Round-18 fix (#639): track whether ANY sub-INSERT was permanent
+    # (ValueError) so the aggregator re-raise preserves the class.
+    any_permanent = False
     if daily_exists:
         logger.info(
             f"metering_daily partition date={target_date} already exists — "
@@ -580,6 +667,11 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+        except ValueError as e:
+            logger.exception("metering_daily PERMANENT INSERT failure")
+            errors.append(f"metering_daily(permanent): {type(e).__name__}: {e}")
+            result["metering_daily"] = {"error": str(e), "skipped": False}
+            any_permanent = True
         except Exception as e:
             logger.exception("metering_daily INSERT failed")
             errors.append(f"metering_daily: {type(e).__name__}: {e}")
@@ -621,25 +713,43 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+        except ValueError as e:
+            logger.exception("metering_docs_daily PERMANENT INSERT failure")
+            errors.append(f"metering_docs_daily(permanent): {type(e).__name__}: {e}")
+            result["metering_docs_daily"] = {"error": str(e), "skipped": False}
+            any_permanent = True
         except Exception as e:
             logger.exception("metering_docs_daily INSERT failed")
             errors.append(f"metering_docs_daily: {type(e).__name__}: {e}")
             result["metering_docs_daily"] = {"error": str(e), "skipped": False}
 
     # Legacy top-level keys for backward-compat with the existing test
-    # + operator invocation shape (skipped/query_execution_id flags).
-    result["skipped"] = bool(result["metering_daily"].get("skipped"))
-    if "query_execution_id" in result["metering_daily"]:
-        result["query_execution_id"] = result["metering_daily"]["query_execution_id"]
+    # + operator invocation shape. Round-18 fix (#631): the aggregate
+    # ``skipped`` and ``query_execution_id`` used to reflect only
+    # ``metering_daily``, so a caller reading the legacy top-level shape
+    # would see ``skipped=True`` when metering_daily was idempotently
+    # skipped even though metering_docs_daily actually wrote. Now:
+    # ``skipped`` is True iff BOTH sub-dailies skipped, and
+    # ``query_execution_id`` prefers a real ID from either sub-daily.
+    d_daily = result["metering_daily"]
+    d_docs = result["metering_docs_daily"]
+    result["skipped"] = bool(d_daily.get("skipped")) and bool(d_docs.get("skipped"))
+    for sub in (d_daily, d_docs):
+        if "query_execution_id" in sub:
+            result["query_execution_id"] = sub["query_execution_id"]
+            break
     # Raise AFTER both INSERTs have had a chance to run so a partial
     # success is recorded in the result dict and the async-retry only
     # replays the truly-failed table (idempotency skip on the succeeded
-    # one).
+    # one). Round-18 fix (#639): preserve permanent-vs-retryable
+    # classification — ValueError from _wait_for_athena means don't
+    # burn async retries.
     if errors:
-        raise RuntimeError(
+        msg = (
             f"Daily rollup for date={target_date} failed on "
             f"{len(errors)} table(s): {'; '.join(errors)}"
         )
+        raise (ValueError if any_permanent else RuntimeError)(msg)
     return result
 
 
@@ -1184,7 +1294,7 @@ def _get_athena_bytes_sum(
                 values = [
                     v
                     for v in (r.get("Values") or [])
-                    if v is not None and not math.isnan(v)
+                    if v is not None and math.isfinite(v)
                 ]
                 total += float(math.fsum(values))
             next_token = resp.get("NextToken")
@@ -1308,7 +1418,7 @@ def _get_bedrock_tokens_by_model(
                     values = [
                         v
                         for v in (r.get("Values") or [])
-                        if v is not None and not math.isnan(v)
+                        if v is not None and math.isfinite(v)
                     ]
                     total = float(math.fsum(values))
                     bucket = result.setdefault(model, {"in": 0.0, "out": 0.0})
@@ -1336,7 +1446,7 @@ def _flatten_cw_response(response: Dict[str, Any]) -> Dict[str, float]:
     result: Dict[str, float] = {}
     for r in response.get("MetricDataResults", []):
         values = [
-            v for v in (r.get("Values") or []) if v is not None and not math.isnan(v)
+            v for v in (r.get("Values") or []) if v is not None and math.isfinite(v)
         ]
         result[r["Id"]] = result.get(r["Id"], 0.0) + float(math.fsum(values))
     return result
@@ -1917,6 +2027,24 @@ def _wait_for_athena(
         "RequestLimitExceeded",
         "InternalServerException",
     )
+
+    def _stop_orphan(qid: str) -> None:
+        """Round-18 review fix (#1941, #1963): stop the orphan Athena
+        query before raising TimeoutError from a poll-retry timeout.
+        Without this, the query keeps scanning (and billing) up to
+        Athena's own ceiling while Lambda has already given up. Called
+        from both the BotoCoreError and ClientError retry-timeout
+        branches so the two additional exit paths match the sibling
+        terminal-state timeout below.
+        """
+        try:
+            athena_client.stop_query_execution(QueryExecutionId=qid)
+            logger.warning(
+                f"Athena query {qid} orphan-stopped after poll-retry timeout."
+            )
+        except Exception as stop_err:  # nosec — best-effort telemetry.
+            logger.warning(f"stop_query_execution({qid}) failed: {stop_err}")
+
     while True:
         try:
             response = athena_client.get_query_execution(QueryExecutionId=query_id)
@@ -1929,7 +2057,9 @@ def _wait_for_athena(
             # exact case async retry can heal.
             _consecutive_throttles += 1
             backoff = min(2 ** (_consecutive_throttles - 1), 5.0)
-            jitter = (time.time() % 1) * 0.5
+            jitter = random.uniform(
+                0, 0.5
+            )  # decorrelates concurrent-Lambda retry (round-18)
             sleep_for = backoff + jitter
             logger.warning(
                 f"Athena poll for {query_id} threw BotoCoreError "
@@ -1938,6 +2068,7 @@ def _wait_for_athena(
             )
             time.sleep(sleep_for)
             if time.time() - started > timeout_sec:
+                _stop_orphan(query_id)
                 raise TimeoutError(
                     f"Athena poll for {query_id} exceeded {timeout_sec}s "
                     f"of BotoCoreError retries; last: {poll_err}"
@@ -1951,7 +2082,9 @@ def _wait_for_athena(
                 backoff = min(2 ** (_consecutive_throttles - 1), 5.0)
                 # Time-derived jitter (no random module — deterministic
                 # under test) — take fractional seconds mod 1.
-                jitter = (time.time() % 1) * 0.5
+                jitter = random.uniform(
+                    0, 0.5
+                )  # decorrelates concurrent-Lambda retry (round-18)
                 sleep_for = backoff + jitter
                 logger.warning(
                     f"Athena poll for {query_id} threw {code} "
@@ -1960,6 +2093,7 @@ def _wait_for_athena(
                 )
                 time.sleep(sleep_for)
                 if time.time() - started > timeout_sec:
+                    _stop_orphan(query_id)
                     raise TimeoutError(
                         f"Athena poll for {query_id} exceeded {timeout_sec}s "
                         f"of poll throttle; last error: {poll_err}"
@@ -1982,6 +2116,14 @@ def _wait_for_athena(
             # fix. Athena's error text is well-known (documented at
             # https://docs.aws.amazon.com/athena/latest/ug/error-reference.html).
             reason_lc = reason.lower()
+            # Round-18 review fix (#1997): the bare ``does not exist``
+            # marker used to false-positive on column/bucket/database/
+            # role/view "does not exist" errors and misclassify them as
+            # PERMANENT (which is fine for a permanent classification —
+            # those never succeed on retry either — but muddies the DLQ
+            # message). Column-specific and view-specific markers stay
+            # as their own dedicated shapes; table-shape now goes
+            # through the shared helper.
             permanent_markers = (
                 "syntax_error",
                 "syntax error",
@@ -1990,12 +2132,6 @@ def _wait_for_athena(
                 "no viable alternative",
                 "hive_metastore_error",  # schema mismatch
                 "invalid_view",
-                # Target table missing → CFN dependency ordering issue,
-                # not a transient failure. DLQ immediately instead of
-                # burning both async retries. Round-12 review fix.
-                "table_not_found",
-                "does not exist",
-                "entitynotfoundexception",
             )
             retryable_markers = (
                 "throttling",
@@ -2005,6 +2141,17 @@ def _wait_for_athena(
                 "resource_exhausted",
                 "network_error",
             )
+            # Table-missing is permanent (needs CFN/operator fix). Use
+            # the shared helper — matches TABLE_NOT_FOUND /
+            # EntityNotFoundException unconditionally, PLUS
+            # "does not exist" only when bound to a real table name
+            # via the fully-qualified segment. Prevents unrelated
+            # "column does not exist" from stealing the permanent path.
+            if _is_athena_table_missing(reason_lc):
+                raise ValueError(
+                    f"Athena query {query_id} PERMANENT (table missing) "
+                    f"({state}): {reason}"
+                )
             if any(m in reason_lc for m in permanent_markers):
                 # Permanent → operator intervention needed; async retry
                 # is wasted budget. Raise ValueError so DLQ sees a
