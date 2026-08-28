@@ -208,6 +208,23 @@ def test_real_template_transforms_without_dangling_refs():
     )
 
 
+# publish.py substitutes these <TOKEN> placeholders in the committed template at
+# publish time (artifact bucket, prefix, zip names, version, ...). The raw
+# placeholders are harmless for structural assertions but not for cfn-lint:
+# cfn-lint 1.51 started validating AWS::Lambda::LayerVersion Content.S3Bucket
+# against the S3 bucket-name pattern, so "<ARTIFACT_BUCKET_TOKEN>" reported
+# E1161/E3031 — a finding about the placeholder, not about the template we
+# actually publish. Substituting a lint-valid stand-in (lowercase + dashes: legal
+# as both a bucket name and an S3 key fragment) keeps the Error gate below honest
+# instead of making it exempt whole rules.
+_PUBLISH_TOKEN_RE = re.compile(r"<([A-Z0-9_]+)>")
+
+
+def _substitute_publish_tokens(text: str) -> str:
+    """Replace every publish-time <TOKEN> with a lint-valid stand-in value."""
+    return _PUBLISH_TOKEN_RE.sub(lambda m: m.group(1).lower().replace("_", "-"), text)
+
+
 def _load_real_template_plain():
     """Load the committed template.yaml as plain dict/list/str (no cfn nodes).
 
@@ -215,7 +232,7 @@ def _load_real_template_plain():
     shorthand !Ref/!GetAtt/!Sub tags plain yaml.safe_load chokes on. The
     transform round-trips through yaml.safe_dump/load internally, which can't
     serialize those node types — so coerce the whole tree to plain
-    dict/list/str/scalars first.
+    dict/list/str/scalars first, resolving publish-time tokens on the way.
     """
     cfnlint_decode = pytest.importorskip("cfnlint.decode.cfn_yaml")
 
@@ -225,7 +242,7 @@ def _load_real_template_plain():
         if isinstance(node, list):
             return [_plain(x) for x in node]
         if isinstance(node, str):
-            return str(node)
+            return _substitute_publish_tokens(str(node))
         return node
 
     loaded = cfnlint_decode.load(str(_repo_root() / "template.yaml"))
