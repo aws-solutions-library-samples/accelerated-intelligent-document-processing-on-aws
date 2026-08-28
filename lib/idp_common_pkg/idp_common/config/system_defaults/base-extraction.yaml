@@ -268,7 +268,7 @@ extraction:
      4. For each extracted attribute key, the value MUST be a nested object formatted
      exactly like this:
             {
-              "G1": "<1st most likely guess, as short as possible>",
+              "G1": "<1st most likely guess, copied EXACTLY as it appears in the document>",
               "P1": <probability between 0.0 and 1.0>,
               "G2": "<2nd most likely guess>",
               "P2": <probability between 0.0 and 1.0>,
@@ -294,42 +294,43 @@ extraction:
     For SIMPLE attributes:
     {
       "simple_attribute_name": {
-        "G1": "<1st most likely guess, as short as possible>",
+        "G1": "<1st most likely guess, copied EXACTLY as it appears in the document>",
         "P1": <probability between 0.0 and 1.0>,
-        "G2": "<2nd most likely guess, as short as possible>",
+        "G2": "<2nd most likely guess>",
         "P2": <probability between 0.0 and 1.0>,
-        "G3": "<3rd most likely guess, as short as possible>",
+        "G3": "<3rd most likely guess>",
         "P3": <probability between 0.0 and 1.0>,
-        "G4": "<4th most likely guess, as short as possible>",
+        "G4": "<4th most likely guess>",
         "P4": <probability between 0.0 and 1.0>
       }
     }
 
-    For LIST attributes (assess EACH item individually):
+    For LIST attributes, give G1/P1 ONLY (a single guess per cell) and include
+    EVERY row that appears in the document. Completeness of the list matters more
+    than alternative guesses, and extra guesses per cell multiply the output
+    length by the number of rows:
     {
       "list_attribute_name": [
         {
-          "item_attribute_1": {
-            "G1": "<1st guess>",
-            "P1": <probability>,
-            "G2": "<2nd guess>",
-            "P2": <probability>,
-            "G3": "<3rd guess>",
-            "P3": <probability>,
-            "G4": "<4th guess>",
-            "P4": <probability>
-          },
-          "item_attribute_2": {
-            "G1": "<1st guess>",
-            "P1": <probability>,
-            "G2": "<2nd guess>",
-            "P2": <probability>,
-            "G3": "<3rd guess>",
-            "P3": <probability>,
-            "G4": "<4th guess>",
-            "P4": <probability>
-          }
+          "item_attribute_1": { "G1": "<guess, copied EXACTLY as it appears in the document>", "P1": <probability between 0.0 and 1.0> },
+          "item_attribute_2": { "G1": "<guess, copied EXACTLY as it appears in the document>", "P1": <probability between 0.0 and 1.0> }
         }
       ]
+    }
+    For GROUP attributes (a nested object), give one candidate object per
+    sub-attribute:
+    {
+      "group_attribute_name": {
+        "sub_attribute_1": {
+          "G1": "<1st most likely guess, copied EXACTLY as it appears in the document>",
+          "P1": <probability between 0.0 and 1.0>,
+          "G2": "<2nd most likely guess>",
+          "P2": <probability between 0.0 and 1.0>
+        },
+        "sub_attribute_2": {
+          "G1": "<1st most likely guess, copied EXACTLY as it appears in the document>",
+          "P1": <probability between 0.0 and 1.0>
+        }
+      }
     }
     </output-format>

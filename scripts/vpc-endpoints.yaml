@@ -258,6 +258,17 @@ Resources:
           ToPort: 443
           CidrIp: !Ref VpcCidr
           Description: "Allow HTTPS from VPC clients (WorkSpaces, VPN, bastion) reaching the private REST API / Web UI"
+      # Explicit egress instead of the implicit allow-all-outbound that CFN adds
+      # when SecurityGroupEgress is omitted (cfn-nag F1000). Interface-endpoint
+      # ENIs only ever answer inbound 443, and security groups are stateful, so
+      # replies to established connections need no egress rule of their own —
+      # this pins outbound to HTTPS inside the VPC and nothing else.
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+          Description: "Allow HTTPS to VPC-internal destinations only"
       Tags:
         - Key: Name
           Value: !Sub "${IDPStackName}-vpc-endpoints-sg"

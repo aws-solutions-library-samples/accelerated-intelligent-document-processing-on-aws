@@ -62,6 +62,8 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 
 > **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips. The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
+> ⚠️ **Simple + `integrated` truncates long lists — prefer `separate` for list-heavy documents.** Benchmarked on a 100-row transaction list, Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat, at ~1.5–2× the cost. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are now asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer told the model to make each guess *"as short as possible"* (which was also causing it to return shortened *values*) — but the fundamental single-response limit remains. **On list-bearing schemas use `separate`.** See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
 ---
@@ -1263,6 +1265,74 @@ For large documents and big tables:
 - **Advanced (agentic) extraction is generally the better fit.** It shards both extraction **and** confidence assessment into token-/page-budgeted ranges, bounding each inference's context and preventing read-timeout / context-overflow failures. It produced the **best-calibrated confidence** in A/B testing. For 100+ page documents prefer `runtime: step_functions` and raise `max_concurrent_batches` (e.g. 10). For large tables specifically, enable **table parsing** (§1) when OCR emits Markdown tables.
 - **Simple + `separate` confidence still handles large lists** via [large-list batching](#large-list-batching-list_batch_size) (`list_batch_size`) — full per-cell confidence and geometry with no extra configuration. This is the direct replacement for the retired granular assessment.
 - **Rule of thumb:** a document that is large only because it contains a long *list* (e.g. a 300-row bank statement) is well served by Simple + separate + batching. A document with a **very large single section** (dense multi-page narrative or multiple large tables) is better served by **Advanced sharding**, which also splits the extraction work, not just the confidence pass.
+
+### Detecting a truncated list
+
+Extraction can lose rows **silently**: a benchmarked simple-mode run returns
+complete lists (recall 1.000) up to ~800 rows, then **0.199 at 1,200 rows and
+0.009 at 3,200** — and reports success every time. Two things make this
+particularly easy to miss:
+
+- **Scalar accuracy is unaffected.** The document's non-list fields extract
+  perfectly whether the table came back complete, partial, or not at all — so a
+  quality metric based on field accuracy looks healthy.
+- **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
+  truncated, so cost monitoring will not flag it either.
+
+So it must be detected structurally. Three signals are now raised as
+[processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
+| `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
+| `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+
+**Add `minItems` to list fields you care about.** It costs nothing at extraction
+time and turns an invisible truncation into a visible warning:
+
+```yaml
+Transactions:
+  type: array
+  minItems: 1        # or a realistic floor for your corpus
+  items: { … }
+```
+
+Without it, only the empty/absent and sparse signals apply — a list that returns
+10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
+For corpora where large tables are expected, also prefer **Advanced** mode, which
+holds recall 1.000 through 3,200 rows by sharding.
+
+#### Advanced mode: an empty list is retried when the OCR proves there were rows
+
+In Advanced (agentic) mode, one case does **not** need `minItems` to be caught.
+The OCR pre-flight scan already counts Markdown pipe-table rows in the section, so
+when it finds a substantial table (>30 rows) and **every** declared list field
+comes back with no rows, the extraction loop rejects the result and gives the
+agent an explicit correction round naming the field and the row count. If some
+list is populated, the check stays quiet — the detected tables plausibly belong to
+that one, and an empty sibling may be genuinely absent.
+
+**This check needs no configuration.** It runs on every Advanced-mode section, and
+in particular it is *not* behind `extraction.agentic.validation.enabled` (which is
+off by default) — a guard against silent data loss that has to be switched on
+protects nobody who did not already know to look. Its only effect is one more agent
+turn; it can never fail a document.
+
+This closes a real failure mode: an agent declined the deterministic table parser
+because one column was OCR-corrupted, then returned the whole 100-row list as
+`null` — treating *"I cannot map this cleanly"* as *"therefore no rows"*. The
+result was schema-valid, scalar accuracy was 1.000, and the section was reported
+COMPLETED. The prompt now states the rule explicitly: declining the tool obliges
+the agent to extract the table directly, and one unreadable column means that
+cell is `null`, not that the row or the list is dropped.
+
+The **Processing Report** also stops contradicting itself here. It previously
+printed `✓ Completeness Validation: All schema constraints satisfied` immediately
+above the warning that the list was empty, because with no `minItems` no
+constraint *was* broken. It now reads `⚠` and says which list returned no rows,
+how many rows the OCR found, whether the table tool ran, and that `minItems` would
+make it a hard constraint.
 
 ---
 

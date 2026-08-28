@@ -87,6 +87,18 @@ there (`E3006 Resource type 'AWS::CloudFront::Distribution' does not exist in
   since [Lambda Function URLs are not available in GovCloud](https://docs.aws.amazon.com/govcloud-us/latest/UserGuide/govcloud-lambda.html).
   Chat still works — the UI automatically switches to a non-streaming path
   (see [Chat in GovCloud](#chat-in-govcloud-non-streaming) below).
+- Remove the streaming endpoint's **handler** (`ChatStreamProcessorFunction`,
+  its log group, its Lambda permission, and the IAM statement that granted
+  invoke on it). It runs under the [AWS Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter),
+  which is published **only in the commercial partition** — AWS account IDs do
+  not exist across partitions, so `arn:${AWS::Partition}:` substitution cannot
+  make the layer ARN resolvable and the deploy fails with a 403 on
+  `lambda:GetLayerVersion`. There is no GovCloud LWA publication to point the
+  `LambdaWebAdapterLayerArn` override at, so that parameter is dropped from the
+  GovCloud template too. This does **not** disable chat: the polling transport
+  is served by the retained `AgentChatProcessorFunction` /
+  `ChatWithDocumentProcessorFunction` via the UI REST API, and the streaming
+  function was never in that path.
 
 Everything else in the UI (Cognito auth, the REST API, WAF, document
 processing, extraction, evaluation, Test Studio, discovery, knowledge base,
@@ -152,15 +164,43 @@ token streaming:
   Lambda Function URL and renders the answer token-by-token, including
   intermediate agent progress ("calling tool X…").
 - **GovCloud (non-streaming):** the browser sends the chat message over the
-  REST API, which asynchronously invokes the same chat processor; the UI then
-  **polls** for the final answer. The user sees a spinner until the complete
-  answer appears at once. **The final answer is identical to streaming.**
+  REST API, which asynchronously invokes the same chat processor
+  (`AgentChatProcessorFunction` / `ChatWithDocumentProcessorFunction` — these
+  are *retained* in GovCloud; only the LWA-based streaming front end is
+  removed); the UI then **polls** for the final answer. The user sees a spinner
+  until the complete answer appears at once. **The final answer is identical to
+  streaming.**
 
 This is auto-detected — the UI streams when a Function URL is configured
 (`VITE_STREAM_URL`) and polls when it is not; no configuration is needed. The
 polling path reuses the Cognito-authed REST API, so it inherits the same
 `ApiGatewayVisibility=PRIVATE` / WAF posture as the rest of the UI. Long agent
 turns are supported (the UI polls for up to 5 minutes).
+
+## Not Available in GovCloud (all deploy modes)
+
+Unlike the transforms above, these gaps are partition conditions in the
+templates themselves, so they apply to `--govcloud`, `--headless` and the
+untransformed template alike.
+
+### Bedrock Data Automation as the OCR backend
+
+The `bda` OCR backend needs a stack-scoped BDA **SYNC** project whose
+`standardOutputConfiguration` carries a `document` block. BDA itself is
+available in `us-gov-west-1`, but that specific project shape is not — the API
+rejects it with `ValidationException: Sync project does not support
+video/audio/document modality in Standard Output Configuration`.
+
+`BDAOCRProject` is therefore created only in the commercial partition
+(condition `ShouldCreateBDAOCRProject`). In GovCloud the project isn't created
+and `BDA_OCR_PROJECT_ARN` is empty; the OCR service raises a clear error *only
+if* `ocr.backend` is actually set to `bda`. Use `ocr.backend: textract` — the
+built-in default. The `lending-package-sample-govcloud` preset sets no `ocr:`
+key, so the default applies and no configuration change is needed.
+
+> Before this gate existed the resource was created unconditionally and its
+> failure rolled back the entire root stack on **every** GovCloud deployment,
+> regardless of deploy mode or the configured `ocr.backend`.
 
 ## Headless Deployment: `--headless`
 

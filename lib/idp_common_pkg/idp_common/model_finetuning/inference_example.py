@@ -521,7 +521,7 @@ Examples:
     --image-directory /path/to/images/ \\
     --compare-with-base \\
     --output-file comparison.json
-        """,
+        """,  # arn-partition-ok: argparse epilog — commercial example ARNs in help text
     )
 
     # Model specification (mutually exclusive)

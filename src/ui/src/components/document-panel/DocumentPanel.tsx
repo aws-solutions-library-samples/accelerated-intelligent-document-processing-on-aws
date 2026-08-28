@@ -40,7 +40,7 @@ import { DocumentVersionProvider } from '../../contexts/document-version';
 import { claimReview } from '../../graphql/generated';
 import usePolling from '../../hooks/use-polling';
 import useClassificationComparison from '../../hooks/use-classification-comparison';
-import { exportDocument, triggerBrowserDownload } from './document-export';
+import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from './document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
 // Uncomment the line below to enable debugging
@@ -795,7 +795,7 @@ export const DocumentPanel = ({
   };
 
   // Baseline option is only useful if the document has evaluation data
-  const isBaselineAvailableForDoc = localItem?.evaluationStatus === 'BASELINE_AVAILABLE' || localItem?.evaluationStatus === 'COMPLETED';
+  const isBaselineAvailableForDoc = isBaselineAvailable(localItem);
 
   // Kick off a document export for the given scope. Scope 'all' routes through the
   // options modal so the user can opt into page images; other scopes start immediately.

@@ -825,7 +825,7 @@ def _get_specific_document_sections_table_info(
         else:
             info += "No configuration-specific columns defined.\n"
 
-        info += f"""  # nosec B608 - AI agent prompt template with example SQL, not executed
+        info += f"""
 
 ### Sample Queries for {table_name}:
 ```sql
@@ -848,7 +848,7 @@ LIMIT 10
 - Use `LOWER()` for case-insensitive string matching
 - Dot-notation column names like `"document_class.type"` are single column identifiers
 - Table is partitioned by `"date"` - include date filters for better performance
-"""
+"""  # nosec B608 - example SQL inside a prompt template, never executed
 
         return info
 

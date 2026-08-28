@@ -10,7 +10,7 @@ Markdown copies (`BENCHMARK_PAPER.md`, `VERSION_COMPARISON_*.md`) that drifted f
 | "How the suite works" guide | `docs/benchmarking/index.md` |
 | "Which config should I pick?" (evergreen, per release) | `docs/benchmarking/config-guidance.md` |
 | Release-vs-release audit trail (one file per release) | `docs/benchmarking/releases/vX.Y.Z.md` + `releases/README.md` index |
-| Raw scored data (unpublished) | `benchmarks/results/<release>/summary.{json,csv}` + `meta.json` |
+| Raw scored data (unpublished) | `benchmarks/results/<release>/<suite>/summary.{json,csv}` + `meta.json` (one set per release — see `benchmarks/results/RETENTION.md`) |
 | Published figures | `images/benchmark-*.png` (referenced by the docs) |
 
 `figures/` here is **harness scratch** — `aggregate.py --figures` writes charts here;

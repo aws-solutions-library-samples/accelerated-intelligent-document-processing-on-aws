@@ -549,10 +549,17 @@ a validator**, not a copy-pasted deploy/validate/cleanup function.
 
 > **Note:** the Jobs API probe exercises the *additive* `EnableJobsApi` CFN
 > parameter on the STANDARD published template — it does **not** exercise the
-> `idp-cli deploy --headless` template transform (which removes the UI). The
-> `--headless` / `--govcloud` transforms are covered by the offline unit tests
-> in `lib/idp_sdk/tests/unit/` (region-aware `cfn-lint`); a `--headless` *deploy*
-> probe remains a follow-up.
+> `idp-cli deploy --headless` template transform (which removes the UI). (It was
+> itself once *named* the "headless" probe, which is why leftover `-headless`
+> stack names appear in the reaper fixtures; it was renamed `jobsapi` precisely
+> to stop implying transform coverage.) The `--headless` transform is now gated
+> at two tiers: **offline** unit tests in `lib/idp_sdk/tests/unit/`
+> (dangling-parameter + zero-`Error` `cfn-lint`), and **`validate_headless_
+> template`** in the integration tier, which transforms the *packaged*
+> `.aws-sam/idp-main.yaml` and validates it through real CloudFormation
+> `ValidateTemplate` (one S3 put + one API call — no second SAM build, no
+> deploy). A `--headless` *deploy* probe remains a follow-up: these gates prove
+> the template is well-formed, not that a headless stack stands up.
 
 Validators live in `scripts/sdlc/codebuild_deployment.py`:
 `validate_apigw_global_hosting`, `validate_waf_enabled`,
@@ -990,13 +997,37 @@ additions.
       carries SAM short-form tags, so a full lint of the **published/SAM-baked**
       template still needs the publish pipeline — deferred to the integration
       tier.)*
-- [ ] **`--headless` template-transform smoke.** At minimum, run the
-      `HeadlessTemplateTransformer` + cfn-lint in the fast gate to catch transform
-      breakage without a deploy. (Full headless *deploy* e2e is below.) *(A
-      real-template `HeadlessTemplateTransformer` dangling-ref test already
-      exists in `test_template_transform.py`; the remaining gap is a
-      region-aware `cfn-lint` pass over the transformed headless template like
-      the govcloud one above.)*
+- [x] **`--headless` template-transform smoke.** Closed at two tiers after this
+      gap shipped a headless template CloudFormation rejects outright — the
+      `SuppressAdminInvite` condition referenced the `AdminEmail` parameter the
+      transform removes, so for six weeks every headless deploy died at
+      validation (`Unresolved dependencies [AdminEmail]`) before creating a
+      single resource. **Fast gate (offline, no AWS):**
+      `test_headless_transform_leaves_no_unresolved_parameter_reference`
+      (structural — no surviving `Ref`/`Fn::Sub` in Conditions/Rules/Outputs may
+      point at a removed parameter) and
+      `test_real_template_headless_has_no_cfn_lint_errors` (zero `Error`-level
+      findings; warnings stay ungated since headless legitimately leaves unused
+      conditions and unreachable `Fn::If` branches). Note the pre-existing
+      headless lint probe gates only `E3006`, which is exactly why an `E1020`
+      slipped through. **Integration tier:** `validate_headless_template`
+      transforms the *packaged* `.aws-sam/idp-main.yaml` and validates it via
+      real CloudFormation `ValidateTemplate`, closing the source-vs-packaged gap
+      the offline tests cannot (SAM expansion, nested-stack URLs). Costs one S3
+      put + one API call — it reuses the template the publish step already built.
+      A full headless *deploy* e2e now exists as an ON-DEMAND runner rather
+      than a CI job: `make transform-deploy-test-headless` /
+      `-govcloud` (`scripts/sdlc/transform_deploy_test.py`) deploy the
+      TRANSFORMED template via the documented `idp-cli deploy
+      --headless|--govcloud --from-code .` path, assert each transform's
+      structural promises, and process a real sample document. Deliberately
+      not wired into CI (~1h+ per variant); the validators and result shape
+      already match the probe framework so wiring in is additive. See
+      `.claude/skills/transform-deploy-test.md`. ⚠️ A COMMERCIAL `govcloud`
+      run does NOT prove GovCloud behaviour (partition ARNs, model
+      availability, the BDA project rejection) — that needs
+      `REGION=us-gov-west-1` against a GovCloud account, which the runner
+      supports unchanged.
 - [x] **Register the `pytest.mark.unit` marker repo-wide.** A minimal repo-root
       `pytest.ini` registers the `unit` / `integration` markers, so the ~12
       per-Lambda/resolver dirs without their own config no longer emit

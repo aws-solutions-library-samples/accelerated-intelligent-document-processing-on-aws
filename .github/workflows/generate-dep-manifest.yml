@@ -25,6 +25,11 @@ on:
       - "docs-site/package-lock.json"
       - "scripts/generate-dep-manifest.sh"
 
+# Least-privilege default for the GITHUB_TOKEN — see the note in
+# developer-tests.yml. Every job here also declares its own block.
+permissions:
+  contents: read
+
 jobs:
   generate-manifests:
     name: Generate Dependency Manifests

@@ -3,7 +3,21 @@ extend-exclude = [
     "lib/appsync_helper_pkg",
     "lib/get_config_pkg",
     "lib/idp_common_pkg/idp_common/bedrock",
-    "lib/idp_common_pkg/idp_common/config",
+    # idp_common/config is excluded FILE-BY-FILE rather than as a directory, so
+    # that anything NEW added there is linted by default. A shared helper
+    # (schema_utils.py) landed in this package and silently got no lint, isort or
+    # format enforcement because the whole directory was skipped. These entries
+    # are pre-existing debt (31 findings); do not add to the list.
+    "lib/idp_common_pkg/idp_common/config/__init__.py",
+    "lib/idp_common_pkg/idp_common/config/class_names.py",
+    "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
+    "lib/idp_common_pkg/idp_common/config/constants.py",
+    "lib/idp_common_pkg/idp_common/config/merge_utils.py",
+    "lib/idp_common_pkg/idp_common/config/migration.py",
+    "lib/idp_common_pkg/idp_common/config/migrations",
+    "lib/idp_common_pkg/idp_common/config/models.py",
+    "lib/idp_common_pkg/idp_common/config/schema_constants.py",
+    "lib/idp_common_pkg/idp_common/config/system_defaults",
     "lib/idp_common_pkg/idp_common/image",
     "lib/idp_common_pkg/idp_common/metrics",
     "lib/idp_common_pkg/idp_common/s3",
