@@ -324,6 +324,16 @@ class HeadlessTemplateTransformer:
             "CreateExternalAppClient",
             # Used only by the removed VersionCheckResolverFunction (AppSync UI feature)
             "HasPublicArtifactsBucket",
+            # Tests the AdminEmail parameter against the CI sentinel to suppress
+            # the Cognito invite email. AdminEmail is removed above, and this
+            # condition's only consumer was AdminUser's MessageAction (also
+            # removed) — but a Condition left referencing a deleted parameter is a
+            # HARD template error, not dead weight:
+            #   Template format error: Unresolved dependencies [AdminEmail].
+            #   Cannot reference resources in the Conditions block of the template
+            # CloudFormation rejects the whole template at validate/create time,
+            # so every headless deploy failed before creating a single resource.
+            "SuppressAdminInvite",
         }
 
         # ---- Rules to remove ----
