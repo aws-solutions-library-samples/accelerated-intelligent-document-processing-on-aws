@@ -25,6 +25,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **A custom domain now serves the Web UI's data operations, not just its pages.** With `CustomDomainUrl` set under `WebUIHosting=APIGateway`, the bundle still called the raw `execute-api` hostname, which a browser reaching the app through the vanity domain often cannot resolve at all in `ApiGatewayVisibility=PRIVATE` — the app shell loaded and every data call failed. The API base is now the custom domain. **Action on upgrade:** the domain needs both base-path mappings to the `api` stage (empty *and* `api`); see [Custom domain](docs/deployment-private-network.md). CloudFront-hosted and non-custom-domain deployments are unchanged.
+
 - **Test Studio could not list test sets in private-network deployments — `getTestSets` returned `504` with an empty body.** When `S3PresignedUrlViaVpcEndpoint=true` (or a BYO S3 endpoint override is set), the test-set and upload resolvers aimed their own S3 calls at the S3 interface VPC endpoint hostname, which those functions cannot route to; the calls hung until API Gateway abandoned the request at 29s. Presigned URLs handed to the browser still use the endpoint, as they must. No configuration change is needed on upgrade.
 
 - **A data operation that runs too long now returns an error you can read.** Any `/op/{field}` call exceeding API Gateway's 29s integration limit produced a bodiless `504`, so the Web UI could only report `Request failed (504)` and the logs did not say which call was slow. Such a request now returns `504` naming the operation with `errorType: "Timeout"`, and the dispatcher logs the resolver it was waiting on.

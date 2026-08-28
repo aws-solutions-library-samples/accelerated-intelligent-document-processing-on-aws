@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """The VPC-endpoint S3 client is for presigning only — enforced statically.
 
 Two different reasons exist to point an S3 client at an interface VPC endpoint,

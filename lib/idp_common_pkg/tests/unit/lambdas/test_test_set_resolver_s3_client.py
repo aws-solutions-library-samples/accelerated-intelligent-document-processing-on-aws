@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """Which S3 client the test-set resolver uses for what.
 
 This is the resolver behind Test Studio, and the one where conflating the two
