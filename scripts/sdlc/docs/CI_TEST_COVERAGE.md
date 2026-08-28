@@ -1015,7 +1015,19 @@ additions.
       real CloudFormation `ValidateTemplate`, closing the source-vs-packaged gap
       the offline tests cannot (SAM expansion, nested-stack URLs). Costs one S3
       put + one API call — it reuses the template the publish step already built.
-      A full headless *deploy* e2e is still open (below).
+      A full headless *deploy* e2e now exists as an ON-DEMAND runner rather
+      than a CI job: `make transform-deploy-test-headless` /
+      `-govcloud` (`scripts/sdlc/transform_deploy_test.py`) deploy the
+      TRANSFORMED template via the documented `idp-cli deploy
+      --headless|--govcloud --from-code .` path, assert each transform's
+      structural promises, and process a real sample document. Deliberately
+      not wired into CI (~1h+ per variant); the validators and result shape
+      already match the probe framework so wiring in is additive. See
+      `.claude/skills/transform-deploy-test.md`. ⚠️ A COMMERCIAL `govcloud`
+      run does NOT prove GovCloud behaviour (partition ARNs, model
+      availability, the BDA project rejection) — that needs
+      `REGION=us-gov-west-1` against a GovCloud account, which the runner
+      supports unchanged.
 - [x] **Register the `pytest.mark.unit` marker repo-wide.** A minimal repo-root
       `pytest.ini` registers the `unit` / `integration` markers, so the ~12
       per-Lambda/resolver dirs without their own config no longer emit
