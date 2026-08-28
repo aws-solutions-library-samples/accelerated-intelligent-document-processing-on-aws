@@ -90,7 +90,20 @@ def _read_timeout():
 
 def _throttle():
     return ClientError(
-        {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}},
+        {
+            "Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"},
+            "ResponseMetadata": {"HTTPStatusCode": 429},
+        },
+        "Invoke",
+    )
+
+
+def _service_error(status: int, code: str):
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
         "Invoke",
     )
 
@@ -146,7 +159,16 @@ class TestResolverTimeout:
         )
 
 
-class TestThrottleHandling:
+class TestTransientInvokeErrorsAreRetried:
+    """Turning botocore's retries off must not make a healthy stack fragile.
+
+    The read-timeout bound requires ``max_attempts=1`` on the client, which also
+    switches off the retries that had nothing to do with timeouts. Those are
+    reissued here instead — one immediate retry, only for failures that never ran
+    the resolver, so a public deployment is no more exposed to a transient Lambda
+    hiccup than it was before.
+    """
+
     def test_throttling_is_retried_once_and_can_succeed(self, idx, monkeypatch):
         fake = _FakeLambda(_throttle(), {"ok": True})
         monkeypatch.setattr(idx, "_lambda", fake)
@@ -156,28 +178,62 @@ class TestThrottleHandling:
         assert result == {"ok": True}
         assert fake.calls == 2
 
-    def test_a_second_throttle_is_not_retried_again(self, idx, monkeypatch):
+    def test_a_lambda_service_5xx_is_retried(self, idx, monkeypatch):
+        """The retry botocore used to provide for us."""
+        fake = _FakeLambda(_service_error(500, "ServiceException"), {"ok": True})
+        monkeypatch.setattr(idx, "_lambda", fake)
+
+        assert idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}}) == {
+            "ok": True
+        }
+        assert fake.calls == 2
+
+    def test_an_unfamiliar_5xx_code_is_still_retried(self, idx, monkeypatch):
+        """Classified by HTTP status, not only by a hardcoded code list."""
+        fake = _FakeLambda(_service_error(503, "SomethingNewFromLambda"), {"ok": True})
+        monkeypatch.setattr(idx, "_lambda", fake)
+
+        assert idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}}) == {
+            "ok": True
+        }
+        assert fake.calls == 2
+
+    def test_eni_capacity_errors_are_retried(self, idx, monkeypatch):
+        fake = _FakeLambda(
+            _service_error(502, "ENILimitReachedException"), {"ok": True}
+        )
+        monkeypatch.setattr(idx, "_lambda", fake)
+
+        assert idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}}) == {
+            "ok": True
+        }
+        assert fake.calls == 2
+
+    def test_retry_happens_at_most_once(self, idx, monkeypatch):
         fake = _FakeLambda(_throttle(), _throttle())
         monkeypatch.setattr(idx, "_lambda", fake)
         with pytest.raises(ClientError):
             idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})
         assert fake.calls == 2
 
-    def test_timeout_on_the_throttle_retry_still_reports_a_timeout(
-        self, idx, monkeypatch
-    ):
+    def test_timeout_on_the_retry_still_reports_a_timeout(self, idx, monkeypatch):
         fake = _FakeLambda(_throttle(), _read_timeout())
         monkeypatch.setattr(idx, "_lambda", fake)
         with pytest.raises(idx.ResolverTimeout):
             idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})
         assert fake.calls == 2
 
-    def test_other_client_errors_are_not_retried(self, idx, monkeypatch):
-        fake = _FakeLambda(
-            ClientError(
-                {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Invoke"
-            )
-        )
+    @pytest.mark.parametrize(
+        "code,status",
+        [
+            ("AccessDeniedException", 403),
+            ("ResourceNotFoundException", 404),
+            ("InvalidParameterValueException", 400),
+        ],
+    )
+    def test_deterministic_errors_are_not_retried(self, idx, monkeypatch, code, status):
+        """A retry only delays the same answer and doubles the latency."""
+        fake = _FakeLambda(_service_error(status, code))
         monkeypatch.setattr(idx, "_lambda", fake)
         with pytest.raises(ClientError):
             idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})

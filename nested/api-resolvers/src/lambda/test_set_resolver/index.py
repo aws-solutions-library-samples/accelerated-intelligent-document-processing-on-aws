@@ -79,21 +79,34 @@ s3_presign_client = boto3.client(
     "s3", endpoint_url=_s3_endpoint_url, config=s3_presign_config
 )
 
-# Every actual S3 API call this resolver makes. Bounded so a future
-# endpoint/network misconfiguration surfaces as a fast, logged error instead of
-# stalling past the API Gateway ceiling into an unexplained 504. botocore reads
-# max_attempts as a RETRY count, so this is 2 total attempts and a worst case of
-# 2 x (2s connect + 6s read) = 16s — one retry kept for genuinely transient S3
-# errors (503 SlowDown), while still leaving room inside the 29s budget for the
-# response to be built. 6s between socket reads is generous for the small
-# LIST/GET responses this resolver makes; an unroutable host burns the full
-# budget with nothing to show, which is the failure this replaces.
+# Bounds for the data-plane client, applied ONLY where there is private-network
+# S3 configuration to get wrong. That is the whole failure this guards: an
+# endpoint or route that cannot be reached, which stalls instead of erroring and
+# gets turned into a bodiless 504 by the 29s API Gateway ceiling. A public
+# deployment has no endpoint and no route to misconfigure, so it keeps botocore's
+# stock timeouts and this change is a no-op there rather than a new way to fail.
+#
+# botocore reads max_attempts as a RETRY count, so this is 2 total attempts:
+# worst case 2 x (3s connect + 8s read) = 22s, leaving room inside the budget for
+# the response to be built, with one retry kept for genuinely transient S3 errors
+# (503 SlowDown). read_timeout is per socket read rather than per operation, so 8s
+# of silence mid-transfer is far outside normal for the small LIST/GET responses
+# this resolver makes — S3 answers these in tens of milliseconds.
+_S3_DATAPLANE_BOUNDS = (
+    {
+        "connect_timeout": 3,
+        "read_timeout": 8,
+        "retries": {"mode": "standard", "max_attempts": 1},
+    }
+    if _s3_endpoint_url
+    else {}
+)
+
+# Every actual S3 API call this resolver makes.
 s3_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": "path"},
-    connect_timeout=2,
-    read_timeout=6,
-    retries={"mode": "standard", "max_attempts": 1},
+    **_S3_DATAPLANE_BOUNDS,
 )
 s3_client = boto3.client("s3", config=s3_config)
 db_client = DynamoDBClient(table_name=os.environ["TRACKING_TABLE"])

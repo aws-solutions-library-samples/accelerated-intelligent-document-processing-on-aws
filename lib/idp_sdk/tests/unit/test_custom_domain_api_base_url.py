@@ -132,3 +132,125 @@ class TestApiBaseUrlFollowsTheBrowserOrigin:
         assert "WebUIHosting" in flattened, (
             "WebUIHosting selects the branch, so it must also force a rebuild"
         )
+
+
+def _evaluate(template: dict, node: Any, params: dict) -> Any:
+    """Resolve `!If` / `!Ref` / `!Sub` / `!GetAtt` for a given parameter set.
+
+    Enough of an evaluator to answer "what does this env var actually become for
+    these parameters" — an assertion about the *shape* of an `!If` cannot tell you
+    whether existing deployments still get the value they got before, and that is
+    the question a change to a baked-in URL has to answer.
+    """
+    if isinstance(node, dict) and len(node) == 1:
+        ((tag, value),) = node.items()
+        if tag == "!If":
+            name, when_true, when_false = value
+            branch = (
+                when_true
+                if _bool(template, {"!Condition": name}, params)
+                else when_false
+            )
+            return _evaluate(template, branch, params)
+        if tag == "!Ref":
+            return params.get(value, f"<{value}>")
+        if tag == "!GetAtt":
+            return f"<GetAtt:{value}>"
+        if tag == "!Sub":
+            out = value
+            for key, val in params.items():
+                out = out.replace("${" + key + "}", str(val))
+            return out
+        raise AssertionError(f"unhandled intrinsic {tag}: {node!r}")
+    return node
+
+
+def _bool(template: dict, node: Any, params: dict) -> bool:
+    """Resolve a CloudFormation condition expression, named or inline."""
+    ((tag, value),) = node.items()
+    if tag == "!Condition":
+        return _bool(template, template["Conditions"][value], params)
+    if tag == "!Equals":
+        left, right = (_evaluate(template, v, params) for v in value)
+        return str(left) == str(right)
+    if tag == "!Not":
+        return not _bool(template, value[0], params)
+    if tag == "!And":
+        return all(_bool(template, v, params) for v in value)
+    if tag == "!Or":
+        return any(_bool(template, v, params) for v in value)
+    raise AssertionError(f"unhandled condition expression {tag}: {node!r}")
+
+
+EXECUTE_API = "<GetAtt:APIRESOLVERSTACK.Outputs.HttpApiEndpoint>"
+
+
+class TestExistingDeploymentsAreUnaffected:
+    """The other three corners of the matrix must resolve exactly as before.
+
+    Only one parameter combination may change behaviour. Anything else — every
+    public CloudFront deployment, every stack with no custom domain — has to keep
+    the execute-api URL it was already baking in, or this fix breaks far more
+    than it repairs.
+    """
+
+    @pytest.mark.parametrize(
+        "hosting,domain,expected,why",
+        [
+            (
+                "CloudFront",
+                "",
+                EXECUTE_API,
+                "the default public build: no custom domain, CloudFront hosting",
+            ),
+            (
+                "APIGateway",
+                "",
+                EXECUTE_API,
+                "private/GovCloud hosting with no custom domain",
+            ),
+            (
+                "CloudFront",
+                "https://idp.example.com",
+                EXECUTE_API,
+                "CloudFront has one S3 origin and no /api behaviour, so the API "
+                "must NOT be routed through a domain in front of it",
+            ),
+            (
+                "APIGateway",
+                "https://idp.example.com",
+                "https://idp.example.com/api",
+                "the only corner that changes: the custom domain fronts this "
+                "same REST API",
+            ),
+        ],
+    )
+    def test_api_base_url_matrix(self, template, hosting, domain, expected, why):
+        value = _ui_env_var(template, "VITE_API_BASE_URL")
+        resolved = _evaluate(
+            template,
+            value,
+            {"WebUIHosting": hosting, "CustomDomainUrl": domain},
+        )
+        assert resolved == expected, (
+            f"WebUIHosting={hosting!r} CustomDomainUrl={domain!r} resolved to "
+            f"{resolved!r}, expected {expected!r} — {why}"
+        )
+
+    def test_the_evaluator_is_not_trivially_agreeing(self, template):
+        """Guard the guard: it must distinguish the corners, not return one value."""
+        value = _ui_env_var(template, "VITE_API_BASE_URL")
+        results = {
+            _evaluate(
+                template,
+                value,
+                {"WebUIHosting": h, "CustomDomainUrl": d},
+            )
+            for h in ("CloudFront", "APIGateway")
+            for d in ("", "https://idp.example.com")
+        }
+        assert len(results) == 2, (
+            "the evaluator produced "
+            f"{results} — it should yield exactly two distinct values across the "
+            "matrix (execute-api for three corners, the domain for one)"
+        )

@@ -59,8 +59,10 @@ _RESOLVER_READ_TIMEOUT_SECONDS = 26
 # max_attempts=1 (no automatic retry) is deliberate. botocore retries a read
 # timeout, and a second 26s attempt cannot fit inside the 29s budget — it would
 # just replace the labelled 504 with a dead Lambda, and for a mutation it would
-# risk running the operation twice. Invoke-level throttling, the one retry that
-# was worth keeping, is retried explicitly in _invoke_resolver below.
+# risk running the operation twice. The retries that DID matter — transient
+# invoke-level failures, which cost milliseconds rather than a full attempt — are
+# reissued explicitly in _invoke_resolver below, so turning botocore's retries
+# off does not make a healthy deployment more fragile.
 _lambda = boto3.client(
     "lambda",
     config=BotoConfig(
@@ -70,6 +72,25 @@ _lambda = boto3.client(
     ),
 )
 _ssm = boto3.client("ssm")
+
+# Invoke failures worth one immediate retry: the request never reached the
+# resolver (or the Lambda service could not answer), so reissuing is both safe
+# and cheap — none of these consume a read-timeout window. Deliberately NOT
+# retried: ReadTimeoutError (the resolver IS running; a retry would double-run a
+# mutation and cannot fit the budget anyway) and every deterministic 4xx
+# (AccessDenied, ResourceNotFound — a retry only delays the same error).
+_RETRYABLE_INVOKE_ERROR_CODES = frozenset(
+    {
+        # Concurrency limit hit before the resolver ran.
+        "TooManyRequestsException",
+        # Lambda service-side failure (the 5xx branch below also catches these
+        # when the code is absent or unfamiliar).
+        "ServiceException",
+        # ENI/EC2 capacity for a VPC-attached resolver.
+        "EC2ThrottledException",
+        "ENILimitReachedException",
+    }
+)
 
 
 # {fieldName: resolverFunctionArn} — fields routed to existing resolver Lambdas.
@@ -188,45 +209,50 @@ class ResolverTimeout(Exception):
     """
 
 
+def _is_retryable_invoke_error(error: ClientError) -> bool:
+    """True for invoke failures that did not reach (or run) the resolver."""
+    code = error.response.get("Error", {}).get("Code", "")
+    if code in _RETRYABLE_INVOKE_ERROR_CODES:
+        return True
+    # Any 5xx from the Lambda service, including codes not named above.
+    status = (error.response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return isinstance(status, int) and status >= 500
+
+
 def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
     """Synchronously invoke a resolver Lambda with an AppSync-shaped event."""
     payload_bytes = json.dumps(appsync_event).encode("utf-8")
-    try:
-        resp = _lambda.invoke(
-            FunctionName=function_arn,
-            InvocationType="RequestResponse",
-            Payload=payload_bytes,
-        )
-    except ReadTimeoutError as e:
-        # The resolver is still running; we simply cannot wait for it and stay
-        # inside the gateway budget. Name the function so the log points at the
-        # right CloudWatch group instead of leaving a bare 504.
-        logger.error(
-            "Resolver %s did not respond within %ss (API Gateway aborts the "
-            "integration at 29s); returning 504",
-            function_arn,
-            _RESOLVER_READ_TIMEOUT_SECONDS,
-        )
-        raise ResolverTimeout(
-            f"resolver did not respond within {_RESOLVER_READ_TIMEOUT_SECONDS}s"
-        ) from e
-    except ClientError as e:
-        # Retries are off (see the client config), so absorb the one class of
-        # transient error that was worth retrying: invoke-level throttling.
-        # A single immediate retry still fits the budget.
-        if e.response.get("Error", {}).get("Code") != "TooManyRequestsException":
-            raise
-        logger.warning("Invoke of %s throttled; retrying once", function_arn)
+
+    # Two attempts at most, and only for errors that never ran the resolver.
+    for attempt in (1, 2):
         try:
             resp = _lambda.invoke(
                 FunctionName=function_arn,
                 InvocationType="RequestResponse",
                 Payload=payload_bytes,
             )
-        except ReadTimeoutError as timeout_error:
+            break
+        except ReadTimeoutError as e:
+            # The resolver is still running; we simply cannot wait for it and
+            # stay inside the gateway budget. Name the function so the log points
+            # at the right CloudWatch group instead of leaving a bare 504.
+            logger.error(
+                "Resolver %s did not respond within %ss (API Gateway aborts the "
+                "integration at 29s); returning 504",
+                function_arn,
+                _RESOLVER_READ_TIMEOUT_SECONDS,
+            )
             raise ResolverTimeout(
                 f"resolver did not respond within {_RESOLVER_READ_TIMEOUT_SECONDS}s"
-            ) from timeout_error
+            ) from e
+        except ClientError as e:
+            if attempt == 2 or not _is_retryable_invoke_error(e):
+                raise
+            logger.warning(
+                "Invoke of %s failed with a transient error (%s); retrying once",
+                function_arn,
+                e.response.get("Error", {}).get("Code", "unknown"),
+            )
 
     payload = resp["Payload"].read()
     data = json.loads(payload) if payload else None

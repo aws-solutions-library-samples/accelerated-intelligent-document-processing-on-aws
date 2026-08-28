@@ -37,16 +37,27 @@ s3_presign_client = boto3.client(
     "s3", endpoint_url=_s3_endpoint_url, config=s3_presign_config
 )
 
-# Every actual S3 API call this resolver makes. Bounded so a misconfiguration
-# fails fast and visibly instead of stalling past the gateway ceiling: 2 total
-# attempts (botocore reads max_attempts as a retry count), worst case
-# 2 x (2s connect + 6s read) = 16s, inside the 29s integration budget.
+# Bounds for the data-plane client, applied ONLY where there is private-network
+# S3 configuration to get wrong (see the fuller note in test_set_resolver). A
+# public deployment has no endpoint or route to misconfigure and keeps botocore's
+# stock timeouts, so this change cannot introduce a new way for it to fail.
+# 2 total attempts, worst case 2 x (3s connect + 8s read) = 22s, inside the 29s
+# API Gateway integration budget.
+_S3_DATAPLANE_BOUNDS = (
+    {
+        "connect_timeout": 3,
+        "read_timeout": 8,
+        "retries": {"mode": "standard", "max_attempts": 1},
+    }
+    if _s3_endpoint_url
+    else {}
+)
+
+# Every actual S3 API call this resolver makes.
 s3_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": "path"},
-    connect_timeout=2,
-    read_timeout=6,
-    retries={"mode": "standard", "max_attempts": 1},
+    **_S3_DATAPLANE_BOUNDS,
 )
 s3_client = boto3.client("s3", config=s3_config)
 

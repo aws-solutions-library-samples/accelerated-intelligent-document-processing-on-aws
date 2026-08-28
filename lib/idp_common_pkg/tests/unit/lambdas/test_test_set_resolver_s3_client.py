@@ -70,6 +70,52 @@ class TestPresignClient:
         assert mod.s3_presign_client.meta.endpoint_url == VPCE_ENDPOINT
 
 
+class TestPublicBuildIsUnaffected:
+    """No S3_ENDPOINT_URL is the default: public and GovCloud-without-BYO-VPCE.
+
+    Both clients then resolve to ordinary S3, which is what this resolver did
+    before the split — asserted on the generated URL rather than on config, since
+    the URL is the artifact the browser consumes.
+    """
+
+    def test_presigned_url_targets_ordinary_s3(self, monkeypatch):
+        monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")  # nosec B105
+        mod = _reload()
+
+        post = mod.s3_presign_client.generate_presigned_post(
+            Bucket="a-test-set-bucket", Key="set/x.zip", ExpiresIn=900
+        )
+
+        assert "vpce" not in post["url"]
+        assert "amazonaws.com" in post["url"]
+
+    def test_both_clients_agree_in_public_mode(self, monkeypatch):
+        monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+        mod = _reload()
+        assert (
+            mod.s3_presign_client.meta.endpoint_url == mod.s3_client.meta.endpoint_url
+        )
+
+    def test_no_timeout_bounds_are_applied(self, monkeypatch):
+        """The public path keeps botocore's stock timeouts.
+
+        The bounds exist to catch an unreachable S3 VPC endpoint. A public
+        deployment has none, so applying them there would add a new way to fail
+        without guarding anything. Pinned so the private-mode hardening cannot
+        drift onto this path.
+        """
+        monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+        cfg = _reload().s3_client.meta.config
+        assert cfg.connect_timeout == 60, (
+            f"public build got connect_timeout={cfg.connect_timeout} instead of "
+            "botocore's default 60 - the private-mode bound leaked onto the "
+            "public path"
+        )
+        assert cfg.read_timeout == 60
+
+
 class TestDataPlaneClient:
     def test_never_targets_the_vpc_endpoint(self, monkeypatch):
         """The getTestSets 504 regression."""
