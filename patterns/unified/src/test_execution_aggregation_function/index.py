@@ -652,12 +652,20 @@ def _run_level_counts_from_rows(
         iter_countable_rows,
     )
 
-    all_rows: List[Dict[str, Any]] = []
-    for scr in comparison_results:
+    # Filter per-doc so the anonymous-root warning (when it fires) names
+    # WHICH document — a run-wide flat merge would attribute the warning
+    # to "run-level aggregation" with no locator.
+    countable: List[Dict[str, Any]] = []
+    for doc_idx, scr in enumerate(comparison_results):
         if not scr:
             continue
-        all_rows.extend(scr.get("field_comparisons") or [])
-    countable = iter_countable_rows(all_rows, context="run-level aggregation")
+        doc_id = scr.get("doc_id") or scr.get("input_key") or f"idx={doc_idx}"
+        countable.extend(
+            iter_countable_rows(
+                scr.get("field_comparisons") or [],
+                context=f"run-level aggregation doc={doc_id}",
+            )
+        )
     counts = aggregate_row_counts(countable)
     tp = counts["tp"]
     fp = counts["fp"]
@@ -706,6 +714,7 @@ def _run_level_field_metrics_from_rows(
     counts), not a single fn to Items.
     """
     from idp_common.evaluation.contract import (
+        _row_weight,
         classify_field_comparison,
         iter_countable_rows,
         leaf_paths,
@@ -719,12 +728,17 @@ def _run_level_field_metrics_from_rows(
         )
         entry[bucket] += weight
 
-    for scr in comparison_results:
+    for doc_idx, scr in enumerate(comparison_results):
         if not scr:
             continue
+        # Include doc identity in context so an anonymous-root warning
+        # points at the specific offending payload (finding from #625
+        # round-3 code review — the previous "run-level field_metrics"
+        # generic context couldn't be located to a document).
+        doc_id = scr.get("doc_id") or scr.get("input_key") or f"idx={doc_idx}"
         rows = iter_countable_rows(
             scr.get("field_comparisons") or [],
-            context="run-level field_metrics",
+            context=f"run-level field_metrics doc={doc_id}",
         )
         for fc in rows:
             bucket = classify_field_comparison(fc)
@@ -755,10 +769,13 @@ def _run_level_field_metrics_from_rows(
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
             else:
-                # Scalar row or None value — attribute to the collapsed path
-                # directly with weight 1 (row_weight already handles empty
-                # containers via the top-level path).
-                _add(collapsed, bucket, 1)
+                # No dotted leaf paths — scalar leaf row, list-of-scalars
+                # (e.g. ``["a", "b", "c"]``), or empty container. Use the
+                # SAME weight ``aggregate_row_counts`` uses at top level so
+                # per-field sum equals top-level (a list-of-scalars would
+                # otherwise count as N at top level but 1 per-field —
+                # finding from #625 round-3 code review).
+                _add(collapsed, bucket, _row_weight(fc))
 
     # Synthesize parent buckets — sum descendants' counts into every prefix
     # level so Test Studio's hierarchical table can still expand from
@@ -787,19 +804,32 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
     """For every dotted leaf path in ``field_counts``, add parent-prefix
     buckets summing all descendants.
 
-    ``Items.name`` and ``Items.amount`` → also emit ``Items`` with the sum of
-    both. If a leaf bucket already exists at the parent path (e.g. a scalar
-    attribute named the same as another attribute's prefix), it's kept and
-    descendants are added to it. Mutates ``field_counts`` in place; no return
-    value.
+    ``Items.name`` and ``Items.amount`` → emit ``Items`` with the sum of
+    both. If a leaf bucket ALREADY EXISTS at the parent path (from some
+    other schema's scalar attribute that happens to share the name), the
+    existing bucket is preserved and no synthesis happens for that prefix —
+    otherwise a scalar ``Items`` field from schema A would be cross-
+    contaminated by structured ``Items.name`` / ``Items.amount`` from
+    schema B in the same test run (finding from #625 round-3 code review).
+    Mutates ``field_counts`` in place; no return value.
     """
-    # Snapshot before mutation so we don't count synthesized parents as
-    # descendants of a grandparent (which would double-count).
-    leaves = list(field_counts.items())
-    for path, counts in leaves:
+    # Snapshot the ORIGINAL leaf buckets (before any synthesis) so:
+    # 1. We don't count synthesized parents as descendants of grandparents
+    #    (would double-count in a 3-level tree).
+    # 2. We can distinguish "pre-existing leaf bucket at parent path"
+    #    (preserve) from "synthesized this pass" (accumulate into).
+    original_paths = set(field_counts.keys())
+    for path, counts in list(field_counts.items()):
         parts = path.split(".")
         for i in range(1, len(parts)):
             parent = ".".join(parts[:i])
+            if parent in original_paths:
+                # A leaf bucket already carries counts under this exact path
+                # — likely a scalar attribute from a different schema with
+                # a name that happens to prefix this leaf. Do NOT merge; a
+                # scalar ``Items`` field's counts are its own, not the sum
+                # of some other schema's ``Items.name`` + ``Items.amount``.
+                continue
             entry = field_counts.setdefault(
                 parent, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
             )
@@ -1004,34 +1034,37 @@ def _aggregate_graded_packet_metrics(
     }
 
 
-def _calculate_false_alarm_rate(metrics: Dict[str, Any]) -> Optional[float]:
+def _calculate_false_alarm_rate(metrics: Dict[str, Any]) -> float:
     """Calculate false alarm rate (FA / (FA + TN)).
 
     Uses Stickler's ``fa`` (false alarm — predicted when the value should be
     absent) rather than the combined ``fp``. Stickler's invariant is
     ``fp == fa + fd``, so the combined count double-counts false *discoveries*
     (predicted-but-wrong) as false *alarms* and inflates this rate whenever
-    both error classes are present. The per-doc path in
-    ``idp_common.evaluation.stickler_backend.results`` uses the same ``fa``
-    formula, so per-doc and run-level dashboards now agree by construction.
+    both error classes are present. Zero denominator returns 0.0 to match the
+    per-doc formula in ``stickler_backend.results`` — both paths must return
+    the same shape or per-doc and run-level dashboards will render the same
+    field as ``0.000`` on one and ``N/A`` on the other (finding from #625
+    round-3 code review).
     """
     fa = metrics.get("fa", 0)
     tn = metrics.get("tn", 0)
-    return fa / (fa + tn) if (fa + tn) > 0 else None
+    return fa / (fa + tn) if (fa + tn) > 0 else 0.0
 
 
-def _calculate_false_discovery_rate(metrics: Dict[str, Any]) -> Optional[float]:
+def _calculate_false_discovery_rate(metrics: Dict[str, Any]) -> float:
     """Calculate false discovery rate (FD / (FD + TP)).
 
     Uses Stickler's ``fd`` (false discovery — predicted a wrong value) rather
     than the combined ``fp``, for the same reason as
     ``_calculate_false_alarm_rate``: ``fp == fa + fd``, so the combined count
-    would fold false alarms into this rate. Matches the per-doc formula in
-    ``stickler_backend.results``.
+    would fold false alarms into this rate. Zero denominator returns 0.0 to
+    match the per-doc formula (see ``_calculate_false_alarm_rate`` for why
+    shape drift matters).
     """
     fd = metrics.get("fd", 0)
     tp = metrics.get("tp", 0)
-    return fd / (fd + tp) if (fd + tp) > 0 else None
+    return fd / (fd + tp) if (fd + tp) > 0 else 0.0
 
 
 class _IndexCollapsingConfidenceAccumulator:

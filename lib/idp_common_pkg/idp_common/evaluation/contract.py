@@ -200,6 +200,15 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     return path[: min(cuts)] if cuts else path
 
 
+# Process-wide dedupe set for the anonymous-root warning. A test-run
+# aggregation calls ``iter_countable_rows`` per document (per section on the
+# per-doc path, plus twice more on the run-level path), so a Stickler shape
+# change that emits anonymous-root rows would fire the same warning
+# O(rows × sections) times without this — CloudWatch flood matching the
+# version-drift warning we explicitly rate-limited.
+_seen_anonymous_root_contexts: set = set()
+
+
 def iter_countable_rows(
     rows: Iterable[Dict[str, Any]],
     *,
@@ -216,17 +225,34 @@ def iter_countable_rows(
 
     Not observed on current Stickler builds; the log surfaces it if the shape
     ever appears rather than silently reintroducing parent-vs-section drift.
+    Warning is rate-limited (once per ``context`` string per process) so an
+    unexpected shape change doesn't flood CloudWatch on a run with many
+    affected rows.
     """
     kept: List[Dict[str, Any]] = []
+    warned_this_call = False
     for fc in rows:
         root = row_root_attribute(fc)
         if not root:
-            logger.warning(
-                "Skipping field_comparisons row with anonymous root "
-                "(path=%r, context=%r) — cannot attribute to a parent attribute.",
-                fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path"),
-                context or "unknown",
-            )
+            if not warned_this_call:
+                # One log per call at most, and only if this context hasn't
+                # already logged elsewhere in this process. Callers pass a
+                # doc-identifying context so an operator can locate the
+                # offending payload.
+                ctx = context or "unknown"
+                if ctx not in _seen_anonymous_root_contexts:
+                    _seen_anonymous_root_contexts.add(ctx)
+                    logger.warning(
+                        "Skipping field_comparisons row(s) with anonymous "
+                        "root (first example path=%r, context=%r) — cannot "
+                        "attribute to a parent attribute. Further "
+                        "occurrences with this context are not logged.",
+                        fc.get("expected_key")
+                        or fc.get("actual_key")
+                        or fc.get("field_path"),
+                        ctx,
+                    )
+                warned_this_call = True
             continue
         kept.append(fc)
     return kept

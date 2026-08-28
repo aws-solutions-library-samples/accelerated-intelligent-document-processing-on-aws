@@ -249,10 +249,12 @@ class TestAggregation:
         rate = index._calculate_false_alarm_rate(metrics)
         assert rate == 0.2  # 2 / (2 + 8), not 7 / (7 + 8)
 
-        # Zero denominator
+        # Zero denominator → 0.0 (matches the per-doc formula's convention;
+        # returning None would render as "N/A" on the run-level dashboard
+        # while the per-doc dashboard renders "0.000" on the same input).
         metrics = {"fa": 0, "tn": 0}
         rate = index._calculate_false_alarm_rate(metrics)
-        assert rate is None
+        assert rate == 0.0
 
     def test_calculate_false_discovery_rate(self, mock_env):
         """Test false discovery rate calculation.
@@ -267,10 +269,11 @@ class TestAggregation:
         rate = index._calculate_false_discovery_rate(metrics)
         assert rate == 0.3  # 3 / (3 + 7), not 7 / (7 + 7)
 
-        # Zero denominator
+        # Zero denominator → 0.0 (same rationale as false_alarm_rate: matches
+        # the per-doc formula's convention).
         metrics = {"fd": 0, "tp": 0}
         rate = index._calculate_false_discovery_rate(metrics)
-        assert rate is None
+        assert rate == 0.0
 
     def test_far_fdr_match_per_doc_evaluation_service_formulas(self, mock_env):
         """Run-level FAR/FDR must equal the per-doc formulas on the same counts.

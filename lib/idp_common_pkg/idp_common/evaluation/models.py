@@ -299,15 +299,14 @@ class DocumentEvaluationResult:
         if self.excluded_sections:
             result["excluded_sections"] = list(self.excluded_sections)
 
-        # Cross-Lambda contract version stamp — every ``results.json`` payload
-        # carries the semantic version of its counts so the aggregation Lambda
-        # can catch shape drift at read time rather than as wrong downstream
-        # numbers (finding 6 from #625 adversarial review — stamping used to
-        # happen at the call site in ``service.py`` and could be silently
-        # skipped by future callers).
-        from idp_common.evaluation.contract import STICKLER_RESULT_VERSION
-
-        result["stickler_result_version"] = STICKLER_RESULT_VERSION
+        # NOTE: ``stickler_result_version`` is NOT stamped here. Stamping in
+        # ``to_dict()`` would silently upgrade the version on any round-trip
+        # (load a historical v1.0 ``results.json``, wrap it in a
+        # ``DocumentEvaluationResult``, re-serialize) — defeating the
+        # drift-detection soft gate the stamp exists to enable. The single
+        # writer path in ``service.py`` stamps at write time; new callers
+        # must do the same explicitly rather than inheriting it as a
+        # side-effect of ``to_dict()``.
 
         return result
 

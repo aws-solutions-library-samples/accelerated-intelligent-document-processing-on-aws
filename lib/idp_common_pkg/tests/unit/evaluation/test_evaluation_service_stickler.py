@@ -2201,3 +2201,100 @@ def test_empty_field_comparisons_logs_warning_and_reports_zero(monkeypatch, capl
     ), (
         f"expected shape-mismatch warning, got records: {[r.message for r in caplog.records]}"
     )
+
+
+@pytest.mark.unit
+def test_no_rows_fallback_verdict_uses_counts_only(monkeypatch):
+    """The no-rows fallback verdict tightened silently from
+    ``tp > 0 or tn > 0`` to ``has_hit AND NOT has_fail`` — critical because
+    a Stickler cell with tp=1 AND fd=1 (mixed) now flips ``matched`` True→False
+    (finding from #625 round-3 code review). Verify the new semantics:
+    a mixed cell WITH failures reads ✗ even in the no-rows fallback branch.
+
+    Simulates the no-rows-for-field shape by stripping ``field_comparisons``
+    from Stickler's output while leaving a cm.fields cell populated for the
+    field. Under production Stickler this shape is rare, but a Stickler
+    variant that emits per-field cells without per-leaf rows would hit this
+    path — and the pre-tightening rule would silently mark ✓ on a cell that
+    clearly has a false discovery.
+    """
+    config = {
+        "classes": [
+            {
+                "$id": "d",
+                "x-aws-idp-document-type": "D",
+                "x-aws-idp-evaluation-model-name": "D",
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "x-aws-idp-evaluation-method": "EXACT"}
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="D", page_ids=["1"])
+
+    from stickler import StructuredModel
+
+    orig = StructuredModel.compare_with
+
+    def _mixed_no_rows(self, other, **kwargs):
+        r = orig(self, other, **kwargs)
+        # Wipe rows so the parent-verdict fallback path fires.
+        r["field_comparisons"] = []
+        # Inject a mixed cell for field ``a`` — tp=1 AND fd=1.
+        r.setdefault("confusion_matrix", {}).setdefault("fields", {})["a"] = {
+            "overall": {"tp": 1, "fa": 0, "fd": 1, "tn": 0, "fn": 0}
+        }
+        return r
+
+    monkeypatch.setattr(StructuredModel, "compare_with", _mixed_no_rows)
+    result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+    a = next(attr for attr in result.attributes if attr.name == "a")
+    # Pre-tightening rule (``tp > 0 or tn > 0``) would say True — the cell has
+    # tp=1. New rule says False because has_fail (fd=1) is truthy. This is
+    # the intended behavior after the sirikaro fix.
+    assert a.matched is False, (
+        f"mixed cell (tp=1, fd=1) with no rows must flip parent False under "
+        f"the tightened fallback rule; got matched={a.matched}"
+    )
+
+
+@pytest.mark.unit
+def test_no_rows_fallback_verdict_clean_hit_reads_true(monkeypatch):
+    """Companion to the mixed-cell test: a cell with tp=1 and no failures
+    STILL reads matched=True under the tightened rule (has_hit AND NOT
+    has_fail). Guards against over-tightening — a genuine clean hit
+    shouldn't flip False just because we changed the fallback logic."""
+    config = {
+        "classes": [
+            {
+                "$id": "d",
+                "x-aws-idp-document-type": "D",
+                "x-aws-idp-evaluation-model-name": "D",
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "x-aws-idp-evaluation-method": "EXACT"}
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="D", page_ids=["1"])
+
+    from stickler import StructuredModel
+
+    orig = StructuredModel.compare_with
+
+    def _clean_no_rows(self, other, **kwargs):
+        r = orig(self, other, **kwargs)
+        r["field_comparisons"] = []
+        r.setdefault("confusion_matrix", {}).setdefault("fields", {})["a"] = {
+            "overall": {"tp": 1, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
+        }
+        return r
+
+    monkeypatch.setattr(StructuredModel, "compare_with", _clean_no_rows)
+    result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+    a = next(attr for attr in result.attributes if attr.name == "a")
+    assert a.matched is True
