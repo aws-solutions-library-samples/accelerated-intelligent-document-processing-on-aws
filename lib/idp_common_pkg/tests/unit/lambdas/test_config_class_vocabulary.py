@@ -102,9 +102,16 @@ class TestClassVocabularyReduction:
         assert "claude-opus" not in flattened
 
     def test_an_unrecognised_key_is_dropped_rather_than_passed_through(self, resolver):
-        # Allow-list, not deny-list: a config key added later must not leak by default.
+        # Allow-list, not deny-list: a config key added later must not reach an
+        # annotator by default.
+        #
+        # The key is named plainly rather than evocatively: an earlier version called
+        # it `secret_future_key`, and bandit's B105 pattern-matches key names
+        # containing "secret", so a test fixture with no credential in it failed the
+        # security gate as a "possible hardcoded password". Renaming beats suppressing
+        # — there was nothing to suppress.
         out = resolver._class_vocabulary_only(
-            {"classes": [{"$id": "X", "secret_future_key": "leak"}]}
+            {"classes": [{"$id": "X", "unrecognised_future_key": "dropped"}]}
         )
 
         assert out["classes"] == [{"$id": "X"}]
