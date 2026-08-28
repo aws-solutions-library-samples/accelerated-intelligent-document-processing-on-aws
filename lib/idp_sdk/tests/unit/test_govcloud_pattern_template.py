@@ -109,23 +109,41 @@ def test_bda_project_arn_env_var_is_conditional():
 
 
 def test_no_other_reference_to_the_gated_resources():
-    """Any ungated reference to a conditional resource is a deploy-time error."""
+    """Any ungated reference to a conditional resource is a deploy-time error.
+
+    Scans every Resource (including OCRFunction, with only its one asserted
+    Fn::If env var removed) plus Outputs — an Output referencing a resource whose
+    condition is false is just as fatal as a Resource reference, and excluding
+    OCRFunction wholesale would hide a SECOND ungated GetAtt added next to the
+    conditional one.
+    """
+    import copy
+
     import yaml
 
     template = _load_pattern_template()
-    resources = template["Resources"]
-    # Everything except the gated resources' own definitions and the OCRFunction
-    # env var (asserted conditional above).
-    others = {
-        name: res
-        for name, res in resources.items()
-        if name not in BDA_OCR_RESOURCES and name != "OCRFunction"
+    resources = copy.deepcopy(template["Resources"])
+
+    # Drop the one legitimate, condition-guarded reference so everything else in
+    # OCRFunction is still scanned.
+    ocr_env = resources["OCRFunction"]["Properties"]["Environment"]["Variables"]
+    removed = ocr_env.pop("BDA_OCR_PROJECT_ARN", None)
+    assert removed is not None, (
+        "OCRFunction no longer has a BDA_OCR_PROJECT_ARN env var — this guard "
+        "assumed it does; re-check what replaced it."
+    )
+
+    scanned = {
+        name: res for name, res in resources.items() if name not in BDA_OCR_RESOURCES
     }
-    blob = yaml.dump(others, default_flow_style=False)
+    blob = yaml.dump(
+        {"Resources": scanned, "Outputs": template.get("Outputs", {})},
+        default_flow_style=False,
+    )
     for name in BDA_OCR_RESOURCES:
         assert name not in blob, (
-            f"{name} is referenced from an ungated resource; that reference "
-            "breaks when the partition gate is false."
+            f"{name} is referenced from an ungated resource or an Output; that "
+            "reference breaks when the partition gate is false."
         )
 
 

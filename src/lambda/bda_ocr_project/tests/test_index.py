@@ -226,6 +226,52 @@ def test_unsupported_capability_predicate_rejects_real_errors(message, code):
     assert not index._is_unsupported_capability_error(_validation_error(message, code))
 
 
+def test_capability_gap_on_update_path_does_not_clobber_a_working_arn():
+    """The degrade path must NOT be reachable from the routing-override repair.
+
+    An existing, working project takes the early-return branch of
+    find_or_create_ocr_project, which calls update_data_automation_project to add
+    the jpeg/png routing override. If a capability-gap ValidationException there
+    degraded to SUCCESS + empty ARN, a previously-healthy stack would silently
+    lose its BDA_OCR_PROJECT_ARN while the project still existed — strictly worse
+    than the "unavailable" case the tolerance models. It must keep failing loudly.
+    """
+    import index
+
+    arn = "arn:aws:bedrock:us-east-1:111122223333:data-automation-project/live"
+    client = _mock_bda_client(
+        existing=[{"projectName": "mystack_OCR_StdOutput", "projectArn": arn}]
+    )
+    # No routing override present, so the repair path runs...
+    client.get_data_automation_project.return_value = {
+        "project": {"status": "COMPLETED", "overrideConfiguration": {}}
+    }
+    # ...and the repair is what fails, with a message the matcher would accept.
+    client.update_data_automation_project.side_effect = _validation_error(
+        _GOVCLOUD_SYNC_DOC_MESSAGE
+    )
+    with patch.object(index.boto3, "client", return_value=client):
+        with pytest.raises(ClientError):
+            index.handler(_event("Create"), MagicMock())
+
+    args = index.cfnresponse.send.call_args
+    assert args.args[2] == index.cfnresponse.FAILED
+    # Crucially: never reported an empty ARN for a project that exists.
+    assert args.args[3] != {"ProjectArn": ""}
+
+
+def test_unsupported_project_shape_is_raised_only_from_the_create_call():
+    """The dedicated exception is what carries the degrade signal."""
+    import index
+
+    client = _mock_bda_client()
+    client.create_data_automation_project.side_effect = _validation_error(
+        _GOVCLOUD_SYNC_DOC_MESSAGE
+    )
+    with pytest.raises(index.UnsupportedProjectShape):
+        index.find_or_create_ocr_project(client, "mystack_OCR_StdOutput")
+
+
 def test_ordinary_validation_error_still_reports_failed():
     """Narrowness guard: a non-capability ValidationException fails the stack."""
     import index

@@ -148,6 +148,14 @@ def find_or_create_ocr_project(client, project_name):
             _ensure_project_routing_override(client, existing_arn)
             return existing_arn
         raise
+    except ClientError as e:
+        # Scoped deliberately to the CREATE call: this region/partition will not
+        # accept the project shape at all, so there is nothing to preserve. A
+        # failure anywhere else (notably the update/repair path above) must keep
+        # failing the stack rather than degrade — see UnsupportedProjectShape.
+        if _is_unsupported_capability_error(e):
+            raise UnsupportedProjectShape(str(e)) from e
+        raise
 
     # A freshly created project is IN_PROGRESS until provisioned (~seconds).
     status = None
@@ -205,26 +213,33 @@ _PHYSICAL_ID_PREFIX = "bda-ocr-project/"
 # failure only surfaces when the endpoint can't be reached.
 _BDA_UNAVAILABLE_ERRORS = (EndpointConnectionError, UnknownServiceError, NoRegionError)
 
-# A reachable BDA endpoint can still refuse to create THIS project shape. The
+# A reachable BDA endpoint can still refuse to CREATE this project shape. The
 # project is a SYNC project whose standardOutputConfiguration carries a
 # ``document`` block; GovCloud accepts BDA projects but not that combination:
 #
 #   ValidationException: Sync project does not support video/audio/document
 #   modality in Standard Output Configuration
 #
-# That is a partition capability gap, not a fixable misconfiguration, so it is
-# treated exactly like "BDA unavailable here" — SUCCESS with an empty
-# ProjectArn — rather than failing the nested stack and rolling back a whole
-# deployment that may not even use the ``bda`` OCR backend.
+# That is a capability gap, not a fixable misconfiguration, so it is treated
+# exactly like "BDA unavailable here" — SUCCESS with an empty ProjectArn —
+# rather than failing the nested stack and rolling back a whole deployment that
+# may not even use the ``bda`` OCR backend.
 #
-# The template's ShouldCreateBDAOCRProject condition already skips this resource
-# outside the ``aws`` partition, so this is the second line of defence: it also
-# covers commercial regions where BDA is reachable but rejects the project
-# shape, and any GovCloud region whose message differs from the one above.
+# SCOPE. The template's ShouldCreateBDAOCRProject condition gates this Lambda
+# itself to the ``aws`` partition, so this path can only ever run in a
+# COMMERCIAL region — it does not, and cannot, act as a fallback for GovCloud.
+# What it covers is a commercial region where BDA is reachable but rejects the
+# project shape.
 #
-# Deliberately narrow: BOTH a "not supported" phrase AND a marker naming the
-# unsupported *capability* must be present, so an ordinary validation error
-# (e.g. a malformed project name) still fails the stack loudly.
+# Because commercial is also where a rejection most likely means WE broke the
+# project config (rather than the region lacking a capability), the tolerance is
+# doubly narrowed:
+#   1. It is raised only from the create_data_automation_project call site — not
+#      from the update/repair path, where degrading would replace a working
+#      project's ARN with "" and silently break a stack that was fine.
+#   2. BOTH a "not supported" phrase AND a marker naming the unsupported
+#      *capability* must appear, so an ordinary validation error (e.g. a
+#      malformed project name) still fails the stack loudly.
 _UNSUPPORTED_PHRASES = ("does not support", "is not supported", "not supported")
 _UNSUPPORTED_CAPABILITY_MARKERS = (
     "modality",
@@ -233,6 +248,15 @@ _UNSUPPORTED_CAPABILITY_MARKERS = (
     "sync project",
     "projecttype",
 )
+
+
+class UnsupportedProjectShape(Exception):
+    """BDA refused to create this project shape in this region/partition.
+
+    Raised only from the create call site (see ``_UNSUPPORTED_PHRASES``) so the
+    degrade-to-empty-ARN path cannot be reached by a failure on the
+    update/repair path, where an empty ARN would clobber a working project.
+    """
 
 
 def _is_unsupported_capability_error(exc):
@@ -325,26 +349,28 @@ def handler(event, context):
             {"ProjectArn": ""},
             physicalResourceId=physical_id,
         )
+    except UnsupportedProjectShape as e:
+        # BDA is reachable but will not create this project shape here. Same
+        # graceful degradation as "BDA unavailable". Logged at ERROR, not
+        # WARNING: this can only fire in the commercial partition (the resource
+        # is gated to `aws`), where the likeliest cause is a regression in the
+        # project config rather than a regional capability gap — so it must be
+        # visible even though the deploy is allowed to succeed.
+        logger.error(
+            "Bedrock Data Automation rejected the stack-scoped OCR project as "
+            "unsupported in this region (%s); returning empty ProjectArn. The "
+            "'bda' OCR backend will be unavailable in this stack.",
+            e,
+            exc_info=True,
+        )
+        cfnresponse.send(
+            event,
+            context,
+            cfnresponse.SUCCESS,
+            {"ProjectArn": ""},
+            physicalResourceId=physical_id,
+        )
     except Exception as e:
-        if _is_unsupported_capability_error(e):
-            # BDA is reachable but will not create this project shape here (e.g.
-            # GovCloud rejects a SYNC project with a document standard-output
-            # block). Same graceful degradation as "BDA unavailable".
-            logger.warning(
-                "Bedrock Data Automation rejected the stack-scoped OCR project "
-                "as unsupported in this partition/region (%s); returning empty "
-                "ProjectArn",
-                e,
-                exc_info=True,
-            )
-            cfnresponse.send(
-                event,
-                context,
-                cfnresponse.SUCCESS,
-                {"ProjectArn": ""},
-                physicalResourceId=physical_id,
-            )
-            return
         logger.error("Error managing BDA OCR project: %s", e, exc_info=True)
         # A real create/update failure: fail the stack op with a clear reason.
         # (Delete's own failures are swallowed inside delete_ocr_project_by_name

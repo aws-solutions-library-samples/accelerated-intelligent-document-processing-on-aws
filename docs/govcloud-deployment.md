@@ -179,9 +179,9 @@ video/audio/document modality in Standard Output Configuration`.
 `BDAOCRProject` is therefore created only in the commercial partition
 (condition `ShouldCreateBDAOCRProject`). In GovCloud the project isn't created
 and `BDA_OCR_PROJECT_ARN` is empty; the OCR service raises a clear error *only
-if* `ocr.backend` is actually set to `bda`. Use `ocr.backend: textract` (the
-default, and what `lending-package-sample-govcloud` uses) — no configuration
-change is needed.
+if* `ocr.backend` is actually set to `bda`. Use `ocr.backend: textract` — the
+built-in default. The `lending-package-sample-govcloud` preset sets no `ocr:`
+key, so the default applies and no configuration change is needed.
 
 > Before this gate existed the resource was created unconditionally and its
 > failure rolled back the entire root stack on **every** GovCloud deployment,
