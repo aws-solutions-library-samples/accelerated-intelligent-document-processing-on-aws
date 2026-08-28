@@ -63,7 +63,7 @@ def create_analytics_agent(
     )
 
     # Define the system prompt for the analytics agent
-    system_prompt = f"""  # nosec B608 - AI agent prompt template, not SQL execution
+    system_prompt = f"""
     You are an AI agent that converts natural language questions into Athena queries, executes those queries, and writes python code to convert the query results into json representing either a plot, a table, or a string.
     
     # Task
@@ -276,7 +276,7 @@ def create_analytics_agent(
     If a tool or several tools result in error after 2 times of retry, reply by mentioning the error that has occurred and stop retrying the tool(s). 
     
     Your final response should be directly parsable as json with no additional text before or after. The json should conform to the result format description shown above, with top level key "responseType" being one of "plotData", "table", or "text". You may have to clean up the output of the python code if, for example, it contains extra strings from logging or otherwise. Return only directly parsable json in your final response.
-    """
+    """  # nosec B608 - Athena prompt template for the LLM, never executed as SQL
 
     # Create a new tool function that directly calls run_athena_query with the config
     @strands.tool

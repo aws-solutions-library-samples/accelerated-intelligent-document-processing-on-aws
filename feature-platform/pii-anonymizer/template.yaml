@@ -133,6 +133,13 @@ Resources:
   ###########################################################################
   PiiAnonymizerHookFunction:
     Type: AWS::Serverless::Function
+    # makefile build, not the default PythonPipBuilder: that builder requests the
+    # single `manylinux2014_aarch64` platform tag, which Pillow >= 12.3.0 no
+    # longer publishes. hook/Makefile names `manylinux_2_28_aarch64` instead —
+    # correct for AL2023 — so the hook can carry the patched Pillow. See
+    # hook/Makefile for the full rationale.
+    Metadata:
+      BuildMethod: makefile
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
       CodeUri: hook/

@@ -84,6 +84,21 @@ class IAMRoleManager:
         region_suffix = self.region.replace("-", "")
         role_name = f"{role_name_base}{region_suffix}"
 
+        # Partition for the ARNs built below, derived from the caller identity so
+        # they resolve outside the commercial partition. Falls back to "aws" if
+        # STS is unreachable rather than failing role creation outright.
+        try:
+            caller_arn = (
+                boto3.client("sts", region_name=self.region)
+                .get_caller_identity()
+                .get("Arn")
+            )
+            partition = (
+                (caller_arn or "arn:aws:").split(":")[1] or "aws"
+            )  # arn-partition-ok: fallback used only to PARSE the partition out
+        except Exception:  # noqa: BLE001
+            partition = "aws"
+
         # Define the trust policy - allows Bedrock service to assume this role
         trust_policy = {
             "Version": "2012-10-17",
@@ -103,7 +118,12 @@ class IAMRoleManager:
                 {
                     "Effect": "Allow",
                     "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
-                    "Resource": ["arn:aws:s3:::*", "arn:aws:s3:::*/*"],
+                    # Partition-aware: a hardcoded arn:aws: S3 resource
+                    # matches nothing in GovCloud/China.
+                    "Resource": [
+                        f"arn:{partition}:s3:::*",
+                        f"arn:{partition}:s3:::*/*",
+                    ],
                 }
             ],
         }
@@ -361,7 +381,7 @@ Examples:
     parser.add_argument("--model-name", help="Name for the fine-tuned model")
     parser.add_argument(
         "--base-model",
-        default="arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0:300k",
+        default="arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0:300k",  # arn-partition-ok: commercial-only CLI default; override --base-model elsewhere
         help="Base model ARN (default: Nova Lite)",
     )
     parser.add_argument(

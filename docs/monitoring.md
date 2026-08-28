@@ -43,6 +43,45 @@ The solution automatically creates an integrated dashboard that displays:
 
 ![Error Tracking Dashboard](../images/Dashboard3.png)
 
+### Workflow Concurrency Counter
+
+The stack limits in-flight workflows with a DynamoDB counter: the queue processor
+increments it before `StartExecution`, and the workflow tracker decrements it on
+the execution's terminal event. If a decrement is ever lost, the counter drifts
+**upward** and nothing puts it back — so once it reaches
+`MaxConcurrentWorkflows`, documents stop starting **permanently**.
+
+That failure is quiet. Every other signal looks *idle* rather than broken: no
+errors, no failed executions, latency graphs simply stop. The usual first symptom
+is a person noticing that nothing has processed for hours.
+
+Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
+the **Workflow Concurrency Counter** widget:
+
+- **`ConcurrencyCounterActive`** — the counter value, published on every document
+  completion. Continuous, so there is a history to inspect after the fact.
+- **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
+  running. Sampled only when an increment is *refused*, i.e. when drift is
+  actually blocking work.
+
+Two alarms publish to `AlertsTopic`:
+
+- **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
+  fires on the *symptom*, once slots are already being held wrongly.
+- **`WorkflowTrackerDLQAlarm`** — any message in the Workflow Tracker
+  dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
+  so an event it could not process is a slot that was never released, and it
+  alarms on the first message rather than waiting for drift to accumulate.
+
+The queue processor also **self-heals**: on a refused increment it
+reconciles the counter against `ListExecutions`, requiring the same discrepancy
+in two samples at least five minutes apart, only ever lowering it, and writing
+conditionally on the value it sampled.
+
+**Reading the widget:** the counter tracking a busy queue is normal. The counter
+sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
+in flight and the Step Functions widget shows nothing starting is the leak.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:

@@ -753,7 +753,7 @@ def test_bad_s3_uri_in_compressed_ref_is_rejected(monkeypatch):
             {
                 "updatedDocument": {
                     "compressed": True,
-                    "s3_uri": "/tmp/x",
+                    "s3_uri": "/tmp/x",  # nosec B108 - fixture string in a test event payload, never opened
                     "document_id": "w2.pdf",
                 }
             }

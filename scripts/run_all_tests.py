@@ -86,6 +86,15 @@ RUN_ROOTS = [
     "feature-platform/sample-health-insurance-review/feature-api/tests",
     "feature-platform/sample-health-insurance-review/hook/tests",
     "feature-platform/sample-health-insurance-review/ui-deployer/tests",
+    # Structural assertions on patterns/unified/statemachine/workflow.asl.json —
+    # invariants that live in the state machine (retry policies, failure routing)
+    # where no Python test can see them. Pure JSON parsing, no AWS clients.
+    "patterns/unified/tests",
+    # Benchmark harness analysis/orchestration code. It decides what a release
+    # report *claims* and which config a run actually executes, so a bug here
+    # becomes a wrong published number rather than a visible failure — which is
+    # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
+    "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
@@ -105,6 +114,7 @@ RUN_ROOTS = [
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
     "src/lambda/external_idp_group_mapping",
+    "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
@@ -118,6 +128,13 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
+    # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
+    # subdir for the same reason as scripts/sdlc/tests above.
+    "scripts/security/tests",
+    # Repo-script gates (the Python arn:aws: partition checker). Same reason as
+    # the two above: the parent `scripts` root stays quarantined, so a new test
+    # dir under it is invisible to this gate unless registered here.
+    "scripts/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------

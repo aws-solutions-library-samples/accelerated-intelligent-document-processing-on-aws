@@ -450,3 +450,50 @@ srt_security_review:
     reports:
       # Future: Add security scanning report format when GitLab supports it
     expire_in: 1 week
+
+# Dependency vulnerability gate (SCA). Complements srt_security_review rather
+# than duplicating it: SRT runs syft, which builds an SBOM but does NO
+# vulnerability matching, so a known-CVE dependency could previously merge with
+# every security job green. This job matches the repo's pinned Python and Node
+# dependency manifests against OSV and fails on HIGH/CRITICAL.
+#
+# Cheap and AWS-free like the other fast_checks jobs, so it runs on every push
+# and MR with needs: [] (in parallel, adding no wall-clock to the gate).
+dep_audit:
+  stage: fast_checks
+  interruptible: true
+  # Manifest generation resolves a handful of extra requirements with uv, then
+  # ~1800 packages are queried against OSV in batches. Comfortably under 20m.
+  timeout: 20m
+
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+  needs: []
+
+  before_script:
+    - python --version
+    - apt-get update -y
+    # jq is REQUIRED: generate-dep-manifest.sh builds the Node manifest by
+    # reading the committed package-lock.json files with jq. It is absent from
+    # the python:3.13-bookworm image (and preinstalled on GitHub's runners, which
+    # is why the sibling GitHub workflow never needed it) — without it the Node
+    # half of the manifest silently comes out empty.
+    - apt-get install curl git jq -y
+    # uv provides the Python runtime + `packaging` that
+    # scripts/generate-dep-manifest.sh needs to resolve the loose pins.
+    - pip install --upgrade pip uv
+    # Node/npm are NOT needed: the manifest is read from the committed
+    # package-lock.json files, not from an install.
+
+  script:
+    - python3 scripts/security/dep_audit.py --json dep-audit-report.json
+
+  artifacts:
+    when: always
+    paths:
+      - dep-audit-report.json
+      - dist/manifests/python-packages.txt
+      - dist/manifests/node-packages.txt
+    expire_in: 1 week

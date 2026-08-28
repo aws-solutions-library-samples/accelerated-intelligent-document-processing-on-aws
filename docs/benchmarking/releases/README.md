@@ -14,6 +14,8 @@ Generate a new entry with **`make benchmark-release VERSION=<new> PREV=<publishe
 
 | Release | vs (published) | Accuracy | Cost | Notable | Report |
 |---------|----------------|----------|------|---------|--------|
+| **v0.6.5 fixes** | v0.6.5 (pre-fix) | flat (1.000 = 1.000) | −9% total (inconclusive) | **Post-fix verification, not a release A/B.** recall 0.901→0.947, 0 regressions, 0 failures; integrated-confidence 400-row lists 1%→100% complete (800-row still truncates, now detectable); first attempt discarded for a config/model confound | [v0.6.5-fix-verification.md](./v0.6.5-fix-verification.md) |
+| **v0.6.5** | v0.6.4 | flat (0.900 = 0.900, all 30 pairs equal) | +1.4% across the 24 runs in the 8 stable cells; +8.5% total, all of it in 2 non-deterministic cells | **0 regressions.** Measured recall 0.931→0.987 but a 4× repeat run shows the integrated-confidence cell is **bimodal (2/4 truncate)** — the hazard is NOT fixed and the "improvement" is noise; alert rate 10.7%→6.4%; confidence pass now attaches page images (per-page cost note) | [v0.6.5.md](./v0.6.5.md) |
 | **v0.6.0** | v0.5.16 | flat (0.917 = 0.917) | **−32.5%** total (advanced −44–55%) | cacheRead −95%; one integrated-confidence completeness regression on long lists; v0.6 fixes v0.5.16 advanced-assessment timeouts | [v0.6.0.md](./v0.6.0.md) |
 
 <!-- APPEND NEW ROWS ABOVE THIS LINE (newest first). Columns:
@@ -30,4 +32,5 @@ Generate a new entry with **`make benchmark-release VERSION=<new> PREV=<publishe
 - **Reproduce** — the exact commands, plus honesty caveats (n, pricing estimate date).
 
 Raw scored data for each side lives (unpublished) under
-`benchmarks/results/<release>/summary.{json,csv}` + `meta.json`.
+`benchmarks/results/<release>/<suite>/summary.{json,csv}` + `meta.json` — one release
+directory per release, per [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).

@@ -220,7 +220,7 @@ def call(api_base, field, args, token):
         req.add_header("Authorization", token)
     request_id = ""
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req) as r:  # nosec B310 - RBAC harness posting to the stack's own API base URL
             status, raw = r.status, r.read()
             request_id = r.headers.get("x-amzn-RequestId", "") or r.headers.get(
                 "apigw-requestid", ""
@@ -259,7 +259,7 @@ def call_body(api_base, field, args, token):
     if token:
         req.add_header("Authorization", token)
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req) as r:  # nosec B310 - RBAC harness posting to the stack's own API base URL
             return r.status, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")

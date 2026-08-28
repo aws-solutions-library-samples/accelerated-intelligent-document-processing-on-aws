@@ -636,6 +636,39 @@ per field, its **top-K guesses with probabilities** rather than a single value:
 Because `explainability_info` is already present in the saved `result.json`, the
 downstream Assessment Lambda **auto-skips**.
 
+**Shapes the resolver handles.** Three, plus a pass-through:
+
+| Shape | Example |
+|---|---|
+| Scalar candidate | `{"Agency": {"G1": …, "P1": …}}` |
+| Array, direct | `{"LineItems": [{"Rate": {"G1": …, "P1": …}}]}` |
+| Array, wrapped | `{"LineItems": {"G1": [ … ], "P1": …}}` |
+| **Group (object)** | `{"Address": {"City": {"G1": …, "P1": …}}}` |
+| Pass-through | a field the model returned as a plain value — kept verbatim, no confidence leaf |
+
+Groups recurse, so a group inside a group, and a list inside a group, both
+resolve; `$ref`s are dereferenced against `$defs` at every level so numeric
+coercion applies to nested sub-attributes too.
+
+> **Group handling was previously missing**, and the failure was silent: a group
+> fell through to pass-through, so the raw candidate dict became the *extracted
+> value* (`Address.City` came out as `{"G1": "Anytown", "P1": 0.95, …}` instead of
+> `"Anytown"`) and the group produced **no confidence leaves at all**, making its
+> fields invisible to threshold alerts and HITL. Observed on every group field of
+> every document processed in integrated mode.
+
+⚠️ **Cost/completeness caveat on long lists.** The TopK envelope costs several
+guesses per cell, so a list that fits comfortably in a plain extraction can exceed
+what the model will emit in one response — and it stops emitting rows rather than
+erroring. Measured on a 100-row list: `integrated` returned **10 of 100 rows**
+where `separate` returned 100 of 100 in every repeat. List cells are therefore
+asked for a **single** guess (`G1/P1` only, not four), which cuts list output
+roughly 4×, and the prompt no longer instructs the model to make guesses *"as
+short as possible"* — that wording was also causing it to return **shortened
+values**, with the document's actual text demoted to `G2`. The single-response
+limit is fundamental to this mode, so **prefer `separate` on list-bearing
+schemas**.
+
 **Why top-K.** Asking the model to enumerate and rank alternatives (instead of a
 single value + a single confidence number) forces it to distribute probability
 mass, yielding **better-calibrated, less-overconfident** scores. See Tian et al.,
@@ -1125,6 +1158,49 @@ Extraction → Schema Validation & Escalation** in the Configuration editor. The
 per-class `x-aws-idp-extraction-escalation-model` override is editable as
 "Escalation Model Override" in the **Document Schema** editor, next to the
 per-class extraction-model override.
+
+**An empty list with OCR evidence to the contrary is rejected.** `null = absent`
+(below) is the right convention for a scalar, but for a *list* it is also exactly
+what a total row loss looks like — and it breaks no schema constraint unless the
+config sets `minItems`, which most do not. So the in-loop validator adds one
+evidence-based check on the **single-agent path**: when the OCR pre-flight
+(`_analyze_ocr_for_tables`) finds a substantial table — its own `>30` pipe-table-row
+threshold, the same signal that drives the tool guidance — and **every** declared
+top-level array field comes back `null`, `[]`, or absent, the result is rejected and
+the agent gets a correction round naming the field and the row count
+(`validation.find_empty_declared_lists` / `build_empty_list_feedback`).
+
+Deliberately narrow:
+- **All-empty only.** A populated sibling list means the detected tables plausibly
+  belong to that one, and an empty sibling may be genuinely absent.
+- **Single-agent only.** Per-shard this inference is unsound — a shard legitimately
+  contains none of the whole document's rows. Sharded output is validated once
+  after merge, as it already was for `minItems`.
+- **Not a schema violation.** It does not enter `ValidationReport`, so escalation
+  behaviour is unchanged. `metadata.completeness_check` reports it separately as
+  `unexplained_empty_lists` (with a `complete` flag), leaving
+  `schema_constraints_met` meaning exactly what it says.
+- **Its effect is one more agent turn**, never a failure. After the last attempt
+  the loop keeps the best-effort result, so the worst case is one wasted turn on a
+  document that genuinely has no rows inside a detected table.
+
+⚠️ **Not gated on `validation.enabled`** — unlike the schema checks above. That flag
+defaults to `false`, and the config that produced this bug has it `false`, so the
+first version of this check (which *was* gated on it) was dead on exactly the
+configurations that needed it — caught by live verification, not by the tests. A
+guard against **silent data loss** cannot itself be off by default. The two checks
+are independently enabled: schema validation stays opt-in; the empty-list check
+runs whenever the OCR evidence is present. `_build_schema_validator` returns `None`
+only when *neither* applies.
+
+The failure this closes: an agent declined the deterministic table parser because
+one column was OCR-corrupted (`tool_usage_decision.agent_stated_reason`: *"the
+Amount column was OCR-corrupted with jumbled text instead of numbers, so
+parse_table/map_table_to_schema couldn't cleanly map usable numeric values"*), then
+returned a 100-row `Transactions` list as `null`. Schema-valid, scalar accuracy
+1.000, status COMPLETED. `SYSTEM_PROMPT` and `TABLE_PARSING_PROMPT_ADDENDUM` now
+state the rule outright — declining the tool obliges direct extraction, and one
+unreadable column means that *cell* is null, not the row and not the list.
 
 **Null = absent.** Extraction follows the convention "return `null` if a field is
 not found", and the generated Pydantic model makes every non-required property

@@ -874,6 +874,13 @@ When using batched extraction plan it out and make a todo list with target size 
 
 NEVER STOP early on large documents, always extract all the data.
 
+NEVER return null or an empty list for an array/list field whose rows are visible
+in the document — that silently discards every row, and no other signal will show
+it (the scalar fields still score perfectly). If part of the data is unreadable,
+garbled, or ambiguous, emit EVERY row anyway with the problem cells set to null or
+to the literal text you can see. A partially-correct list is far more useful than
+no list. Difficulty is never a reason to return nothing.
+
 JSON PATCH FORMAT (RFC 6902):
 - {"op": "replace", "path": "/field_name", "value": "new_value"} - Update a field
 - {"op": "add", "path": "/new_field", "value": "value"} - Add a field
@@ -947,7 +954,18 @@ FALLBACK WORKFLOW (use when map_table_to_schema is not suitable):
 - Complex tables with merged cells, nested headers, or irregular structure
 - Tables where column mapping is ambiguous
 - Small tables (< 50 rows) where manual extraction is acceptable
+- Any column that is OCR-corrupted, garbled, or cannot be mapped cleanly
 In these cases, use parse_table + extraction_tool/apply_json_patches as before.
+
+DECLINING THE TOOL IS NOT DECLINING THE TABLE (ABSOLUTE RULE):
+Choosing not to use the table tools obliges you to extract the table DIRECTLY.
+- NEVER return null or an empty list for an array field whose rows are visible
+  in the document. That silently discards every row.
+- If ONE column is unreadable, garbled, or cannot be mapped, still emit EVERY
+  row. Set that single cell to null, or to the literal text you can see. Do not
+  drop the row, and do not drop the whole list, because of one bad column.
+- A partially-correct table is far more useful than no table. "I could not map
+  this cleanly" is never a reason to return nothing.
 
 QUALITY CHECKS:
 - parse_success_rate target: >= {min_parse_success_rate}
