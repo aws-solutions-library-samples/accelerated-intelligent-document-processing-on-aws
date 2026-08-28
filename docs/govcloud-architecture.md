@@ -86,7 +86,29 @@ Only the two resource families that do not exist in GovCloud:
 
 Everything else — Cognito authentication, the UI REST API, WAF, agents, MCP,
 Test Studio, HITL, knowledge base, discovery, configuration UI — is retained
-and works as in commercial regions.
+and works as in commercial regions, subject to the capability gaps below.
+
+## GovCloud Capability Gaps (all deploy modes)
+
+These are **not** template transforms. They are partition conditions in the
+templates themselves, so they apply equally to `--govcloud`, `--headless` and
+the untransformed template — there is nothing to opt into or out of.
+
+### Bedrock Data Automation as the OCR backend
+
+The `bda` OCR backend needs a stack-scoped BDA **SYNC** project whose
+`standardOutputConfiguration` carries a `document` block. BDA itself is offered
+in `us-gov-west-1`, but that project shape is not: the API rejects it with
+`ValidationException: Sync project does not support video/audio/document
+modality in Standard Output Configuration`.
+
+`BDAOCRProject` (in the nested unified pattern stack) is therefore gated on
+`ShouldCreateBDAOCRProject` — the `aws` partition only. Outside it the project
+is not created, `BDA_OCR_PROJECT_ARN` is empty, and the OCR service raises a
+clear error *only if* `ocr.backend` is actually set to `bda`. Use
+`ocr.backend: textract` — the built-in default; the GovCloud preset sets no
+`ocr:` key, so the default applies. See
+[the deployment guide](./govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend).
 
 ## What `--headless` Removes
 

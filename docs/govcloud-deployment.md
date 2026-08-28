@@ -162,6 +162,31 @@ polling path reuses the Cognito-authed REST API, so it inherits the same
 `ApiGatewayVisibility=PRIVATE` / WAF posture as the rest of the UI. Long agent
 turns are supported (the UI polls for up to 5 minutes).
 
+## Not Available in GovCloud (all deploy modes)
+
+Unlike the transforms above, these gaps are partition conditions in the
+templates themselves, so they apply to `--govcloud`, `--headless` and the
+untransformed template alike.
+
+### Bedrock Data Automation as the OCR backend
+
+The `bda` OCR backend needs a stack-scoped BDA **SYNC** project whose
+`standardOutputConfiguration` carries a `document` block. BDA itself is
+available in `us-gov-west-1`, but that specific project shape is not — the API
+rejects it with `ValidationException: Sync project does not support
+video/audio/document modality in Standard Output Configuration`.
+
+`BDAOCRProject` is therefore created only in the commercial partition
+(condition `ShouldCreateBDAOCRProject`). In GovCloud the project isn't created
+and `BDA_OCR_PROJECT_ARN` is empty; the OCR service raises a clear error *only
+if* `ocr.backend` is actually set to `bda`. Use `ocr.backend: textract` — the
+built-in default. The `lending-package-sample-govcloud` preset sets no `ocr:`
+key, so the default applies and no configuration change is needed.
+
+> Before this gate existed the resource was created unconditionally and its
+> failure rolled back the entire root stack on **every** GovCloud deployment,
+> regardless of deploy mode or the configured `ocr.backend`.
+
 ## Headless Deployment: `--headless`
 
 `--headless` removes the Web UI and everything that exists to serve it
