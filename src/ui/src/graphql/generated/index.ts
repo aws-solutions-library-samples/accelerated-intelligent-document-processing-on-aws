@@ -408,6 +408,7 @@ export const getAnnotationQueue = /* GraphQL */ `
         sections {
           sectionId
           baselineKey
+          pageIndices
         }
         claimedBy
         claimedByMe
@@ -868,6 +869,7 @@ export const getTestSetDocuments = /* GraphQL */ `
         sections {
           sectionId
           baselineKey
+          pageIndices
         }
         labelSource
         minConfidence

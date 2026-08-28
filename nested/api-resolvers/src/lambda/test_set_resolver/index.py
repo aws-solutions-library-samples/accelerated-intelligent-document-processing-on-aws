@@ -3235,7 +3235,7 @@ def _attach_label_metadata(test_set_bucket, documents):
     tasks = []
     for doc in documents:
         for section in doc["sections"]:
-            tasks.append((doc, section["baselineKey"]))
+            tasks.append((doc, section))
     if not tasks:
         for doc in documents:
             doc["labelSource"] = None
@@ -3273,10 +3273,22 @@ def _attach_label_metadata(test_set_bucket, documents):
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(tasks), 16)
     ) as executor:
-        results = executor.map(lambda t: (t[0], read(t[1])), tasks)
-        for doc, result in results:
+        results = executor.map(lambda t: (t[0], t[1], read(t[1]["baselineKey"])), tasks)
+        for doc, section, result in results:
             if not result:
                 continue
+            # The section's page grouping, so the page-regrouping editor can show every
+            # section at once instead of fetching each result.json again. Free: this
+            # file is already open for label state and class, same as `classes` below.
+            # Left absent rather than empty when unreadable — an empty grouping would
+            # read as "this section has no pages", which is a different claim.
+            indices = (result.get("split_document") or {}).get("page_indices")
+            if isinstance(indices, list):
+                section["pageIndices"] = [
+                    int(i)
+                    for i in indices
+                    if isinstance(i, int) and not isinstance(i, bool)
+                ]
             bucket_for_doc = per_doc[id(doc)]
             # A baseline with no labelSource is ground truth supplied when the set was
             # created: authoritative, but not reviewed here. Reporting it as

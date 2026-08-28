@@ -62,6 +62,15 @@ const REEXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
 export interface TestSetDocumentSectionRef {
   sectionId: string;
   baselineKey: string;
+  /**
+   * 0-based page indices this section covers, from the queue/documents payload.
+   *
+   * Lets the page-regrouping editor show every section's grouping without fetching
+   * each `result.json` again — the editor otherwise loads only the section being
+   * viewed. Optional because the resolver omits it when a section's file could not be
+   * read, which is not the same as the section having no pages.
+   */
+  pageIndices?: number[] | null;
 }
 
 interface GroundTruthVisualEditorProps {

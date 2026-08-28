@@ -756,6 +756,12 @@ type TestSet @aws_cognito_user_pools @aws_iam {
 type TestSetDocumentSection @aws_cognito_user_pools @aws_iam {
   sectionId: String!
   baselineKey: String!
+  # 0-based page indices this section covers, from split_document.page_indices.
+  # Returned so the page-regrouping editor can render every section's grouping at
+  # once; the resolver already reads each result.json for label state and class, so
+  # this costs no extra S3 reads. Absent when the section's file could not be read —
+  # an empty list would assert the section has no pages, which is a different claim.
+  pageIndices: [Int!]
 }
 
 type TestSetDocument @aws_cognito_user_pools @aws_iam {

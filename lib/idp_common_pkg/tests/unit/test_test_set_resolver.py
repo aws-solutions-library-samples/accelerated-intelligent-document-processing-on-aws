@@ -3901,6 +3901,86 @@ class TestTestSetResolver:
 
         assert page["documents"][0]["documentClasses"] == ["Bank-Statement"]
 
+    def test_each_section_reports_its_page_grouping(self, labeling_env):
+        """The page-regrouping editor needs every section's grouping at once.
+
+        Without this it would have to fetch each section's result.json again — the
+        editor otherwise loads only the section being viewed. The resolver is already
+        opening these files for label state and class, so this costs no extra reads.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        for section, cls, indices in (("1", "Invoice", [0, 1]), ("2", "W2", [2])):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/packet.pdf/sections/{section}/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "document_class": {"type": cls},
+                        "split_document": {"page_indices": indices},
+                        "inference_result": {"f": "v"},
+                    }
+                ).encode(),
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        sections = page["documents"][0]["sections"]
+
+        assert [s["sectionId"] for s in sections] == ["1", "2"]
+        assert [s["pageIndices"] for s in sections] == [[0, 1], [2]]
+
+    def test_a_section_with_no_grouping_omits_it_rather_than_claiming_no_pages(
+        self, labeling_env
+    ):
+        """Absent and empty are different claims.
+
+        A non-packet baseline carries no split_document at all. Reporting [] would say
+        "this section covers no pages", which would make the regrouping editor show it
+        as empty and refuse to save.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert "pageIndices" not in page["documents"][0]["sections"][0]
+
+    def test_the_queue_reports_page_groupings_too(self, labeling_env):
+        """Both payloads, because the editor is reached from either."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/packet.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Invoice"},
+                    "split_document": {"page_indices": [0, 1, 2]},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        queue = test_set_index.get_annotation_queue({"testSetId": "ts1"})
+
+        assert queue["documents"][0]["sections"][0]["pageIndices"] == [0, 1, 2]
+
     def test_a_packet_reports_each_distinct_class_once(self, labeling_env):
         """A split document has a class per section. Duplicates collapse so a
         20-page packet of one class does not render twenty identical badges."""
