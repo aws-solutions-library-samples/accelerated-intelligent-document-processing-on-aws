@@ -1229,6 +1229,26 @@ Conditions:
   #      redirectSignOut. This keeps the API Gateway URL and the custom domain
   #      working side-by-side instead of pinning OAuth to a single host.
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainUrl, ""]]
+  # True when the custom domain fronts the REST API ITSELF, so the SPA must call
+  # the API on that same origin instead of the raw execute-api hostname.
+  #
+  # Only APIGateway hosting qualifies: there the SPA and the /op transport are
+  # the same REST API (the SPA is an S3 proxy on the `api` stage), so a custom
+  # domain with a base-path mapping to that stage serves both. Under CloudFront
+  # hosting the distribution has a single S3 origin and no /api behaviour, so a
+  # custom domain in front of it cannot reach the API — the bundle must keep the
+  # execute-api URL there.
+  #
+  # Why this matters (and why it is worse than merely cosmetic in PRIVATE mode):
+  # VITE_API_BASE_URL is frozen into the JS bundle. Left as the execute-api URL
+  # while the browser is on the custom domain, every /op call is cross-origin
+  # (extra preflight) and, with ApiGatewayVisibility=PRIVATE, the execute-api
+  # hostname usually does not resolve for the client at all — the private DNS
+  # override lives only in the VPC that owns the endpoint. See
+  # docs/deployment-private-network.md.
+  UseCustomDomainForApi: !And
+    - !Condition HasCustomDomain
+    - !Condition UseApiGatewayHosting
   # True when an S3 VPC Interface Endpoint EXISTS (customer-provided via the
   # override params). Used for:
   #   - Backend Lambda S3 access (HasS3VpcEndpointAndVpc)
@@ -10779,8 +10799,27 @@ Resources:
           # REST API endpoint. VITE_API_BASE_URL is the REST API base; the thin
           # REST client posts to ${VITE_API_BASE_URL}/op/<field>. (GraphQL API
           # removed, so the old GraphQL URL / API_TRANSPORT vars are no longer emitted.)
+          #
+          # When a custom domain fronts this same REST API (APIGateway hosting —
+          # see UseCustomDomainForApi), the bundle must call the API on the
+          # custom origin the user is actually browsing. Pointing it at the raw
+          # execute-api hostname makes every data operation cross-origin, and in
+          # PRIVATE mode that hostname typically does not resolve for the client
+          # at all (the private DNS override exists only in the endpoint's own
+          # VPC) — so Test Studio and every other page fail while the SPA shell,
+          # served by the custom domain, loads fine.
+          #
+          # "/api" is the stage name on the raw URL and the base-path mapping to
+          # that same stage on the custom domain, so both forms resolve
+          # POST {base}/op/<field> to the dispatcher identically. The custom
+          # domain needs BOTH the empty and the "api" base-path mapping (the
+          # empty one anchors the OAuth return at the domain root); see
+          # docs/deployment-private-network.md.
           - Name: VITE_API_BASE_URL
-            Value: !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
+            Value: !If
+              - UseCustomDomainForApi
+              - !Sub "${CustomDomainUrl}/api"
+              - !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
           # Chat streaming Function URL (IAM-authed, response streaming). The
           # signed stream client (src/api/stream-client.ts) reads this.
           - Name: VITE_STREAM_URL
