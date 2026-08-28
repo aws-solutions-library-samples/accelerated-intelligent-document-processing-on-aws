@@ -208,6 +208,11 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         ("metering_hourly", _rollup_metering_hourly),
         ("metering_docs_hourly", _rollup_metering_docs_hourly),
         ("control_plane_hourly", _rollup_control_plane_hourly),
+        # Round-22 sibling of control_plane_hourly for consistency —
+        # data-plane Lambdas' compute cost had no home in the reporting
+        # layer (metering_hourly captures per-doc API service costs but
+        # not the Lambda compute time hosting those calls).
+        ("data_plane_lambda_hourly", _rollup_data_plane_lambda_hourly),
     ):
         try:
             results[label] = fn(target_date, target_hour)
@@ -232,7 +237,7 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         # retry only replays the failed ones.
         msg = (
             f"Hourly rollup for {target_date} hour={target_hour} had "
-            f"{len(failures)} of 3 sub-rollups fail: {'; '.join(failures)}"
+            f"{len(failures)} of 4 sub-rollups fail: {'; '.join(failures)}"
         )
         raise (ValueError if any_permanent else RuntimeError)(msg)
     return results
@@ -601,6 +606,160 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
 
     key = f"control_plane/date={target_date}/hour={target_hour}/data.parquet"
     _write_parquet(rows, key)
+    return {"skipped": False, "rows": len(rows), "s3_key": key}
+
+
+def _rollup_data_plane_lambda_hourly(
+    target_date: str, target_hour: str
+) -> Dict[str, Any]:
+    """Query CloudWatch for the previous hour's data-plane Lambda
+    compute metrics and write one Parquet row per (function, hour) to
+    S3 under ``data_plane_lambda/date=<D>/hour=<H>/data.parquet``.
+
+    Sibling of ``_rollup_control_plane_hourly`` — same Duration/
+    Invocations math, but scoped to Lambdas tagged ``idp:plane=data``
+    and with a minimal Lambda-only schema (no Bedrock/Athena columns).
+    Data-plane Bedrock/Textract API costs already flow through
+    ``metering_hourly`` via ``save_metering_data``'s per-doc metering
+    counters — this table closes the gap for the Lambda compute cost
+    hosting those API calls.
+
+    Idempotency: partition-write skip identical to control_plane_hourly.
+    Isolation: per-function try/except (same round-13 pattern) so a
+    single throttled CW call doesn't blank the whole hour.
+    """
+    if _s3_object_exists(
+        f"data_plane_lambda/date={target_date}/hour={target_hour}/data.parquet"
+    ):
+        logger.info(
+            f"data_plane_lambda_hourly partition date={target_date} "
+            f"hour={target_hour} already exists — skipping"
+        )
+        return {"skipped": True, "reason": "partition_exists"}
+
+    data_arns = _discover_data_plane_lambdas()
+    if not data_arns:
+        logger.info(
+            "No data-plane Lambdas discovered (fresh stack or all untagged). "
+            "Nothing to roll up for data_plane_lambda_hourly this hour."
+        )
+        return {"skipped": True, "reason": "no_data_lambdas"}
+
+    hour_start, hour_end = _hour_window(target_date, target_hour)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one_data(function_arn: str) -> Optional[Dict[str, Any]]:
+        function_name = function_arn.rsplit(":", 1)[-1]
+        component = _component_for_function(function_name)
+        # ONLY Duration + Invocations for data-plane — skip the Bedrock/
+        # Athena metric fetches that control-plane needs. Bedrock spend
+        # for data-plane is already captured in metering_hourly via
+        # save_metering_data's per-doc counters.
+        raw = cloudwatch_client.get_metric_data(
+            MetricDataQueries=[
+                {
+                    "Id": "d",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "AWS/Lambda",
+                            "MetricName": "Duration",
+                            "Dimensions": [
+                                {"Name": "FunctionName", "Value": function_name}
+                            ],
+                        },
+                        "Period": 3600,
+                        "Stat": "Sum",
+                    },
+                },
+                {
+                    "Id": "i",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "AWS/Lambda",
+                            "MetricName": "Invocations",
+                            "Dimensions": [
+                                {"Name": "FunctionName", "Value": function_name}
+                            ],
+                        },
+                        "Period": 3600,
+                        "Stat": "Sum",
+                    },
+                },
+            ],
+            StartTime=hour_start,
+            EndTime=hour_end,
+        )
+        flat = _flatten_cw_response(raw)
+        duration_ms = flat.get("d", 0.0)
+        invocations = flat.get("i", 0.0)
+        if invocations <= 0.0 and duration_ms <= 0.0:
+            return None  # no activity this hour — drop the row
+        mem_mb, arch = _get_lambda_memory_mb(function_name)
+        gb_second_price = (
+            LAMBDA_ARM64_GB_SECOND_PRICE
+            if arch == "arm64"
+            else LAMBDA_X86_64_GB_SECOND_PRICE
+        )
+        gb_seconds = (duration_ms / 1000.0) * (mem_mb / 1024.0)
+        est_lambda_cost = (
+            gb_seconds * gb_second_price + invocations * LAMBDA_REQUEST_PRICE
+        )
+        return {
+            "hour_ts": hour_start,
+            "function_name": function_name,
+            "component": component,
+            "invocations": int(invocations),
+            "duration_ms_sum": int(duration_ms),
+            "est_lambda_cost": float(est_lambda_cost),
+        }
+
+    rows: List[Dict[str, Any]] = []
+    failed: List[str] = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_one_data, arn): arn for arn in data_arns}
+        for future in as_completed(futures):
+            arn = futures[future]
+            try:
+                row = future.result()
+                if row is not None:
+                    rows.append(row)
+            except Exception as e:
+                function_name = arn.rsplit(":", 1)[-1]
+                failed.append(function_name)
+                logger.warning(
+                    f"data-plane lambda-cost fetch failed for {function_name}: "
+                    f"{type(e).__name__}: {e} — dropping this function's "
+                    f"row, rollup continues for the rest of the fleet"
+                )
+
+    if failed:
+        logger.warning(
+            f"data_plane_lambda_hourly partition {target_date}/{target_hour}: "
+            f"{len(failed)} function(s) failed to fetch metrics: "
+            f"{sorted(failed)[:10]}{'...' if len(failed) > 10 else ''}"
+        )
+    rows.sort(key=lambda r: r.get("function_name") or "")
+
+    # Same total-outage guard as control-plane rollup — refuse to lock
+    # an empty partition when every function failed.
+    if failed and not rows:
+        raise RuntimeError(
+            f"data_plane_lambda_hourly {target_date}/{target_hour}: all "
+            f"{len(failed)} data-plane function fetches failed and no "
+            f"rows were produced. Refusing to write an empty parquet — "
+            f"the idempotency skip would lock this hour into a permanent "
+            f"hole. Sample failures: {sorted(failed)[:5]}"
+        )
+
+    if not rows:
+        logger.info(
+            f"No data-plane Lambda activity for {target_date} hour={target_hour}"
+        )
+        return {"skipped": True, "reason": "no_activity"}
+
+    key = f"data_plane_lambda/date={target_date}/hour={target_hour}/data.parquet"
+    _write_parquet(rows, key, schema_name="data_plane_lambda")
     return {"skipped": False, "rows": len(rows), "s3_key": key}
 
 
@@ -1078,6 +1237,28 @@ def _discover_control_plane_lambdas() -> List[str]:
                 f"{arn} — expected idp:plane=data tag"
             )
     return control_plane
+
+
+def _discover_data_plane_lambdas() -> List[str]:
+    """Return data-plane Lambda ARNs — the opposite side of the split
+    from ``_discover_control_plane_lambdas``. Same tag-based query,
+    inverted: everything with ``idp:plane=data`` in the stack tree.
+
+    Data-plane Bedrock/Textract API COSTS already flow through the raw
+    ``metering`` table (per-doc). What's missing is the Lambda compute
+    cost of the OCR/Classification/Extraction/etc. Lambdas themselves —
+    that's what ``data_plane_lambda_hourly`` closes. No Bedrock/Athena
+    metric read here; only Duration/Invocations.
+    """
+    if not STACK_NAME:
+        logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
+        return []
+    stack_tree = _enumerate_stack_tree(STACK_NAME)
+    return list(
+        _get_resources_by_tag(
+            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
+        )
+    )
 
 
 def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
@@ -2332,7 +2513,11 @@ def _s3_object_exists(key: str) -> bool:
         raise
 
 
-def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:
+def _write_parquet(
+    rows: List[Dict[str, Any]],
+    key: str,
+    schema_name: str = "control_plane",
+) -> None:
     """Serialize rows to Parquet and upload to the reporting bucket.
 
     Round-8 review fix: re-checks target-key existence immediately
@@ -2344,6 +2529,13 @@ def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:
     but the second-writer window shrinks to the PUT itself, which is
     orders of magnitude tighter than the previous "check at start of
     handler, PUT at end".
+
+    ``schema_name`` selects which per-table schema to use. Round-22:
+    added ``"data_plane_lambda"`` for the sibling ``data_plane_lambda_hourly``
+    table — its rows have only Lambda-cost columns (no Bedrock/Athena),
+    so writing with the control-plane schema would fill the missing
+    columns with null junk that Athena would then read back as
+    permanent zeros in Bedrock/Athena cost columns.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -2356,29 +2548,51 @@ def _write_parquet(rows: List[Dict[str, Any]], key: str) -> None:
         )
         return
 
-    schema = pa.schema(
-        [
-            # Explicit UTC tz — round-10 review fix. hour_ts values are
-            # tz-aware datetimes from ``_hour_window`` (timezone.utc); the
-            # previous ``pa.timestamp("ms")`` (naive) silently stripped
-            # the tz on write. Newer pyarrow versions raise ArrowInvalid
-            # on the mismatch, so declaring tz explicitly future-proofs
-            # the write and preserves UTC in the parquet metadata for
-            # non-Athena readers.
-            ("hour_ts", pa.timestamp("ms", tz="UTC")),
-            ("function_name", pa.string()),
-            ("component", pa.string()),
-            ("bedrock_model", pa.string()),
-            ("invocations", pa.int64()),
-            ("duration_ms_sum", pa.int64()),
-            ("athena_bytes_sum", pa.int64()),
-            ("bedrock_tokens_in", pa.int64()),
-            ("bedrock_tokens_out", pa.int64()),
-            ("est_lambda_cost", pa.float64()),
-            ("est_athena_cost", pa.float64()),
-            ("est_bedrock_cost", pa.float64()),
-        ]
-    )
+    if schema_name == "control_plane":
+        schema = pa.schema(
+            [
+                # Explicit UTC tz — round-10 review fix. hour_ts values are
+                # tz-aware datetimes from ``_hour_window`` (timezone.utc); the
+                # previous ``pa.timestamp("ms")`` (naive) silently stripped
+                # the tz on write. Newer pyarrow versions raise ArrowInvalid
+                # on the mismatch, so declaring tz explicitly future-proofs
+                # the write and preserves UTC in the parquet metadata for
+                # non-Athena readers.
+                ("hour_ts", pa.timestamp("ms", tz="UTC")),
+                ("function_name", pa.string()),
+                ("component", pa.string()),
+                ("bedrock_model", pa.string()),
+                ("invocations", pa.int64()),
+                ("duration_ms_sum", pa.int64()),
+                ("athena_bytes_sum", pa.int64()),
+                ("bedrock_tokens_in", pa.int64()),
+                ("bedrock_tokens_out", pa.int64()),
+                ("est_lambda_cost", pa.float64()),
+                ("est_athena_cost", pa.float64()),
+                ("est_bedrock_cost", pa.float64()),
+            ]
+        )
+    elif schema_name == "data_plane_lambda":
+        # Data-plane Lambda cost: minimal Lambda-only columns. Bedrock
+        # and Textract costs already live in metering_hourly via
+        # save_metering_data's per-doc counters, so this table
+        # deliberately omits them to avoid double-counting and to keep
+        # the schema focused on the gap it closes.
+        schema = pa.schema(
+            [
+                ("hour_ts", pa.timestamp("ms", tz="UTC")),
+                ("function_name", pa.string()),
+                ("component", pa.string()),
+                ("invocations", pa.int64()),
+                ("duration_ms_sum", pa.int64()),
+                ("est_lambda_cost", pa.float64()),
+            ]
+        )
+    else:
+        raise ValueError(
+            f"_write_parquet: unknown schema_name={schema_name!r} "
+            f"(expected 'control_plane' or 'data_plane_lambda')"
+        )
     table = pa.Table.from_pylist(rows, schema=schema)
     buf = io.BytesIO()
     pq.write_table(table, buf, compression="snappy")

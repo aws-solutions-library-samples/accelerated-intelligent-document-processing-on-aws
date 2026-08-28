@@ -2154,6 +2154,14 @@ Resources:
                 - !Ref ReportingBucketName
           TEST_EXECUTION_AGGREGATION_FUNCTION_ARN: !Ref TestExecutionAggregationFunctionArn
           MLFLOW_LOGGER_FUNCTION_ARN: !If [HasMLflowLoggerFunction, !Ref MLflowLoggerFunctionArn, ""]
+      # Round-21 review fix: attach the IDP common base layer so this
+      # resolver can ``from idp_common.metrics import
+      # emit_control_plane_cost_metric`` — required by the new Athena
+      # cost emission wired in _execute_athena_query. Base layer is
+      # the minimum needed here; other resolvers in this file use the
+      # same layer for identical reasons.
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
       Events:
         SQSEvent:
           Type: SQS
@@ -2194,6 +2202,24 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+        - Statement:
+            # Round-21 review fix: emit_control_plane_cost_metric publishes
+            # AthenaBytesScanned to the IDPControlPlane namespace after
+            # each query so this resolver's Athena spend shows up in
+            # ``control_plane_hourly`` under component=``test-results``.
+            # Without this grant the emit call AccessDenies and 149
+            # daily queries' cost stays invisible (verified via the
+            # deployed idp-dev-qs1 stack: athena_bytes_sum=0 despite
+            # 149 invocations). Scoped to the IDPControlPlane namespace
+            # via a Condition since PutMetricData does not support
+            # resource-level scoping.
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
         - Statement:
             - Effect: Allow
               Action:

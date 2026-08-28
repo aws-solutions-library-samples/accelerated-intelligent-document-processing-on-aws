@@ -1402,11 +1402,13 @@ def _execute_athena_query(query, database):
 
         # Wait for query to complete
         max_attempts = 30
+        final_result = None
         for attempt in range(max_attempts):
             result = athena.get_query_execution(QueryExecutionId=query_execution_id)
             status = result["QueryExecution"]["Status"]["State"]
 
             if status == "SUCCEEDED":
+                final_result = result
                 break
             elif status in ["FAILED", "CANCELLED"]:
                 error = result["QueryExecution"]["Status"].get(
@@ -1419,6 +1421,34 @@ def _execute_athena_query(query, database):
         else:
             logger.error(f"Athena query timed out after {max_attempts * 2} seconds")
             return []
+
+        # Round-21 review fix: emit the AthenaBytesScanned control-plane
+        # cost metric so this resolver's Athena spend shows up in
+        # ``control_plane_hourly`` under component=``test-results``.
+        # Before this, the 149 daily invocations of this resolver ran
+        # queries whose DataScannedInBytes was NEVER published to
+        # CloudWatch — the rollup Lambda saw invocations+duration but
+        # ``est_athena_cost=0``. Matches the pattern the analytics-agent
+        # ``athena_tool.py`` uses (round-5 review fix wired it there).
+        try:
+            bytes_scanned = (
+                (final_result or {})
+                .get("QueryExecution", {})
+                .get("Statistics", {})
+                .get("DataScannedInBytes")
+            )
+            if bytes_scanned is not None:
+                from idp_common.metrics import emit_control_plane_cost_metric
+
+                emit_control_plane_cost_metric(
+                    component="test-results",
+                    athena_bytes=int(bytes_scanned),
+                )
+        except Exception as e:  # nosec — telemetry must not break the resolver
+            # WARN, not silent, so a future packaging/import regression is
+            # visible in the log instead of returning invisible zeros in
+            # control_plane_hourly.
+            logger.warning(f"Failed to emit test-results Athena cost metric: {e!r}")
 
         # Get query results
         results = []

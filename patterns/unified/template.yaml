@@ -3810,7 +3810,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -3900,7 +3908,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -4003,7 +4019,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action: 
               - states:SendTaskSuccess
@@ -4275,6 +4299,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4444,6 +4476,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4607,6 +4647,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4776,6 +4824,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4915,6 +4971,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5057,6 +5121,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5159,6 +5231,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5439,6 +5519,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5540,7 +5628,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Decrypt
@@ -5623,6 +5719,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5735,6 +5839,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5877,6 +5989,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5996,6 +6116,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - sagemaker-mlflow:*

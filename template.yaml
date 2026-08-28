@@ -5001,6 +5001,77 @@ Resources:
           - Name: hour
             Type: string
 
+  # Data-plane Lambda compute cost — sibling of ControlPlaneHourlyTable.
+  # ``metering_hourly`` already tracks per-doc external API costs
+  # (Textract pages, Bedrock tokens) for data-plane processing, but the
+  # Lambda compute time hosting those API calls (OCR/Classification/
+  # Extraction/Assessment/Summarization/Evaluation Lambdas, all tagged
+  # ``idp:plane=data``) had no home in the reporting layer. This table
+  # closes the gap so dashboards can show total compute cost across both
+  # planes consistently. Same Duration/Invocations math as
+  # control_plane_hourly. Bedrock/Athena columns are OMITTED — data-plane
+  # Bedrock cost already flows through ``metering_hourly``, and
+  # data-plane Lambdas don't call Athena.
+  DataPlaneLambdaHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "data_plane_lambda_hourly"
+        Description: "Hourly rollup of data-plane Lambda compute cost. See docs/reporting-sql-layer.md §10.4."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/data_plane_lambda/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/data_plane_lambda/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: function_name
+              Type: string
+            - Name: component
+              Type: string
+            - Name: invocations
+              Type: bigint
+            - Name: duration_ms_sum
+              Type: bigint
+            - Name: est_lambda_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
   ##########################################################################
   # Metering hour-partition migration — on stack upgrade from a pre-hour-
   # partition version, relocates historical `date=X/*.parquet` files into
@@ -5167,7 +5238,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       CodeUri: ./src/lambda/data_mart_rollup
-      Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, and control_plane_hourly tables.
+      Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, control_plane_hourly, and data_plane_lambda_hourly tables.
       MemorySize: 512
       Timeout: 900
       Tracing: Active
@@ -5422,6 +5493,7 @@ Resources:
       - MeteringDocsHourlyTable
       - MeteringDocsDailyTable
       - ControlPlaneHourlyTable
+      - DataPlaneLambdaHourlyTable
     Properties:
       Description: Hourly trigger for the data-mart rollup Lambda.
       ScheduleExpression: "cron(5 * * * ? *)"
@@ -5460,6 +5532,7 @@ Resources:
       - MeteringDocsHourlyTable
       - MeteringDocsDailyTable
       - ControlPlaneHourlyTable
+      - DataPlaneLambdaHourlyTable
     Properties:
       Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
       ScheduleExpression: "cron(15 0 * * ? *)"
@@ -6783,6 +6856,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
@@ -7127,6 +7207,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -8074,6 +8161,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -8568,6 +8662,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - athena:StartQueryExecution
@@ -10938,6 +11039,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -11184,6 +11292,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
