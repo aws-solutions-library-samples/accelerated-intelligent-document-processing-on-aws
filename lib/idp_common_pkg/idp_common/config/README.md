@@ -78,10 +78,11 @@ whole group as a scalar.
 
 `deref_schema(node, root)` is the single shared fix. It returns the referenced
 subschema with sibling keys on the referencing node layered on top (a local
-`description` overrides the definition's) and follows `$ref` chains. Anything
-unresolvable — a remote `$ref`, a dangling name, a cycle, a non-dict node —
-is returned as-is so callers degrade to the un-dereferenced reading rather
-than raising.
+`description` overrides the definition's) and follows `$ref` chains. An
+unresolvable `$ref` — remote, dangling, or cyclic — leaves the node returned
+as-is, so callers degrade to the un-dereferenced reading rather than raising. A
+non-dict node yields `{}` instead, so callers can `.get()` the result
+unconditionally.
 
 ```python
 from idp_common.config.schema_utils import deref_schema
@@ -93,7 +94,10 @@ prop["type"]  # "object", not None
 Callers: the confidence prompt's attribute-description formatter and the
 confidence enhancer's attribute-type read (`assessment/service.py`), the
 classification attribute-name walk (`classification/service.py`), and the
-assessment escalation-skip reason (`assessment/batching.py`).
+assessment escalation-skip reason plus the integrated/BDA threshold enrichment
+(`assessment/batching.py`). The Web UI carries a deliberate port, `derefSchema`
+in `configuration-layout/PromptPreview.tsx`, so the prompt preview shows the
+same attribute list the backend builds — keep the two in step.
 
 Dereference for the **type/description** read specifically; do not hoist it over
 a property wholesale. `_assess_core` reads a property's own

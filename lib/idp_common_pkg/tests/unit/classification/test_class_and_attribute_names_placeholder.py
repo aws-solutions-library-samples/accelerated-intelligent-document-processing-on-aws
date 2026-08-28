@@ -322,6 +322,43 @@ class TestGetAttributeNamesForClass:
             "plain",
         ]
 
+    def test_combinatorial_ref_dag_is_bounded(self, caplog):
+        """A non-cyclic ``$defs`` DAG must not expand without bound.
+
+        The ``$ref`` cycle guard is per-BRANCH, so a definition that is not
+        recursive at all is still legitimately re-entered on every sibling
+        branch. Dereferencing therefore makes a tiny schema expand
+        combinatorially — a ~2 KB schema with a 3-way fan-out 12 deep produced
+        ~265K names (16 deep: ~14M, 34s) — and the caller's
+        ``MAX_ATTRIBUTES_PER_CLASS`` cap cannot help, because it truncates the
+        RESULT after the walk has already built the whole list.
+        """
+        depth, fanout = 12, 3
+        defs = {}
+        for i in range(depth):
+            props = {"leaf": {"type": "string"}}
+            if i + 1 < depth:
+                for k in range(fanout):
+                    props[f"c{k}"] = {"$ref": f"#/$defs/L{i + 1}"}
+            defs[f"L{i}"] = {"type": "object", "properties": props}
+
+        schema = _make_class_schema(
+            "dag", "Fan-out DAG", properties={"root": {"$ref": "#/$defs/L0"}}
+        )
+        schema["$defs"] = defs
+        service = _build_service(_make_config([schema]))
+
+        names = service._get_attribute_names_for_class("dag")
+
+        assert len(names) == ClassificationService._MAX_WALK_NAMES
+        # Well above the soft cap, so "...(+N more)" stays accurate for any
+        # schema anyone would legitimately author.
+        assert (
+            ClassificationService._MAX_WALK_NAMES
+            > ClassificationService.MAX_ATTRIBUTES_PER_CLASS
+        )
+        assert "walk ceiling" in caplog.text
+
     def test_unresolvable_refs_degrade_to_leaf_names(self):
         """Dangling / remote / non-dict properties are emitted, never raised on."""
         schema = _make_class_schema(

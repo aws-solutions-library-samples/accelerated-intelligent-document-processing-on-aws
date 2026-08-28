@@ -861,7 +861,17 @@ similar names but have very different extraction schemas (e.g.
   `$defs` (what the UI's schema editor emits) are dereferenced via
   `idp_common.config.schema_utils.deref_schema` before their `type` is
   read, so they contribute their child names just like an inline group.
-  Unresolvable and self-recursive refs degrade to the property name.
+  Unresolvable refs degrade to the property name; a recursive definition is
+  walked until it re-enters itself, and the re-entered member becomes a leaf.
+- The walk itself stops at `_MAX_WALK_NAMES` (10 x the soft cap above).
+  `MAX_ATTRIBUTES_PER_CLASS` truncates the walk's *result*, so it cannot bound
+  the walk — and because a `$defs` definition can be re-entered on every
+  sibling branch, dereferencing lets a ~2 KB schema expand to hundreds of
+  thousands of names. Hitting the ceiling logs a warning.
+- `PromptPreview.tsx` in the Web UI carries a deliberate port of this walk
+  (`getAttributeNamesForClass` + `derefSchema`) so the prompt preview matches
+  what the backend builds. Change both together; the TS tests mirror the
+  Python expectations case for case.
 
 Example:
 

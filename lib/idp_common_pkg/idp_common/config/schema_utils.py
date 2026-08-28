@@ -9,11 +9,15 @@ schema editor emits for every group. Any consumer that reads ``type`` or
 ``description`` straight off such a property sees neither, so it silently
 treats a group as an untyped leaf.
 
-This module owns the single dereferencing helper those consumers share. It
-deliberately lives under ``config`` (next to ``schema_constants``) rather than
-under ``assessment``: the classification service and the assessment batcher
-both need it, and neither can import the assessment service without dragging
-in Bedrock/S3 clients it has no use for.
+This module owns the single dereferencing helper those consumers share. It lives
+under ``config`` because that is where ``schema_constants`` — the only thing it
+depends on — already lives, and because every caller already imports from this
+package, so it adds no dependency edge any of them did not already have. The
+alternative, keeping it in ``assessment/service.py`` where it started, would
+have forced ``classification`` to depend on the assessment service. (Note the
+placement is about that dependency direction and about cohesion, NOT about
+import weight: ``config/__init__.py`` imports boto3 at module level, so
+importing this module pulls it in regardless.)
 
 Not consolidated here: ``assessment/threshold_resolver.py`` has its own
 ``_deref``, whose dangling-``$ref``-returns-``{}`` and
@@ -42,10 +46,11 @@ def deref_schema(
     node layered on top (a local ``description`` overrides the definition's),
     and follows ``$ref`` chains.
 
-    Anything that is not a resolvable local ``#/$defs/<name>`` reference — a
-    remote ``$ref``, a dangling name, a non-dict node — is returned as-is, so
-    unresolvable schemas degrade to the un-dereferenced behavior rather than
-    raising.
+    A ``$ref`` that is not a resolvable local ``#/$defs/<name>`` reference — a
+    remote ``$ref``, a dangling name, a cycle — leaves the node returned as-is,
+    so unresolvable schemas degrade to the un-dereferenced behavior rather than
+    raising. A node that is not a dict at all yields ``{}`` (there is nothing to
+    return as-is), which lets callers ``.get()`` the result unconditionally.
 
     Args:
         node: The (possibly ``$ref``-bearing) subschema.
@@ -71,9 +76,7 @@ def deref_schema(
 
     seen = _seen or set()
     if ref in seen:
-        logger.warning(
-            "Circular $ref '%s' in class schema; stopping resolution", ref
-        )
+        logger.warning("Circular $ref '%s' in class schema; stopping resolution", ref)
         return node
     seen.add(ref)
 

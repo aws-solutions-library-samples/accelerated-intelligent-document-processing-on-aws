@@ -123,6 +123,7 @@ def enrich_assessment_with_thresholds(
         TYPE_ARRAY,
         X_AWS_IDP_CONFIDENCE_THRESHOLD,
     )
+    from idp_common.config.schema_utils import deref_schema
 
     if not isinstance(assessment, dict):
         return assessment, []
@@ -187,7 +188,18 @@ def enrich_assessment_with_thresholds(
 
         # For array-type fields, resolve per-sub-field thresholds from $ref/$defs.
         # ``type`` may be a union list (e.g. ["array", "null"]), so normalize.
-        raw_type = prop_schema.get(SCHEMA_TYPE)
+        #
+        # Read the type and the ``items`` shape off the DEREFERENCED subschema:
+        # a property declared as ``{"$ref": "#/$defs/TxnList"}`` carries neither,
+        # so the raw read left this path resolving zero per-sub-field thresholds
+        # and falling back to the uniform container threshold — while the
+        # standalone path (``AssessmentService._assess_core``) resolved them, so
+        # the same schema and the same confidences produced HITL alerts in
+        # ``confidence: separate`` and none in ``integrated``. The threshold on
+        # the property itself stays a RAW read, matching _assess_core: honoring
+        # one declared on the $defs definition is a threshold-INHERITANCE change.
+        deref_prop_schema = deref_schema(prop_schema, class_schema)
+        raw_type = deref_prop_schema.get(SCHEMA_TYPE)
         declared_types = raw_type if isinstance(raw_type, list) else [raw_type]
         is_array = TYPE_ARRAY in declared_types or isinstance(attr_assessment, list)
         if is_array and isinstance(attr_assessment, list):
@@ -196,7 +208,7 @@ def enrich_assessment_with_thresholds(
             )
 
             item_thresholds = resolve_array_item_thresholds(
-                prop_schema, class_schema, threshold
+                deref_prop_schema, class_schema, threshold
             )
             if item_thresholds:
                 enriched[attr_name] = [

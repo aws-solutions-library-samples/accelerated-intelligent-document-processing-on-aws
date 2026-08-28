@@ -914,8 +914,15 @@ classification:
   shape — are dereferenced first, so a `$ref` group renders exactly like
   an equivalent inline group (`Signatures.Signature-of-taxpayer1`, not a
   bare `Signatures`). `$ref` chains are followed; a `$ref` that cannot be
-  resolved (dangling, remote, or self-recursive) surfaces by its property
-  name only rather than failing the classification.
+  resolved (dangling or remote) surfaces by its property name only rather
+  than failing the classification. A **recursive** definition is walked
+  normally and only stops where it re-enters itself — a `Node` with a
+  `child: {"$ref": "#/$defs/Node"}` member yields `root.label`, `root.child`
+  and `root.kids`, with `child`/`kids` as leaves.
+- Very deeply nested schemas are truncated. Because a `$defs` definition may
+  be referenced from many sibling branches, dereferencing can expand a small
+  schema into a very large attribute list, so the walk stops at 500 names and
+  logs a warning. Prefer flatter schemas if you hit it.
 - Classes that have no JSON Schema render
   `<attributes>(no schema)</attributes>` so the absence is obvious for
   debugging.

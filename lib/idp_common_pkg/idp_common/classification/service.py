@@ -90,6 +90,16 @@ class ClassificationService:
     # is logged.
     MAX_ATTRIBUTES_PER_CLASS = 50
 
+    # Hard ceiling on names the schema WALK itself will build, as opposed to the
+    # soft cap above which truncates the walk's RESULT. Needed because $ref
+    # dereferencing lets a non-cyclic $defs DAG be re-entered on every sibling
+    # branch, so a small schema can expand combinatorially (a 2 KB schema with a
+    # 3-way fan-out 12 levels deep produced ~265K names, and 16 deep ~14M) —
+    # unbounded work in a Lambda that the result-level cap never sees. Set well
+    # above MAX_ATTRIBUTES_PER_CLASS so the "...(+N more)" overflow count stays
+    # accurate for every schema anyone would legitimately author.
+    _MAX_WALK_NAMES = 10 * MAX_ATTRIBUTES_PER_CLASS
+
     def __init__(
         self,
         region: str | None = None,
@@ -865,7 +875,7 @@ class ClassificationService:
         def _walk(
             props: Dict[str, Any],
             parent_path: str = "",
-            active_refs: frozenset = frozenset(),
+            active_refs: frozenset[str] = frozenset(),
         ) -> None:
             """Emit leaf names under ``props``.
 
@@ -874,10 +884,19 @@ class ClassificationService:
             reachable (``$defs/Node`` with a ``child: {"$ref": "#/$defs/Node"}``
             member), which would otherwise recurse forever — such a property is
             emitted as a leaf instead of re-entered.
+
+            It also stops at ``_MAX_WALK_NAMES``. ``active_refs`` is per-BRANCH,
+            so a NON-cyclic ``$defs`` DAG is legitimately re-entered on every
+            sibling branch and expands combinatorially: a 2 KB schema nesting a
+            3-way fan-out 12 deep yields ~265K names. The caller's
+            ``MAX_ATTRIBUTES_PER_CLASS`` cap cannot help — it is applied to the
+            RESULT, after this walk has already built the whole list.
             """
             if not isinstance(props, dict):
                 return
             for prop_name, prop_schema in props.items():
+                if len(names) >= self._MAX_WALK_NAMES:
+                    return
                 if not isinstance(prop_schema, dict):
                     continue
                 full_path = f"{parent_path}.{prop_name}" if parent_path else prop_name
@@ -928,6 +947,15 @@ class ClassificationService:
                     names.append(full_path)
 
         _walk(properties)
+        if len(names) >= self._MAX_WALK_NAMES:
+            logger.warning(
+                "Class '%s' schema expanded to the %d-name walk ceiling; the "
+                "attribute listing is truncated. This usually means a $defs "
+                "definition is re-entered across many sibling branches — flatten "
+                "the schema or reduce nesting depth.",
+                class_name,
+                self._MAX_WALK_NAMES,
+            )
         return names
 
     def _format_classes_and_attributes_list(self) -> str:
