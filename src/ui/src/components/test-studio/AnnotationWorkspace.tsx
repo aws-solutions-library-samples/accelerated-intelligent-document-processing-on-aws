@@ -114,7 +114,25 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   const requestedField = searchParams.get('field');
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
-  const { canAnnotate, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAuthor, isReviewer, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+
+  /**
+   * Who the SERVER will accept, per save path — the two differ, and neither matches
+   * `canAnnotate`.
+   *
+   * A document with a review record saves through `completeSectionReview`
+   * (`Admin, Reviewer, Annotator` — schema.graphql:1350-1351). One without saves
+   * through the editor's direct-to-S3 write, which needs `uploadDocument`
+   * (`Admin, Author` — schema.graphql:1239-1246). So `Author` is refused the first
+   * and `Annotator` the second.
+   *
+   * Gating on `canAnnotate` (Admin | Author | Annotator) offered editing to users the
+   * server would refuse: an Annotator would have corrected a class and lost it to an
+   * authorization error at save. The server is still what enforces this; these
+   * booleans exist so the UI does not invite work it cannot persist.
+   */
+  const canSaveViaReview = isAdmin || isReviewer || isAnnotator;
+  const canSaveDirectToBaseline = isAdmin || isAuthor;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<QueueState | null>(null);
@@ -759,8 +777,10 @@ const AnnotationWorkspace = (): React.JSX.Element => {
               {selected && !selected.reviewObjectKey && selected.labelSource && (
                 <Alert type="success" header="Already ground truth">
                   This document carries authored ground truth, so there is nothing to draft-label or review — draft labeling skips it
-                  deliberately, and nothing here will overwrite it. You can still correct it below, including its class; saving writes the
-                  ground truth directly rather than recording a review, because there is no draft here to confirm.
+                  deliberately, and nothing here will overwrite it.
+                  {canSaveDirectToBaseline
+                    ? ' You can still correct it below, including its class; saving writes the ground truth directly rather than recording a review, because there is no draft here to confirm.'
+                    : ' Correcting a document that already has authored ground truth writes it directly rather than recording a review, which an Admin or Author has to do — you can inspect the values below.'}
                 </Alert>
               )}
               {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}
@@ -771,16 +791,24 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                   inputKey={selected.inputKey}
                   objectKey={selected.objectKey}
                   sections={selected.sections ?? []}
-                  /* Role only, matching TestSetDocumentDetail. A missing review
-                     record used to force read-only here too, so an Admin opening a
-                     document that already carries authored ground truth got a
-                     disabled class dropdown reading "You do not have permission to
-                     change this class" — attributing a queue-state condition to
-                     permissions, two lines under an alert promising they could
-                     "correct the values" ([#674]). The review record gates the
-                     review WORKFLOW (claim, release, mark reviewed), which is
-                     handled separately above; it does not gate editing. */
-                  isReadOnly={!canAnnotate}
+                  /* Read-only only when the server would refuse this document's save
+                     path — see canSaveViaReview / canSaveDirectToBaseline above.
+
+                     Previously `!canAnnotate || !selected.reviewObjectKey`, so a
+                     missing review record forced read-only whatever the role: an
+                     Admin opening a document that already carried authored ground
+                     truth got a disabled class dropdown reading "You do not have
+                     permission to change this class", two lines under an alert
+                     promising they could "correct the values" ([#674]). The review
+                     record gates the review WORKFLOW — claim, release, mark reviewed,
+                     handled by separate props above — not editing. */
+                  isReadOnly={selected.reviewObjectKey ? !canSaveViaReview : !canSaveDirectToBaseline}
+                  /* Wider than isReadOnly on purpose. A class correction persists via
+                     reextractTestSetDocument (Admin, Author, Annotator), which stamps
+                     the baseline server-side and needs no review record — so every
+                     role that may work this queue may also correct a class, even on a
+                     document whose FIELD edits they could not save. */
+                  canChangeClass={canAnnotate}
                   /* Route through the review API only when there IS a review to
                      complete. completeSectionReview requires reviewObjectKey, so
                      leaving it wired for an authored-ground-truth document would let

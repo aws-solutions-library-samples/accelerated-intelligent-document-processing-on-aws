@@ -96,6 +96,21 @@ interface GroundTruthVisualEditorProps {
    */
   configVersion?: string;
   /**
+   * Whether the caller's role may change this document's CLASS, which is a
+   * different capability from editing its fields and is deliberately wider.
+   *
+   * A class correction persists through `reextractTestSetDocument`
+   * (`Admin, Author, Annotator` — schema.graphql:1333-1334), which stamps the
+   * baseline server-side and needs no review record. Field edits persist through
+   * whichever save path the caller wired, and those accept different groups. Gating
+   * the class dropdown on `isReadOnly` therefore denied the class to roles the
+   * server accepts for it.
+   *
+   * Defaults to `!isReadOnly`, so a caller that does not distinguish them keeps
+   * today's behaviour.
+   */
+  canChangeClass?: boolean;
+  /**
    * Canonical path of a field to select on open ("LineItems[0].Rate"), from a
    * shared deep link. Ancestors are expanded so the field is actually on screen.
    */
@@ -125,6 +140,7 @@ const GroundTruthVisualEditor = ({
   onReextracted,
   testSetId,
   configVersion,
+  canChangeClass,
   focusFieldPath = null,
   buildFieldLink = null,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
@@ -140,6 +156,8 @@ const GroundTruthVisualEditor = ({
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
   // Canonical path of the field the reviewer last clicked, so it can be linked.
   const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
+  // See the prop's doc comment: the class is a wider capability than field editing.
+  const mayChangeClass = canChangeClass ?? !isReadOnly;
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   const [filterMode, setFilterMode] = useState<SelectProps.Option>({ label: 'Show all fields', value: 'none' });
   const [activeTabId, setActiveTabId] = useState('visual');
@@ -307,7 +325,10 @@ const GroundTruthVisualEditor = ({
   };
 
   const updateDocumentClass = (newType: string) => {
-    if (isReadOnly || !localData) return;
+    // mayChangeClass, not isReadOnly: guarding on the narrower flag would accept the
+    // dropdown's change event and silently discard it, which is how the original
+    // class-correction bug behaved.
+    if (!mayChangeClass || !localData) return;
     const docClass = { ...((localData.document_class as Record<string, unknown>) ?? {}), type: newType };
     setLocalData({ ...localData, document_class: docClass });
   };
@@ -585,7 +606,7 @@ const GroundTruthVisualEditor = ({
                           constraintText={
                             isReextracting
                               ? 'Locked while the re-extraction runs.'
-                              : isReadOnly
+                              : !mayChangeClass
                                 ? 'You do not have permission to change this class.'
                                 : undefined
                           }
@@ -607,14 +628,14 @@ const GroundTruthVisualEditor = ({
                                 }
                                 onChange={({ detail }) => updateDocumentClass(detail.selectedOption.value ?? '')}
                                 options={classOptionsWithCurrent}
-                                disabled={isReadOnly || isReextracting}
+                                disabled={!mayChangeClass || isReextracting}
                                 placeholder="Choose a document class"
                               />
                             ) : (
                               <Input
                                 value={documentClassType ?? ''}
                                 onChange={({ detail }) => updateDocumentClass(detail.value)}
-                                disabled={isReadOnly}
+                                disabled={!mayChangeClass}
                               />
                             )}
                             {/* Correcting the class is only half the fix: the fields
@@ -625,7 +646,7 @@ const GroundTruthVisualEditor = ({
                                 type="info"
                                 header="Fields still reflect the previous class"
                                 action={
-                                  <Button onClick={handleReextract} loading={isReextracting} disabled={isReadOnly}>
+                                  <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
                                     {isReextracting ? 'Re-extracting…' : 'Change class & re-extract'}
                                   </Button>
                                 }
