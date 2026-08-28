@@ -23,8 +23,6 @@ from typing import Any, Dict, List, Optional, Union
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
-    DEFS_FIELD,
-    REF_FIELD,
     SCHEMA_DESCRIPTION,
     SCHEMA_ITEMS,
     SCHEMA_PROPERTIES,
@@ -35,6 +33,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_CONFIDENCE_THRESHOLD,
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
+from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document
 from idp_common.utils import extract_json_from_text, repair_truncated_json
 
@@ -78,59 +77,6 @@ def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
             f"Could not convert {type(value)} '{value}' to float, using default {default}"
         )
         return default
-
-
-def _deref_schema(
-    node: Any, root: Dict[str, Any], _seen: Optional[set] = None
-) -> Dict[str, Any]:
-    """
-    Resolve a local JSON-Schema ``$ref`` against ``root``'s ``$defs``.
-
-    Class schemas routinely put groups and list-item shapes in ``$defs`` and
-    reference them (``{"$ref": "#/$defs/Signatures"}``), so a consumer that reads
-    ``type``/``description`` straight off the property sees neither. This returns
-    the referenced subschema with any sibling keys on the referencing node
-    layered on top (a local ``description`` overrides the definition's), and
-    follows ``$ref`` chains.
-
-    Anything that is not a resolvable local ``#/$defs/<name>`` reference — a
-    remote ``$ref``, a dangling name, a non-dict node — is returned as-is, so
-    unresolvable schemas degrade to today's behavior rather than raising.
-
-    Args:
-        node: The (possibly ``$ref``-bearing) subschema.
-        root: The document-class schema that owns ``$defs``.
-        _seen: Internal cycle guard.
-
-    Returns:
-        The dereferenced subschema dict (``{}`` for a non-dict node).
-    """
-    if not isinstance(node, dict):
-        return {}
-
-    ref = node.get(REF_FIELD)
-    if not isinstance(ref, str):
-        return node
-
-    prefix = f"#/{DEFS_FIELD}/"
-    if not ref.startswith(prefix):
-        logger.debug(f"Unsupported non-local $ref '{ref}'; using it as-is")
-        return node
-
-    seen = _seen or set()
-    if ref in seen:
-        logger.warning(f"Circular $ref '{ref}' in class schema; stopping resolution")
-        return node
-    seen.add(ref)
-
-    target = root.get(DEFS_FIELD, {}).get(ref[len(prefix) :])
-    if not isinstance(target, dict):
-        logger.warning(f"Dangling $ref '{ref}' in class schema; using it as-is")
-        return node
-
-    # Sibling keys on the referencing node win over the definition's.
-    merged = {**target, **{k: v for k, v in node.items() if k != REF_FIELD}}
-    return _deref_schema(merged, root, seen) if REF_FIELD in target else merged
 
 
 @dataclass
@@ -254,7 +200,7 @@ class AssessmentService:
         formatted_lines = []
 
         for prop_name, prop_schema in properties.items():
-            prop_schema = _deref_schema(prop_schema, schema)
+            prop_schema = deref_schema(prop_schema, schema)
             prop_type = prop_schema.get(SCHEMA_TYPE)
             description = prop_schema.get(SCHEMA_DESCRIPTION, "")
 
@@ -262,14 +208,14 @@ class AssessmentService:
                 formatted_lines.append(f"{prop_name}  \t[ {description} ]")
                 nested_props = prop_schema.get(SCHEMA_PROPERTIES, {})
                 for nested_name, nested_schema in nested_props.items():
-                    nested_desc = _deref_schema(nested_schema, schema).get(
+                    nested_desc = deref_schema(nested_schema, schema).get(
                         SCHEMA_DESCRIPTION, ""
                     )
                     formatted_lines.append(f"  - {nested_name}  \t[ {nested_desc} ]")
 
             elif prop_type == TYPE_ARRAY:
                 formatted_lines.append(f"{prop_name}  \t[ {description} ]")
-                items_schema = _deref_schema(prop_schema.get(SCHEMA_ITEMS, {}), schema)
+                items_schema = deref_schema(prop_schema.get(SCHEMA_ITEMS, {}), schema)
 
                 item_desc = prop_schema.get(X_AWS_IDP_LIST_ITEM_DESCRIPTION, "")
                 if item_desc:
@@ -278,7 +224,7 @@ class AssessmentService:
                 if items_schema.get(SCHEMA_TYPE) == TYPE_OBJECT:
                     item_props = items_schema.get(SCHEMA_PROPERTIES, {})
                     for item_name, item_schema in item_props.items():
-                        item_prop_desc = _deref_schema(item_schema, schema).get(
+                        item_prop_desc = deref_schema(item_schema, schema).get(
                             SCHEMA_DESCRIPTION, ""
                         )
                         formatted_lines.append(
@@ -1174,6 +1120,11 @@ class AssessmentService:
 
         for attr_name, attr_assessment in assessment_data.items():
             prop_schema = properties.get(attr_name, {})
+            # NOTE: deliberately read off the RAW property, not the dereferenced
+            # one. Honoring a threshold declared on the ``$defs`` definition
+            # rather than the property is a change to threshold *inheritance*
+            # semantics, which belongs with threshold_resolver's rules — not
+            # here. See config/schema_utils.py.
             attr_threshold = _safe_float_conversion(
                 prop_schema.get(
                     X_AWS_IDP_CONFIDENCE_THRESHOLD, default_confidence_threshold
@@ -1181,7 +1132,14 @@ class AssessmentService:
                 default_confidence_threshold,
             )
 
-            prop_type_json = prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
+            # The type MUST be read off the dereferenced subschema: a property
+            # declared as ``{"$ref": "#/$defs/TxnList"}`` carries no ``type``, so
+            # the raw read defaulted an array to TYPE_STRING -> attr_type
+            # "simple", and the list assessment below was collapsed to a single
+            # default 0.5 leaf that reconciliation padded to N null placeholders
+            # no model could ever fill.
+            deref_prop_schema = deref_schema(prop_schema, class_schema)
+            prop_type_json = deref_prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
             if prop_type_json == TYPE_OBJECT:
                 attr_type = "group"
             elif prop_type_json == TYPE_ARRAY:
@@ -1206,8 +1164,13 @@ class AssessmentService:
                         resolve_array_item_thresholds,
                     )
 
+                    # Dereferenced: a ``$ref``-wrapped array property has no
+                    # ``items`` of its own, so the raw schema yielded {} and every
+                    # sub-field silently fell back to the uniform container
+                    # threshold. Reachable only now that such a property is
+                    # correctly typed "list" above.
                     item_thresholds = resolve_array_item_thresholds(
-                        prop_schema, class_schema, attr_threshold
+                        deref_prop_schema, class_schema, attr_threshold
                     )
 
                     enhanced_list = []
