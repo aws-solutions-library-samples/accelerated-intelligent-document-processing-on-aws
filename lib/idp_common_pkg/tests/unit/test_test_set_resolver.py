@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import pathlib
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
@@ -2909,6 +2911,57 @@ class TestTestSetResolver:
         # No class given, so nothing is rewritten — including the review tag.
         assert written["labelSource"] == "reviewed-human"
         assert written["document_class"]["type"] == "bank-check"
+
+    def test_an_annotator_can_watch_the_reextract_they_started(self):
+        """Starting a job without being able to observe it is not a capability.
+
+        The editor calls reextractTestSetDocument — long Annotator-reachable — and
+        then polls getDraftLabelJob for the outcome. getDraftLabelJob was absent from
+        ANNOTATOR_ALLOWED_FIELDS, so on a dev stack an annotator's class correction
+        ran to completion server-side while the UI showed "Could not re-extract this
+        document": a failure message over a job that worked.
+        """
+        allowed = test_set_index.ANNOTATOR_ALLOWED_FIELDS
+
+        # Both halves of the same flow, or neither is usable.
+        assert "reextractTestSetDocument" in allowed
+        assert "getDraftLabelJob" in allowed
+
+    def test_every_annotator_field_asserts_per_set_scope(self):
+        """Group membership alone would expose other teams' sets.
+
+        Each Annotator-reachable field must assert per-set access somewhere on its
+        path. Checked in the dispatch branch AND in the handler it calls, because the
+        codebase does both: getTestSetDocuments asserts in the dispatch,
+        getAnnotationQueue inside its handler. Looking only at the dispatch reported a
+        gap that was not there.
+        """
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        dispatch = source[source.index("def handler(") :]
+
+        for field in test_set_index.ANNOTATOR_ALLOWED_FIELDS:
+            branch_at = dispatch.index(f'field_name == "{field}"')
+            next_branch = dispatch.find("elif field_name ==", branch_at + 1)
+            branch = dispatch[
+                branch_at : next_branch if next_branch > 0 else len(dispatch)
+            ]
+            if "assert_can_access_test_set" in branch:
+                continue
+
+            # Otherwise the handler it delegates to has to do it.
+            called = re.findall(r"return (\w+)\(", branch)
+            assert called, f"{field} dispatches to nothing recognisable"
+            handler_src = ""
+            for name in called:
+                at = source.find(f"def {name}(")
+                if at == -1:
+                    continue
+                end = source.find("\ndef ", at + 1)
+                handler_src += source[at : end if end > 0 else len(source)]
+            assert "assert_can_access_test_set" in handler_src, (
+                f"{field} is Annotator-reachable but neither its dispatch branch nor "
+                f"{called} asserts per-set access"
+            )
 
     def test_a_document_class_is_validated_before_it_reaches_s3_metadata(self):
         """`documentClass` is Annotator-reachable and ends up as S3 user metadata.

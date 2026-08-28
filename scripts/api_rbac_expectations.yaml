@@ -390,7 +390,13 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getDraftLabelJob:
-    groups: [Admin, Author]
+    # Annotator included: the ground-truth editor polls this for the outcome of the
+    # re-extract it just started via reextractTestSetDocument, which annotators may
+    # already run. Without it the job completed server-side while the UI reported
+    # "Could not re-extract this document" — observed on a dev stack. Per-set scope
+    # is asserted in the handler, so group membership alone does not expose another
+    # set's jobs.
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }

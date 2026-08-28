@@ -130,6 +130,13 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # annotator page load and the panel is silently absent for the role it exists
     # for. Per-set scope is still asserted in the handler below.
     "estimateReviewEffort",
+    # Starting a re-extract without being able to watch it is not a capability. The
+    # editor kicks off reextractTestSetDocument (allowed above) and then polls this
+    # for the outcome, so leaving it off the list meant an annotator's class
+    # correction ran to completion server-side while the UI reported
+    # "Could not re-extract this document" — a failure message over a job that
+    # worked. Per-set scope is asserted in the handler below, as for the others.
+    "getDraftLabelJob",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -202,6 +209,8 @@ def handler(event, context):
         assert_can_access_test_set(event, input_data.get("testSetId") or "")
         return reextract_test_set_document(event["arguments"], event)
     elif field_name == "getDraftLabelJob":
+        # Annotator-reachable: group membership alone would expose other sets' jobs.
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         return get_draft_label_job(event["arguments"])
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.

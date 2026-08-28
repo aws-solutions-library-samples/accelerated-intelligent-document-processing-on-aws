@@ -36,6 +36,7 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
+import { getErrorMessage } from '../../utils/errorUtils';
 import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
@@ -210,7 +211,7 @@ const GroundTruthVisualEditor = ({
         setReextractNote(null);
       } catch (err) {
         logger.error('Error loading baseline:', err);
-        if (!cancelled) setError(`Failed to load ground truth: ${(err as Error).message}`);
+        if (!cancelled) setError(`Failed to load ground truth: ${getErrorMessage(err)}`);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -398,7 +399,7 @@ const GroundTruthVisualEditor = ({
       if (onReextracted) onReextracted();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
-      setError(`Could not re-extract this document: ${(err as Error).message}`);
+      setError(`Could not re-extract this document: ${getErrorMessage(err)}`);
     } finally {
       setIsReextracting(false);
     }
@@ -464,7 +465,7 @@ const GroundTruthVisualEditor = ({
       if (onSaved) onSaved(fullPath);
     } catch (err) {
       logger.error('Error saving ground truth:', err);
-      setError(`Failed to save: ${(err as Error).message}`);
+      setError(`Failed to save: ${getErrorMessage(err)}`);
     } finally {
       setIsSaving(false);
     }

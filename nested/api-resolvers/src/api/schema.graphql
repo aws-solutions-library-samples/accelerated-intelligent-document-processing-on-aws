@@ -1625,8 +1625,12 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   getTestSetVersions(testSetId: String!): [TestSetVersion]
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Annotator included: the ground-truth editor polls this for the outcome of the
+  # re-extract it just started (reextractTestSetDocument, also Annotator-reachable).
+  # Without it the job ran and the UI reported failure. Scoped per test set by the
+  # resolver via allowedTestSets.
   getDraftLabelJob(testSetId: String!, jobId: String!): DraftLabelJob
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   # Annotator included so the workspace can show what their review is buying; the
   # resolver additionally enforces allowedTestSets per set.
   estimateReviewEffort(testSetId: String!, targetAccuracy: Float, configVersion: String): ReviewEffortEstimate
