@@ -1159,6 +1159,49 @@ per-class `x-aws-idp-extraction-escalation-model` override is editable as
 "Escalation Model Override" in the **Document Schema** editor, next to the
 per-class extraction-model override.
 
+**An empty list with OCR evidence to the contrary is rejected.** `null = absent`
+(below) is the right convention for a scalar, but for a *list* it is also exactly
+what a total row loss looks like — and it breaks no schema constraint unless the
+config sets `minItems`, which most do not. So the in-loop validator adds one
+evidence-based check on the **single-agent path**: when the OCR pre-flight
+(`_analyze_ocr_for_tables`) finds a substantial table — its own `>30` pipe-table-row
+threshold, the same signal that drives the tool guidance — and **every** declared
+top-level array field comes back `null`, `[]`, or absent, the result is rejected and
+the agent gets a correction round naming the field and the row count
+(`validation.find_empty_declared_lists` / `build_empty_list_feedback`).
+
+Deliberately narrow:
+- **All-empty only.** A populated sibling list means the detected tables plausibly
+  belong to that one, and an empty sibling may be genuinely absent.
+- **Single-agent only.** Per-shard this inference is unsound — a shard legitimately
+  contains none of the whole document's rows. Sharded output is validated once
+  after merge, as it already was for `minItems`.
+- **Not a schema violation.** It does not enter `ValidationReport`, so escalation
+  behaviour is unchanged. `metadata.completeness_check` reports it separately as
+  `unexplained_empty_lists` (with a `complete` flag), leaving
+  `schema_constraints_met` meaning exactly what it says.
+- **Its effect is one more agent turn**, never a failure. After the last attempt
+  the loop keeps the best-effort result, so the worst case is one wasted turn on a
+  document that genuinely has no rows inside a detected table.
+
+⚠️ **Not gated on `validation.enabled`** — unlike the schema checks above. That flag
+defaults to `false`, and the config that produced this bug has it `false`, so the
+first version of this check (which *was* gated on it) was dead on exactly the
+configurations that needed it — caught by live verification, not by the tests. A
+guard against **silent data loss** cannot itself be off by default. The two checks
+are independently enabled: schema validation stays opt-in; the empty-list check
+runs whenever the OCR evidence is present. `_build_schema_validator` returns `None`
+only when *neither* applies.
+
+The failure this closes: an agent declined the deterministic table parser because
+one column was OCR-corrupted (`tool_usage_decision.agent_stated_reason`: *"the
+Amount column was OCR-corrupted with jumbled text instead of numbers, so
+parse_table/map_table_to_schema couldn't cleanly map usable numeric values"*), then
+returned a 100-row `Transactions` list as `null`. Schema-valid, scalar accuracy
+1.000, status COMPLETED. `SYSTEM_PROMPT` and `TABLE_PARSING_PROMPT_ADDENDUM` now
+state the rule outright — declining the tool obliges direct extraction, and one
+unreadable column means that *cell* is null, not the row and not the list.
+
 **Null = absent.** Extraction follows the convention "return `null` if a field is
 not found", and the generated Pydantic model makes every non-required property
 `Optional[...] = None`. Validation therefore treats a `null` property as

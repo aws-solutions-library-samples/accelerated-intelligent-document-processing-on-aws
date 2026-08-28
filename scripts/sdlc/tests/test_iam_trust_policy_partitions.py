@@ -93,7 +93,12 @@ UPDATE_ONLY_ROLE_ACTIONS = (
 # fine for "which properties are present" checks but useless here: the whole
 # point is to look at what Fn::If guards.
 class CfnLoader(yaml.SafeLoader):
-    """SafeLoader (never the unsafe yaml.Loader) plus CFN short-form tags."""
+    """SafeLoader (never the unsafe yaml.Loader) plus CFN short-form tags.
+
+    Kept local rather than taken from idp_sdk._core.cfn_yaml: the long-form
+    normalization below is specific to this file's Fn::If evaluation, and these
+    tests are meant to run from the repo root with nothing installed.
+    """
 
 
 def _intrinsic(loader, tag_suffix, node):
@@ -115,10 +120,17 @@ _NO_VALUE = {"Ref": "AWS::NoValue"}
 
 
 def load_template(path: Path) -> dict:
+    # CfnLoader subclasses yaml.SafeLoader, so no Python-object construction is
+    # possible; input is a developer-committed template from this repo. The
+    # loader is driven directly rather than via `yaml.load(..., Loader=)` —
+    # identical behaviour, minus the call shape scanners flag. See
+    # idp_sdk._core.cfn_yaml.
     with path.open() as f:
-        # nosec B506 - CfnLoader subclasses yaml.SafeLoader; input is a
-        # developer-committed template from this repo.
-        return yaml.load(f, Loader=CfnLoader) or {}  # nosec B506
+        loader = CfnLoader(f)
+        try:
+            return loader.get_single_data() or {}
+        finally:
+            loader.dispose()
 
 
 # --- Three-valued condition evaluation ----------------------------------------

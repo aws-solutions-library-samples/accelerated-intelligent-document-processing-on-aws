@@ -28,6 +28,7 @@ import {
   CopyToClipboard,
   Alert,
 } from '@cloudscape-design/components';
+import { DEFS_FIELD, REF_FIELD } from '../../constants/schemaConstants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -155,6 +156,42 @@ function formatClassNamesAndDescriptions(classes: ClassSchema[]): string {
 const MAX_ATTRIBUTES_PER_CLASS = 50;
 
 /**
+ * Hard ceiling on names the walk itself builds. Must mirror
+ * ``ClassificationService._MAX_WALK_NAMES``: dereferencing lets a non-cyclic
+ * ``$defs`` DAG be re-entered on every sibling branch, so a small schema can
+ * expand combinatorially and the soft cap above (applied to the RESULT) never
+ * sees it.
+ */
+const MAX_WALK_NAMES = 10 * MAX_ATTRIBUTES_PER_CLASS;
+
+/**
+ * Resolve a local ``#/$defs/<name>`` ``$ref`` against the class schema.
+ *
+ * Mirrors ``deref_schema`` in ``idp_common/config/schema_utils.py``: sibling
+ * keys on the referencing node win over the definition's, ``$ref`` chains are
+ * followed, and anything unresolvable (remote ``$ref``, dangling name, cycle)
+ * is returned as-is so the preview degrades rather than throwing.
+ */
+function derefSchema(node: PropertySchema, root: ClassSchema, seen: Set<string> = new Set()): PropertySchema {
+  if (!node || typeof node !== 'object') return {};
+  const ref = node[REF_FIELD];
+  if (typeof ref !== 'string') return node;
+
+  const prefix = `#/${DEFS_FIELD}/`;
+  if (!ref.startsWith(prefix)) return node;
+  if (seen.has(ref)) return node;
+  seen.add(ref);
+
+  const defs = root[DEFS_FIELD] as Record<string, PropertySchema> | undefined;
+  const target = defs?.[ref.slice(prefix.length)];
+  if (!target || typeof target !== 'object') return node;
+
+  const { [REF_FIELD]: _dropped, ...siblings } = node;
+  const merged = { ...target, ...siblings } as PropertySchema;
+  return REF_FIELD in target ? derefSchema(merged, root, seen) : merged;
+}
+
+/**
  * Recursively walk a JSON Schema ``properties`` object and yield a flat
  * list of dotted-path attribute names.
  *
@@ -166,47 +203,72 @@ const MAX_ATTRIBUTES_PER_CLASS = 50;
  *   - Arrays of objects are unwrapped — item-properties are surfaced as
  *     ``parent.child`` (no ``[]`` indexing).
  *   - Scalar arrays surface by their parent name only.
+ *   - Groups and list-item shapes behind a local ``$ref`` into ``$defs``
+ *     (what the schema editor emits) are dereferenced first, so a ``$ref``
+ *     group contributes its child names exactly like an inline one. Without
+ *     this the preview shows a bare ``Signatures`` while the prompt the model
+ *     actually receives contains ``Signatures.Signature-of-taxpayer1``.
+ *   - A ``$ref`` already entered on the current branch is emitted as a leaf
+ *     rather than re-entered, so a recursive ``$defs`` terminates.
  */
-function getAttributeNamesForClass(cls: ClassSchema): string[] {
+export function getAttributeNamesForClass(cls: ClassSchema): string[] {
   const properties = cls.properties;
   if (!properties || typeof properties !== 'object') return [];
 
   const names: string[] = [];
   const seen = new Set<string>();
 
-  const walk = (props: Record<string, PropertySchema>, parentPath = ''): void => {
-    for (const [propName, propSchema] of Object.entries(props)) {
-      if (!propSchema || typeof propSchema !== 'object') continue;
+  const walk = (props: Record<string, PropertySchema>, parentPath = '', activeRefs: ReadonlySet<string> = new Set()): void => {
+    for (const [propName, rawSchema] of Object.entries(props)) {
+      if (names.length >= MAX_WALK_NAMES) return;
+      if (!rawSchema || typeof rawSchema !== 'object') continue;
       const fullPath = parentPath ? `${parentPath}.${propName}` : propName;
-      const propType = (propSchema as { type?: string }).type;
+
+      const emit = (): void => {
+        if (!seen.has(fullPath)) {
+          seen.add(fullPath);
+          names.push(fullPath);
+        }
+      };
+
+      const ref = rawSchema[REF_FIELD];
+      if (typeof ref === 'string' && activeRefs.has(ref)) {
+        emit();
+        continue;
+      }
+      const branchRefs = typeof ref === 'string' ? new Set([...activeRefs, ref]) : activeRefs;
+
+      const propSchema = derefSchema(rawSchema, cls);
+      const propType = propSchema.type;
 
       if (propType === 'object') {
-        const nested = (propSchema as { properties?: Record<string, PropertySchema> }).properties;
+        const nested = propSchema.properties;
         if (nested && typeof nested === 'object' && Object.keys(nested).length > 0) {
-          walk(nested, fullPath);
-        } else if (!seen.has(fullPath)) {
-          seen.add(fullPath);
-          names.push(fullPath);
+          walk(nested, fullPath, branchRefs);
+          continue;
         }
+        // Object with no declared properties — emit the parent name itself.
       } else if (propType === 'array') {
-        const items = (propSchema as { items?: PropertySchema }).items;
-        if (items && typeof items === 'object' && (items as { type?: string }).type === 'object') {
-          const nested = (items as { properties?: Record<string, PropertySchema> }).properties;
-          if (nested && typeof nested === 'object' && Object.keys(nested).length > 0) {
-            walk(nested, fullPath);
-            continue;
+        // ``items`` may legally be a LIST (draft-07 tuple form), so only a
+        // plain object is safe to read keys off.
+        const itemsRaw =
+          propSchema.items && typeof propSchema.items === 'object' && !Array.isArray(propSchema.items) ? propSchema.items : {};
+        const itemsRef = itemsRaw[REF_FIELD];
+        if (!(typeof itemsRef === 'string' && branchRefs.has(itemsRef))) {
+          const itemsSchema = derefSchema(itemsRaw, cls);
+          if (itemsSchema.type === 'object') {
+            const nested = itemsSchema.properties;
+            if (nested && typeof nested === 'object' && Object.keys(nested).length > 0) {
+              const itemRefs = typeof itemsRef === 'string' ? new Set([...branchRefs, itemsRef]) : branchRefs;
+              walk(nested, fullPath, itemRefs);
+              continue;
+            }
           }
         }
-        if (!seen.has(fullPath)) {
-          seen.add(fullPath);
-          names.push(fullPath);
-        }
-      } else {
-        if (!seen.has(fullPath)) {
-          seen.add(fullPath);
-          names.push(fullPath);
-        }
+        // Scalar array (or array with no item properties) — emit the parent.
       }
+
+      emit();
     }
   };
 
