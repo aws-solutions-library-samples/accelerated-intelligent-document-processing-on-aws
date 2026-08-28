@@ -118,7 +118,76 @@ def _template_with_cloudfront():
             },
             "ChatStreamProcessorUrlPermission": {
                 "Type": "AWS::Lambda::Permission",
-                "Properties": {"Action": "lambda:InvokeFunctionUrl"},
+                "Properties": {
+                    "Action": "lambda:InvokeFunctionUrl",
+                    # The real permission names the function (template.yaml:7881).
+                    # Keep the fixture faithful: without this the "permission
+                    # targeting a removed function" pruning branch is never
+                    # exercised by any test.
+                    "FunctionName": {"Ref": "ChatStreamProcessorFunction"},
+                },
+            },
+            # A permission that does NOT match the InvokeFunctionUrl action, so it
+            # can only be removed via the FunctionName reference check.
+            "ChatStreamProcessorInvokePermission": {
+                "Type": "AWS::Lambda::Permission",
+                "Properties": {
+                    "Action": "lambda:InvokeFunction",
+                    "FunctionName": {"Ref": "ChatStreamProcessorFunction"},
+                },
+            },
+            # A standalone managed policy whose ONLY statement targets the removed
+            # function: the whole resource must go (an empty PolicyDocument is
+            # invalid), exercising the Properties.PolicyDocument branch.
+            "ChatStreamManagedPolicy": {
+                "Type": "AWS::IAM::ManagedPolicy",
+                "Properties": {
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": ["lambda:InvokeFunction"],
+                                "Resource": {
+                                    "Fn::GetAtt": ["ChatStreamProcessorFunction", "Arn"]
+                                },
+                            }
+                        ],
+                    }
+                },
+            },
+            # A surviving resource whose logical id CONTAINS a removed one, plus a
+            # policy referencing it via Fn::Sub. Neither may be collateral damage:
+            # prefix-matching would prune the statement, and a raw substring scan
+            # in validation would fail the publish for a non-reason.
+            "ChatStreamProcessorFunctionAlarm": {"Type": "AWS::CloudWatch::Alarm"},
+            "AlarmReaderRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "Policies": [
+                        {
+                            "PolicyName": "ReadAlarm",
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Effect": "Allow",
+                                        "Action": ["cloudwatch:DescribeAlarms"],
+                                        "Resource": {
+                                            "Fn::Sub": "${ChatStreamProcessorFunctionAlarm}"
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            },
+            # An unrelated function with an intentional empty Policies list — the
+            # transform must not rewrite resources it pruned nothing from.
+            "UnrelatedFunction": {
+                "Type": "AWS::Serverless::Function",
+                "Properties": {"Policies": []},
             },
             # The Function URL's handler: it layers in the AWS Lambda Web Adapter,
             # published only in the commercial partition, so it cannot be created
@@ -428,6 +497,48 @@ def test_partially_referencing_statement_keeps_surviving_resources():
     mixed = next(p for p in policies if p["PolicyName"] == "MixedResources")
     resources = mixed["PolicyDocument"]["Statement"][0]["Resource"]
     assert resources == [{"Fn::GetAtt": ["AgentChatProcessorFunction", "Arn"]}]
+
+
+def test_permission_and_managed_policy_targeting_removed_function_are_removed():
+    """Both reference-pruning branches that DELETE a resource must fire.
+
+    `ChatStreamProcessorInvokePermission` can only be caught by the FunctionName
+    check (its Action isn't InvokeFunctionUrl), and `ChatStreamManagedPolicy` is a
+    standalone PolicyDocument whose only statement targets the removed function —
+    an empty PolicyDocument is invalid, so the resource itself must go.
+    """
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    resources = result["Resources"]
+    assert "ChatStreamProcessorInvokePermission" not in resources
+    assert "ChatStreamManagedPolicy" not in resources
+
+
+def test_resource_whose_name_contains_a_removed_one_is_untouched():
+    """Guards two prefix-matching hazards at once.
+
+    `ChatStreamProcessorFunctionAlarm` survives `ChatStreamProcessorFunction`
+    being removed, and the Fn::Sub statement referencing the alarm must NOT be
+    pruned — nor may validation fail the publish over the shared prefix.
+    """
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    resources = result["Resources"]
+    assert "ChatStreamProcessorFunctionAlarm" in resources
+    policies = resources["AlarmReaderRole"]["Properties"]["Policies"]
+    stmts = policies[0]["PolicyDocument"]["Statement"]
+    assert len(stmts) == 1, "the alarm's Fn::Sub statement was wrongly pruned"
+    assert stmts[0]["Resource"] == {"Fn::Sub": "${ChatStreamProcessorFunctionAlarm}"}
+    # And the shared prefix must not be reported as a dangling reference.
+    assert t.validate_no_cloudfront(result) is True
+
+
+def test_unrelated_resource_policies_are_not_rewritten():
+    """The transform must not mutate resources it pruned nothing from."""
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    props = result["Resources"]["UnrelatedFunction"]["Properties"]
+    assert "Policies" in props and props["Policies"] == []
 
 
 def test_validation_flags_a_dangling_reference_to_a_removed_function():

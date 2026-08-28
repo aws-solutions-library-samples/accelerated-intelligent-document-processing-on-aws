@@ -1630,6 +1630,7 @@ class GovCloudTemplateTransformer:
             policies = props.get("Policies")
             if isinstance(policies, list):
                 kept_policies = []
+                dropped_any = False
                 for policy in policies:
                     if not isinstance(policy, dict):
                         kept_policies.append(policy)
@@ -1641,25 +1642,34 @@ class GovCloudTemplateTransformer:
                     if self._prune_statements(doc, targets):
                         kept_policies.append(policy)
                     else:
+                        dropped_any = True
                         logger.debug(
                             f"Dropped now-empty inline policy "
                             f"{policy.get('PolicyName', '<unnamed>')} on {name} "
                             "(IAM rejects Statement: [])"
                         )
-                if kept_policies:
-                    props["Policies"] = kept_policies
-                else:
-                    props.pop("Policies", None)
-                    logger.debug(f"Dropped empty Policies list on {name}")
+                # Only rewrite Policies when this pass actually dropped one.
+                # Touching it unconditionally rewrote unrelated resources (e.g.
+                # stripping an intentional `Policies: []`), which widened the
+                # GovCloud template diff and made the transform harder to audit.
+                if dropped_any:
+                    if kept_policies:
+                        props["Policies"] = kept_policies
+                    else:
+                        props.pop("Policies", None)
+                        logger.debug(f"Dropped now-empty Policies list on {name}")
 
             # Standalone policy documents (ManagedPolicy, IAM::Policy, bucket
-            # policies): Properties.PolicyDocument
+            # policies): Properties.PolicyDocument. Only remove the resource if
+            # pruning is what emptied it — a policy that was already statement-
+            # less is not ours to delete.
             doc = props.get("PolicyDocument")
-            if isinstance(doc, dict) and not self._prune_statements(doc, targets):
-                del resources[name]
-                self._removed_logical_ids.add(name)
-                targets.add(name)
-                logger.debug(f"Removed policy resource emptied by pruning: {name}")
+            if isinstance(doc, dict) and doc.get("Statement"):
+                if not self._prune_statements(doc, targets):
+                    del resources[name]
+                    self._removed_logical_ids.add(name)
+                    targets.add(name)
+                    logger.debug(f"Removed policy resource emptied by pruning: {name}")
 
         # 3. DependsOn entries pointing at removed resources.
         for res in resources.values():
@@ -1732,7 +1742,15 @@ class GovCloudTemplateTransformer:
                         return True
                 if key == "Fn::Sub":
                     text = value[0] if isinstance(value, list) else value
-                    if isinstance(text, str) and any(f"${{{n}" in text for n in names):
+                    # Match the WHOLE logical id, not a prefix: "${FooAlarm}" is
+                    # NOT a reference to a removed "Foo". A ${...} token either
+                    # closes with "}" or continues with ".Attribute", so require
+                    # one of those to follow the name — otherwise a surviving
+                    # resource whose name merely starts with a removed one would
+                    # have its IAM statement silently pruned.
+                    if isinstance(text, str) and any(
+                        f"${{{n}}}" in text or f"${{{n}." in text for n in names
+                    ):
                         return True
                 if cls._node_references(value, names):
                     return True
@@ -2035,8 +2053,21 @@ class GovCloudTemplateTransformer:
         # LWA-dependent chat streaming function, its log group, or the IAM
         # statement that granted invoke on it). A survivor here is a guaranteed
         # deploy-time rollback, so fail the publish instead.
+        #
+        # Matched on a word boundary, not a raw substring: a SURVIVING resource
+        # whose logical id merely contains a removed one (e.g. a retained
+        # "FooAlarm" after "Foo" was removed) must not fail the publish for a
+        # non-reason. Surviving logical ids are excluded from the haystack for the
+        # same reason.
+        surviving = set(resources) | set(template.get("Outputs", {}) or {})
         for ref in sorted(self._removed_logical_ids):
-            if ref in template_str:
+            if any(s != ref and ref in s for s in surviving):
+                # A retained id contains this name, so a raw scan would false-
+                # positive. Fall back to structural reference detection.
+                if self._node_references(template, {ref}):
+                    issues.append(f"Dangling reference to removed resource: {ref}")
+                continue
+            if re.search(rf"\b{re.escape(ref)}\b", template_str):
                 issues.append(f"Dangling reference to removed resource: {ref}")
 
         # An inline IAM policy emptied by pruning must be dropped, not left with
