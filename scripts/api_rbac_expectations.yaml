@@ -413,6 +413,17 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
+  updateTestSetDocumentSections:
+    # Annotator corrects a wrong packet split in their own set — the same kind of
+    # annotation work as reextractTestSetDocument, and the correction Spencer's
+    # customer needs most. The resolver additionally enforces allowedTestSets per set,
+    # and writes only the grouping and class: field values, labelSource and edit
+    # history are preserved.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
+
   reextractTestSetDocument:
     # Annotator corrects a misclassified document in their own set; the resolver
     # additionally enforces allowedTestSets per set.

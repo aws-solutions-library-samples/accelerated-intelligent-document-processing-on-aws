@@ -836,6 +836,7 @@ export type Mutation = {
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateTestSet?: Maybe<TestSet>;
+  updateTestSetDocumentSections?: Maybe<TestSetDocumentSections>;
   updateUser?: Maybe<User>;
   uploadDiscoveryDocument: DisPresignedUrlResponse;
   uploadDocument: PresignedUrlResponse;
@@ -1241,6 +1242,11 @@ export type MutationUpdatePricingArgs = {
 
 export type MutationUpdateTestSetArgs = {
   input: UpdateTestSetInput;
+};
+
+
+export type MutationUpdateTestSetDocumentSectionsArgs = {
+  input: UpdateTestSetDocumentSectionsInput;
 };
 
 
@@ -1974,6 +1980,12 @@ export type TestSetDocumentSection = {
   sectionId: Scalars['String']['output'];
 };
 
+export type TestSetDocumentSections = {
+  objectKey: Scalars['String']['output'];
+  sections: Array<TestSetSectionGrouping>;
+  testSetId: Scalars['String']['output'];
+};
+
 export type TestSetDocumentsPage = {
   activeLabelJobId?: Maybe<Scalars['String']['output']>;
   documents: Array<TestSetDocument>;
@@ -1985,6 +1997,18 @@ export type TestSetDocumentsUploadInput = {
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
   testSetId: Scalars['String']['input'];
+};
+
+export type TestSetSectionGrouping = {
+  documentClass?: Maybe<Scalars['String']['output']>;
+  pageIndices: Array<Scalars['Int']['output']>;
+  sectionId: Scalars['String']['output'];
+};
+
+export type TestSetSectionGroupingInput = {
+  documentClass?: InputMaybe<Scalars['String']['input']>;
+  pageIndices: Array<Scalars['Int']['input']>;
+  sectionId: Scalars['String']['input'];
 };
 
 export type TestSetUploadInput = {
@@ -2106,6 +2130,12 @@ export type UpdatePricingResponse = {
   error?: Maybe<ConfigurationError>;
   message?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
+};
+
+export type UpdateTestSetDocumentSectionsInput = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<TestSetSectionGroupingInput>;
+  testSetId: Scalars['String']['input'];
 };
 
 export type UpdateTestSetInput = {

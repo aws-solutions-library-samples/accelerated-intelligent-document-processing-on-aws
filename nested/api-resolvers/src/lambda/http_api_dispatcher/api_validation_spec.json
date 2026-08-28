@@ -1969,6 +1969,17 @@
         }
       ]
     },
+    "updateTestSetDocumentSections": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "UpdateTestSetDocumentSectionsInput"
+        }
+      ]
+    },
     "updateUser": {
       "args": [
         {
@@ -2817,6 +2828,29 @@
         "type": "Int"
       }
     ],
+    "TestSetSectionGroupingInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "sectionId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "pageIndices",
+        "non_null": true,
+        "type": "Int"
+      }
+    ],
     "TestSetUploadInput": [
       {
         "elem_non_null": false,
@@ -3133,6 +3167,29 @@
         "name": "WorkflowStatus",
         "non_null": false,
         "type": "String"
+      }
+    ],
+    "UpdateTestSetDocumentSectionsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "objectKey",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "sections",
+        "non_null": true,
+        "type": "TestSetSectionGroupingInput"
       }
     ],
     "UpdateTestSetInput": [

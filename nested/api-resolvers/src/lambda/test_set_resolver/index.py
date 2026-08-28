@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
@@ -137,6 +138,10 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # "Could not re-extract this document" — a failure message over a job that
     # worked. Per-set scope is asserted in the handler below, as for the others.
     "getDraftLabelJob",
+    # Correcting a wrong packet split is annotation work, exactly as correcting a wrong
+    # class is — and it is the correction Spencer's customer needs most. Per-set scope
+    # asserted in the dispatch below.
+    "updateTestSetDocumentSections",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -203,6 +208,11 @@ def handler(event, context):
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
         return generate_draft_labels(event["arguments"], event)
+    elif field_name == "updateTestSetDocumentSections":
+        # Annotator-reachable: group membership alone would expose other sets.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return update_test_set_document_sections(event["arguments"], event)
     elif field_name == "reextractTestSetDocument":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
@@ -1055,6 +1065,208 @@ def reextract_test_set_document(args, event=None):
         f"'{document_class or 'its existing class'}' via job {result['jobId']}"
     )
     return result
+
+
+# A packet with more sections than this is far more likely to be a client bug than a
+# real document, and each section is a separate S3 write.
+MAX_SECTIONS_PER_DOCUMENT = 200
+
+
+def _read_baseline_sections(test_set_bucket, test_set_id, object_key):
+    """Every section of a document's baseline, as ``{section_id: (key, parsed)}``.
+
+    An unreadable section is fatal here, unlike in ``_set_baseline_document_class``
+    where one bad file must not block a class correction. Re-grouping rewrites the
+    whole set of sections, so proceeding without knowing what one of them contained
+    would discard its field values silently.
+    """
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    out = {}
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith("/result.json"):
+                continue
+            section_id = key[len(prefix) :].split("/")[0]
+            body = s3_client.get_object(Bucket=test_set_bucket, Key=key)["Body"].read()
+            out[section_id] = (key, json.loads(body))
+    return out
+
+
+def _validate_regrouping(sections, previously_labelled_pages):
+    """Reject a re-grouping that would corrupt or lose ground truth.
+
+    The client validates more than this — it also requires every page of the rendered
+    PDF to be assigned, which only it can check, because the server would have to
+    parse the document to learn its page count. What the server *can* enforce is that
+    nothing already labelled disappears, and that the result is a partition of what it
+    is given:
+
+    * no page in two sections, which would make the grouping meaningless;
+    * no empty section, which would carry field values belonging to no pages;
+    * no page that was previously labelled going missing, which would silently drop
+      the ground truth for that page.
+
+    A page the baseline never mentioned *is* allowed in: a split that dropped a page
+    entirely is exactly the defect a reviewer is here to fix.
+    """
+    if not sections:
+        raise Exception("A document must have at least one section")
+    if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
+        raise Exception(
+            f"Too many sections ({len(sections)}); the maximum is "
+            f"{MAX_SECTIONS_PER_DOCUMENT}"
+        )
+
+    seen = {}
+    for section in sections:
+        section_id = str(section.get("sectionId") or "")
+        indices = section.get("pageIndices")
+        if not isinstance(indices, list) or not indices:
+            raise Exception(f"Section '{section_id}' has no pages")
+        for raw in indices:
+            if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+                raise Exception(
+                    f"Section '{section_id}' has an invalid page index {raw!r}; "
+                    "expected a non-negative integer"
+                )
+            if raw in seen:
+                raise Exception(
+                    f"Page index {raw} is in both section '{seen[raw]}' and "
+                    f"section '{section_id}'"
+                )
+            seen[raw] = section_id
+
+    lost = sorted(previously_labelled_pages - set(seen))
+    if lost:
+        raise Exception(
+            f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
+            "would no longer belong to any section, which would discard the ground "
+            "truth for those pages"
+        )
+
+
+def update_test_set_document_sections(args, event=None):
+    """Re-group a document's pages into sections, keeping every field value.
+
+    The reason this exists: a packet split that grouped pages wrongly makes the
+    classification ground truth wrong, and until now there was no way to correct it —
+    the editor showed ``page_indices`` read-only. Fixing it by re-running extraction
+    would regenerate the field values, which is precisely the annotation loss the
+    reviewer is trying to avoid.
+
+    So this writes the grouping and the class and **nothing else**. Each surviving
+    section keeps its ``inference_result``, its ``labelSource`` and its
+    ``_editHistory`` — a reviewer's corrections are not touched. The fields may no
+    longer match their pages afterwards, which is true and is why the UI says so and
+    offers an opt-in re-extract rather than doing it here.
+
+    ## Sections are renumbered to agree with page order
+
+    Consumers derive a section's group index from its *position in a list*
+    (``compute_graded_packet_metrics`` enumerates ``sections_gt``), and nothing
+    guarantees that list is in page order. Writing sections as ``1..N`` in first-page
+    order makes id order, lexical key order and page order all the same thing, so no
+    consumer can disagree about which group a page is in.
+
+    That means rewriting every section file rather than renaming a few. Writes happen
+    before deletes, so an interrupted call leaves an extra stale section — visible,
+    and recoverable by re-saving — rather than a missing one.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+    object_key = input_data["objectKey"]
+    incoming = input_data.get("sections") or []
+
+    if not validate_test_set_name(test_set_id):
+        raise Exception("Invalid test set id")
+    for section in incoming:
+        if not validate_document_class(section.get("documentClass")):
+            raise Exception(
+                f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+                "characters of letters, digits, spaces, hyphens or underscores"
+            )
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
+    if not existing:
+        raise Exception(
+            f"'{object_key}' has no baseline sections to re-group. Generate draft "
+            "labels for this test set first."
+        )
+
+    previously_labelled = {
+        int(index)
+        for _key, parsed in existing.values()
+        for index in (parsed.get("split_document") or {}).get("page_indices") or []
+    }
+    _validate_regrouping(incoming, previously_labelled)
+
+    # First-page order, so the ids we assign below agree with page order.
+    ordered = sorted(incoming, key=lambda sec: min(sec["pageIndices"]))
+
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    written_keys = set()
+    for position, section in enumerate(ordered, start=1):
+        source_id = str(section.get("sectionId") or "")
+        _old_key, content = existing.get(source_id, (None, None))
+        if content is None:
+            # A section the reviewer added. It has no field values yet, and saying so
+            # in the data beats writing a plausible-looking empty result.
+            content = {"inference_result": {}, "labelSource": LABEL_SOURCE_DRAFT}
+            logger.info(
+                f"Section '{source_id}' of {object_key} is new; writing it with no "
+                "field values"
+            )
+        content = dict(content)
+
+        split = dict(content.get("split_document") or {})
+        split["page_indices"] = sorted(int(i) for i in section["pageIndices"])
+        content["split_document"] = split
+
+        document_class = section.get("documentClass")
+        if document_class:
+            doc_class = dict(content.get("document_class") or {})
+            doc_class["type"] = document_class
+            content["document_class"] = doc_class
+
+        key = f"{prefix}{position}/result.json"
+        s3_client.put_object(
+            Bucket=test_set_bucket,
+            Key=key,
+            Body=json.dumps(content, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        written_keys.add(key)
+
+    # After the writes, never before: an interruption should leave a stale extra
+    # section rather than a hole.
+    for old_key, _content in existing.values():
+        if old_key not in written_keys:
+            s3_client.delete_object(Bucket=test_set_bucket, Key=old_key)
+
+    logger.info(
+        f"Re-grouped {object_key} in {test_set_id} into {len(ordered)} section(s); "
+        f"removed {len(existing) - len(written_keys) if len(existing) > len(written_keys) else 0} "
+        "stale section file(s)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "objectKey": object_key,
+        "sections": [
+            {
+                "sectionId": str(position),
+                "documentClass": section.get("documentClass"),
+                "pageIndices": sorted(int(i) for i in section["pageIndices"]),
+            }
+            for position, section in enumerate(ordered, start=1)
+        ],
+    }
 
 
 def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class_type):

@@ -992,6 +992,34 @@ input ReextractTestSetDocumentInput {
   configVersion: String
 }
 
+input UpdateTestSetDocumentSectionsInput {
+  testSetId: String!
+  objectKey: String!
+  sections: [TestSetSectionGroupingInput!]!
+}
+
+input TestSetSectionGroupingInput {
+  # The section whose content should carry over. A value not present in the current
+  # baseline is treated as a new, empty section.
+  sectionId: String!
+  documentClass: String
+  # 0-based page indices within the document, matching split_document.page_indices.
+  pageIndices: [Int!]!
+}
+
+type TestSetDocumentSections @aws_cognito_user_pools @aws_iam {
+  testSetId: String!
+  objectKey: String!
+  # The grouping as written, renumbered so section ids agree with page order.
+  sections: [TestSetSectionGrouping!]!
+}
+
+type TestSetSectionGrouping @aws_cognito_user_pools @aws_iam {
+  sectionId: String!
+  documentClass: String
+  pageIndices: [Int!]!
+}
+
 input GenerateDraftLabelsInput {
   testSetId: String!
   # Defaults to the deployment's active config when omitted.
@@ -1331,6 +1359,16 @@ type Mutation {
   # Annotator-reachable: correcting a misclassified document is annotation work,
   # scoped per test set by the resolver via allowedTestSets.
   reextractTestSetDocument(input: ReextractTestSetDocumentInput!): DraftLabelJob
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  # Re-group a document's pages into sections, correcting a wrong packet split.
+  # Annotator-reachable for the same reason as reextractTestSetDocument: it is
+  # annotation work, scoped per test set by the resolver via allowedTestSets.
+  #
+  # Writes ONLY the grouping and the class. Each surviving section keeps its
+  # inference_result, labelSource and _editHistory, so a reviewer's corrections are
+  # never discarded — the fields may no longer match their pages afterwards, which is
+  # what the UI warns about while offering an opt-in re-extract.
+  updateTestSetDocumentSections(input: UpdateTestSetDocumentSectionsInput!): TestSetDocumentSections
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   sendTestRunToReview(testRunId: String!): SendTestRunToReviewResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])

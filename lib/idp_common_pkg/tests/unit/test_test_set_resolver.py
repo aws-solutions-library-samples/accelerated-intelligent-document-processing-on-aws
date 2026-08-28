@@ -2963,6 +2963,307 @@ class TestTestSetResolver:
                 f"{called} asserts per-set access"
             )
 
+    # ---------------------------------------------------------------- regrouping
+
+    @staticmethod
+    def _seed_packet(s3, sections):
+        """Write a document's baseline sections. `sections` is {id: (class, indices)}."""
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        for section_id, (doc_class, indices) in sections.items():
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/packet.pdf/sections/{section_id}/result.json",
+                Body=json.dumps(
+                    {
+                        "document_class": {"type": doc_class},
+                        "split_document": {"page_indices": indices},
+                        "inference_result": {"field": f"value-from-{section_id}"},
+                        "labelSource": "reviewed-human",
+                        "_editHistory": [{"editedBy": "someone"}],
+                    }
+                ).encode(),
+            )
+
+    @staticmethod
+    def _read_sections(s3):
+        """{section_id: parsed result.json} for the seeded document."""
+        prefix = "ts1/baseline/packet.pdf/sections/"
+        out = {}
+        for obj in s3.list_objects_v2(Bucket="test-set-bucket", Prefix=prefix).get(
+            "Contents", []
+        ):
+            if not obj["Key"].endswith("/result.json"):
+                continue
+            section_id = obj["Key"][len(prefix) :].split("/")[0]
+            out[section_id] = json.loads(
+                s3.get_object(Bucket="test-set-bucket", Key=obj["Key"])["Body"].read()
+            )
+        return out
+
+    def test_regrouping_preserves_every_field_value(self, labeling_env):
+        """The whole reason this mutation exists rather than a re-extract.
+
+        Spencer's blocker was a wrong packet split on a document carrying annotations he
+        could not lose. Re-running extraction would fix the grouping and destroy the
+        annotations, so this writes the grouping and nothing else.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1, 2],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [0, 1, 2]
+        assert after["2"]["split_document"]["page_indices"] == [3]
+        # Untouched: the values, their provenance, and the edit trail.
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["2"]["inference_result"] == {"field": "value-from-2"}
+        assert after["1"]["labelSource"] == "reviewed-human"
+        assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
+
+    def test_sections_are_renumbered_so_ids_agree_with_page_order(self, labeling_env):
+        """Consumers take a section's group index from its position in a list.
+
+        `compute_graded_packet_metrics` enumerates the sections it is given, and nothing
+        guarantees that list is in page order. Numbering 1..N by first page makes id
+        order, lexical key order and page order the same thing, so no consumer can
+        disagree about which group a page belongs to.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [2, 3]), "2": ("Invoice", [0, 1])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [2, 3],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [0, 1],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        # Section 1 now holds the FIRST pages, and carries the content that came with
+        # them — the values follow their pages, not their old id.
+        assert after["1"]["split_document"]["page_indices"] == [0, 1]
+        assert after["1"]["inference_result"] == {"field": "value-from-2"}
+        assert after["2"]["split_document"]["page_indices"] == [2, 3]
+        assert after["2"]["inference_result"] == {"field": "value-from-1"}
+        assert [s["pageIndices"] for s in result["sections"]] == [[0, 1], [2, 3]]
+
+    def test_merging_two_sections_removes_the_leftover_file(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1, 2, 3],
+                        }
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        # A stale section/2/result.json left behind would be read as a real section by
+        # every consumer, including scoring.
+        assert list(after) == ["1"]
+
+    def test_a_new_section_is_written_with_no_field_values(self, labeling_env):
+        """Splitting one section into two: the new half has nothing extracted yet.
+
+        Writing an empty inference_result states that plainly; inventing a copy of the
+        original's values would look like extracted data that no model produced.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1, 2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1],
+                        },
+                        {
+                            "sectionId": "99",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 3],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["2"]["inference_result"] == {}
+        assert after["2"]["document_class"]["type"] == "Invoice"
+
+    def test_a_page_in_two_sections_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        with pytest.raises(Exception, match="in both section"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1, 2]},
+                            {"sectionId": "2", "pageIndices": [2, 3]},
+                        ],
+                    }
+                }
+            )
+
+    def test_dropping_a_labelled_page_is_refused(self, labeling_env):
+        """Losing a page silently would discard the ground truth for it.
+
+        The client also requires every page of the rendered PDF to be assigned, which
+        only it can check — the server would have to parse the document to learn its
+        page count. What the server can enforce is that nothing already labelled goes
+        missing, which is the half that loses data.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        with pytest.raises(Exception, match="would no longer belong to any section"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [{"sectionId": "1", "pageIndices": [0, 1, 2]}],
+                    }
+                }
+            )
+
+    def test_a_page_the_baseline_never_mentioned_is_allowed_in(self, labeling_env):
+        """A split that dropped a page is exactly what a reviewer is here to fix."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    # Page 2 was never in any section; the reviewer adds it.
+                    "sections": [{"sectionId": "1", "pageIndices": [0, 1, 2]}],
+                }
+            }
+        )
+
+        assert self._read_sections(s3)["1"]["split_document"]["page_indices"] == [
+            0,
+            1,
+            2,
+        ]
+
+    def test_an_empty_section_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        with pytest.raises(Exception, match="has no pages"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1]},
+                            {"sectionId": "2", "pageIndices": []},
+                        ],
+                    }
+                }
+            )
+
+    def test_a_negative_or_non_integer_page_index_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        for bad in (-1, "0", 1.5, True):
+            with pytest.raises(Exception, match="invalid page index"):
+                test_set_index.update_test_set_document_sections(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKey": "packet.pdf",
+                            "sections": [
+                                {"sectionId": "1", "pageIndices": [0, 1, bad]}
+                            ],
+                        }
+                    }
+                )
+
+    def test_a_document_with_no_baseline_is_refused_with_advice(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+
+        with pytest.raises(Exception, match="Generate draft labels"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [{"sectionId": "1", "pageIndices": [0]}],
+                    }
+                }
+            )
+
     def test_a_document_class_is_validated_before_it_reaches_s3_metadata(self):
         """`documentClass` is Annotator-reachable and ends up as S3 user metadata.
 
