@@ -555,23 +555,35 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
         # not full-file read) while actually scanning past null rows.
         # Cap iterations at a modest ROW_SCAN_CAP so a degenerate
         # all-nulls parquet doesn't stream forever.
+        # Round-20 review fix (#566): iterate ROW-first, then columns
+        # within each row. Round-19's column-first loop incremented
+        # ``rows_scanned`` per (row × column) — so if column
+        # ``timestamp`` had 128 nulls we hit the cap and broke out
+        # BEFORE ever checking ``initial_event_time`` on those rows,
+        # effectively halving the cap when both columns are wanted.
+        # Row-first with the counter incremented ONCE per row makes
+        # ROW_SCAN_CAP mean what the name says.
         ROW_SCAN_CAP = 128  # noqa: N806
         rows_scanned = 0
+        found_hour: Optional[str] = None
         try:
             batches = pf.iter_batches(batch_size=16, columns=wanted)
             for batch in batches:
-                for candidate in wanted:  # honours wanted-order preference
-                    col = batch.column(candidate)
-                    for row_idx in range(len(col)):
-                        rows_scanned += 1
+                # Determine max rows in this batch across the wanted columns.
+                cols = {c: batch.column(c) for c in wanted}
+                batch_len = max((len(cols[c]) for c in wanted), default=0)
+                for row_idx in range(batch_len):
+                    rows_scanned += 1
+                    # Try each wanted column at this row in preferred order.
+                    for candidate in wanted:
+                        col = cols[candidate]
+                        if row_idx >= len(col):
+                            continue
                         ts = col[row_idx].as_py()
                         if ts is None:
-                            if rows_scanned >= ROW_SCAN_CAP:
-                                break
                             continue
                         # Round-18 review fix (#578): tz-aware non-UTC →
-                        # convert to UTC before strftime so the file
-                        # lands in the correct hour subdirectory.
+                        # convert to UTC before strftime.
                         if ts.tzinfo is None:
                             logger.warning(
                                 f"infer_hour: {key} column {candidate} row "
@@ -583,13 +595,18 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
                             from datetime import timezone as _tz
 
                             ts_utc = ts.astimezone(_tz.utc)
-                        return (ts_utc.strftime("%H"), True)
+                        found_hour = ts_utc.strftime("%H")
+                        break
+                    if found_hour is not None:
+                        break
                     if rows_scanned >= ROW_SCAN_CAP:
                         break
-                if rows_scanned >= ROW_SCAN_CAP:
+                if found_hour is not None or rows_scanned >= ROW_SCAN_CAP:
                     break
         except StopIteration:
             pass
+        if found_hour is not None:
+            return (found_hour, True)
         if rows_scanned == 0:
             logger.warning(
                 f"infer_hour: {key} has zero rows in {wanted} — cannot "

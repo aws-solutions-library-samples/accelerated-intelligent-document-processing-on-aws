@@ -1499,6 +1499,176 @@ class TestBedrockPricing:
 
 
 @pytest.mark.unit
+class TestIsAthenaTableMissing:
+    """Round-20 review fix (#269): unambiguous markers must still bind
+    to the specific ``table`` argument — otherwise a probe of
+    ``metering_hourly`` would false-positive on a
+    ``TABLE_NOT_FOUND: metering_docs_hourly`` error for a different table.
+    """
+
+    def test_unambiguous_marker_with_matching_table_returns_true(self, rollup):
+        exc = RuntimeError(
+            "TABLE_NOT_FOUND: table `awsdatacatalog.reporting.metering_hourly` does not exist"
+        )
+        assert rollup._is_athena_table_missing(exc, "metering_hourly") is True
+
+    def test_unambiguous_marker_with_different_table_returns_false(self, rollup):
+        """Regression pin for the round-20 finding: a
+        TABLE_NOT_FOUND error about ``metering_docs_hourly`` must NOT
+        satisfy a probe of ``metering_hourly``.
+        """
+        exc = RuntimeError("TABLE_NOT_FOUND: metering_docs_hourly does not exist")
+        assert rollup._is_athena_table_missing(exc, "metering_hourly") is False
+
+    def test_unambiguous_marker_no_table_arg_returns_true(self, rollup):
+        """Bare shape probe (no table binding requested) still matches."""
+        exc = RuntimeError("EntityNotFoundException: something")
+        assert rollup._is_athena_table_missing(exc, None) is True
+
+    def test_column_not_found_does_not_false_positive(self, rollup):
+        """A ``does not exist`` error about a COLUMN must not satisfy
+        a table-binding probe.
+        """
+        exc = RuntimeError("Column 'foo' does not exist in table 'metering_hourly'")
+        # No unambiguous marker; only the bound-to-table forms match.
+        assert rollup._is_athena_table_missing(exc, "metering_hourly") is False
+
+
+@pytest.mark.unit
+class TestCachedFailureRestart:
+    """Round-20 review fixes for the cached-failure detection path
+    (#1937 probe-swallow, #1949 dropped-token)."""
+
+    def test_probe_transient_error_defaults_to_restart(self, rollup):
+        """Round-20 fix (#1937): if the probe itself fails 3× in a row,
+        we can't determine whether the returned QID is a cached failure
+        — defaulting to trust would loop us right back into the
+        cached-failure trap the round-19 fix was meant to break. Fix:
+        default to RESTART on probe exhaustion.
+        """
+        from botocore.exceptions import ClientError
+
+        athena = MagicMock()
+        athena.start_query_execution.side_effect = [
+            {"QueryExecutionId": "cached-failed-qid"},
+            {"QueryExecutionId": "fresh-qid"},
+        ]
+        athena.get_query_execution.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "GetQueryExecution"
+        )
+        with (
+            patch.object(rollup, "athena_client", athena),
+            patch.object(rollup, "_wait_for_athena"),
+            patch.object(rollup, "time"),
+        ):
+            qid = rollup._run_athena(
+                "SELECT 1",
+                idempotency_key="idp-rollup-test-daily-2026-08-27" + "-pad" * 3,
+            )
+        # We MUST have restarted (2 start_query_execution calls).
+        assert athena.start_query_execution.call_count == 2
+        assert qid == "fresh-qid"
+
+    def test_cached_failure_restart_uses_fresh_token_not_none(self, rollup):
+        """Round-20 fix (#1949): on cached-failure restart, DON'T drop
+        the ClientRequestToken entirely — that forfeits Athena's dedup
+        for the logical write and enables double-INSERT under Lambda
+        hard-timeout race. Instead, append a fresh salt so Athena
+        treats it as a new logical write while still deduping any
+        concurrent retry of THIS attempt.
+        """
+        athena = MagicMock()
+        athena.start_query_execution.side_effect = [
+            {"QueryExecutionId": "cached-failed-qid"},
+            {"QueryExecutionId": "fresh-qid"},
+        ]
+        athena.get_query_execution.return_value = {
+            "QueryExecution": {"Status": {"State": "FAILED"}}
+        }
+        with (
+            patch.object(rollup, "athena_client", athena),
+            patch.object(rollup, "_wait_for_athena"),
+        ):
+            rollup._run_athena(
+                "SELECT 1",
+                idempotency_key="idp-rollup-test-metering_hourly-2026-08-27-13",
+            )
+        # First call had the ORIGINAL token; second call MUST have a token,
+        # not None, and it MUST be different from the first.
+        first_kwargs = athena.start_query_execution.call_args_list[0].kwargs
+        second_kwargs = athena.start_query_execution.call_args_list[1].kwargs
+        assert "ClientRequestToken" in first_kwargs
+        assert "ClientRequestToken" in second_kwargs, (
+            "restart MUST preserve dedup — round-20 finding #1949"
+        )
+        assert first_kwargs["ClientRequestToken"] != second_kwargs["ClientRequestToken"]
+
+
+@pytest.mark.unit
+class TestPricingUnavailableRaises:
+    """Round-20 review fix (#1720): when the pricing map failed to
+    load AND control-plane rows have bedrock activity, the rollup MUST
+    raise so async retry replays with a fresh pricing load — otherwise
+    the S3 idempotency skip locks est_bedrock_cost=0 for the hour
+    forever.
+    """
+
+    def test_raises_when_pricing_unavailable_and_bedrock_rows_present(self, rollup):
+        arns = ["arn:aws:lambda:us-east-1:1:function:AgentFn"]
+
+        def cw_side_effect(function_name, hour_start, hour_end):  # noqa: ARG001
+            return {
+                "duration_ms": 100.0,
+                "invocations": 1.0,
+                "bedrock_by_model": {"anthropic.claude-opus": {"in": 1, "out": 1}},
+            }
+
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_control_plane_lambdas", return_value=arns),
+            patch.object(
+                rollup, "_get_cw_metrics_for_function", side_effect=cw_side_effect
+            ),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")),
+            # Simulate pricing-load failure.
+            patch.object(rollup, "_load_bedrock_pricing_from_config", return_value={}),
+        ):
+            # Trip the unavailable flag directly (production sets it inside
+            # _load_bedrock_pricing_from_config on the failure/empty path).
+            rollup._bedrock_pricing_unavailable = True
+            with pytest.raises(RuntimeError, match="pricing map was unavailable"):
+                rollup._rollup_control_plane_hourly("2026-08-27", "13")
+
+    def test_writes_when_pricing_unavailable_but_no_bedrock_activity(self, rollup):
+        """Rows without bedrock activity — empty pricing is harmless
+        (nothing to price), rollup should still write.
+        """
+        arns = ["arn:aws:lambda:us-east-1:1:function:NonBedrockFn"]
+
+        def cw_side_effect(function_name, hour_start, hour_end):  # noqa: ARG001
+            return {
+                "duration_ms": 100.0,
+                "invocations": 1.0,
+                "bedrock_by_model": {},  # no bedrock calls
+            }
+
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_control_plane_lambdas", return_value=arns),
+            patch.object(
+                rollup, "_get_cw_metrics_for_function", side_effect=cw_side_effect
+            ),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")),
+            patch.object(rollup, "_load_bedrock_pricing_from_config", return_value={}),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            rollup._bedrock_pricing_unavailable = True
+            result = rollup._rollup_control_plane_hourly("2026-08-27", "13")
+        write.assert_called_once()
+        assert result["skipped"] is False
+
+
+@pytest.mark.unit
 class TestControlPlaneRollupFanOut:
     """Round-14 review fixes — total-outage detection and stable row order."""
 

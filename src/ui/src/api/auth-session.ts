@@ -37,6 +37,23 @@ const inFlight: { normal: Promise<AuthSession> | null; forced: Promise<AuthSessi
 };
 
 /**
+ * How long to hold the slot pointing at a SETTLED (esp. rejected) promise
+ * after settlement. Callers' `.catch` handlers back off on a `setTimeout` of
+ * their own (typically 300-1000ms in this codebase); if the slot were cleared
+ * synchronously via `.finally`, those setTimeouts would fire and each
+ * observe `inFlight[slot] === null`, independently starting their own
+ * `GetCredentialsForIdentity` — the exact byte-identical concurrent request
+ * this module was written to eliminate.
+ *
+ * Round-20 review fix (#47): keep the settled promise in the slot for a
+ * short cooldown so any retry that lands within the backoff window shares
+ * the settlement (success or rejection) instead of racing a fresh fetch.
+ * 1500ms comfortably covers the observed 300-1000ms retry backoffs while
+ * still letting a genuinely-delayed retry (>>1.5s) trigger a fresh call.
+ */
+const SETTLED_SLOT_HOLD_MS = 1500;
+
+/**
  * `fetchAuthSession`, de-duplicated across the app.
  *
  * Drop-in: same signature and same return value, so a caller only has to change
@@ -45,9 +62,23 @@ const inFlight: { normal: Promise<AuthSession> | null; forced: Promise<AuthSessi
 export const fetchSharedAuthSession = (options?: { forceRefresh?: boolean }): Promise<AuthSession> => {
   const slot = options?.forceRefresh ? 'forced' : 'normal';
   if (!inFlight[slot]) {
-    inFlight[slot] = fetchAuthSession(options).finally(() => {
-      inFlight[slot] = null;
-    });
+    const p = fetchAuthSession(options);
+    inFlight[slot] = p;
+    // Delay the slot clear so concurrent-retry setTimeouts observe the
+    // settled promise instead of a null slot. The equality check on
+    // ``inFlight[slot] === p`` prevents clearing a slot that was
+    // already replaced by a fresh fetch (e.g., a forceRefresh call).
+    void p
+      .catch(() => {
+        /* swallow — real handlers registered by callers still see the rejection */
+      })
+      .finally(() => {
+        setTimeout(() => {
+          if (inFlight[slot] === p) {
+            inFlight[slot] = null;
+          }
+        }, SETTLED_SLOT_HOLD_MS);
+      });
   }
   return inFlight[slot] as Promise<AuthSession>;
 };

@@ -195,10 +195,18 @@ def handler(event, context):
             # 7 chars — one fewer 'd'). The previous check missed
             # States.Timeout so Step-Functions-side timeouts recorded
             # as generic FAILED instead of TIMED_OUT.
+            #
+            # Round-20 review fix (#201): the bare ``Timeout`` substring
+            # false-positived on ConnectTimeoutError / ReadTimeoutError /
+            # TimeoutException / ClientTimeout etc., misclassifying
+            # transient network/Bedrock timeouts as evaluation-level
+            # TIMED_OUT rather than the transient FAILED they actually
+            # are. Bind to the EXACT error classes Step Functions
+            # and Lambda emit: ``States.Timeout`` and ``Sandbox.Timedout``.
             err_json = json.dumps(event.get("error", ""))
             is_timeout = (
-                "Timedout" in err_json  # Lambda sandbox timeout
-                or "Timeout" in err_json  # States.Timeout, task timeout, etc.
+                "Sandbox.Timedout" in err_json  # Lambda sandbox timeout
+                or "States.Timeout" in err_json  # Step Functions task timeout
             )
             status = (
                 EvaluationStatus.TIMED_OUT if is_timeout else EvaluationStatus.FAILED

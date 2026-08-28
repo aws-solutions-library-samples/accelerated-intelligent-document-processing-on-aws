@@ -1164,13 +1164,25 @@ class SaveReportingData:
             logger.warning(warning_msg)
             return None
 
-        # Use document.initial_event_time if available, otherwise use current time
+        # Use document.initial_event_time if available, otherwise use current time.
+        # Round-20 review fix (#1183): the fallback paths used naive
+        # ``datetime.now()`` (system local time) so the section-parquet
+        # date partition and timestamp column diverged from every other
+        # reporting-table writer (which round-13 migrated to UTC).
+        # Non-UTC hosts (unit tests, local reproducers) landed section
+        # rows in the wrong date partition. Fix: use UTC everywhere and
+        # strip tz to match the naive schema (section tables use naive
+        # timestamp; Athena reads naive as UTC).
         if document.initial_event_time:
             try:
                 # Try to parse the initial_event_time string into a datetime object
                 doc_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
                 )
+                if doc_time.tzinfo is not None:
+                    doc_time = doc_time.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
                 timestamp = doc_time
                 date_partition = doc_time.strftime("%Y-%m-%d")
                 logger.info(
@@ -1180,14 +1192,18 @@ class SaveReportingData:
                 logger.warning(
                     f"Could not parse document.initial_event_time: {document.initial_event_time}, using current time instead. Error: {str(e)}"
                 )
-                current_time = datetime.datetime.now()
+                current_time = datetime.datetime.now(datetime.timezone.utc).replace(
+                    tzinfo=None
+                )
                 timestamp = current_time
                 date_partition = current_time.strftime("%Y-%m-%d")
         else:
             logger.warning(
                 "Document initial_event_time not available, using current time instead"
             )
-            current_time = datetime.datetime.now()
+            current_time = datetime.datetime.now(datetime.timezone.utc).replace(
+                tzinfo=None
+            )
             timestamp = current_time
             date_partition = current_time.strftime("%Y-%m-%d")
 

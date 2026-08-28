@@ -80,6 +80,12 @@ DEFAULT_BEDROCK_PRICE_PER_TOKEN = {"in": 3.0e-6, "out": 15.0e-6}
 # Module-level pricing cache. Populated lazily on first Bedrock cost lookup;
 # survives across warm invocations of the same Lambda container.
 _bedrock_pricing_map: Optional[Dict[str, Dict[str, float]]] = None
+# Round-20 review fix (#1720): tracks whether the invocation's pricing load
+# hit a real failure (empty result or exception) vs was never attempted /
+# succeeded. When True AND control-plane rows have bedrock activity, the
+# rollup MUST raise so Lambda async-retry replays; otherwise S3
+# idempotency locks est_bedrock_cost=0 for the hour forever.
+_bedrock_pricing_unavailable: bool = False
 CONFIGURATION_TABLE_NAME = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 
 athena_client = boto3.client("athena")
@@ -114,9 +120,10 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # can change a Lambda's MemorySize/Architecture, and an operator
     # editing pricing.yaml must see the change on the next rollup, not
     # after the container recycles.
-    global _bedrock_pricing_map
+    global _bedrock_pricing_map, _bedrock_pricing_unavailable
     _lambda_memory_cache.clear()
     _bedrock_pricing_map = None
+    _bedrock_pricing_unavailable = False
 
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
@@ -265,19 +272,23 @@ def _is_athena_table_missing(exc_or_msg: Any, table: Optional[str] = None) -> bo
     or bucket errors.
     """
     msg = str(exc_or_msg).lower()
-    # Unambiguous markers — safe without table binding.
-    if any(
-        m in msg
-        for m in (
-            "table_not_found",
-            "entitynotfoundexception",
-            "table not found",
-        )
-    ):
-        return True
+    unambiguous_markers = (
+        "table_not_found",
+        "entitynotfoundexception",
+        "table not found",
+    )
+    has_unambiguous = any(m in msg for m in unambiguous_markers)
     if not table:
-        return False
+        # No table binding requested — unambiguous markers alone.
+        return has_unambiguous
     tbl = table.lower()
+    # Round-20 review fix (#269): when ``table`` is supplied, an
+    # unambiguous marker MUST also mention the specific table we asked
+    # about — otherwise a probe of ``metering_hourly`` would false-
+    # positive on a ``TABLE_NOT_FOUND: metering_docs_hourly`` error
+    # affecting a DIFFERENT table.
+    if has_unambiguous and tbl in msg:
+        return True
     return any(
         marker in msg
         for marker in (
@@ -569,6 +580,24 @@ def _rollup_control_plane_hourly(target_date: str, target_hour: str) -> Dict[str
     if not rows:
         logger.info(f"No control-plane activity for {target_date} hour={target_hour}")
         return {"skipped": True, "reason": "no_activity"}
+
+    # Round-20 review fix (#1720): if pricing was unavailable this
+    # invocation AND any row has bedrock activity, DO NOT write a
+    # parquet with zero est_bedrock_cost — the S3 idempotency skip
+    # would then permanently lock the wrong cost for the hour. Raise
+    # so Lambda's async retry replays with a fresh pricing-load attempt
+    # instead. If no row has bedrock activity, empty pricing is fine
+    # (nothing to price) and we proceed to write.
+    if _bedrock_pricing_unavailable and any(
+        r.get("bedrock_model") is not None for r in rows
+    ):
+        raise RuntimeError(
+            f"control_plane_hourly {target_date}/{target_hour}: pricing "
+            f"map was unavailable this invocation AND at least one row "
+            f"has bedrock activity — refusing to write zero-cost partition "
+            f"that S3 idempotency would lock. Async retry will replay "
+            f"with a fresh pricing load."
+        )
 
     key = f"control_plane/date={target_date}/hour={target_hour}/data.parquet"
     _write_parquet(rows, key)
@@ -1712,12 +1741,20 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
         # the config DynamoDB table. Cross-invocation retry semantics
         # are preserved because handler() resets
         # ``_bedrock_pricing_map = None`` at the start of every fire.
+        # Round-20 review fix (#1720): mark the empty state as
+        # "pricing unavailable" (not merely "no entries known") so the
+        # caller can distinguish and raise if bedrock activity is
+        # present — prevents the S3 idempotency skip from locking
+        # est_bedrock_cost=0 for the hour when pricing was transiently
+        # broken.
+        global _bedrock_pricing_unavailable  # noqa: PLW0603
         logger.warning(
             "ConfigurationTable returned 0 pricing entries; caching empty "
             "within THIS invocation so workers don't stampede DynamoDB. "
             "Next invocation resets the cache and retries."
         )
         _bedrock_pricing_map = {}
+        _bedrock_pricing_unavailable = True
         return _bedrock_pricing_map
     except Exception as e:
         # Same reasoning as the empty-result path above: cache the empty
@@ -1730,6 +1767,7 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
             f"next invocation will retry."
         )
         _bedrock_pricing_map = {}
+        _bedrock_pricing_unavailable = True
         return _bedrock_pricing_map
 
 
@@ -1931,22 +1969,63 @@ def _run_athena(
     # cached failure; start a FRESH query without the token so the
     # retry actually retries.
     if idempotency_key:
-        try:
-            initial = athena_client.get_query_execution(QueryExecutionId=query_id)
-            initial_state = initial["QueryExecution"]["Status"]["State"]
-        except Exception as e:  # nosec — tolerate transient poll error here
-            logger.warning(
-                f"Cached-failure probe for {query_id} failed ({e}); "
-                f"proceeding to _wait_for_athena as usual."
-            )
-            initial_state = None
+        # Round-20 review fix (#1937): retry the probe on transient
+        # errors instead of swallowing → None → falling through. If the
+        # probe itself keeps failing, DEFAULT TO RESTART (safer to
+        # re-execute than to trust an unknown state and hit the cached-
+        # failure loop the round-19 fix was meant to break).
+        initial_state: Optional[str] = None
+        _AthenaBotoCoreError: Any
+        _AthenaClientError: Any
+        from botocore.exceptions import (  # noqa: PLC0415
+            BotoCoreError as _AthenaBotoCoreError,
+        )
+        from botocore.exceptions import (
+            ClientError as _AthenaClientError,
+        )
+
+        for probe_attempt in range(3):
+            try:
+                initial = athena_client.get_query_execution(QueryExecutionId=query_id)
+                initial_state = initial["QueryExecution"]["Status"]["State"]
+                break
+            except (_AthenaClientError, _AthenaBotoCoreError) as e:
+                logger.warning(
+                    f"Cached-failure probe for {query_id} attempt "
+                    f"{probe_attempt + 1}/3 failed ({e})"
+                )
+                if probe_attempt < 2:
+                    time.sleep(1 + probe_attempt)  # 1s, 2s
+                else:
+                    # Probe genuinely can't determine state — default to
+                    # RESTART. Trusting the returned QID could put us
+                    # right back in the cached-failure retry loop.
+                    logger.warning(
+                        f"Probe for {query_id} exhausted; defaulting to "
+                        f"cached-failure restart branch to avoid loop."
+                    )
+                    initial_state = "FAILED"  # trigger the restart
+
         if initial_state in ("FAILED", "CANCELLED"):
             logger.warning(
                 f"Athena returned cached {initial_state} QueryExecutionId "
                 f"{query_id!r} for idempotency token — retry would loop "
-                f"forever. Starting a FRESH query without the token."
+                f"forever. Starting a FRESH query with a fresh token."
             )
-            kwargs.pop("ClientRequestToken", None)
+            # Round-20 review fix (#1949): don't DROP ClientRequestToken
+            # on the restart — that forfeits dedup for the logical
+            # write, so a Lambda hard-timeout race could double-INSERT.
+            # Instead, append a fresh salt so Athena treats it as a NEW
+            # logical write (breaks the cached-failure lock) while
+            # still deduping any concurrent retry of THIS attempt.
+            #
+            # Salt is a UTC-second timestamp — high enough resolution
+            # that two concurrent retries of THIS invocation share it
+            # (dedup wins), but every subsequent async-retry gets a
+            # different one (breaks lock).
+            fresh_salt = str(int(time.time()))
+            restart_key = f"{idempotency_key}-r{fresh_salt}"[:128]
+            kwargs["ClientRequestToken"] = restart_key
             response = athena_client.start_query_execution(**kwargs)
             query_id = response["QueryExecutionId"]
     _wait_for_athena(query_id, emit_self_cost=emit_self_cost)
@@ -2018,6 +2097,8 @@ def _wait_for_athena(
     # are retried in-place until the outer timeout_sec is exceeded.
     from botocore.exceptions import (
         BotoCoreError as _AthenaBotoCoreError,
+    )
+    from botocore.exceptions import (
         ClientError as _AthenaClientError,
     )
 
