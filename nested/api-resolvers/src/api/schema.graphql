@@ -1554,8 +1554,14 @@ type Query @aws_cognito_user_pools @aws_iam {
   # Configuration & pricing queries - Admin, Author, Viewer (not Reviewer)
   getConfigVersions: ConfigurationVersionsResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+  # Annotator is included so the annotate view can populate its class dropdown —
+  # correcting a misclassified section is annotation work, and its write side
+  # (reextractTestSetDocument) already accepts them. An Annotator with no other
+  # entitlement receives ONLY the class vocabulary: the resolver reduces the payload
+  # (see _class_vocabulary_only), so prompts, model ids and every other setting stay
+  # out of reach of the lowest-privilege role.
   getConfigVersion(versionName: String!): ConfigurationResponse
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer", "Annotator"])
   getPricing: PricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getModelConfigLimits: ModelConfigLimitsResponse

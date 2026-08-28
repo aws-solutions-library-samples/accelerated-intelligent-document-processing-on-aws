@@ -75,12 +75,55 @@ _OPERATION_REQUIRED_GROUPS = {
     "generateRuleJson": {"Admin", "Author"},
     # Admin + Author + Viewer reads (everything except Reviewer)
     "getConfigVersions": {"Admin", "Author", "Viewer"},
-    "getConfigVersion": {"Admin", "Author", "Viewer"},
+    # Annotator included so the annotate view can populate its class dropdown, and
+    # ONLY for that: the response is reduced to the class vocabulary for a caller who
+    # is not otherwise entitled to the configuration. See _class_vocabulary_only.
+    "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator"},
     "getPricing": {"Admin", "Author", "Viewer"},
     "getModelConfigLimits": {"Admin", "Author", "Viewer"},
     "listConfigurationLibrary": {"Admin", "Author", "Viewer"},
     "getConfigurationLibraryFile": {"Admin", "Author", "Viewer"},
 }
+
+
+# Groups entitled to the configuration in full.
+_FULL_CONFIG_GROUPS = {"Admin", "Author", "Viewer"}
+
+# The only keys the class dropdown reads: a class names itself with `$id` or
+# `x-aws-idp-document-type` (post-migration) or `name` (pre-migration), and may carry
+# a description. Mirrors getConfigClassOptions in
+# src/ui/src/components/common/config-class-options.ts.
+_CLASS_VOCABULARY_KEYS = ("$id", "x-aws-idp-document-type", "name", "description")
+
+
+def _class_vocabulary_only(config):
+    """Reduce a configuration payload to just its class names and descriptions.
+
+    An Annotator needs the class list to correct a misclassified section — the write
+    side of that, ``reextractTestSetDocument``, has always accepted them. Without the
+    list the dropdown had nothing to offer and the UI fell back to a free-text box,
+    handing the role least able to know the vocabulary an unconstrained field; a class
+    no config defines yields a section with no schema and so no extracted fields.
+
+    Granting Annotator the whole configuration would have exposed prompts, model ids
+    and every other setting to the lowest-privilege role, and moving the class list
+    onto ``getAnnotationQueue`` would have needed a config-table grant for a Lambda
+    that has none. Reducing the response here needs neither.
+
+    Anything not recognised is dropped rather than passed through, so a future config
+    key cannot leak by default.
+    """
+    classes = config.get("classes") if isinstance(config, dict) else None
+    if not isinstance(classes, list):
+        return {}
+    reduced = []
+    for cls in classes:
+        if not isinstance(cls, dict):
+            continue
+        keep = {k: cls[k] for k in _CLASS_VOCABULARY_KEYS if k in cls}
+        if keep:
+            reduced.append(keep)
+    return {"classes": reduced}
 
 
 def _enforce_operation_group(operation, caller):
@@ -214,7 +257,22 @@ def handler(event, context):
                         "message": f"Access denied: version '{version_name}' is not in your allowed scope",
                     },
                 }
-            return handle_get_configuration(manager, version_name)
+            config_result = handle_get_configuration(manager, version_name)
+            # Reduced for a caller whose only entitlement is annotation. Applied here
+            # rather than inside handle_get_configuration so the full payload has one
+            # producer and the narrowing is visible at the authorization boundary.
+            if not _FULL_CONFIG_GROUPS.intersection(caller["groups"]):
+                logger.info(
+                    "Reducing getConfigVersion to the class vocabulary for "
+                    f"{caller['email']} (groups={caller['groups']})"
+                )
+                return {
+                    "success": config_result.get("success", True),
+                    "Schema": {},
+                    "Default": _class_vocabulary_only(config_result.get("Default")),
+                    "Custom": _class_vocabulary_only(config_result.get("Custom")),
+                }
+            return config_result
         elif operation == "updateConfiguration":
             args = event["arguments"]
             version = args.get("versionName")

@@ -189,7 +189,14 @@ operations:
     enforced_in: *cfg
     args: {}
   getConfigVersion:
-    groups: [Admin, Author, Viewer]
+    # Annotator included deliberately: the annotate view needs the class list to
+    # correct a misclassified section, and that correction's write side
+    # (reextractTestSetDocument) already accepts Annotator. A caller with no group in
+    # {Admin, Author, Viewer} receives ONLY the class names and descriptions — the
+    # resolver reduces the payload via _class_vocabulary_only, so prompts, model ids
+    # and every other setting stay out of reach of the lowest-privilege role. The
+    # reduction is an allow-list, so a config key added later cannot leak by default.
+    groups: [Admin, Author, Viewer, Annotator]
     kind: read
     scope_checked: true
     enforced_in: *cfg
