@@ -33,13 +33,42 @@ from typing import Any, Dict
 
 import boto3
 import ddb_direct
-from idp_common.api_adapter import _http_response, normalize_event
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError, ReadTimeoutError
 from validation import validate_arguments
+
+from idp_common.api_adapter import _http_response, normalize_event
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-_lambda = boto3.client("lambda")
+# REST API Gateway abandons an integration after 29s (account default) and
+# answers the browser `504` with no body, so anything slower than this is
+# unreportable by construction: the UI shows `Request failed (504)` and neither
+# the dispatcher nor the resolver logs say which call was slow. That is how a
+# hung S3 data-plane call in the test-set resolver read as "Test Studio is
+# broken" with nothing to go on.
+#
+# Bounding the invoke just under the gateway budget lets US lose the race
+# instead: the resolver read times out at 26s, this Lambda returns a labelled
+# 504 naming the field, and the UI has something to show. The function's own
+# Timeout is 29s (see the nested template) so a slower path cannot outrun it
+# either way.
+_RESOLVER_READ_TIMEOUT_SECONDS = 26
+
+# max_attempts=1 (no automatic retry) is deliberate. botocore retries a read
+# timeout, and a second 26s attempt cannot fit inside the 29s budget — it would
+# just replace the labelled 504 with a dead Lambda, and for a mutation it would
+# risk running the operation twice. Invoke-level throttling, the one retry that
+# was worth keeping, is retried explicitly in _invoke_resolver below.
+_lambda = boto3.client(
+    "lambda",
+    config=BotoConfig(
+        connect_timeout=3,
+        read_timeout=_RESOLVER_READ_TIMEOUT_SECONDS,
+        retries={"mode": "standard", "max_attempts": 1},
+    ),
+)
 _ssm = boto3.client("ssm")
 
 
@@ -151,13 +180,54 @@ FIELD_ALIASES: Dict[str, str] = {
 }
 
 
+class ResolverTimeout(Exception):
+    """A resolver did not answer inside the API Gateway integration budget.
+
+    Distinct from a generic failure so the handler can return 504 with the field
+    name rather than letting API Gateway emit a bodiless one.
+    """
+
+
 def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
     """Synchronously invoke a resolver Lambda with an AppSync-shaped event."""
-    resp = _lambda.invoke(
-        FunctionName=function_arn,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(appsync_event).encode("utf-8"),
-    )
+    payload_bytes = json.dumps(appsync_event).encode("utf-8")
+    try:
+        resp = _lambda.invoke(
+            FunctionName=function_arn,
+            InvocationType="RequestResponse",
+            Payload=payload_bytes,
+        )
+    except ReadTimeoutError as e:
+        # The resolver is still running; we simply cannot wait for it and stay
+        # inside the gateway budget. Name the function so the log points at the
+        # right CloudWatch group instead of leaving a bare 504.
+        logger.error(
+            "Resolver %s did not respond within %ss (API Gateway aborts the "
+            "integration at 29s); returning 504",
+            function_arn,
+            _RESOLVER_READ_TIMEOUT_SECONDS,
+        )
+        raise ResolverTimeout(
+            f"resolver did not respond within {_RESOLVER_READ_TIMEOUT_SECONDS}s"
+        ) from e
+    except ClientError as e:
+        # Retries are off (see the client config), so absorb the one class of
+        # transient error that was worth retrying: invoke-level throttling.
+        # A single immediate retry still fits the budget.
+        if e.response.get("Error", {}).get("Code") != "TooManyRequestsException":
+            raise
+        logger.warning("Invoke of %s throttled; retrying once", function_arn)
+        try:
+            resp = _lambda.invoke(
+                FunctionName=function_arn,
+                InvocationType="RequestResponse",
+                Payload=payload_bytes,
+            )
+        except ReadTimeoutError as timeout_error:
+            raise ResolverTimeout(
+                f"resolver did not respond within {_RESOLVER_READ_TIMEOUT_SECONDS}s"
+            ) from timeout_error
+
     payload = resp["Payload"].read()
     data = json.loads(payload) if payload else None
 
@@ -241,6 +311,22 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         logger.warning("Authorization denied for %s: %s", field, e)
         return _http_response(
             403, {"errors": [{"message": str(e), "errorType": "Unauthorized"}]}
+        )
+    except ResolverTimeout as e:
+        # 504 with a body. API Gateway's own 29s timeout produces a 504 with an
+        # empty body, which is what made this failure mode undiagnosable from
+        # the browser; include the field so the UI can say what timed out.
+        logger.error("Timeout for %s: %s", field, e)
+        return _http_response(
+            504,
+            {
+                "errors": [
+                    {
+                        "message": f"operation '{field}' timed out: {e}",
+                        "errorType": "Timeout",
+                    }
+                ]
+            },
         )
     except (ValueError, KeyError) as e:
         logger.warning("Bad request for %s: %s", field, e)
