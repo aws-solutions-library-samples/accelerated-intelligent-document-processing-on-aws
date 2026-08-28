@@ -29,6 +29,7 @@ import time
 import boto3
 import cfnresponse
 from botocore.exceptions import (
+    ClientError,
     EndpointConnectionError,
     NoRegionError,
     UnknownServiceError,
@@ -204,6 +205,54 @@ _PHYSICAL_ID_PREFIX = "bda-ocr-project/"
 # failure only surfaces when the endpoint can't be reached.
 _BDA_UNAVAILABLE_ERRORS = (EndpointConnectionError, UnknownServiceError, NoRegionError)
 
+# A reachable BDA endpoint can still refuse to create THIS project shape. The
+# project is a SYNC project whose standardOutputConfiguration carries a
+# ``document`` block; GovCloud accepts BDA projects but not that combination:
+#
+#   ValidationException: Sync project does not support video/audio/document
+#   modality in Standard Output Configuration
+#
+# That is a partition capability gap, not a fixable misconfiguration, so it is
+# treated exactly like "BDA unavailable here" — SUCCESS with an empty
+# ProjectArn — rather than failing the nested stack and rolling back a whole
+# deployment that may not even use the ``bda`` OCR backend.
+#
+# The template's ShouldCreateBDAOCRProject condition already skips this resource
+# outside the ``aws`` partition, so this is the second line of defence: it also
+# covers commercial regions where BDA is reachable but rejects the project
+# shape, and any GovCloud region whose message differs from the one above.
+#
+# Deliberately narrow: BOTH a "not supported" phrase AND a marker naming the
+# unsupported *capability* must be present, so an ordinary validation error
+# (e.g. a malformed project name) still fails the stack loudly.
+_UNSUPPORTED_PHRASES = ("does not support", "is not supported", "not supported")
+_UNSUPPORTED_CAPABILITY_MARKERS = (
+    "modality",
+    "standard output configuration",
+    "standardoutputconfiguration",
+    "sync project",
+    "projecttype",
+)
+
+
+def _is_unsupported_capability_error(exc):
+    """True if exc is a BDA ValidationException about an unsupported capability.
+
+    Matches the GovCloud refusal of a SYNC project carrying a ``document``
+    standard-output block (see ``_UNSUPPORTED_CAPABILITY_MARKERS``). Returns
+    False for every other ValidationException so genuine misconfiguration still
+    fails the stack.
+    """
+    if not isinstance(exc, ClientError):
+        return False
+    error = exc.response.get("Error", {}) if isinstance(exc.response, dict) else {}
+    if error.get("Code") != "ValidationException":
+        return False
+    message = str(error.get("Message", "")).lower()
+    return any(p in message for p in _UNSUPPORTED_PHRASES) and any(
+        m in message for m in _UNSUPPORTED_CAPABILITY_MARKERS
+    )
+
 
 def _delete_project_name(event):
     """Resolve the project name to delete from the resource's physical id.
@@ -277,6 +326,25 @@ def handler(event, context):
             physicalResourceId=physical_id,
         )
     except Exception as e:
+        if _is_unsupported_capability_error(e):
+            # BDA is reachable but will not create this project shape here (e.g.
+            # GovCloud rejects a SYNC project with a document standard-output
+            # block). Same graceful degradation as "BDA unavailable".
+            logger.warning(
+                "Bedrock Data Automation rejected the stack-scoped OCR project "
+                "as unsupported in this partition/region (%s); returning empty "
+                "ProjectArn",
+                e,
+                exc_info=True,
+            )
+            cfnresponse.send(
+                event,
+                context,
+                cfnresponse.SUCCESS,
+                {"ProjectArn": ""},
+                physicalResourceId=physical_id,
+            )
+            return
         logger.error("Error managing BDA OCR project: %s", e, exc_info=True)
         # A real create/update failure: fail the stack op with a clear reason.
         # (Delete's own failures are swallowed inside delete_ocr_project_by_name
