@@ -5,7 +5,7 @@ import { Button, ButtonDropdown, CollectionPreferences, Link, SpaceBetween, Stat
 import type { ButtonDropdownProps, CollectionPreferencesProps } from '@cloudscape-design/components';
 import type { TableProps } from '@cloudscape-design/components';
 
-import type { ExportScope } from '../document-panel/document-export';
+import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
 
 import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH } from '../../routes/constants';
@@ -74,29 +74,31 @@ interface DocumentsCommonHeaderProps {
   [key: string]: unknown;
 }
 
-/** Baselines can only be exported for documents that actually have one. */
-const hasBaseline = (item: MappedDocument): boolean =>
-  item.evaluationStatus === 'BASELINE_AVAILABLE' || item.evaluationStatus === 'COMPLETED';
-
 /**
  * Two download actions live in one menu, split into labeled groups because they
  * differ in scope: the Excel export covers every filtered row, while the ZIP
- * exports cover only the selected documents.
+ * exports cover only the selected documents. The Excel item stays enabled while a
+ * ZIP export runs — only the ZIP scopes are held.
  */
 export const buildDownloadMenuItems = (
   selectedItems: readonly MappedDocument[],
   filteredCount: number,
   includeZipScopes = true,
+  isDownloadInProgress = false,
 ): ButtonDropdownProps.ItemOrGroup[] => {
   const selectedCount = selectedItems.length;
   const noSelection = selectedCount === 0;
-  const selectionReason = 'Select one or more documents in the table';
+  const blockedReason = (() => {
+    if (isDownloadInProgress) return 'A download is already in progress';
+    if (noSelection) return 'Select one or more documents in the table';
+    return undefined;
+  })();
   const zipItem = (id: ExportScope, text: string, extraDisabled?: string): ButtonDropdownProps.Item => ({
     id,
     text,
     iconName: 'download',
-    disabled: noSelection || !!extraDisabled,
-    disabledReason: noSelection ? selectionReason : extraDisabled,
+    disabled: !!blockedReason || !!extraDisabled,
+    disabledReason: blockedReason ?? extraDisabled,
   });
 
   const listGroup: ButtonDropdownProps.ItemOrGroup = {
@@ -121,7 +123,7 @@ export const buildDownloadMenuItems = (
         zipItem(
           'baselines',
           'Baselines (ZIP)',
-          !noSelection && !selectedItems.some(hasBaseline) ? 'No selected document has an evaluation baseline' : undefined,
+          !noSelection && !selectedItems.some(isBaselineAvailable) ? 'No selected document has an evaluation baseline' : undefined,
         ),
       ],
     },
@@ -398,7 +400,12 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be released (has review owner and HITL not completed)
   const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted);
 
-  const downloadMenuItems = buildDownloadMenuItems(selectedItems, props.totalItems?.length ?? 0, !!onDownloadSelected);
+  const downloadMenuItems = buildDownloadMenuItems(
+    selectedItems,
+    props.totalItems?.length ?? 0,
+    !!onDownloadSelected,
+    !!isDownloadInProgress,
+  );
 
   const onDownloadItemClick = ({ detail }: { detail: { id: string } }) => {
     if (detail.id === 'excel') {
@@ -428,8 +435,7 @@ export const DocumentsCommonHeader = ({
           <ButtonDropdown
             items={downloadMenuItems}
             onItemClick={onDownloadItemClick}
-            loading={props.loading || isDownloadInProgress}
-            disabled={isDownloadInProgress}
+            loading={props.loading}
             expandToViewport
             ariaLabel="Download"
           >

@@ -69,6 +69,16 @@ describe('buildDownloadMenuItems', () => {
     expect(itemById(items, 'baselines').disabled).toBe(false);
   });
 
+  it('holds only the ZIP scopes while a download runs, leaving the Excel export usable', () => {
+    const items = buildDownloadMenuItems([row({ evaluationStatus: 'COMPLETED' })], 3, true, true);
+
+    for (const id of ['all', 'predictions', 'baselines']) {
+      expect(itemById(items, id).disabled).toBe(true);
+      expect(itemById(items, id).disabledReason).toMatch(/already in progress/);
+    }
+    expect(itemById(items, 'excel').disabled).toBeFalsy();
+  });
+
   it('omits the selection group entirely when bulk export is unavailable', () => {
     const items = buildDownloadMenuItems([row()], 5, false);
     expect(items).toHaveLength(1);

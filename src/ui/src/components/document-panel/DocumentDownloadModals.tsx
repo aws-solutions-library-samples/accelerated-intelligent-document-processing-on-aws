@@ -111,6 +111,8 @@ interface DownloadProgressModalProps {
   isFinished: boolean;
   onCancel: () => void;
   onClose: () => void;
+  /** True once cancellation is requested but the current step is still finishing. */
+  isCancelling?: boolean;
 }
 
 /** Long-running progress + error summary modal shown during exports. */
@@ -121,14 +123,21 @@ export const DownloadProgressModal = ({
   isFinished,
   onCancel,
   onClose,
+  isCancelling = false,
 }: DownloadProgressModalProps): React.JSX.Element => {
   const total = progress?.total ?? 1;
   const completed = progress?.completed ?? 0;
   const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   const documentsTotal = progress?.documentsTotal ?? 1;
-  const fileProgress = `${completed} of ${total} files processed`;
-  const description =
-    documentsTotal > 1 ? `${fileProgress} · ${progress?.documentsCompleted ?? 0} of ${documentsTotal} documents` : fileProgress;
+  let description: string;
+  if (progress?.phase === 'preparing') {
+    // Hydration phase: the counts are documents, not files.
+    description = `${completed} of ${total} document${total === 1 ? '' : 's'} loaded`;
+  } else {
+    const fileProgress = `${completed} of ${total} files processed`;
+    description =
+      documentsTotal > 1 ? `${fileProgress} · ${progress?.documentsCompleted ?? 0} of ${documentsTotal} documents` : fileProgress;
+  }
 
   return (
     <Modal
@@ -142,8 +151,8 @@ export const DownloadProgressModal = ({
               Close
             </Button>
           ) : (
-            <Button variant="link" onClick={onCancel}>
-              Cancel
+            <Button variant="link" onClick={onCancel} disabled={isCancelling}>
+              {isCancelling ? 'Cancelling…' : 'Cancel'}
             </Button>
           )}
         </Box>
@@ -152,7 +161,7 @@ export const DownloadProgressModal = ({
       <SpaceBetween size="s">
         <ProgressBar value={pct} additionalInfo={progress?.currentFile ?? ''} description={description} label="Export progress" />
         {errors.length > 0 && (
-          <Alert type="warning" header={`${errors.length} file(s) could not be included`}>
+          <Alert type="warning" header={`${errors.length} item(s) could not be included`}>
             <Box>
               These entries were skipped and recorded in the archive&apos;s <code>manifest.json</code>:
             </Box>

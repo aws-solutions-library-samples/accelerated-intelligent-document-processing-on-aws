@@ -652,4 +652,61 @@ describe('exportDocuments', () => {
   it('throws when given an empty selection', async () => {
     await expect(exportDocuments([], SETTINGS, { scope: 'predictions', credentials: {} })).rejects.toThrow(/no documents/);
   });
+
+  it('records preflight errors in the result, the root manifest, and the owning document manifest', async () => {
+    const mocks = makeMocks({
+      's3://output-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': ok(textBody('{}')),
+    });
+    // Mirrors a document whose detail fetch failed: only attributes are exportable.
+    const preflightErrors = [
+      {
+        path: '(document details)',
+        document: 'tenant/two/statement.pdf',
+        message: 'Could not fetch document details',
+      },
+    ];
+
+    const result = await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+      preflightErrors,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].document).toBe('tenant/two/statement.pdf');
+
+    const zip = await readZip(result.blob);
+    const root = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(root.errors).toHaveLength(1);
+    expect(root.documents.find((d: { folder: string }) => d.folder === 'tenant_two_statement.pdf').errorCount).toBe(1);
+    expect(root.documents.find((d: { folder: string }) => d.folder === 'tenant_one_lending.pdf').errorCount).toBe(0);
+
+    // The failure is attributed inside the affected document's own manifest…
+    const docB = JSON.parse(await zip.file('tenant_two_statement.pdf/manifest.json')!.async('string'));
+    expect(docB.errors).toHaveLength(1);
+    expect(docB.errors[0].message).toMatch(/Could not fetch document details/);
+    // …and nowhere else.
+    const docA = JSON.parse(await zip.file('tenant_one_lending.pdf/manifest.json')!.async('string'));
+    expect(docA.errors).toEqual([]);
+  });
+
+  it('surfaces preflight errors through progress events so the dialog can show them', async () => {
+    const mocks = makeMocks({ 's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': ok(textBody('{}')) });
+    const events: ExportProgress[] = [];
+
+    await exportDocuments([DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+      preflightErrors: [{ path: '(document details)', document: 'other.pdf', message: 'boom' }],
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events.every((e) => e.errors.some((err) => err.message === 'boom'))).toBe(true);
+  });
 });

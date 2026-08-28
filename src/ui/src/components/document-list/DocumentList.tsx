@@ -52,6 +52,12 @@ import '@cloudscape-design/global-styles/index.css';
 
 const logger = new ConsoleLogger('DocumentList');
 
+/**
+ * Documents hydrated per round before a bulk export. Matches the exporter's own
+ * fetch concurrency so a large selection cannot fan out unbounded.
+ */
+const HYDRATION_CHUNK_SIZE = 5;
+
 const DocumentList = (): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
   const [documentList, setDocumentList] = useState<MappedDocument[]>([]);
@@ -78,6 +84,7 @@ const DocumentList = (): React.JSX.Element => {
   const [downloadProgress, setDownloadProgress] = useState<ExportProgress | null>(null);
   const [downloadErrors, setDownloadErrors] = useState<ExportErrorEntry[]>([]);
   const [downloadDocumentCount, setDownloadDocumentCount] = useState(0);
+  const [isDownloadCancelling, setIsDownloadCancelling] = useState(false);
   const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
 
   // Get current username on mount
@@ -342,6 +349,7 @@ const DocumentList = (): React.JSX.Element => {
     const controller = new AbortController();
     setDownloadScope(scope);
     setDownloadErrors([]);
+    setIsDownloadCancelling(false);
     setDownloadProgress({
       completed: 0,
       total: 1,
@@ -356,12 +364,57 @@ const DocumentList = (): React.JSX.Element => {
 
     try {
       const objectKeys = selected.map((item) => item.objectKey);
-      const details = await getDocumentDetailsFromIds(objectKeys);
-      const mapped = mapDocumentsAttributes(details as unknown as { ObjectKey: string }[]) as MappedDocument[];
-      const detailByKey = new Map(mapped.map((doc) => [doc.objectKey, doc]));
-      // Keep the table's ordering, and fall back to the list row if a detail
-      // fetch failed so the document still appears (attributes only) rather than
-      // vanishing from the archive.
+
+      // Hydration fans out one getDocument per row. It is chunked rather than
+      // fired all at once so a 100-row selection does not become 100 simultaneous
+      // API calls — the throttled failures would be invisible, since
+      // getDocumentDetailsFromIds drops rejected fetches silently.
+      const detailByKey = new Map<string, MappedDocument>();
+      let hydrated = 0;
+      for (let i = 0; i < objectKeys.length; i += HYDRATION_CHUNK_SIZE) {
+        if (controller.signal.aborted) {
+          throw new DOMException('Bulk export aborted', 'AbortError');
+        }
+        const chunk = objectKeys.slice(i, i + HYDRATION_CHUNK_SIZE);
+        try {
+          const details = await getDocumentDetailsFromIds(chunk);
+          const mapped = mapDocumentsAttributes(details as unknown as { ObjectKey: string }[]) as MappedDocument[];
+          mapped.forEach((doc) => detailByKey.set(doc.objectKey, doc));
+        } catch (e) {
+          // Recorded as a preflight error below via the missing-key check.
+          logger.warn('Detail fetch failed for chunk', chunk, e);
+        }
+        hydrated += chunk.length;
+        setDownloadProgress({
+          completed: hydrated,
+          total: objectKeys.length,
+          currentFile: 'Loading document details…',
+          errors: [],
+          documentsTotal: objectKeys.length,
+          phase: 'preparing',
+        });
+      }
+
+      // A row whose details never arrived can only contribute its attributes, so
+      // it must be reported — otherwise the archive silently omits that
+      // document's predictions while reporting a clean export.
+      const preflightErrors: ExportErrorEntry[] = selected
+        .filter((row) => !detailByKey.has(row.objectKey))
+        .map((row) => ({
+          path: '(document details)',
+          document: row.objectKey,
+          message: 'Could not fetch document details — only document attributes were exported for this document',
+        }));
+      if (preflightErrors.length > 0) {
+        logger.warn(
+          'Hydration failed for documents',
+          preflightErrors.map((e) => e.document),
+        );
+        setDownloadErrors(preflightErrors);
+      }
+
+      // Keep the table's ordering, falling back to the list row so a document
+      // with a failed detail fetch still appears in the archive.
       const docs = selected.map((row) => detailByKey.get(row.objectKey) ?? row);
 
       const result = await exportDocuments(docs as unknown as Parameters<typeof exportDocuments>[0], settings, {
@@ -370,6 +423,7 @@ const DocumentList = (): React.JSX.Element => {
         includeSourceDocument: scope === 'all' ? includeSourceDocument : false,
         credentials: currentCredentials as Record<string, unknown>,
         signal: controller.signal,
+        preflightErrors,
         onProgress: (p) => {
           setDownloadProgress(p);
           setDownloadErrors(p.errors);
@@ -387,6 +441,7 @@ const DocumentList = (): React.JSX.Element => {
     } finally {
       setIsDownloadInProgress(false);
       setIsDownloadFinished(true);
+      setIsDownloadCancelling(false);
       setDownloadAbortController(null);
     }
   };
@@ -511,7 +566,11 @@ const DocumentList = (): React.JSX.Element => {
         progress={downloadProgress}
         errors={downloadErrors}
         isFinished={isDownloadFinished}
-        onCancel={() => downloadAbortController?.abort()}
+        isCancelling={isDownloadCancelling}
+        onCancel={() => {
+          setIsDownloadCancelling(true);
+          downloadAbortController?.abort();
+        }}
         onClose={handleCloseDownloadProgress}
       />
 

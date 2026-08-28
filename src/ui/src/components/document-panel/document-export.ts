@@ -4,6 +4,8 @@
 import JSZip from 'jszip';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
+import { generateClient } from '../../api/client-shim';
+import { getFilePresignedUrl } from '../../graphql/generated';
 
 const logger = new ConsoleLogger('document-export');
 
@@ -26,6 +28,11 @@ export interface ExportProgress {
   documentsTotal?: number;
   /** Documents whose files have all been processed. */
   documentsCompleted?: number;
+  /**
+   * Which stage the counts refer to: `preparing` counts documents being hydrated
+   * before the export starts, `exporting` counts files. Defaults to `exporting`.
+   */
+  phase?: 'preparing' | 'exporting';
 }
 
 export interface ExportErrorEntry {
@@ -53,6 +60,14 @@ export interface ExportOptions {
    * {@link DEFAULT_FETCH_CONCURRENCY}.
    */
   concurrency?: number;
+  /**
+   * Failures that happened before the export started (for example a document
+   * whose details could not be fetched, so only its attributes can be exported).
+   * They are surfaced to `onProgress`, returned in the result, and recorded in
+   * the manifests — attributed to `document` when set — so the archive never
+   * reads as complete when it is not.
+   */
+  preflightErrors?: ExportErrorEntry[];
   // --- Test-only seams ------------------------------------------------------
   /** Override for the presigned URL generator (defaults to the shared util). */
   presignFn?: (s3Uri: string, credentials: Record<string, unknown>) => Promise<string>;
@@ -157,8 +172,12 @@ export const constructBaselineUri = (outputUri: string | undefined, settings: Ex
   return `s3://${baselineBucket}/${parsed.key}`;
 };
 
-const isBaselineAvailable = (doc: ExportableDocument): boolean => {
-  const status = doc.evaluationStatus;
+/**
+ * Whether a document has an evaluation baseline worth exporting. Shared by the
+ * exporter's planning step and the UI affordances that offer the scope.
+ */
+export const isBaselineAvailable = (doc: { evaluationStatus?: string } | null | undefined): boolean => {
+  const status = doc?.evaluationStatus;
   return status === 'BASELINE_AVAILABLE' || status === 'COMPLETED';
 };
 
@@ -176,6 +195,43 @@ export const uriToZipPath = (uri: string, settings: ExportSettings | undefined |
   if (parsed.bucket === settings?.EvaluationBaselineBucket) return `baseline/${parsed.key}`;
   if (parsed.bucket === settings?.InputBucket) return `input/${parsed.key}`;
   return `other/${parsed.bucket}/${parsed.key}`;
+};
+
+// ---------------------------------------------------------------------------
+// Presigning
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign a URI via the backend `getFilePresignedUrl` resolver, which holds read
+ * access to every IDP bucket behind its own allow-list. Same route the Sections
+ * panel uses for per-section baseline downloads.
+ */
+const presignViaResolver = async (s3Uri: string): Promise<string> => {
+  const response = await generateClient().graphql({ query: getFilePresignedUrl, variables: { s3Uri } });
+  const presignedUrl = response.data?.getFilePresignedUrl?.presignedUrl;
+  if (!presignedUrl) {
+    throw new Error(`getFilePresignedUrl returned no URL for ${s3Uri}`);
+  }
+  return presignedUrl;
+};
+
+/**
+ * Resolve a fetchable URL for an export asset.
+ *
+ * Client-side signing is used for the buckets the browser's Cognito identity
+ * role actually grants (`OutputBucket`, `InputBucket`) because it costs no extra
+ * round trip. Everything else — notably the **EvaluationBaselineBucket**, which
+ * that role deliberately does not grant — is signed by the backend resolver;
+ * signing those client-side yields a presigned URL that 403s at fetch time.
+ */
+export const presignForExport = async (
+  uri: string,
+  credentials: Record<string, unknown>,
+  settings: ExportSettings | undefined | null,
+): Promise<string> => {
+  const bucket = parseS3Uri(uri)?.bucket;
+  const browserSignable = !!bucket && (bucket === settings?.OutputBucket || bucket === settings?.InputBucket);
+  return browserSignable ? generateS3PresignedUrl(uri, credentials) : presignViaResolver(uri);
 };
 
 // ---------------------------------------------------------------------------
@@ -400,7 +456,7 @@ export const exportDocuments = async (
   if (docs.length === 0) {
     throw new Error('exportDocuments: no documents to export');
   }
-  const presign = opts.presignFn ?? ((uri: string, creds: Record<string, unknown>) => generateS3PresignedUrl(uri, creds));
+  const presign = opts.presignFn ?? ((uri: string, creds: Record<string, unknown>) => presignForExport(uri, creds, settings));
   const doFetch =
     opts.fetchFn ??
     (async (url: string) => {
@@ -446,7 +502,10 @@ export const exportDocuments = async (
   const totalSteps = allTasks.length + 1; // +1 for the zip-generation step
   let completed = 0;
   let documentsCompleted = prepared.filter((entry) => entry.pendingFetches === 0).length;
-  const allErrors = (): ExportErrorEntry[] => prepared.flatMap((entry) => entry.errors);
+  const preflightErrors = opts.preflightErrors ?? [];
+  const allErrors = (): ExportErrorEntry[] => [...preflightErrors, ...prepared.flatMap((entry) => entry.errors)];
+  /** Preflight failures belonging to one document, so its own manifest carries them too. */
+  const preflightErrorsFor = (key: string): ExportErrorEntry[] => preflightErrors.filter((e) => e.document === key);
   const emit = (currentFile: string) => {
     opts.onProgress?.({
       completed,
@@ -517,7 +576,7 @@ export const exportDocuments = async (
       },
       sourceFileUri: entry.plan.sourceFileUri,
       files: entry.manifestFiles,
-      errors: entry.errors,
+      errors: [...preflightErrorsFor(entry.key), ...entry.errors],
     };
     zip.file(`${entry.rootFolder}/manifest.json`, JSON.stringify(manifest, null, 2));
   }
@@ -534,7 +593,7 @@ export const exportDocuments = async (
         objectStatus: entry.doc.objectStatus ?? null,
         evaluationStatus: entry.doc.evaluationStatus ?? null,
         fileCount: entry.manifestFiles.length,
-        errorCount: entry.errors.length,
+        errorCount: entry.errors.length + preflightErrorsFor(entry.key).length,
       })),
       errors: allErrors(),
     };

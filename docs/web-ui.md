@@ -353,7 +353,7 @@ A self-describing `manifest.json` is written at the ZIP root capturing the expor
 
 ### Fetching mechanics
 
-Every file in the archive is fetched directly from S3 using a short-lived presigned URL generated client-side with your browser's Cognito credentials, preserving binary content byte-for-byte. Up to 5 files are fetched in parallel. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. Files in the **OutputBucket** and **InputBucket** are signed client-side with your browser's Cognito credentials, which saves a round trip. Files in the **EvaluationBaselineBucket** are signed by the backend `getFilePresignedUrl` resolver instead — the browser's Cognito identity role deliberately does not grant read access to the baseline bucket, so signing those in the browser produces a URL that fails with HTTP 403 at fetch time. Up to 5 files are fetched in parallel. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
 
 ### Bulk download from the document list
 
