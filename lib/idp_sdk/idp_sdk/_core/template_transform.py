@@ -1090,12 +1090,14 @@ class HeadlessTemplateTransformer:
         template_str = yaml.dump(template, default_flow_style=False)
 
         remaining_arns = len(
-            re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str)
+            re.findall(
+                r"arn:aws:(?!\$\{AWS::Partition\})", template_str
+            )  # arn-partition-ok: regex that DETECTS this pattern
         )
         if remaining_arns > 0:
             logger.warning(f"Found {remaining_arns} hard-coded ARN references — fixing")
             template_str = re.sub(
-                r"arn:aws:(?!\$\{AWS::Partition\})",
+                r"arn:aws:(?!\$\{AWS::Partition\})",  # arn-partition-ok: regex that DETECTS this pattern
                 "arn:${AWS::Partition}:",
                 template_str,
             )
@@ -2004,11 +2006,13 @@ class GovCloudTemplateTransformer:
 
     def _update_arn_partitions(self, template: Dict[str, Any]) -> Dict[str, Any]:
         template_str = yaml.dump(template, default_flow_style=False)
-        remaining = len(re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str))
+        remaining = len(
+            re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str)
+        )  # arn-partition-ok: regex that DETECTS this pattern
         if remaining > 0:
             logger.warning(f"Found {remaining} hard-coded ARN references — fixing")
             template_str = re.sub(
-                r"arn:aws:(?!\$\{AWS::Partition\})",
+                r"arn:aws:(?!\$\{AWS::Partition\})",  # arn-partition-ok: regex that DETECTS this pattern
                 "arn:${AWS::Partition}:",
                 template_str,
             )

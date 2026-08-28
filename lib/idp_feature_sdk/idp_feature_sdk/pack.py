@@ -725,7 +725,7 @@ def apply_enforce_ssl_only(
         return False
 
 
-def _pack_public_bucket_policy(bucket: str) -> Dict[str, Any]:
+def _pack_public_bucket_policy(bucket: str, partition: str = "aws") -> Dict[str, Any]:
     """Bucket policy granting `s3:GetObject` to anyone for the prefixes
     pack publishing uses. Required so cross-account CFN deploys can
     download the wrapper / host / feature templates and Lambda zips.
@@ -744,8 +744,11 @@ def _pack_public_bucket_policy(bucket: str) -> Dict[str, Any]:
                 "Effect": "Allow",
                 "Principal": "*",
                 "Action": "s3:GetObject",
+                # Partition-aware: a hardcoded arn:aws: S3 resource matches
+                # nothing in aws-us-gov / aws-cn, so the policy would grant no
+                # access there while appearing to apply.
                 "Resource": [
-                    f"arn:aws:s3:::{bucket}/{p}*" for p in _PACK_PUBLIC_PREFIXES
+                    f"arn:{partition}:s3:::{bucket}/{p}*" for p in _PACK_PUBLIC_PREFIXES
                 ],
             }
         ],
@@ -927,7 +930,14 @@ def apply_public_artifacts_policy(
         )
 
     # Set or merge the public-prefix bucket policy.
-    desired = _pack_public_bucket_policy(bucket)
+    try:
+        caller_arn = boto3.client("sts").get_caller_identity().get("Arn")
+        partition = (caller_arn or "arn:aws:").split(":")[
+            1
+        ] or "aws"  # arn-partition-ok: fallback used only to PARSE the partition out
+    except Exception:  # noqa: BLE001
+        partition = "aws"
+    desired = _pack_public_bucket_policy(bucket, partition)
     try:
         existing_resp = s3.get_bucket_policy(Bucket=bucket)
         existing = json.loads(existing_resp["Policy"])

@@ -244,6 +244,10 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 		echo -e "$(RED)❌ Found hardcoded references that need to be fixed for GovCloud compatibility$(NC)"; \
 		exit 1; \
 	fi
+	@# The loops above cover CloudFormation templates and Step Functions ASL only.
+	@# Python was never scanned, which is how a hardcoded arn:aws: reached runtime
+	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
+	@$(PYTHON) scripts/check_python_arn_partitions.py
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
@@ -317,6 +321,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
 	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
+	@echo "Running repo-script tests (Python ARN-partition gate)..."
+	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
