@@ -57,15 +57,26 @@ Parameters:
     Type: String
     # Public AWS Lambda Web Adapter layer (x86_64). The account 753240598075 is
     # the LWA publisher; the layer name/version are region-stable. Leave blank
-    # to default to the LWA layer in this stack's region/partition (constructed
-    # as arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...). Override
-    # this parameter for GovCloud (GovCloud publishes LWA under a different
-    # account; see the LWA releases) or to pin a specific version.
+    # to default to the LWA layer in this stack's region (constructed as
+    # arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...), or set it to
+    # pin a specific version / point at a layer you published yourself.
+    #
+    # NOTE (GovCloud/China): LWA is published ONLY in the commercial partition.
+    # AWS account IDs do not exist across partitions, so ${AWS::Partition}
+    # substitution alone cannot make that ARN resolve — a GovCloud deploy fails
+    # with a 403 on lambda:GetLayerVersion that reads like a missing
+    # resource-based policy but is really a partition mismatch no identity policy
+    # can fix. The --govcloud transform therefore REMOVES
+    # ChatStreamProcessorFunction (and this parameter) outright and the UI falls
+    # back to its polling chat transport; see docs/govcloud-deployment.md. Set
+    # this parameter only if you have published an LWA layer into the target
+    # partition yourself.
     Default: ""
     Description: >-
       ARN of the AWS Lambda Web Adapter layer used by the chat streaming Function
-      URL. Leave blank to use the region-default LWA x86_64 layer; override for
-      GovCloud or to pin a version.
+      URL. Leave blank to use the region-default LWA x86_64 layer, or set it to
+      pin a version / use a layer you published yourself. LWA is published only
+      in the commercial AWS partition.
 
   # Authorization params
   AdminEmail:

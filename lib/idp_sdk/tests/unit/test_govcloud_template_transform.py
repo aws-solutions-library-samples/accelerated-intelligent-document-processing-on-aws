@@ -41,10 +41,14 @@ def _template_with_cloudfront():
             },
             "CloudFrontPriceClass": {"Type": "String", "Default": "PriceClass_100"},
             "CloudFrontAllowedGeos": {"Type": "String", "Default": ""},
+            "LambdaWebAdapterLayerArn": {"Type": "String", "Default": ""},
         },
         "Conditions": {
             "UseCloudFrontHosting": {
                 "Fn::Equals": [{"Ref": "WebUIHosting"}, "CloudFront"]
+            },
+            "HasLambdaWebAdapterLayerArn": {
+                "Fn::Not": [{"Fn::Equals": [{"Ref": "LambdaWebAdapterLayerArn"}, ""]}]
             },
             "UseApiGatewayHosting": {
                 "Fn::Equals": [{"Ref": "WebUIHosting"}, "APIGateway"]
@@ -107,11 +111,99 @@ def _template_with_cloudfront():
             # A Lambda Function URL (not available in GovCloud) + its permission.
             "ChatStreamProcessorUrl": {
                 "Type": "AWS::Lambda::Url",
-                "Properties": {"AuthType": "AWS_IAM"},
+                "Properties": {
+                    "AuthType": "AWS_IAM",
+                    "TargetFunctionArn": {"Ref": "ChatStreamProcessorFunction"},
+                },
             },
             "ChatStreamProcessorUrlPermission": {
                 "Type": "AWS::Lambda::Permission",
                 "Properties": {"Action": "lambda:InvokeFunctionUrl"},
+            },
+            # The Function URL's handler: it layers in the AWS Lambda Web Adapter,
+            # published only in the commercial partition, so it cannot be created
+            # in GovCloud either (403 lambda:GetLayerVersion) and must go too.
+            "ChatStreamProcessorFunction": {
+                "Type": "AWS::Serverless::Function",
+                "Properties": {
+                    "Handler": "run.sh",
+                    "Layers": [
+                        {"Ref": "IDPCommonBaseLayer"},
+                        {
+                            "Fn::If": [
+                                "HasLambdaWebAdapterLayerArn",
+                                {"Ref": "LambdaWebAdapterLayerArn"},
+                                {
+                                    "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:25"
+                                },
+                            ]
+                        },
+                    ],
+                    "LoggingConfig": {
+                        "LogGroup": {"Ref": "ChatStreamProcessorLogGroup"}
+                    },
+                },
+            },
+            "ChatStreamProcessorLogGroup": {"Type": "AWS::Logs::LogGroup"},
+            "IDPCommonBaseLayer": {"Type": "AWS::Serverless::LayerVersion"},
+            # A function WITHOUT the LWA layer must survive untouched.
+            "AgentChatProcessorFunction": {
+                "Type": "AWS::Serverless::Function",
+                "Properties": {"Layers": [{"Ref": "IDPCommonBaseLayer"}]},
+            },
+            # The invoke grant for the removed function. Its ONLY statement
+            # targets that function, so pruning must drop the whole inline policy
+            # — IAM rejects `Statement: []` with "Syntax errors in policy" (400).
+            "CognitoAuthorizedRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "Policies": [
+                        {
+                            "PolicyName": "ChatStreamInvoke",
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Effect": "Allow",
+                                        "Action": ["lambda:InvokeFunction"],
+                                        "Resource": {
+                                            "Fn::GetAtt": [
+                                                "ChatStreamProcessorFunction",
+                                                "Arn",
+                                            ]
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "PolicyName": "MixedResources",
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Effect": "Allow",
+                                        "Action": ["lambda:InvokeFunction"],
+                                        "Resource": [
+                                            {
+                                                "Fn::GetAtt": [
+                                                    "ChatStreamProcessorFunction",
+                                                    "Arn",
+                                                ]
+                                            },
+                                            {
+                                                "Fn::GetAtt": [
+                                                    "AgentChatProcessorFunction",
+                                                    "Arn",
+                                                ]
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    ]
+                },
             },
             # A resource that references the Function URL (like the UI CodeBuild
             # env var VITE_STREAM_URL) — must be blanked, not left dangling.
@@ -272,6 +364,83 @@ def test_function_url_reference_blanked_not_dangling():
     assert "ChatStreamUrlOutput" not in result.get("Outputs", {})
 
 
+# ---------------------------------------------------------------------------
+# LWA-dependent function removal (issue #677).
+#
+# Removing only the AWS::Lambda::Url left ChatStreamProcessorFunction behind.
+# It layers in the AWS Lambda Web Adapter, published solely by commercial-
+# partition account 753240598075; because AWS account IDs do not span
+# partitions, `arn:${AWS::Partition}:` substitution can never make that ARN
+# resolve in GovCloud, and the deploy died with a 403 on
+# lambda:GetLayerVersion that reads like a missing resource-based policy.
+# ---------------------------------------------------------------------------
+
+
+def test_lwa_dependent_function_removed():
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    resources = result["Resources"]
+    assert "ChatStreamProcessorFunction" not in resources
+    # Its log group goes too (nothing else referenced it).
+    assert "ChatStreamProcessorLogGroup" not in resources
+    # A function that does NOT use the LWA layer is untouched.
+    assert "AgentChatProcessorFunction" in resources
+    assert "IDPCommonBaseLayer" in resources
+
+
+def test_no_lwa_layer_reference_survives():
+    """No trace of the commercial-only LWA layer may remain."""
+    import yaml
+
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    blob = yaml.dump(result, default_flow_style=False)
+    for marker in ("753240598075", "LambdaAdapterLayer", "LambdaWebAdapterLayerArn"):
+        assert marker not in blob, f"LWA marker survived: {marker}"
+    # The now-dead override parameter and its condition are dropped.
+    assert "LambdaWebAdapterLayerArn" not in result["Parameters"]
+    assert "HasLambdaWebAdapterLayerArn" not in result.get("Conditions", {})
+
+
+def test_emptied_inline_iam_policy_is_dropped_not_left_empty():
+    """The implementation trap from #677: IAM rejects `Statement: []` with a 400.
+
+    ChatStreamInvoke's only statement targets the removed function, so the whole
+    inline policy must disappear — pruning the statement alone would produce an
+    empty statement list and roll the stack back somewhere else entirely.
+    """
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    policies = result["Resources"]["CognitoAuthorizedRole"]["Properties"]["Policies"]
+    names = [p["PolicyName"] for p in policies]
+    assert "ChatStreamInvoke" not in names
+    for policy in policies:
+        assert policy["PolicyDocument"]["Statement"], (
+            f"{policy['PolicyName']} left with an empty Statement list"
+        )
+
+
+def test_partially_referencing_statement_keeps_surviving_resources():
+    """A Resource LIST loses only the removed entries; the statement survives."""
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    policies = result["Resources"]["CognitoAuthorizedRole"]["Properties"]["Policies"]
+    mixed = next(p for p in policies if p["PolicyName"] == "MixedResources")
+    resources = mixed["PolicyDocument"]["Statement"][0]["Resource"]
+    assert resources == [{"Fn::GetAtt": ["AgentChatProcessorFunction", "Arn"]}]
+
+
+def test_validation_flags_a_dangling_reference_to_a_removed_function():
+    """Guard the guard: a surviving reference must fail validation, not pass."""
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(_template_with_cloudfront())
+    # Re-introduce a dangling reference of the kind the transform must prune.
+    result["Outputs"]["Oops"] = {
+        "Value": {"Fn::GetAtt": ["ChatStreamProcessorFunction", "Arn"]}
+    }
+    assert t.validate_no_cloudfront(result) is False
+
+
 def test_no_dangling_cloudfront_references():
     """Nothing may reference a removed CloudFront resource or the removed condition."""
     t = GovCloudTemplateTransformer()
@@ -322,6 +491,66 @@ def test_real_template_has_no_cloudfront_after_transform():
     assert result["Parameters"]["WebUIHosting"]["AllowedValues"] == ["APIGateway"]
     assert "UseApiGatewayHosting" in result["Conditions"]
     assert "WebUIProxyRole" in result["Resources"]
+
+
+def test_real_template_removes_the_lwa_chat_stream_family():
+    """Transform the ACTUAL template.yaml; the LWA-dependent family must be gone.
+
+    Regression guard for issue #677: stripping only ``ChatStreamProcessorUrl``
+    left ``ChatStreamProcessorFunction`` (and its commercial-only LWA layer)
+    behind and every ``--govcloud`` deploy rolled back on a 403
+    lambda:GetLayerVersion.
+    """
+    import yaml
+
+    cfnlint_decode = pytest.importorskip("cfnlint.decode.cfn_yaml")
+
+    def _plain(node):
+        if isinstance(node, dict):
+            return {str(k): _plain(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_plain(x) for x in node]
+        if isinstance(node, str):
+            return str(node)
+        return node
+
+    loaded = cfnlint_decode.load(str(_repo_root() / "template.yaml"))
+    template = _plain(loaded[0] if isinstance(loaded, tuple) else loaded)
+
+    assert isinstance(template, dict) and "Resources" in template
+    # Sanity: the base template really does carry the LWA-dependent function, so
+    # this test fails loudly if it is renamed rather than silently passing.
+    assert "ChatStreamProcessorFunction" in template["Resources"]
+
+    t = GovCloudTemplateTransformer()
+    result = t.apply_transforms(template)
+    resources = result["Resources"]
+    blob = yaml.dump(result, default_flow_style=False)
+
+    for name in (
+        "ChatStreamProcessorFunction",
+        "ChatStreamProcessorLogGroup",
+        "ChatStreamProcessorUrl",
+        "ChatStreamProcessorUrlPermission",
+    ):
+        assert name not in resources, f"{name} survived the GovCloud transform"
+    # No dangling reference anywhere (the CognitoAuthorizedRole invoke grant).
+    assert "ChatStreamProcessor" not in blob
+    # No reference to the commercial-only LWA layer or its override parameter.
+    for marker in ("753240598075", "LambdaAdapterLayer", "LambdaWebAdapterLayerArn"):
+        assert marker not in blob, f"LWA marker survived: {marker}"
+    # No inline IAM policy left with an empty statement list (IAM 400).
+    assert t.validate_no_cloudfront(result) is True
+
+    # Chat still works in GovCloud: the polling transport's backing functions and
+    # the UI REST API that fronts them are retained — the streaming function is
+    # not in that path.
+    for kept in (
+        "AgentChatProcessorFunction",
+        "ChatWithDocumentProcessorFunction",
+        "APIRESOLVERSTACK",
+    ):
+        assert kept in resources, f"{kept} must survive (polling chat path)"
 
 
 def test_real_template_passes_govcloud_region_cfn_lint():
