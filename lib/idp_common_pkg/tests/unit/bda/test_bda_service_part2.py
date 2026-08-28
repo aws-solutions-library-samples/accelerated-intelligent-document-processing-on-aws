@@ -221,6 +221,7 @@ def test_profile_arn_uses_govcloud_partition(mock_boto3):
         caller_arn="arn:aws-us-gov:sts::111122223333:assumed-role/r/s",
     )
     arn = service._dataAutomationProfileArn
+    assert arn is not None
     assert arn.startswith("arn:aws-us-gov:bedrock:us-gov-west-1:"), arn
     assert "arn:aws:" not in arn
 

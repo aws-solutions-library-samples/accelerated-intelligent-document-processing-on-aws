@@ -418,6 +418,33 @@ stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VP
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
 	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
 
+# --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
+# These do NOT go through run_stacktest.py: every probe there deploys the
+# STANDARD template with different parameters, whereas these deploy the
+# TRANSFORMED template via the documented user path (idp-cli deploy --headless /
+# --govcloud --from-code .) and then process a real sample document. That is the
+# only tier that can prove a transform produces a DEPLOYABLE stack — the gap that
+# shipped issues #676, #677 and the SuppressAdminInvite dangling parameter.
+# Each run is a full publish + deploy (~1h+). Not wired into CI; see
+# .claude/skills/transform-deploy-test.md.
+_TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
+	$(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) \
+	$(if $(STACK_NAME),--stack-name $(STACK_NAME),) \
+	$(if $(KEEP),--keep,) $(if $(SKIP_DOC_TEST),--skip-doc-test,) \
+	$(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
+transform-deploy-test-list: ## List the transform deploy-tests
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py --list
+
+transform-deploy-test-headless: ## Deploy a REAL --headless stack + process a sample doc
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
+
+transform-deploy-test-govcloud: ## Deploy a REAL --govcloud stack + process a sample doc (REGION=us-gov-west-1 for a true GovCloud run)
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
+
+transform-deploy-test-all: ## Both transform deploy-tests, one after the other
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
+
 # Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
 # through run_stacktest.py: it deploys its own standalone stack (into a seller
 # account) and tears it down again.
