@@ -1,0 +1,552 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Release Benchmark: v0.6.5 vs v0.6.4 | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.1.3"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="Release Benchmark: v0.6.5 vs v0.6.4"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.CjZgBAcP.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.LAbJoB63.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.DgM3kjKb.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="0oat0jk" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/criteria-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Criteria Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/migration-prompt-appsync-removal/" class="astro-ojxuodky"><span class="astro-ojxuodky">Migration: External Feature for AppSync Removal</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Assessment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI GPT-5.x Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">New &amp; Uncategorized</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation Z3</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#tldr" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">TL;DR</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#methodology-notes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Methodology notes</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#test-data" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Test data</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-per-cell-summary-mean-over-the-3-corefast-docs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Per-cell summary (mean over the 3 corefast docs)</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-cost--flat-where-nothing-changed-higher-only-where-rows-were-recovered" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Cost — flat where nothing changed, higher only where rows were recovered</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#3-accuracy--completeness" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3. Accuracy &amp; completeness</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3.1 The integrated-confidence “improvement” is noise — the hazard is still open</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#4-what---compare-flagged-and-why-none-of-it-is-a-regression" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">4. What --compare flagged, and why none of it is a regression</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#5-reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">5. Reproduce</span></a></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#tldr" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">TL;DR</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#methodology-notes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Methodology notes</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#test-data" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Test data</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-per-cell-summary-mean-over-the-3-corefast-docs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Per-cell summary (mean over the 3 corefast docs)</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-cost--flat-where-nothing-changed-higher-only-where-rows-were-recovered" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Cost — flat where nothing changed, higher only where rows were recovered</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#3-accuracy--completeness" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3. Accuracy &amp; completeness</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3.1 The integrated-confidence “improvement” is noise — the hazard is still open</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#4-what---compare-flagged-and-why-none-of-it-is-a-regression" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">4. What --compare flagged, and why none of it is a regression</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#5-reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">5. Reproduce</span></a></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">Release Benchmark: v0.6.5 vs v0.6.4</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><div class="sl-heading-wrapper level-h1"><h1 id="genaiidp-release-benchmark--v064-published-vs-v065">GenAIIDP Release Benchmark — v0.6.4 (published) vs v0.6.5</h1><a class="sl-anchor-link" href="#genaiidp-release-benchmark--v064-published-vs-v065"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “GenAIIDP Release Benchmark — v0.6.4 (published) vs v0.6.5”</span></a></div>
+<p><strong>Baseline:</strong> v0.6.4 — the previous <strong>publicly published</strong> release
+(<code dir="auto">https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.4.yaml</code>,
+Description <code dir="auto">(v0.6.4)</code>).
+<strong>Release under test:</strong> v0.6.5 (<code dir="auto">develop</code> @ commit <code dir="auto">720f3052a</code>).
+<strong>Method:</strong> a single stack (<code dir="auto">IDPBench065</code>, us-west-2, account <code dir="auto">912625584728</code>) was created
+from the published v0.6.4 template, benchmarked, then <strong>upgraded in place</strong> to v0.6.5 via
+<code dir="auto">idp-cli deploy --from-code .</code> and benchmarked again with <strong>byte-for-byte identical config
+files</strong>, written verbatim to the ConfigurationTable by <code dir="auto">compat/native_upload.py</code>. The only
+variable between the two runs is the accelerator code version.
+<strong>Pricing:</strong> <code dir="auto">config_library/pricing.yaml</code> (sha256 <code dir="auto">bc68d49e…</code>; rates as of 2026-08; intro
+pricing may apply).</p>
+<blockquote>
+<p>Every number here is produced by <code dir="auto">benchmarks/harness/aggregate.py</code> from live runs; none
+are recalled from memory. Supporting data: <code dir="auto">benchmarks/results/v0.6.4/</code> and
+<code dir="auto">benchmarks/results/v0.6.5/</code> (<code dir="auto">summary.{json,csv}</code>, <code dir="auto">cell_stats.csv</code>, and a <code dir="auto">meta</code> block
+recording each side’s deployed <code dir="auto">stack_version</code>).</p>
+</blockquote>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="tldr">TL;DR</h2><a class="sl-anchor-link" href="#tldr"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “TL;DR”</span></a></div>
+<p>Upgrading from the published <strong>v0.6.4</strong> to <strong>v0.6.5</strong> is <strong>safe: nothing regressed.</strong> It is
+<em>not</em> a completeness fix — read finding 2 carefully.</p>
+<ol>
+<li><strong>Accuracy is identical.</strong> Mean scalar-field accuracy is <strong>0.900 on both</strong> versions, and
+every one of the 30 paired <code dir="auto">(cell, doc)</code> measurements matches exactly — the paired
+scatter in §3 sits entirely on the identity line.</li>
+<li><strong>Measured recall rose (0.931 → 0.987) but this is run-to-run variance, not a fix.</strong> Two
+cells scored better and <strong>none scored worse</strong>; both improvements are single samples on
+cells whose failure mode is non-deterministic. A follow-up repeated-measures run
+(§3.1) settles it: on v0.6.5, the integrated-confidence cell that “recovered” is
+<strong>bimodal — 2 of 4 repeats truncate the list to 10/100 rows and 2 of 4 return
+100/100</strong>, on the same document, same config, same stack. <strong>The
+integrated-confidence row-loss hazard is still present in v0.6.5</strong>; the
+<a href="./v0.6.0.md">v0.6.0 report</a> §4 guidance to avoid <code dir="auto">integrated</code> confidence with simple
+extraction on list documents <strong>still stands</strong>.</li>
+<li><strong>Cost is flat where behaviour was stable: +1.4% across the 24 runs in the 8 cells whose
+recall did not move — inside their sampling spread.</strong> The headline total is +8.5%, but
+all of it sits in the two non-deterministic cells, where cost tracks whether that
+particular sample truncated the list. See §2.</li>
+<li><strong>Review burden drops:</strong> the confidence alert rate (share of confidence leaves below
+0.9) falls <strong>10.7% → 6.4%</strong> with accuracy unchanged, so this is a reduction in review
+volume rather than over-confidence. Also n=30, so treat it as directional.</li>
+<li><strong>No failures on either side:</strong> 30/30 documents completed on both versions.</li>
+</ol>
+<p><code dir="auto">aggregate.py --compare</code> flags <strong>0 cell-level regressions</strong>. It also flags 2 cell-level
+“improvements”, which §3.1 shows are noise — a caution about the audit trail’s own
+thresholds at n=3, not about the upgrade.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="methodology-notes">Methodology notes</h2><a class="sl-anchor-link" href="#methodology-notes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Methodology notes”</span></a></div>
+<p>Both sides are v0.6.x, so none of the cross-version config-compatibility handling the
+<a href="./v0.6.0.md">v0.6.0 A/B</a> needed was exercised here. The scoping choices below are applied
+<strong>identically to both versions</strong>:</p>
+<ul>
+<li><strong>Extraction model held at Claude Sonnet 4.6</strong> (<code dir="auto">default_cell.extraction_model: sonnet46</code>). This is the committed cross-version control, kept here so this entry stays
+comparable with the rest of the audit trail. Both versions can run Sonnet 5; the
+cross-config study at the product default model is
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/config-guidance.md">config-guidance</a>, not this A/B.</li>
+<li><strong>Confidence model Nova Lite</strong>, <code dir="auto">reasoning_effort=low</code>, <code dir="auto">geometry=ocr_only</code>.</li>
+<li><strong>Summarization disabled</strong> (<code dir="auto">summarization.enabled=false</code>) — it is unscored.</li>
+<li><strong><code dir="auto">corefast</code> doc set</strong> — <code dir="auto">tiny_form</code> (5 rows, 1 page), <code dir="auto">small_narrow</code> (100 rows, 3 pages),
+<code dir="auto">longdesc_100</code> (100 rows, 3 pages, long free-text descriptions). The same three documents
+the audit trail has used since v0.6.0, so entries remain comparable.</li>
+<li><strong>Grid:</strong> all <strong>10 core config cells × 3 docs = 30 runs per version</strong>.</li>
+<li><strong>Configs written verbatim</strong> via <code dir="auto">--native-upload</code>, so the stored config bytes are
+identical on both sides rather than re-derived by a migration.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="test-data">Test data</h3><a class="sl-anchor-link" href="#test-data"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Test data”</span></a></div>
+<p>Every document in this A/B is <strong>synthetic, fabricated data with exact machine-generated
+ground truth</strong> — no real or externally-sourced documents were used. All three come from the
+<code dir="auto">bank_statement</code> generator (<code dir="auto">benchmarks/corpus/generators/bank_statement.py</code>), regenerated
+deterministically by <code dir="auto">gen_corpus.py</code>, built from placeholder values (account
+<code dir="auto">000123456789</code>, fictional merchants like “AnyCompany Store”) with a unique <code dir="auto">SEQnnnnn</code> tag
+embedded in every transaction row. That makes list recall exact (distinct SEQ tags
+recovered ÷ total) and scalar accuracy exact (field-exact match against the emitted
+<code dir="auto">&#x3C;doc>.truth.json</code>), rather than measured against a human-curated baseline.</p>
+<p>The wider corpus also holds a synthetic scaling series (25 → 3,200 rows) and a reference set
+of real labeled documents. Those are <strong>deliberately excluded from this head-to-head</strong> — the
+audit trail’s job is to isolate the code-version variable on a fixed, cheap, exactly-scored
+grid. Cross-config and scaling behaviour at v0.6.5 is the subject of
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/config-guidance.md">config-guidance</a>.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="1-per-cell-summary-mean-over-the-3-corefast-docs">1. Per-cell summary (mean over the 3 corefast docs)</h2><a class="sl-anchor-link" href="#1-per-cell-summary-mean-over-the-3-corefast-docs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “1. Per-cell summary (mean over the 3 corefast docs)”</span></a></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>cell (OCR · mode · assess)</th><th align="right">$/doc v0.6.4</th><th align="right">$/doc v0.6.5</th><th align="right">Δcost</th><th align="right">cost CV (6.4/6.5)</th><th align="right">recall v0.6.4</th><th align="right">recall v0.6.5</th><th align="right">wall v0.6.4</th><th align="right">wall v0.6.5</th></tr></thead><tbody><tr><td>tt-simple-sep (textract+tables · simple · separate)</td><td align="right">$0.118</td><td align="right">$0.113</td><td align="right">−4%</td><td align="right">0.62/0.61</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">161s</td><td align="right">109s</td></tr><tr><td>tt-simple-int (textract+tables · simple · integrated)</td><td align="right">$0.231</td><td align="right">$0.377</td><td align="right"><strong>+63%</strong></td><td align="right">0.99/0.71</td><td align="right"><strong>0.700</strong></td><td align="right"><strong>1.000</strong></td><td align="right">146s</td><td align="right">170s</td></tr><tr><td>tt-simple-off (textract+tables · simple · off)</td><td align="right">$0.105</td><td align="right">$0.105</td><td align="right">−0%</td><td align="right">0.64/0.64</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">35s</td><td align="right">34s</td></tr><tr><td>tt-adv-sep (textract+tables · advanced · separate)</td><td align="right">$0.334</td><td align="right">$0.343</td><td align="right">+3%</td><td align="right">0.71/0.70</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">90s</td><td align="right">152s</td></tr><tr><td>tt-adv-int (textract+tables · advanced · integrated)</td><td align="right">$0.426</td><td align="right">$0.453</td><td align="right">+6%</td><td align="right">0.72/0.76</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">107s</td><td align="right">116s</td></tr><tr><td>tl-simple-sep (textract+layout · simple · separate)</td><td align="right">$0.090</td><td align="right">$0.087</td><td align="right">−3%</td><td align="right">0.72/0.71</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">84s</td><td align="right">55s</td></tr><tr><td>tl-adv-sep (textract+layout · advanced · separate)</td><td align="right">$0.215</td><td align="right">$0.268</td><td align="right">+24%</td><td align="right">0.68/0.77</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">88s</td><td align="right">154s</td></tr><tr><td>bda-simple-sep (BDA · simple · separate)</td><td align="right">$0.116</td><td align="right">$0.109</td><td align="right">−6%</td><td align="right">0.66/0.64</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">112s</td><td align="right">52s</td></tr><tr><td>bda-adv-sep (BDA · advanced · separate)</td><td align="right">$0.356</td><td align="right">$0.306</td><td align="right">−14%</td><td align="right">0.97/0.74</td><td align="right">1.000</td><td align="right">1.000</td><td align="right">113s</td><td align="right">118s</td></tr><tr><td>llm-simple-sep (Bedrock Nova OCR · simple · separate)</td><td align="right">$0.084</td><td align="right">$0.090</td><td align="right">+7%</td><td align="right">0.75/0.75</td><td align="right"><strong>0.607</strong></td><td align="right"><strong>0.873</strong></td><td align="right">49s</td><td align="right">96s</td></tr></tbody></table>
+<p><code dir="auto">scalar_accuracy</code> is not shown per-cell because it is <strong>identical across versions for every
+cell</strong> (§3).</p>
+<p><strong>Read the cost column with the CV column.</strong> Every cell’s per-doc cost CV is 0.6–0.99 at
+n=3 — the three corefast documents differ hugely in size, which is the point of the doc set
+but makes a single cell’s cost mean a noisy statistic. The variance-aware cell-level pass
+of <code dir="auto">aggregate.py --compare</code> therefore reports <code dir="auto">tt-simple-int</code> (+63%) and
+<code dir="auto">tl-adv-sep</code> (+24%) as <strong>inconclusive at this n</strong>, and flags <strong>no</strong> cell-level cost
+regression. The trustworthy cost reading is the aggregate decomposition in §2.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="2-cost--flat-where-nothing-changed-higher-only-where-rows-were-recovered">2. Cost — flat where nothing changed, higher only where rows were recovered</h2><a class="sl-anchor-link" href="#2-cost--flat-where-nothing-changed-higher-only-where-rows-were-recovered"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “2. Cost — flat where nothing changed, higher only where rows were recovered”</span></a></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>scope</th><th align="right">v0.6.4</th><th align="right">v0.6.5</th><th align="right">Δ</th></tr></thead><tbody><tr><td><strong>All 30 runs</strong></td><td align="right">$6.223</td><td align="right">$6.750</td><td align="right">+8.5%</td></tr><tr><td><strong>The 24 runs in the 8 cells whose recall did not change</strong></td><td align="right">$5.279</td><td align="right">$5.350</td><td align="right"><strong>+1.4%</strong></td></tr><tr><td><strong>The 6 runs in the 2 non-deterministic cells (§3.1)</strong></td><td align="right">$0.945</td><td align="right">$1.399</td><td align="right"><strong>+48.2%</strong></td></tr></tbody></table>
+<p>So the headline +8.5% is not a general cost regression: 8 of 10 cells move <strong>+1.4% in
+aggregate</strong>, inside their sampling spread, and the entire increase is concentrated in the
+two non-deterministic cells, where the sample that extracted more rows cost more:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>cell · doc</th><th align="right">rows extracted / truth</th><th align="right">cost</th></tr></thead><tbody><tr><td>tt-simple-int · longdesc_100</td><td align="right">10/100 → <strong>100/100</strong></td><td align="right">$0.135 → $0.536</td></tr><tr><td>tt-simple-int · small_narrow</td><td align="right">100/100 → 100/100</td><td align="right">$0.493 → $0.528</td></tr><tr><td>tt-simple-int · tiny_form</td><td align="right">5/5 → 5/5</td><td align="right">$0.066 → $0.067</td></tr><tr><td>llm-simple-sep · tiny_form</td><td align="right">1/5 → <strong>5/5</strong></td><td align="right">$0.0138 → $0.0139</td></tr></tbody></table>
+<p>In the v0.6.5 sample <code dir="auto">tt-simple-int</code> on <code dir="auto">longdesc_100</code> extracted 10× the rows for ~4× the
+cost. §3.1 shows both outcomes occur on v0.6.5 at roughly even odds, so read this row as
+“the cost of a complete extraction vs a truncated one on the same document” rather than as a
+version delta. The other two <code dir="auto">tt-simple-int</code> documents, which were complete on both sides,
+moved +7% and +0.2%.</p>
+<p>Token totals across the grid (from per-doc <code dir="auto">Metering</code>):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>unit</th><th align="right">v0.6.4</th><th align="right">v0.6.5</th><th align="right">Δ</th></tr></thead><tbody><tr><td>input</td><td align="right">609,452</td><td align="right">907,379</td><td align="right">+49%</td></tr><tr><td>output</td><td align="right">361,845</td><td align="right">382,057</td><td align="right">+6%</td></tr><tr><td>cacheRead</td><td align="right">1,266,547</td><td align="right">1,331,948</td><td align="right">+5%</td></tr><tr><td>cacheWrite</td><td align="right">173,695</td><td align="right">220,908</td><td align="right">+27%</td></tr></tbody></table>
+<p>The input-token rise is the mechanism behind the cost delta and has two identified
+contributors, both intended v0.6.5 behaviour: the confidence pass <strong>now attaches page
+images whenever the prompt asks for them</strong> (previously suppressed whenever
+<code dir="auto">geometry.mode</code> was <code dir="auto">ocr_only</code> — the default — which is the fix documented in the 0.6.5
+CHANGELOG, at a stated ~1.7K additional input tokens per page), and the integrated cell is
+now processing ten times as many rows. Output tokens rose only 6%, consistent with the work
+being <em>input</em>-side.</p>
+<p><img alt="Cost per cell" loading="lazy" decoding="async" width="1320" height="540" src="/accelerated-intelligent-document-processing-on-aws/_astro/benchmark-v0.6.5-cost.BG02-YOV_Z1srR5d.png" srcset=""></p>
+<p><strong>⚠️ Cost note for operators:</strong> the page-image attachment applies to any config that keeps
+<code dir="auto">{DOCUMENT_IMAGE}</code> in <code dir="auto">extraction.confidence.task_prompt</code> (the shipped default). On
+image-heavy or high-page-count corpora this is a real per-page cost increase. Removing the
+placeholder from that prompt opts back into a text-only confidence pass.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="3-accuracy--completeness">3. Accuracy &#x26; completeness</h2><a class="sl-anchor-link" href="#3-accuracy--completeness"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “3. Accuracy &#x26; completeness”</span></a></div>
+<p><img alt="Paired accuracy/recall" loading="lazy" decoding="async" width="1320" height="540" src="/accelerated-intelligent-document-processing-on-aws/_astro/benchmark-v0.6.5-accuracy.D_BBlkfv_Za8wr6.png" srcset=""></p>
+<ul>
+<li><strong>Scalar accuracy:</strong> mean <strong>0.900 on both</strong> versions; all 30 paired <code dir="auto">(cell, doc)</code>
+measurements are equal, which is why the left panel is a single line of points on the
+diagonal.</li>
+<li><strong>Completeness recall:</strong> mean <strong>0.931 → 0.987</strong>. In the right panel every off-diagonal
+point is <strong>above</strong> the line: two apparent improvements, <strong>zero</strong> regressions. Both are
+single samples on non-deterministic cells (§3.1) — the safe reading is “no regression”,
+not “+0.057”.
+<ul>
+<li><code dir="auto">tt-simple-int</code> 0.700 → 1.000 (driven by <code dir="auto">longdesc_100</code>: 0.10 → 1.00) — <strong>shown to be
+noise in §3.1</strong></li>
+<li><code dir="auto">llm-simple-sep</code> 0.607 → 0.873 (driven by <code dir="auto">tiny_form</code>: 0.20 → 1.00) — not
+independently re-measured; treat as unconfirmed</li>
+</ul>
+</li>
+<li><strong>Confidence:</strong> mean confidence flat (0.9287 → 0.9293), while the <strong>alert rate</strong>
+(share of confidence leaves below 0.9) falls <strong>10.7% → 6.4%</strong>. Because accuracy is
+unchanged, fewer alerts means less review for the same correctness, not a model that has
+become over-confident.</li>
+<li><strong>Failures:</strong> 0 on both versions (30/30 completed each).</li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open">3.1 The integrated-confidence “improvement” is noise — the hazard is still open</h2><a class="sl-anchor-link" href="#31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “3.1 The integrated-confidence “improvement” is noise — the hazard is still open”</span></a></div>
+<p>The <a href="./v0.6.0.md">v0.6.0 report</a> §4 recorded a regression where <strong>simple extraction +
+integrated confidence</strong> truncated a long-description 100-row list to 10 rows, and
+recommended avoiding that combination. The grid above finds the v0.6.4 stack still doing it
+(10/100 rows) and the v0.6.5 stack returning all 100 — which reads like a fix.</p>
+<p>It is not. The grid measures each <code dir="auto">(cell, doc)</code> <strong>once</strong>, and the failure mode is a <em>partial
+list</em>, not an error, so a single sample cannot separate “fixed” from “got lucky”. Re-running
+that exact cell 4× on v0.6.5 with a <code dir="auto">separate</code>-confidence control on the same document
+(<code dir="auto">--suite intconf</code>, extraction model held at the same Sonnet 4.6 control) gives:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>cell</th><th align="right">repeat</th><th align="right">rows extracted / truth</th><th align="right">recall</th><th align="right">cost</th><th align="right">wall</th></tr></thead><tbody><tr><td>tt-simple-int</td><td align="right">0</td><td align="right">10/100</td><td align="right">0.100</td><td align="right">$0.139</td><td align="right">62s</td></tr><tr><td>tt-simple-int</td><td align="right">1</td><td align="right">10/100</td><td align="right">0.100</td><td align="right">$0.139</td><td align="right">59s</td></tr><tr><td>tt-simple-int</td><td align="right">2</td><td align="right"><strong>100/100</strong></td><td align="right">1.000</td><td align="right">$0.536</td><td align="right">188s</td></tr><tr><td>tt-simple-int</td><td align="right">3</td><td align="right"><strong>100/100</strong></td><td align="right">1.000</td><td align="right">$0.532</td><td align="right">186s</td></tr><tr><td>tt-simple-sep</td><td align="right">0–3</td><td align="right">100/100 ×4</td><td align="right">1.000</td><td align="right">~$0.159</td><td align="right">~76s</td></tr></tbody></table>
+<p><strong>The integrated cell is bimodal on v0.6.5 — 2 of 4 repeats truncate to exactly 10 rows —
+while the <code dir="auto">separate</code> control is complete 4 of 4 at a third of the cost.</strong> The v0.6.4 → v0.6.5
+“recovery” in §1/§3 was therefore a coin flip that landed differently on each side, and it
+is a live demonstration that this audit trail’s n=3, 1-repeat grid cannot resolve a
+non-deterministic completeness failure. Two further consequences worth stating:</p>
+<ul>
+<li><strong><code dir="auto">scalar_accuracy</code> is 0.50 in all eight runs above, identical whether 10 or 100 rows came
+back.</strong> The scalar fields are correct either way, so a truncated document scores the same
+as a complete one on that metric — the row loss is only visible in list recall.</li>
+<li>The wider v0.6.5 cross-config grid (7 synthetic docs, product-default Sonnet 5) finds the
+same hazard much <strong>worse</strong> at scale: mean recall <strong>0.294</strong>, and on an 800-row document the
+transaction list is <strong>absent from the response entirely</strong>. See
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/config-guidance.md">config-guidance §2</a>.</li>
+</ul>
+<p><strong>Guidance unchanged and reinforced:</strong> use <strong><code dir="auto">separate</code></strong> confidence (the default) on
+list-heavy documents. Do not use <code dir="auto">integrated</code> with simple extraction.</p>
+<p>Data: <code dir="auto">benchmarks/results/v0.6.5-intconf-sonnet46/</code>. Reproduce:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/make_configs.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">intconf</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--class</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">bank_statement</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet46</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">intconf</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="python3 benchmarks/harness/make_configs.py --suite intconf --class bank_statement --set extraction_model=sonnet46AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite intconf --native-upload"><div></div></button></div></figure></div>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="4-what---compare-flagged-and-why-none-of-it-is-a-regression">4. What <code dir="auto">--compare</code> flagged, and why none of it is a regression</h2><a class="sl-anchor-link" href="#4-what---compare-flagged-and-why-none-of-it-is-a-regression"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “4. What --compare flagged, and why none of it is a regression”</span></a></div>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">REGRESSIONS (4)                 all cost-only, no accuracy/recall/failure regressions</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">tt-simple-int|longdesc_100   cost +298%   ← this sample returned 100 rows, not 10 (§3.1)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">tl-adv-sep|longdesc_100      cost  +48%   ← within cell sampling spread (CV 0.68/0.77)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">bda-adv-sep|tiny_form        cost  +49%   ← $0.039→$0.058 on the 5-row doc; absolute Δ $0.019</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">bda-adv-sep|small_narrow     cost  +18%   ← within cell sampling spread; cell mean is −14%</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">IMPROVEMENTS (2)                both single-sample; §3.1 shows the first is noise</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">tt-simple-int|longdesc_100   completeness_recall +0.900</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">llm-simple-sep|tiny_form     completeness_recall +0.800</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">CELL-LEVEL REGRESSIONS (0)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">CELL-LEVEL IMPROVEMENTS (2)      ← not real; see §3.1</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">tt-simple-int  recall 0.700→1.000</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">llm-simple-sep recall 0.607→0.873</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="REGRESSIONS (4)                 all cost-only, no accuracy/recall/failure regressions  tt-simple-int|longdesc_100   cost +298%   ← this sample returned 100 rows, not 10 (§3.1)  tl-adv-sep|longdesc_100      cost  +48%   ← within cell sampling spread (CV 0.68/0.77)  bda-adv-sep|tiny_form        cost  +49%   ← $0.039→$0.058 on the 5-row doc; absolute Δ $0.019  bda-adv-sep|small_narrow     cost  +18%   ← within cell sampling spread; cell mean is −14%IMPROVEMENTS (2)                both single-sample; §3.1 shows the first is noise  tt-simple-int|longdesc_100   completeness_recall +0.900  llm-simple-sep|tiny_form     completeness_recall +0.800CELL-LEVEL REGRESSIONS (0)CELL-LEVEL IMPROVEMENTS (2)      ← not real; see §3.1  tt-simple-int  recall 0.700→1.000  llm-simple-sep recall 0.607→0.873"><div></div></button></div></figure></div>
+<p>The four per-run cost flags are the row-level threshold (+15%) firing on single samples;
+the variance-aware cell-level pass — the one designed to separate a real cost shift from
+agentic/size noise — reports none of them as regressions, and <code dir="auto">bda-adv-sep</code>’s <strong>cell</strong> mean
+actually fell 14%.</p>
+<p><strong>A gap this release exposed in the comparison tool.</strong> <code dir="auto">aggregate.py --compare</code> applies its
+variance-aware treatment to <strong>cost</strong> but not to <strong>completeness/accuracy</strong>, so a
+non-deterministic recall swing is promoted to a headline “CELL-LEVEL IMPROVEMENT” from a
+single sample — exactly what happened here, in the direction that flatters the release.
+Recall/accuracy deltas should get the same spread-aware gate as cost, or the grid needs
+<code dir="auto">repeats > 1</code> on the cells with known non-deterministic failure modes.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="5-reproduce">5. Reproduce</h2><a class="sl-anchor-link" href="#5-reproduce"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “5. Reproduce”</span></a></div>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">source</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">/home/ec2-user/projects/idp1/.venv/bin/activate</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#919F9F;--1:#5F636F"># or any env with idp_common + reportlab/matplotlib</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">export</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">PYTHONPATH</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#C5E478;--1:#3B61B0">$PWD</span><span style="--0:#D6DEEB;--1:#403F53">/</span><span style="--0:#C5E478;--1:#3B61B0">lib</span><span style="--0:#D6DEEB;--1:#403F53">/</span><span style="--0:#C5E478;--1:#3B61B0">idp_common_pkg</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">sts</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">get-caller-identity</span><span style="--0:#D6DEEB;--1:#403F53">           </span><span style="--0:#919F9F;--1:#5F636F"># confirm deployment account</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># 1. deploy the PREV published release, benchmark it</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">deploy</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--admin-email</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;you></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--region</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--wait</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--template-url</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.4.yaml</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/gen_corpus.py</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/make_configs.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">corefast</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--class</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">bank_statement</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">corefast</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">6</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--run</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/run-&#x3C;stamp></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--out</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.4</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># 2. upgrade the SAME stack in place, re-run the identical grid</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">deploy</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--from-code</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">.</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--region</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--wait</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">corefast</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">6</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">default</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--run</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/run-&#x3C;stamp2></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--out</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.5</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># 3. compare + charts</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--compare</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.5/summary.json</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--baseline</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.4/summary.json</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--figures-compare</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.5/summary.json</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.4/summary.json</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--labels</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">v0.6.5</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">v0.6.4</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="source /home/ec2-user/projects/idp1/.venv/bin/activate   # or any env with idp_common + reportlab/matplotlibexport PYTHONPATH=$PWD/lib/idp_common_pkgAWS_PROFILE=default aws sts get-caller-identity           # confirm deployment accountidp-cli deploy --stack-name <STACK> --admin-email <you> --region us-west-2 --wait \  --template-url https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.4.yamlpython3 benchmarks/harness/gen_corpus.pypython3 benchmarks/harness/make_configs.py --suite corefast --class bank_statementAWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite corefast --native-upload --max-inflight 6AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/v0.6.4idp-cli deploy --stack-name <STACK> --from-code . --region us-west-2 --waitAWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite corefast --native-upload --max-inflight 6AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp2> --out benchmarks/results/v0.6.5python3 benchmarks/harness/aggregate.py --compare benchmarks/results/v0.6.5/summary.json --baseline benchmarks/results/v0.6.4/summary.jsonpython3 benchmarks/harness/aggregate.py --figures-compare benchmarks/results/v0.6.5/summary.json benchmarks/results/v0.6.4/summary.json --labels v0.6.5 v0.6.4"><div></div></button></div></figure></div>
+<p><strong>Caveats / honesty</strong></p>
+<ul>
+<li>Costs are estimates from <code dir="auto">pricing.yaml</code> (rates as of 2026-08; intro pricing may apply).</li>
+<li><strong>n = 3 docs per cell, 1 repeat</strong>, and the three documents differ greatly in size, so
+per-cell cost CV is 0.6–0.99. Per-cell cost deltas in §1 are therefore <strong>not</strong>
+individually significant; the reliable signals are the <strong>aggregate cost decomposition</strong>
+(§2), the <strong>paired per-(cell,doc)</strong> accuracy/recall (exact and stable), and the token
+totals that explain the cost movement.</li>
+<li>The two recall “improvements” in §1/§3 rest on <strong>one</strong> measurement per document. The
+<code dir="auto">intconf</code> repeated-measures run (§3.1) shows the integrated-confidence one is noise; the
+<code dir="auto">llm-simple-sep</code> one was <strong>not</strong> re-measured and should be treated as unconfirmed. The
+claim this entry stands behind is <strong>“no regression”</strong>, not “+0.057 recall”.</li>
+<li>Only the <code dir="auto">corefast</code> grid was run for this A/B. The scaling series and the reference
+(real, labeled) corpora were not run against v0.6.4, so this entry makes <strong>no claim</strong>
+about release-over-release behaviour on documents larger than 100 rows or on real-world
+corpora.</li>
+</ul></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Release Benchmark: v0.6.0 vs v0.5.16</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Fix Verification: v0.6.5 correctness fixes</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>
