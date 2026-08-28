@@ -799,28 +799,11 @@ def _hourly_ever_written(before_date: str) -> bool:
     # the raw probe when hourly is missing; only if BOTH tables are
     # missing (or hourly is missing AND raw is empty on prior dates) do
     # we return False and let the caller treat it as day-1.
-    # Round-17 review fix: a bare ``"does not exist"`` marker matches
-    # column / bucket / database / role / permission errors too. Bind
-    # the phrase to the specific table names we probe so a
-    # ColumnNotFound error can't sneak through as "day-1 signal".
-    _TABLE_MISSING_MARKERS = (  # noqa: N806
-        "table_not_found",
-        "entitynotfoundexception",
-        "table not found",
-        # Bind "does not exist" to the specific hourly/raw table names
-        # this probe uses, so unrelated does-not-exist errors don't
-        # false-positive.
-        "metering_hourly` does not exist",
-        'metering_hourly" does not exist',
-        "metering_hourly' does not exist",
-        "metering` does not exist",
-        'metering" does not exist',
-        "metering' does not exist",
-    )
-
-    def _is_table_missing(exc: BaseException) -> bool:
-        m = str(exc).lower()
-        return any(marker in m for marker in _TABLE_MISSING_MARKERS)
+    # Round-19 review fix (#806): use the shared
+    # ``_is_athena_table_missing`` helper introduced in round-18
+    # instead of the hand-copied marker set that lived here. The
+    # helper unifies the drift class that rounds 6/7/8/11/15/16/17
+    # each edited a different copy of.
 
     def _probe_raw() -> Optional[bool]:
         """Return True if raw metering has prior-date rows, False if it's
@@ -830,7 +813,7 @@ def _hourly_ever_written(before_date: str) -> bool:
             rows = _run_athena_query_with_results(raw_sql, emit_self_cost=False)
             return bool(rows)
         except Exception as e:
-            if _is_table_missing(e):
+            if _is_athena_table_missing(e, "metering"):
                 logger.info(
                     f"_hourly_ever_written: raw metering table also missing "
                     f"({e}); no prior-date data possible."
@@ -852,7 +835,7 @@ def _hourly_ever_written(before_date: str) -> bool:
             return bool(raw_rows)
         except Exception as e:
             last_error = e
-            if _is_table_missing(e):
+            if _is_athena_table_missing(e, "metering_hourly"):
                 # Hourly table missing. STILL consult raw before deciding —
                 # raw metering may hold historical rows even if hourly was
                 # dropped, and that means we're NOT day-1.
@@ -1636,9 +1619,30 @@ def _bedrock_price_for_model(model: Optional[str]) -> Dict[str, float]:
     key = f"bedrock/{model}"
     entry = pricing_map.get(key)
     if entry:
+        # Round-19 review fix (#1637): don't hardcode
+        # ``inputTokens``/``outputTokens`` key names — the map is
+        # populated from the config's ``unit.name`` which is whatever
+        # the operator wrote in pricing.yaml (could be ``input_tokens``,
+        # ``input-tokens``, ``inputToken`` singular, etc.). Match any
+        # case- and separator-insensitive variant so a config-side
+        # rename doesn't silently produce zero cost.
+        def _pick(entry: Dict[str, float], *candidates: str) -> float:
+            # Try exact match first (fast path for the current standard).
+            for c in candidates:
+                if c in entry:
+                    return entry[c]
+            # Fallback: normalize keys and candidates for match.
+            norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())  # noqa: E731
+            normalized_entry = {norm(k): v for k, v in entry.items()}
+            for c in candidates:
+                v = normalized_entry.get(norm(c))
+                if v is not None:
+                    return v
+            return 0.0
+
         return {
-            "in": entry.get("inputTokens", 0.0),
-            "out": entry.get("outputTokens", 0.0),
+            "in": _pick(entry, "inputTokens", "input_tokens", "inputToken"),
+            "out": _pick(entry, "outputTokens", "output_tokens", "outputToken"),
         }
     logger.error(
         f"No pricing entry for {key!r} in ConfigurationTable. "
@@ -1856,43 +1860,11 @@ def _partition_already_written(
         rows = _run_athena_query_with_results(sql, emit_self_cost=False)
         return bool(rows)
     except Exception as e:
-        # Only "table does not exist" is safe to swallow — Athena reports
-        # this as TABLE_NOT_FOUND, EntityNotFoundException, or (from Glue)
-        # "does not exist" in the message. First INSERT to a table on
-        # Athena creates partitions on demand, so treating this as
-        # not-written is correct on the first-invocation-after-deploy path.
-        msg = str(e).lower()
-        # Match ONLY the specific table-missing error shapes Athena/Glue
-        # actually emit. Round-7 fix: added the single-quote
-        # fully-qualified form Athena uses in practice
-        # (`Table 'awsdatacatalog.<db>.<name>' does not exist`) —
-        # the round-6 narrowing only had backtick/double-quote forms,
-        # which never matched real Athena output. A broader "does not
-        # exist" substring would fail-open on missing bucket / database /
-        # column / role, so we still bind the phrase to the table name.
-        tbl = table.lower()
-        table_missing_markers = (
-            "table_not_found",
-            "entitynotfoundexception",
-            "table not found",
-            f"table `{tbl}` does not exist",
-            f'table "{tbl}" does not exist',
-            f"table '{tbl}' does not exist",
-            # Athena's real form includes the catalog+db prefix:
-            f".{tbl}' does not exist",
-            f".{tbl}` does not exist",
-            f'.{tbl}" does not exist',
-            # Trino/Athena engine v3 also emits the fully-quoted-per-
-            # segment form: Table "catalog"."db"."tbl" does not exist —
-            # the segment BEFORE `tbl` ends in `"."` and the segment
-            # AROUND tbl is `"tbl"`. Round-8 review fix.
-            f'."{tbl}" does not exist',
-            # Hive/backtick fully-qualified form:
-            # `catalog`.`db`.`tbl` — the segment before tbl ends in
-            # `` `.` `` (backtick-dot-backtick). Round-11 review fix.
-            f".`{tbl}` does not exist",
-        )
-        if any(m in msg for m in table_missing_markers):
+        # Round-19 review fix (#806): use the shared
+        # ``_is_athena_table_missing`` helper — the marker set here
+        # used to be hand-copied and drifted independently over rounds
+        # 6/7/8/11/15/16/17.
+        if _is_athena_table_missing(e, table):
             logger.info(
                 f"Idempotency check for {table}: table does not exist yet — "
                 f"assuming not written. ({e})"
@@ -1948,6 +1920,35 @@ def _run_athena(
         kwargs["ClientRequestToken"] = idempotency_key[:128]
     response = athena_client.start_query_execution(**kwargs)
     query_id = response["QueryExecutionId"]
+    # Round-19 review fix (#1948): Athena's ClientRequestToken idempotency
+    # caches ALL prior QueryExecutionIds for a given token — including
+    # FAILED and CANCELLED ones. On Lambda async retry (same anchor time
+    # → same token), Athena returns the previously-FAILED QueryExecutionId
+    # and our _wait_for_athena raises the same failure again → next retry
+    # returns the same FAILED QID → the retry loop is defeated forever.
+    # Fix: after start_query_execution, if the returned execution is
+    # already in a terminal-failure state, we know Athena served us a
+    # cached failure; start a FRESH query without the token so the
+    # retry actually retries.
+    if idempotency_key:
+        try:
+            initial = athena_client.get_query_execution(QueryExecutionId=query_id)
+            initial_state = initial["QueryExecution"]["Status"]["State"]
+        except Exception as e:  # nosec — tolerate transient poll error here
+            logger.warning(
+                f"Cached-failure probe for {query_id} failed ({e}); "
+                f"proceeding to _wait_for_athena as usual."
+            )
+            initial_state = None
+        if initial_state in ("FAILED", "CANCELLED"):
+            logger.warning(
+                f"Athena returned cached {initial_state} QueryExecutionId "
+                f"{query_id!r} for idempotency token — retry would loop "
+                f"forever. Starting a FRESH query without the token."
+            )
+            kwargs.pop("ClientRequestToken", None)
+            response = athena_client.start_query_execution(**kwargs)
+            query_id = response["QueryExecutionId"]
     _wait_for_athena(query_id, emit_self_cost=emit_self_cost)
     return query_id
 
@@ -2099,7 +2100,11 @@ def _wait_for_athena(
                         f"of poll throttle; last error: {poll_err}"
                     ) from poll_err
                 continue
-            # Non-throttle client error — propagate.
+            # Non-throttle client error — propagate. Round-19 review
+            # fix (#2103): stop the orphan query first so it doesn't
+            # keep scanning + billing while Lambda gives up. Matches
+            # the throttle/BotoCoreError timeout paths above.
+            _stop_orphan(query_id)
             raise
         _consecutive_throttles = 0
         state = response["QueryExecution"]["Status"]["State"]

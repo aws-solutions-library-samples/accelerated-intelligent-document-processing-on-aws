@@ -354,7 +354,14 @@ class SaveReportingData:
                 glue_type = "double"
             elif field.type == pa.float32():
                 glue_type = "float"
-            elif field.type == pa.timestamp("ms"):
+            elif field.type == pa.timestamp("ms") or field.type == pa.timestamp(
+                "ms", tz="UTC"
+            ):
+                # Round-19 review fix (#357): also match the tz-aware
+                # timestamp variant. Previously ONLY naive
+                # ``pa.timestamp("ms")`` mapped to Glue "timestamp";
+                # tz-aware fell through to "string" and Athena time-range
+                # queries silently returned nothing for those columns.
                 glue_type = "timestamp"
             else:
                 # Default to string for unknown types

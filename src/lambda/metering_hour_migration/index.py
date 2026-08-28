@@ -547,47 +547,55 @@ def _infer_hour(bucket: str, key: str) -> tuple[str, bool]:
         # wanted columns even though only row 0 is consumed; on
         # multi-MB legacy files at 50-worker concurrency that was a
         # 50× larger memory footprint than needed.
+        # Round-19 review fix (#551): the round-18 "scan through nulls"
+        # loop only saw row 0 because ``iter_batches(batch_size=1)``
+        # produced 1-row batches. Real fix: iterate MULTIPLE batches
+        # until we find a non-null value in any wanted column, then
+        # stop. Keeps the memory-savings intent (streaming batches,
+        # not full-file read) while actually scanning past null rows.
+        # Cap iterations at a modest ROW_SCAN_CAP so a degenerate
+        # all-nulls parquet doesn't stream forever.
+        ROW_SCAN_CAP = 128  # noqa: N806
+        rows_scanned = 0
         try:
-            batch = next(pf.iter_batches(batch_size=1, columns=wanted))
+            batches = pf.iter_batches(batch_size=16, columns=wanted)
+            for batch in batches:
+                for candidate in wanted:  # honours wanted-order preference
+                    col = batch.column(candidate)
+                    for row_idx in range(len(col)):
+                        rows_scanned += 1
+                        ts = col[row_idx].as_py()
+                        if ts is None:
+                            if rows_scanned >= ROW_SCAN_CAP:
+                                break
+                            continue
+                        # Round-18 review fix (#578): tz-aware non-UTC →
+                        # convert to UTC before strftime so the file
+                        # lands in the correct hour subdirectory.
+                        if ts.tzinfo is None:
+                            logger.warning(
+                                f"infer_hour: {key} column {candidate} row "
+                                f"{row_idx} returned a naive datetime "
+                                f"({ts.isoformat()}). Assuming UTC."
+                            )
+                            ts_utc = ts
+                        else:
+                            from datetime import timezone as _tz
+
+                            ts_utc = ts.astimezone(_tz.utc)
+                        return (ts_utc.strftime("%H"), True)
+                    if rows_scanned >= ROW_SCAN_CAP:
+                        break
+                if rows_scanned >= ROW_SCAN_CAP:
+                    break
         except StopIteration:
-            # No rows at all — treat as un-inferrable.
+            pass
+        if rows_scanned == 0:
             logger.warning(
                 f"infer_hour: {key} has zero rows in {wanted} — cannot "
                 f"infer hour; leaving file in place for operator to inspect"
             )
             return ("00", False)
-        # Round-18 review fix (#551): scan through nulls to find the first
-        # non-null row, not just row 0. A legacy parquet whose row 0 has
-        # NULL timestamp AND NULL initial_event_time would previously
-        # return "un-inferrable" and the whole migration would FAIL, even
-        # though later rows have valid timestamps. Iterate row 0..N; if
-        # every row is null across every wanted column, only THEN fall
-        # through as un-inferrable.
-        for candidate in wanted:  # honours the wanted-order preference
-            col = batch.column(candidate)
-            for row_idx in range(len(col)):
-                ts = col[row_idx].as_py()
-                if ts is None:
-                    continue
-                # Round-18 review fix (#578): a tz-AWARE non-UTC datetime
-                # would silently return the LOCAL-tz hour; the partition
-                # contract is UTC. Convert to UTC before strftime so
-                # non-UTC-tz producers still land in the correct hour
-                # subdirectory. The naive branch keeps its "assume UTC"
-                # warning (Lambda always runs UTC, so real drift is rare).
-                if ts.tzinfo is None:
-                    logger.warning(
-                        f"infer_hour: {key} column {candidate} row {row_idx} "
-                        f"returned a naive datetime ({ts.isoformat()}). "
-                        f"Assuming UTC. If the writer wrote wall-clock in "
-                        f"another tz, the file will land under the wrong hour."
-                    )
-                    ts_utc = ts
-                else:
-                    from datetime import timezone as _tz
-
-                    ts_utc = ts.astimezone(_tz.utc)
-                return (ts_utc.strftime("%H"), True)
     except Exception as e:
         # Log with enough detail for the operator to correlate — a
         # KMS/IAM issue looks identical to a corrupted-parquet issue in

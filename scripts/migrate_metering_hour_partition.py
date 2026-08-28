@@ -108,26 +108,33 @@ def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
     wanted = [c for c in ("timestamp", "initial_event_time") if c in available_names]
     if not wanted:
         return None
-    # First batch of ONLY the wanted columns — O(one row group ×
-    # wanted-columns) not O(whole file). Round-8 review fix.
-    try:
-        batch = next(pf.iter_batches(batch_size=1, columns=wanted))
-    except StopIteration:
-        return None
-    # Round-18 review fix: scan for the first non-null row (row 0 can be
-    # NULL) and convert tz-aware datetimes to UTC before strftime — the
-    # hour partition contract is UTC and a tz-aware non-UTC datetime
-    # would otherwise silently land in the local-tz hour.
+    # Round-19 review fix (#551): iterate MULTIPLE batches to find
+    # the first non-null row across wanted columns. Previous
+    # ``batch_size=1`` produced 1-row batches so the row-scan loop
+    # from round-18 only ever saw row 0.
     from datetime import timezone as _tz
 
-    for candidate in wanted:
-        col = batch.column(candidate)
-        for row_idx in range(len(col)):
-            ts = col[row_idx].as_py()
-            if ts is None:
-                continue
-            ts_utc = ts if ts.tzinfo is None else ts.astimezone(_tz.utc)
-            return ts_utc.strftime("%H")
+    ROW_SCAN_CAP = 128  # noqa: N806
+    rows_scanned = 0
+    try:
+        for batch in pf.iter_batches(batch_size=16, columns=wanted):
+            for candidate in wanted:
+                col = batch.column(candidate)
+                for row_idx in range(len(col)):
+                    rows_scanned += 1
+                    ts = col[row_idx].as_py()
+                    if ts is None:
+                        if rows_scanned >= ROW_SCAN_CAP:
+                            break
+                        continue
+                    ts_utc = ts if ts.tzinfo is None else ts.astimezone(_tz.utc)
+                    return ts_utc.strftime("%H")
+                if rows_scanned >= ROW_SCAN_CAP:
+                    break
+            if rows_scanned >= ROW_SCAN_CAP:
+                break
+    except StopIteration:
+        pass
     return None
 
 
