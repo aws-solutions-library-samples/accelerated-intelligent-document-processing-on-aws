@@ -329,7 +329,7 @@ The Document Process Flow visualization is particularly useful for troubleshooti
 
 ## Download Document Data
 
-The Document Details page exposes a **Download** dropdown in the page header that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console.
+The Document Details page exposes a **Download** dropdown in the page header that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console. The same three scopes are available in bulk from the document list — see [Bulk download from the document list](#bulk-download-from-the-document-list) below.
 
 ### Folder layout
 
@@ -353,7 +353,25 @@ A self-describing `manifest.json` is written at the ZIP root capturing the expor
 
 ### Fetching mechanics
 
-Every file in the archive is fetched directly from S3 using a short-lived presigned URL generated client-side with your browser's Cognito credentials, preserving binary content byte-for-byte. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. Files in the **OutputBucket** and **InputBucket** are signed client-side with your browser's Cognito credentials, which saves a round trip. Files in the **EvaluationBaselineBucket** are signed by the backend `getFilePresignedUrl` resolver instead — the browser's Cognito identity role deliberately does not grant read access to the baseline bucket, so signing those in the browser produces a URL that fails with HTTP 403 at fetch time. Up to 5 files are fetched in parallel. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+
+### Bulk download from the document list
+
+The document list's **Download** menu covers both the table itself and the artifacts of the documents you select. The two are grouped separately because they differ in scope:
+
+- **Document list → Table as Excel (N rows)** — the document list as a spreadsheet, covering every row currently passing the filter (not just the selected ones). This is the same export the list's download button previously offered on its own.
+- **Selected documents (N) → All data / Predictions / Baselines (ZIP)** — the same three scopes described above, applied to every document you tick in the table. Disabled until you select at least one row; **Baselines** additionally requires that at least one selected document has an evaluation baseline.
+
+A bulk archive contains **one top-level folder per document**, named after its object key, each laid out exactly as a single-document archive (`output/`, `baseline/`, `input/`, `document-attributes.json`, `manifest.json`). An additional `manifest.json` at the ZIP root indexes every document with its folder, file count, and error count. Documents whose keys would collide once sanitized for the filesystem (for example `a/b.pdf` and `a_b.pdf`) get a numeric suffix rather than overwriting each other.
+
+Selecting a scope opens a confirmation dialog stating how many documents are included; for **All data** it also carries the page-image and source-document toggles. The progress modal reports both file and document counts (`24 of 60 files processed · 3 of 5 documents`), and **Cancel** stops the export at the next file. Per-file failures are recorded per document and reported in the completion dialog prefixed with the document they belong to, so one document with a permissions problem does not spoil the rest of the archive.
+
+Two practical limits, since the archive is assembled in your browser rather than server-side:
+
+- Selections above 25 documents raise a warning in the confirmation dialog. Large exports take minutes and hold the whole archive in tab memory, so prefer several smaller batches.
+- **Include page images** multiplies size by roughly the page count; leave it off for bulk exports unless you specifically need the images.
+
+For unattended or very large extractions, use the CLI instead — `idp-cli download-results` pulls a batch's outputs straight from S3 with no browser involved.
 
 ## Document Versions
 

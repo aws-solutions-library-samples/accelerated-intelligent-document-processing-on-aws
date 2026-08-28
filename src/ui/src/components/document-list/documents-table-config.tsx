@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
 import { Button, ButtonDropdown, CollectionPreferences, Link, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
-import type { CollectionPreferencesProps } from '@cloudscape-design/components';
+import type { ButtonDropdownProps, CollectionPreferencesProps } from '@cloudscape-design/components';
 import type { TableProps } from '@cloudscape-design/components';
+
+import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
 
 import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH } from '../../routes/constants';
@@ -64,8 +66,69 @@ interface DocumentsCommonHeaderProps {
   setCustomDateRange?: (range: { startDateTime: string; endDateTime: string } | null) => void;
   onCustomDateRange?: () => void;
   downloadToExcel?: () => void;
+  /** Rows currently passing the filter — used for the Excel item's row count. */
+  totalItems?: unknown[];
+  /** Starts a bulk artifact export (ZIP) for the selected documents. */
+  onDownloadSelected?: ((scope: ExportScope) => void) | null;
+  isDownloadInProgress?: boolean;
   [key: string]: unknown;
 }
+
+/**
+ * Two download actions live in one menu, split into labeled groups because they
+ * differ in scope: the Excel export covers every filtered row, while the ZIP
+ * exports cover only the selected documents. The Excel item stays enabled while a
+ * ZIP export runs — only the ZIP scopes are held.
+ */
+export const buildDownloadMenuItems = (
+  selectedItems: readonly MappedDocument[],
+  filteredCount: number,
+  includeZipScopes = true,
+  isDownloadInProgress = false,
+): ButtonDropdownProps.ItemOrGroup[] => {
+  const selectedCount = selectedItems.length;
+  const noSelection = selectedCount === 0;
+  const blockedReason = (() => {
+    if (isDownloadInProgress) return 'A download is already in progress';
+    if (noSelection) return 'Select one or more documents in the table';
+    return undefined;
+  })();
+  const zipItem = (id: ExportScope, text: string, extraDisabled?: string): ButtonDropdownProps.Item => ({
+    id,
+    text,
+    iconName: 'download',
+    disabled: !!blockedReason || !!extraDisabled,
+    disabledReason: blockedReason ?? extraDisabled,
+  });
+
+  const listGroup: ButtonDropdownProps.ItemOrGroup = {
+    text: 'Document list',
+    items: [
+      {
+        id: 'excel',
+        text: `Table as Excel (${filteredCount} ${filteredCount === 1 ? 'row' : 'rows'})`,
+        iconName: 'download',
+      },
+    ],
+  };
+  if (!includeZipScopes) return [listGroup];
+
+  return [
+    listGroup,
+    {
+      text: `Selected documents (${selectedCount})`,
+      items: [
+        zipItem('all', 'All data (ZIP)'),
+        zipItem('predictions', 'Predictions (ZIP)'),
+        zipItem(
+          'baselines',
+          'Baselines (ZIP)',
+          !noSelection && !selectedItems.some(isBaselineAvailable) ? 'No selected document has an evaluation baseline' : undefined,
+        ),
+      ],
+    },
+  ];
+};
 
 export const KEY_COLUMN_ID = 'objectKey';
 export const UNIQUE_TRACK_ID = 'uniqueId';
@@ -291,6 +354,8 @@ export const DocumentsCommonHeader = ({
   onAbort,
   onClaimReview,
   onReleaseReview,
+  onDownloadSelected,
+  isDownloadInProgress,
   _currentUsername,
   ...props
 }: DocumentsCommonHeaderProps): React.JSX.Element => {
@@ -335,6 +400,21 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be released (has review owner and HITL not completed)
   const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted);
 
+  const downloadMenuItems = buildDownloadMenuItems(
+    selectedItems,
+    props.totalItems?.length ?? 0,
+    !!onDownloadSelected,
+    !!isDownloadInProgress,
+  );
+
+  const onDownloadItemClick = ({ detail }: { detail: { id: string } }) => {
+    if (detail.id === 'excel') {
+      props.downloadToExcel?.();
+      return;
+    }
+    onDownloadSelected?.(detail.id as ExportScope);
+  };
+
   return (
     <TableHeader
       title={resourceName}
@@ -352,15 +432,15 @@ export const DocumentsCommonHeader = ({
               ariaLabel="Refresh"
             />
           </span>
-          <span title="Download document list to Excel">
-            <Button
-              iconName="download"
-              variant="normal"
-              loading={props.loading}
-              onClick={() => props.downloadToExcel?.()}
-              ariaLabel="Download"
-            />
-          </span>
+          <ButtonDropdown
+            items={downloadMenuItems}
+            onItemClick={onDownloadItemClick}
+            loading={props.loading}
+            expandToViewport
+            ariaLabel="Download"
+          >
+            Download
+          </ButtonDropdown>
           {onClaimReview && (
             <Button variant="primary" disabled={!hasClaimableItems} onClick={onClaimReview}>
               Start Review
