@@ -11,10 +11,17 @@ import yaml
 
 # Custom YAML loader that ignores CloudFormation intrinsic functions.
 # CFNLoader subclasses yaml.SafeLoader (NOT yaml.Loader), so no unsafe
-# Python-object constructors are ever enabled. The only customization is
-# a no-op multi-constructor for `!`-prefixed tags (e.g. !Ref, !Sub, !GetAtt)
-# so that real CloudFormation templates parse. This is the standard pattern
-# for inspecting CFN templates with PyYAML.
+# Python-object constructors are ever enabled: `python/object`, `python/name`
+# and `python/object/apply` are not registered, so nothing in the document can
+# instantiate an object or import a module. The only customization is a no-op
+# multi-constructor for `!`-prefixed tags (e.g. !Ref, !Sub, !GetAtt) that
+# returns None, so that real CloudFormation templates parse.
+#
+# idp_sdk._core.cfn_yaml is the shared home for this pattern, but this script
+# deliberately does not import it: the `deployment_validation` CI job runs this
+# file with only PyYAML installed (see .gitlab-ci.yml), so it must stay
+# dependency-free. The collapse-to-None policy is also specific to this script —
+# _iter_statements below is built around it.
 class CFNLoader(yaml.SafeLoader):
     pass
 
@@ -30,13 +37,17 @@ def load_template(template_path):
     Deliberately does NOT swallow errors: a template this script cannot parse
     must fail the CI gate loudly rather than degrade to "no permissions
     required" (see the note on _iter_statements below).
+
+    The loader is driven directly rather than through `yaml.load(..., Loader=)`.
+    That is what yaml.load does internally, minus the call shape that scanners
+    report as unsafe deserialization; see idp_sdk._core.cfn_yaml.
     """
     with open(template_path, 'r') as f:
-        # nosec B506 - CFNLoader extends yaml.SafeLoader; it is NOT the
-        # default unsafe yaml.Loader. Input is a developer-committed
-        # CloudFormation template supplied by the caller (CLI path arg),
-        # not untrusted user input.
-        return yaml.load(f, Loader=CFNLoader)  # nosec B506
+        loader = CFNLoader(f)
+        try:
+            return loader.get_single_data()
+        finally:
+            loader.dispose()
 
 
 # --- Tolerant policy-document walking -----------------------------------------

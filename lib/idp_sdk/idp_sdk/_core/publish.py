@@ -36,6 +36,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from .cfn_yaml import load_cfn_template, make_cfn_loader
 from .s3_security import apply_enforce_ssl_only
 
 LIB_DEPENDENCY = "./lib/idp_common_pkg/idp_common"
@@ -943,51 +944,27 @@ STDERR:
     def _extract_function_name(self, dir_name, template_path):
         """Extract CloudFormation function name from template by matching CodeUri."""
         try:
-            # Create a custom loader that ignores CloudFormation intrinsic functions
-            class CFLoader(yaml.SafeLoader):
-                pass
-
-            def construct_unknown(loader, node):
+            # This only needs to read CodeUri, so an intrinsic collapses to its
+            # raw scalar: `CodeUri: !Sub '${X}/src'` yields '${X}/src', whose
+            # last path segment is still the directory name being matched.
+            #
+            # This replaces a hand-maintained list of 16 intrinsic tags. Any tag
+            # outside that list used to raise, get swallowed by the except below,
+            # and silently cost this function its answer — a template using, say,
+            # `!Transform` anywhere would resolve no function names at all.
+            def _raw_scalar(loader, tag_suffix, node):
                 if isinstance(node, yaml.ScalarNode):
                     return loader.construct_scalar(node)
-                elif isinstance(node, yaml.SequenceNode):
-                    return loader.construct_sequence(node)
-                elif isinstance(node, yaml.MappingNode):
-                    return loader.construct_mapping(node)
+                if isinstance(node, yaml.SequenceNode):
+                    return loader.construct_sequence(node, deep=True)
+                if isinstance(node, yaml.MappingNode):
+                    return loader.construct_mapping(node, deep=True)
                 return None
 
-            # Add constructors for CloudFormation intrinsic functions
-            cf_functions = [
-                "!Ref",
-                "!GetAtt",
-                "!Join",
-                "!Sub",
-                "!Select",
-                "!Split",
-                "!Base64",
-                "!GetAZs",
-                "!ImportValue",
-                "!FindInMap",
-                "!Equals",
-                "!And",
-                "!Or",
-                "!Not",
-                "!If",
-                "!Condition",
-            ]
-
-            for func in cf_functions:
-                CFLoader.add_constructor(func, construct_unknown)
-
-            with open(template_path, "r", encoding="utf-8") as f:
-                # nosec B506 - CFLoader extends yaml.SafeLoader (see class
-                # definition above); it is NOT the default unsafe yaml.Loader.
-                # Only a fixed list of CloudFormation intrinsic function tags
-                # (!Ref, !Sub, !GetAtt, ...) is registered, and their
-                # constructor only returns scalars/sequences/mappings.
-                # Input is a developer-committed CloudFormation template
-                # bundled with the SDK, not untrusted user input.
-                template = yaml.load(f, Loader=CFLoader)  # nosec B506
+            # Safe: cfn_yaml builds a yaml.SafeLoader subclass, so no
+            # Python-object construction is possible, and _raw_scalar returns
+            # only plain scalars/sequences/mappings. See that module's docstring.
+            template = load_cfn_template(template_path, make_cfn_loader(_raw_scalar))
 
             if not template or not isinstance(template, dict):
                 raise Exception(f"Failed to parse YAML template: {template_path}")
