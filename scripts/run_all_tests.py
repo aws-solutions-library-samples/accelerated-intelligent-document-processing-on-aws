@@ -114,6 +114,7 @@ RUN_ROOTS = [
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
     "src/lambda/external_idp_group_mapping",
+    "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
@@ -130,6 +131,10 @@ RUN_ROOTS = [
     # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
     # subdir for the same reason as scripts/sdlc/tests above.
     "scripts/security/tests",
+    # Repo-script gates (the Python arn:aws: partition checker). Same reason as
+    # the two above: the parent `scripts` root stays quarantined, so a new test
+    # dir under it is invisible to this gate unless registered here.
+    "scripts/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------

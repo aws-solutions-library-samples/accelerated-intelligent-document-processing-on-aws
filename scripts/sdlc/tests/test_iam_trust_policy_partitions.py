@@ -507,3 +507,50 @@ def test_service_role_docs_list_the_same_iam_actions():
     assert not undocumented, (
         f"IAM actions granted but not documented: {sorted(undocumented)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding from review: the AWS_PARTITION env-var wiring had nothing pinning it.
+#
+# query_knowledgebase_resolver builds the Bedrock inference-profile MODEL_ARN
+# itself and reads the partition from AWS_PARTITION, defaulting to "aws". Delete
+# the env var from the template and the resolver silently reverts to the exact
+# bug — every Knowledge Base query failing in GovCloud on an invalid model ARN —
+# with no test failing and the Python arn:aws: gate seeing nothing wrong, because
+# the Python is partition-correct and the TEMPLATE is what broke.
+# ---------------------------------------------------------------------------
+
+_KB_RESOLVER_TEMPLATE = "nested/api-resolvers/template.yaml"
+_KB_RESOLVER_SRC = (
+    "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py"
+)
+
+
+def _repo_root_path():
+    from pathlib import Path
+
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "template.yaml").is_file() and (parent / "publish.py").is_file():
+            return parent
+    raise RuntimeError("repo root not found")
+
+
+def test_kb_resolver_receives_the_partition_from_the_template():
+    """The resolver's MODEL_ARN partition must be injected, not defaulted."""
+    text = (_repo_root_path() / _KB_RESOLVER_TEMPLATE).read_text()
+    assert "AWS_PARTITION: !Ref AWS::Partition" in text, (
+        "query_knowledgebase_resolver builds its Bedrock MODEL_ARN from "
+        "AWS_PARTITION and falls back to 'aws' when unset. Without this env var "
+        "every Knowledge Base query fails in GovCloud on an invalid model ARN, "
+        "and no other test or gate notices."
+    )
+
+
+def test_kb_resolver_uses_the_partition_when_building_model_arn():
+    """And the resolver must actually USE it rather than a literal arn:aws:."""
+    text = (_repo_root_path() / _KB_RESOLVER_SRC).read_text()
+    assert 'os.environ.get("AWS_PARTITION")' in text
+    assert "arn:{AWS_PARTITION}:bedrock:" in text, (
+        "MODEL_ARN must interpolate AWS_PARTITION; a literal arn:aws: cannot "
+        "resolve outside the commercial partition."
+    )

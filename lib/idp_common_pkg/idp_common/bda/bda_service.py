@@ -45,8 +45,10 @@ class BdaService:
             partition = (
                 (identity.get("Arn") or "arn:aws:").split(":")[1] or "aws"
             )  # arn-partition-ok: fallback used only to PARSE the partition out
+            # `or ""` guards a missing Account: without it the ARN would read
+            # "…:None:data-automation-profile/…" and fail opaquely at invoke time.
             self._dataAutomationProfileArn = build_profile_arn(
-                region, account_id, partition
+                region, account_id or "", partition
             )
 
         self._bda_client = boto3.client("bedrock-data-automation-runtime")

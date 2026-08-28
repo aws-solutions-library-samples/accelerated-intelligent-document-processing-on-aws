@@ -56,6 +56,10 @@ SCAN_ROOTS = (
     "scripts",
     "patterns",
     "feature-platform",
+    # User-deployed Lambda hook samples and the benchmark harness both talk to
+    # AWS and are shipped to customers, so they belong in the gate.
+    "samples",
+    "benchmarks",
 )
 
 # Path fragments that exclude a file entirely.
@@ -129,8 +133,17 @@ def _arn_is_in_comment(line: str) -> bool:
     """
     hash_idx = -1
     in_single = in_double = False
+    escaped = False
     for i, ch in enumerate(line):
-        if ch == "'" and not in_double:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            # A backslash escape — the next char is literal, so a \" must not
+            # be read as closing a string (which would mis-detect the comment
+            # boundary and could suppress a real finding).
+            escaped = True
+        elif ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
             in_double = not in_double
@@ -143,16 +156,25 @@ def _arn_is_in_comment(line: str) -> bool:
 
 
 def _prose_line_ranges(source: str) -> set[int]:
-    """Line numbers belonging to documentation rather than ARN construction.
+    """Line numbers belonging to a DOCSTRING.
 
-    Covers docstrings AND any multi-line string literal — argparse ``epilog``
-    usage blocks, help text, banner strings. Two reasons this is the right cut:
+    Deliberately docstrings only, not every multi-line string. An earlier version
+    skipped all multi-line literals on the grounds that "a pragma cannot live
+    inside a string literal" — but that is defeated by the statement-level pragma
+    below: a comment after the closing quotes is inside the statement span, so a
+    non-docstring multi-line string IS suppressible. Skipping them all created two
+    real false negatives:
 
-      * A pragma cannot live inside a string literal; it would become part of the
-        string rather than a comment (the trap that made two `# nosec` markers in
-        this repo inert), so such lines could never be suppressed.
-      * Real ARN construction is a single-line f-string or literal. Prose that
-        merely *shows* an ARN is documentation, and gating it is pure noise.
+      * an IAM policy embedded as a triple-quoted JSON document — genuine ARN
+        construction, not prose;
+      * implicit string concatenation across lines
+        (``"arn:aws:s3:::" "bucket/key"``), which the parser sees as one
+        multi-line constant.
+
+    Docstrings stay exempt because they are documentation by definition and a
+    pragma inside one would become part of the string (the trap that made two
+    `# nosec` markers inert in this repo). Prose in a non-docstring literal —
+    argparse epilogs, usage banners — takes a pragma on the closing line.
 
     Returns an empty set if the file does not parse — a syntax error is not this
     checker's business.
@@ -178,11 +200,6 @@ def _prose_line_ranges(source: str) -> set[int]:
                     lines.update(
                         range(first.lineno, (first.end_lineno or first.lineno) + 1)
                     )
-        # Any string literal spanning more than one line.
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            end = node.end_lineno or node.lineno
-            if end > node.lineno:
-                lines.update(range(node.lineno, end + 1))
     return lines
 
 
@@ -222,14 +239,29 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
     spans = _statement_spans(source)
 
     def _statement_is_annotated(lineno: int) -> bool:
+        """True if a pragma applies to the ARN on `lineno`.
+
+        The pragma must appear AT or AFTER the ARN's line, and within the
+        innermost statement containing it. Directional on purpose:
+
+          * after allows the two positions a pragma legitimately takes — the
+            ARN's own line, and a later line of the same statement, because
+            `ruff format` moves a trailing comment to the closing line when it
+            reflows an expression, and a multi-line string literal can only be
+            annotated past its closing quotes;
+          * before is rejected, which closes the leak in the earlier
+            "anywhere in the statement" rule: a pragma on the OPENING line of a
+            large dict or call suppressed every ARN nested inside it, so one
+            intentional suppression silently covered unrelated ARNs added later.
+        """
         best = None
         for start, end in spans:
             if start <= lineno <= end:
                 best = (start, end)  # later (narrower) spans overwrite
         if best is None:
-            return False
-        start, end = best
-        return any(PRAGMA in ln for ln in lines[start - 1 : end])
+            return PRAGMA in lines[lineno - 1]
+        _, end = best
+        return any(PRAGMA in ln for ln in lines[lineno - 1 : end])
 
     findings = []
     for lineno, line in enumerate(lines, start=1):

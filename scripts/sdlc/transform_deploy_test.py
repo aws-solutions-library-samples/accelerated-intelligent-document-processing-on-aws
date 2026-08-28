@@ -90,7 +90,10 @@ DEFAULT_SAMPLE_DIR = "samples"
 # A string the OCR of page 1 must contain — same assertion the primary suite makes.
 SAMPLE_VERIFY_STRING = "ANYTOWN, USA 12345"
 
-Variant = namedtuple("Variant", ["key", "name", "cli_flag", "validate_fn", "caveat"])
+Variant = namedtuple(
+    "Variant",
+    ["key", "name", "cli_flag", "validate_fn", "needs_admin_email", "caveat"],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +295,9 @@ VARIANTS = (
         name="--headless transform deploy",
         cli_flag="--headless",
         validate_fn=validate_headless_deploy,
+        # The headless template has NO AdminEmail parameter (Cognito is stripped);
+        # passing one is a CloudFormation ValidationError.
+        needs_admin_email=False,
         caveat=None,
     ),
     Variant(
@@ -299,6 +305,8 @@ VARIANTS = (
         name="--govcloud transform deploy",
         cli_flag="--govcloud",
         validate_fn=validate_govcloud_deploy,
+        # --govcloud RETAINS the UI, so Cognito needs an admin email.
+        needs_admin_email=True,
         caveat=(
             "In a COMMERCIAL account this proves the CloudFront-free template "
             "deploys and processes documents. It does NOT prove GovCloud "
@@ -323,24 +331,41 @@ def _is_govcloud_region(region):
     return bool(region) and region.startswith("us-gov-")
 
 
-def _extra_deploy_params(variant, region):
-    """CFN parameter overrides needed to make the variant testable here.
+def _extra_deploy_params(variant, region, with_knowledge_base=False):
+    """CFN parameter overrides needed to make the variant testable and affordable.
 
-    The --govcloud transform defaults ConfigurationPreset to
-    lending-package-sample-govcloud, which pins GovCloud-invokable model IDs. In
-    a COMMERCIAL account some of those models do not exist, so the sample-document
-    test would fail on model availability rather than on anything the transform
-    did. Override back to the commercial preset when not in a us-gov-* region,
-    and leave the GovCloud default alone when we ARE in GovCloud.
+    Two overrides, both only meaningful for --govcloud (the --headless transform
+    REMOVES both parameters, so passing either would be a CloudFormation
+    ValidationError — the same class of mistake as passing AdminEmail):
+
+    1. ConfigurationPreset. The transform defaults it to
+       lending-package-sample-govcloud, which pins GovCloud-invokable model IDs.
+       In a COMMERCIAL account some of those do not exist, so the sample-document
+       test would fail on model availability rather than on anything the transform
+       did. Overridden back to the commercial preset outside us-gov-*; left alone
+       when we ARE in GovCloud.
+
+    2. DocumentKnowledgeBase. It defaults to "BEDROCK_KNOWLEDGE_BASE (Create)"
+       and the transform forces KnowledgeBaseVectorStore=OPENSEARCH_SERVERLESS, so
+       every run would stand up an OpenSearch Serverless collection — the slowest
+       and most expensive resource in the stack (minimum-OCU billing, slow to
+       create AND to delete) and nothing to do with what a template transform
+       does. Disabled by default; --with-knowledge-base opts back in for a
+       full-fidelity run.
     """
-    if variant.key == "govcloud" and not _is_govcloud_region(region):
-        return {"ConfigurationPreset": "lending-package-sample"}
-    return {}
+    if variant.key != "govcloud":
+        return {}
+    extra = {}
+    if not _is_govcloud_region(region):
+        extra["ConfigurationPreset"] = "lending-package-sample"
+    if not with_knowledge_base:
+        extra["DocumentKnowledgeBase"] = "DISABLED"
+    return extra
 
 
 def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
                 sample_dir=DEFAULT_SAMPLE_DIR, skip_doc_test=False, keep=False,
-                existing_stack=None):
+                existing_stack=None, with_knowledge_base=False):
     """Deploy (or reuse) a stack for one variant, validate it, always tear down.
 
     Returns a result dict shaped like the probe framework's:
@@ -375,7 +400,7 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
         if not role_arn:
             raise RuntimeError(f"Failed to create IAM resources for {stack_name}")
 
-        extra = _extra_deploy_params(variant, region)
+        extra = _extra_deploy_params(variant, region, with_knowledge_base)
         param_pairs = [f"PermissionsBoundaryArn={boundary_arn}"]
         param_pairs += [f"{k}={v}" for k, v in extra.items()]
         params = ",".join(param_pairs)
@@ -389,7 +414,7 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
             f"--from-code . --region {region} --wait --role-arn {role_arn} "
             f'--parameters "{params}"'
         )
-        if variant.key != "headless":
+        if variant.needs_admin_email:
             cmd += f" --admin-email {admin_email}"
 
         print(f"🚀 [{variant.name}] deploying {stack_name} in {region}...")
@@ -416,12 +441,25 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
             return result
 
         print(f"✅ [{variant.name}] stack reached {status_text}")
-        result.update(
-            variant.validate_fn(
-                stack_name, skip_doc_test=skip_doc_test,
-                sample=sample, sample_dir=sample_dir,
+        # Validation runs in its OWN try. Inside the outer one, a throttled
+        # list-stack-resources or an exception from run_inference_test would be
+        # reported as failure_type="deploy" and trigger a CF-event capture — i.e.
+        # "CloudFormation refused or rolled back", which is exactly the wrong
+        # reading (and the one the skill's failure guide gives). The stack
+        # demonstrably reached COMPLETE by this point, so nothing here is a deploy
+        # failure. Same misattribution class as the "COMPLETE" in
+        # "ROLLBACK_COMPLETE" bug fixed above.
+        try:
+            result.update(
+                variant.validate_fn(
+                    stack_name, skip_doc_test=skip_doc_test,
+                    sample=sample, sample_dir=sample_dir,
+                )
             )
-        )
+        except Exception as e:  # noqa: BLE001
+            print(f"❌ [{variant.name}] validation raised: {e}")
+            result["success"] = False
+            result["error"] = f"validation raised: {e}"
         if not result.get("success"):
             result["failure_type"] = "test"
         return result
@@ -486,6 +524,12 @@ def main(argv=None):
         help="structural assertions only (much faster; does NOT prove processing works)",
     )
     parser.add_argument(
+        "--with-knowledge-base", action="store_true",
+        help="keep the Bedrock Knowledge Base enabled on --govcloud (adds an "
+             "OpenSearch Serverless collection: the slowest and most expensive "
+             "resource in the stack; disabled by default)",
+    )
+    parser.add_argument(
         "--keep", action="store_true",
         help="leave the stack up for inspection (you must delete it)",
     )
@@ -527,6 +571,7 @@ def main(argv=None):
             skip_doc_test=args.skip_doc_test,
             keep=args.keep,
             existing_stack=args.stack_name,
+            with_knowledge_base=args.with_knowledge_base,
         )
         for v in selected
     ]

@@ -76,16 +76,22 @@ def test_comment_is_not_flagged(tmp_path):
     assert findings == []
 
 
-def test_multiline_usage_string_is_not_flagged(tmp_path):
-    """argparse epilog / usage blocks are prose and cannot carry a pragma."""
-    findings = _scan(
-        tmp_path,
+def test_multiline_usage_string_is_flagged_but_suppressible(tmp_path):
+    """Prose in a NON-docstring literal is flagged, and takes a pragma.
+
+    This originally asserted the opposite — that every multi-line literal is
+    exempt — which review showed hid real ARN construction (an IAM policy
+    embedded as a JSON document). Only docstrings are exempt now; other prose is
+    annotated past its closing quotes.
+    """
+    src = (
         'EPILOG = """\n'
         "Examples:\n"
         "  --model-arn arn:aws:bedrock:us-east-1:123456789012:custom-model/x\n"
-        '"""\n',
+        '"""{}\n'
     )
-    assert findings == []
+    assert len(_scan(tmp_path, src.format(""))) == 1
+    assert _scan(tmp_path, src.format("  # arn-partition-ok: help text")) == []
 
 
 def test_pragma_on_the_same_line_suppresses(tmp_path):
@@ -154,3 +160,90 @@ def test_repo_is_currently_clean():
         "hardcoded arn:aws: in first-party Python: "
         + "; ".join(f"{r}:{n}: {ln}" for r, n, ln in offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# False-negative classes found in review. Each was MISSED by the first version
+# of this gate, which skipped every multi-line string literal on the grounds
+# that "a pragma cannot live inside a string literal" — defeated by the
+# statement-level pragma the same gate provides.
+# ---------------------------------------------------------------------------
+
+
+def test_flags_arn_in_a_multiline_non_docstring_string(tmp_path):
+    """An IAM policy embedded as a JSON document is ARN construction, not prose."""
+    findings = _scan(
+        tmp_path,
+        'POLICY = """\n'
+        '{"Statement":[{"Resource":"arn:aws:s3:::bucket/*"}]}\n'
+        '"""\n',
+    )
+    assert len(findings) == 1
+
+
+def test_flags_implicit_string_concatenation_across_lines(tmp_path):
+    """The parser sees one multi-line constant; it is still a built ARN."""
+    findings = _scan(
+        tmp_path,
+        "x = (\n"
+        '    "arn:aws:s3:::"\n'
+        '    "bucket/key"\n'
+        ")\n",
+    )
+    assert len(findings) == 1
+
+
+def test_flags_multiline_fstring(tmp_path):
+    findings = _scan(tmp_path, 'x = f"""\narn:aws:s3:::{b}/key\n"""\n')
+    assert len(findings) == 1
+
+
+def test_multiline_string_is_suppressible_after_its_closing_quotes(tmp_path):
+    """Why the blanket skip was unnecessary: prose CAN be annotated."""
+    findings = _scan(
+        tmp_path,
+        'EPILOG = """\n'
+        "  --model-arn arn:aws:bedrock:us-east-1:1:custom-model/x\n"
+        '"""  # arn-partition-ok: help text\n',
+    )
+    assert findings == []
+
+
+def test_pragma_before_the_arn_does_not_suppress_it(tmp_path):
+    """The leak the directional rule closes.
+
+    A pragma on the OPENING line of a large dict/call used to suppress every ARN
+    nested inside it, so one intentional suppression silently covered unrelated
+    ARNs added later.
+    """
+    findings = _scan(
+        tmp_path,
+        "policy = {  # arn-partition-ok: this refers to something else\n"
+        '    "Resource": f"arn:aws:s3:::{bucket}",\n'
+        "}\n",
+    )
+    assert len(findings) == 1
+    assert findings[0][0] == 2
+
+
+def test_pragma_after_the_arn_in_the_same_statement_suppresses(tmp_path):
+    """ruff format moves a trailing comment here when it reflows the expression."""
+    findings = _scan(
+        tmp_path,
+        "x = (\n"
+        '    f"arn:aws:s3:::{bucket}"\n'
+        ")  # arn-partition-ok: reason\n",
+    )
+    assert findings == []
+
+
+def test_escaped_quote_does_not_confuse_comment_detection(tmp_path):
+    """A \\" must not be read as closing a string when locating the # comment."""
+    findings = _scan(tmp_path, 'x = "a\\" # arn:aws:s3:::b"\n')
+    assert len(findings) == 1
+
+
+def test_scan_roots_cover_shipped_lambda_samples_and_benchmarks():
+    """Both talk to AWS and ship to customers, so they belong in the gate."""
+    assert "samples" in gate.SCAN_ROOTS
+    assert "benchmarks" in gate.SCAN_ROOTS
