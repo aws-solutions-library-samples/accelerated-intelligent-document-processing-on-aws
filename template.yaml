@@ -5019,7 +5019,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "data_plane_lambda_hourly"
-        Description: "Hourly rollup of data-plane Lambda compute cost. See docs/reporting-sql-layer.md §10.4."
+        Description: "Hourly rollup of data-plane Lambda compute cost. See docs/reporting-sql-layer.md §2 (Tables) — row #6."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -8662,13 +8662,20 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
-              # Round-22 hardening: scope PutMetricData to the stack's own
-              # metric namespace so a compromised Lambda can't spam metrics
-              # to arbitrary namespaces or names that trigger alarms on
-              # neighbouring stacks.
+              # Round-23 review fix (#8671): the round-22 hardening
+              # scoped this grant ONLY to <StackName>, but the vendored
+              # agent-chat-processor in this Lambda runs the analytics
+              # agent whose athena_tool.py emits AthenaBytesScanned to
+              # IDPControlPlane (round-5 fix). A pure-<StackName>
+              # Condition silently DENIED that emit and zeroed the
+              # analytics-agent Athena cost row in control_plane_hourly.
+              # Fix: permit both namespaces this Lambda legitimately
+              # writes to.
               Condition:
                 StringEquals:
-                  "cloudwatch:namespace": !Ref AWS::StackName
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - athena:StartQueryExecution

@@ -1778,3 +1778,209 @@ class TestControlPlaneRollupFanOut:
         assert ordered == sorted(ordered)
         assert ordered[0][0] == "AFunction"
         assert ordered[-1][0] == "ZFunction"
+
+
+@pytest.mark.unit
+class TestDataPlaneLambdaRollup:
+    """Round-23 review coverage for the round-22 additions: the new
+    ``data_plane_lambda_hourly`` rollup and its sibling helpers.
+    """
+
+    def test_discover_data_plane_lambdas_uses_data_tag(self, rollup):
+        with (
+            patch.object(rollup, "_enumerate_stack_tree", return_value=["root"]),
+            patch.object(
+                rollup, "_get_resources_by_tag", return_value=["arn:...:function:X"]
+            ) as gr,
+        ):
+            arns = rollup._discover_data_plane_lambdas()
+        # The tag filter MUST include idp:plane=data and be scoped to
+        # the discovered stack tree.
+        gr.assert_called_once()
+        (tags,) = gr.call_args.args
+        assert tags == {
+            "aws:cloudformation:stack-name": ["root"],
+            "idp:plane": ["data"],
+        }
+        assert arns == ["arn:...:function:X"]
+
+    def test_data_plane_rollup_skips_when_partition_exists(self, rollup):
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=True),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            result = rollup._rollup_data_plane_lambda_hourly("2026-08-27", "13")
+        assert result == {"skipped": True, "reason": "partition_exists"}
+        write.assert_not_called()
+
+    def test_data_plane_rollup_writes_expected_row_shape(self, rollup):
+        """A single active Lambda produces one Lambda-only row (no
+        bedrock_model, no athena_bytes_sum, no bedrock_tokens_*, no
+        est_bedrock_cost / est_athena_cost)."""
+        arns = ["arn:aws:lambda:us-east-1:1:function:OCRFunction"]
+
+        cw = MagicMock()
+        # Duration + Invocations for one hour.
+        cw.get_metric_data.return_value = {
+            "MetricDataResults": [
+                {"Id": "d", "Values": [12000.0]},
+                {"Id": "i", "Values": [3.0]},
+            ]
+        }
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_data_plane_lambdas", return_value=arns),
+            patch.object(rollup, "cloudwatch_client", cw),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(1024, "arm64")),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            result = rollup._rollup_data_plane_lambda_hourly("2026-08-27", "13")
+        assert result["skipped"] is False
+        assert result["rows"] == 1
+        # Verify _write_parquet was called with the data_plane_lambda schema.
+        write.assert_called_once()
+        _, kwargs = write.call_args
+        assert kwargs.get("schema_name") == "data_plane_lambda"
+        written_rows = write.call_args[0][0]
+        assert len(written_rows) == 1
+        r = written_rows[0]
+        # Only Lambda-only columns present. Bedrock/Athena keys forbidden
+        # so a future accidental schema drift is caught at test time.
+        assert set(r.keys()) == {
+            "hour_ts",
+            "function_name",
+            "component",
+            "invocations",
+            "duration_ms_sum",
+            "est_lambda_cost",
+        }
+        assert r["function_name"] == "OCRFunction"
+        assert r["invocations"] == 3
+        assert r["duration_ms_sum"] == 12000
+        # 12s at 1GB arm64 → 12 * 1.3334e-5 = ~$0.00016 + 3 * $0.0000002 ≈ $0.00016
+        assert r["est_lambda_cost"] > 0
+
+    def test_data_plane_rollup_drops_zero_activity_rows(self, rollup):
+        arns = [
+            "arn:aws:lambda:us-east-1:1:function:IdleFn",
+            "arn:aws:lambda:us-east-1:1:function:ActiveFn",
+        ]
+        cw = MagicMock()
+
+        def cw_side_effect(**kwargs):
+            # queries=[Duration(Id=d), Invocations(Id=i)]; return zeros for
+            # IdleFn, real numbers for ActiveFn (identified via dim).
+            fn = kwargs["MetricDataQueries"][0]["MetricStat"]["Metric"]["Dimensions"][
+                0
+            ]["Value"]
+            if fn == "IdleFn":
+                return {
+                    "MetricDataResults": [
+                        {"Id": "d", "Values": []},
+                        {"Id": "i", "Values": []},
+                    ]
+                }
+            return {
+                "MetricDataResults": [
+                    {"Id": "d", "Values": [100.0]},
+                    {"Id": "i", "Values": [1.0]},
+                ]
+            }
+
+        cw.get_metric_data.side_effect = cw_side_effect
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_data_plane_lambdas", return_value=arns),
+            patch.object(rollup, "cloudwatch_client", cw),
+            patch.object(rollup, "_get_lambda_memory_mb", return_value=(512, "x86_64")),
+            patch.object(rollup, "_write_parquet") as write,
+        ):
+            result = rollup._rollup_data_plane_lambda_hourly("2026-08-27", "13")
+        assert result["skipped"] is False
+        # IdleFn dropped, ActiveFn written.
+        written_rows = write.call_args[0][0]
+        assert [r["function_name"] for r in written_rows] == ["ActiveFn"]
+
+    def test_data_plane_rollup_no_lambdas_soft_skips(self, rollup):
+        """Fresh install has no data-plane Lambdas yet — must NOT raise."""
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_data_plane_lambdas", return_value=[]),
+        ):
+            result = rollup._rollup_data_plane_lambda_hourly("2026-08-27", "13")
+        assert result == {"skipped": True, "reason": "no_data_lambdas"}
+
+    def test_data_plane_rollup_total_outage_raises(self, rollup):
+        """Round-14 pattern: if EVERY function's fetch fails, refuse to
+        write an empty partition — S3 idempotency would lock the hour
+        into a permanent hole. Async retry must replay."""
+        arns = ["arn:aws:lambda:us-east-1:1:function:FnA"]
+        cw = MagicMock()
+        cw.get_metric_data.side_effect = RuntimeError("CW throttled")
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "_discover_data_plane_lambdas", return_value=arns),
+            patch.object(rollup, "cloudwatch_client", cw),
+        ):
+            with pytest.raises(RuntimeError, match="all .* function fetches failed"):
+                rollup._rollup_data_plane_lambda_hourly("2026-08-27", "13")
+
+    def test_write_parquet_data_plane_schema_dispatch(self, rollup):
+        """The ``schema_name='data_plane_lambda'`` dispatch was
+        added in this commit; verify it uses the minimal Lambda-only
+        schema (round-22 audit caught the missing dispatch that would
+        have silently applied the control-plane schema to data-plane
+        rows, filling Bedrock/Athena columns with null junk)."""
+        import io as _io
+
+        import pyarrow.parquet as _pq
+
+        rows = [
+            {
+                "hour_ts": datetime(2026, 8, 27, 13, 0, tzinfo=timezone.utc),
+                "function_name": "OCRFunction",
+                "component": "ocr",
+                "invocations": 5,
+                "duration_ms_sum": 50000,
+                "est_lambda_cost": 0.001,
+            }
+        ]
+        s3 = MagicMock()
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "s3_client", s3),
+        ):
+            rollup._write_parquet(rows, "test-key", schema_name="data_plane_lambda")
+        # Read back the uploaded bytes and inspect the schema.
+        put_kwargs = s3.put_object.call_args.kwargs
+        body = put_kwargs["Body"]
+        pf = _pq.ParquetFile(_io.BytesIO(body))
+        col_names = set(pf.schema_arrow.names)
+        # Must NOT contain control-plane-only columns.
+        for forbidden in (
+            "bedrock_model",
+            "athena_bytes_sum",
+            "bedrock_tokens_in",
+            "bedrock_tokens_out",
+            "est_athena_cost",
+            "est_bedrock_cost",
+        ):
+            assert forbidden not in col_names, (
+                f"data_plane_lambda schema leaked control-plane column: {forbidden}"
+            )
+        assert col_names == {
+            "hour_ts",
+            "function_name",
+            "component",
+            "invocations",
+            "duration_ms_sum",
+            "est_lambda_cost",
+        }
+
+    def test_write_parquet_rejects_unknown_schema_name(self, rollup):
+        with (
+            patch.object(rollup, "_s3_object_exists", return_value=False),
+            patch.object(rollup, "s3_client", MagicMock()),
+        ):
+            with pytest.raises(ValueError, match="unknown schema_name"):
+                rollup._write_parquet([], "test-key", schema_name="bogus")

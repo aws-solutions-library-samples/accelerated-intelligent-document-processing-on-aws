@@ -38,6 +38,7 @@ Related module docs (developer tier):
 | 3 | `metering_docs_hourly` | hour × config_version | Same rollup Lambda, `INSERT INTO` from raw `metering` via a MAX-per-doc subquery |
 | 4 | `metering_docs_daily` | date × config_version | Same rollup Lambda, `INSERT INTO` from `metering_docs_hourly` |
 | 5 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, writes Parquet directly from CloudWatch data |
+| 6 | `data_plane_lambda_hourly` | hour × function_name × component | Same rollup Lambda, writes Parquet from CloudWatch `AWS/Lambda` Duration/Invocations for `idp:plane=data` Lambdas (Lambda compute cost only — Bedrock/Textract API costs are already in `metering_hourly` per-doc, so they are omitted here to avoid double-count) |
 
 **Column split — cost vs docs (Phase 1 change).** Cost columns
 (`sum_value`, `sum_cost`) live on `metering_hourly` / `metering_daily`

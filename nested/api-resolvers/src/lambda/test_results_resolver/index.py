@@ -1419,7 +1419,21 @@ def _execute_athena_query(query, database):
 
             time.sleep(2)
         else:
-            logger.error(f"Athena query timed out after {max_attempts * 2} seconds")
+            # Round-23 review fix (#1416): stop the orphan Athena query
+            # before returning — otherwise it keeps scanning bytes and
+            # billing indefinitely (up to the workgroup DML timeout,
+            # typically 30 min for Athena engine v2/v3). Best-effort;
+            # never raise from this fallback path.
+            try:
+                athena.stop_query_execution(QueryExecutionId=query_execution_id)
+                logger.warning(
+                    f"Athena query {query_execution_id} timed out after "
+                    f"{max_attempts * 2} seconds — stop_query_execution issued."
+                )
+            except Exception as stop_err:
+                logger.warning(
+                    f"stop_query_execution({query_execution_id}) failed: {stop_err}"
+                )
             return []
 
         # Round-21 review fix: emit the AthenaBytesScanned control-plane

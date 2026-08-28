@@ -287,12 +287,45 @@ def _is_athena_table_missing(exc_or_msg: Any, table: Optional[str] = None) -> bo
         # No table binding requested — unambiguous markers alone.
         return has_unambiguous
     tbl = table.lower()
-    # Round-20 review fix (#269): when ``table`` is supplied, an
-    # unambiguous marker MUST also mention the specific table we asked
-    # about — otherwise a probe of ``metering_hourly`` would false-
-    # positive on a ``TABLE_NOT_FOUND: metering_docs_hourly`` error
-    # affecting a DIFFERENT table.
-    if has_unambiguous and tbl in msg:
+    # Round-23 review fix (#295): round-20 tightened this to require
+    # the specific table name to appear in the message when the caller
+    # supplied a ``table`` argument, but that misclassifies bare
+    # ``TABLE_NOT_FOUND`` / ``EntityNotFoundException`` errors (which
+    # some Athena error variants emit without a fully-qualified name)
+    # as retryable — reproducing the round-6-era retry loop on
+    # permanent Glue conditions.
+    #
+    # Correct behavior: if the message HAS an unambiguous marker AND
+    # ALSO mentions the specific table → match. If it has an
+    # unambiguous marker but NO table name at all → also match (bare
+    # shape; we can't tell but the failure is genuinely a
+    # table-missing shape). Only if the message names a DIFFERENT
+    # table explicitly should we return False.
+    if has_unambiguous:
+        if tbl in msg:
+            return True
+        # Round-23 review fix (#295): distinguish "bare marker with no
+        # table name at all" (default-True: safer to treat as permanent
+        # per round-6) from "marker with a DIFFERENT table's name"
+        # (return False: not our table's error). Look for any
+        # ``<identifier> does not exist`` / ``TABLE_NOT_FOUND: <ident>``
+        # pattern; if an identifier appears and it isn't ours, it's a
+        # different table's error.
+        other_name = re.search(
+            r"(?:table[_\s]not[_\s]found:?\s*|entitynotfoundexception:?\s*|table\s+[`'\"]?)"
+            r"([a-z_][a-z0-9_.]*)"
+            r"(?:[`'\"]?\s+does not exist|[`'\"]?\s*$)",
+            msg,
+        )
+        if other_name:
+            ident = other_name.group(1)
+            # Strip catalog/db prefix if present ("catalog.db.table" → "table").
+            ident = ident.rsplit(".", 1)[-1]
+            if ident != tbl:
+                return False
+        # Bare unambiguous marker (no parseable identifier) — assume
+        # it's for our table (safer than treating a permanent Glue
+        # failure as retryable, per round-6).
         return True
     return any(
         marker in msg
@@ -656,41 +689,59 @@ def _rollup_data_plane_lambda_hourly(
         # Athena metric fetches that control-plane needs. Bedrock spend
         # for data-plane is already captured in metering_hourly via
         # save_metering_data's per-doc counters.
-        raw = cloudwatch_client.get_metric_data(
-            MetricDataQueries=[
-                {
-                    "Id": "d",
-                    "MetricStat": {
-                        "Metric": {
-                            "Namespace": "AWS/Lambda",
-                            "MetricName": "Duration",
-                            "Dimensions": [
-                                {"Name": "FunctionName", "Value": function_name}
-                            ],
-                        },
-                        "Period": 3600,
-                        "Stat": "Sum",
+        queries = [
+            {
+                "Id": "d",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "AWS/Lambda",
+                        "MetricName": "Duration",
+                        "Dimensions": [
+                            {"Name": "FunctionName", "Value": function_name}
+                        ],
                     },
+                    "Period": 3600,
+                    "Stat": "Sum",
                 },
-                {
-                    "Id": "i",
-                    "MetricStat": {
-                        "Metric": {
-                            "Namespace": "AWS/Lambda",
-                            "MetricName": "Invocations",
-                            "Dimensions": [
-                                {"Name": "FunctionName", "Value": function_name}
-                            ],
-                        },
-                        "Period": 3600,
-                        "Stat": "Sum",
+            },
+            {
+                "Id": "i",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "AWS/Lambda",
+                        "MetricName": "Invocations",
+                        "Dimensions": [
+                            {"Name": "FunctionName", "Value": function_name}
+                        ],
                     },
+                    "Period": 3600,
+                    "Stat": "Sum",
                 },
-            ],
-            StartTime=hour_start,
-            EndTime=hour_end,
-        )
-        flat = _flatten_cw_response(raw)
+            },
+        ]
+        # Round-23 review fix (#659): loop on NextToken for defensive
+        # consistency with the sibling paths in ``_get_athena_bytes_sum``
+        # / ``_get_bedrock_tokens_by_model`` (round-19 pagination fix).
+        # In practice this call returns 2 datapoints and cannot paginate,
+        # but the accumulate-safe ``_flatten_cw_response`` handles multi-
+        # page responses correctly if CW ever changes behavior.
+        flat: Dict[str, float] = {}
+        next_token: Optional[str] = None
+        while True:
+            call_kwargs: Dict[str, Any] = {
+                "MetricDataQueries": queries,
+                "StartTime": hour_start,
+                "EndTime": hour_end,
+            }
+            if next_token:
+                call_kwargs["NextToken"] = next_token
+            raw = cloudwatch_client.get_metric_data(**call_kwargs)
+            page = _flatten_cw_response(raw)
+            for k, v in page.items():
+                flat[k] = flat.get(k, 0.0) + v
+            next_token = raw.get("NextToken")
+            if not next_token:
+                break
         duration_ms = flat.get("d", 0.0)
         invocations = flat.get("i", 0.0)
         if invocations <= 0.0 and duration_ms <= 0.0:
@@ -1876,7 +1927,7 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
     for the "empty dict cached on failure poisons the warm container"
     class.
     """
-    global _bedrock_pricing_map
+    global _bedrock_pricing_map, _bedrock_pricing_unavailable
     if _bedrock_pricing_map is not None:
         return _bedrock_pricing_map
     if not CONFIGURATION_TABLE_NAME:
@@ -1886,6 +1937,14 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
         )
         # Env var never appears mid-lifetime — this IS a "cache the empty"
         # result: no retry will help.
+        # Round-23 review fix (#1889): the round-20 pricing-unavailable
+        # flag was set on the empty-result and exception paths but NOT
+        # here — a stack with the env var missing would write
+        # est_bedrock_cost=0 for rows with real bedrock activity and
+        # let S3 idempotency lock those zeros forever. Set the flag
+        # so ``_rollup_control_plane_hourly`` raises on bedrock rows
+        # instead of writing zeros.
+        _bedrock_pricing_unavailable = True
         _bedrock_pricing_map = {}
         return _bedrock_pricing_map
     try:
@@ -1927,8 +1986,11 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
         # caller can distinguish and raise if bedrock activity is
         # present — prevents the S3 idempotency skip from locking
         # est_bedrock_cost=0 for the hour when pricing was transiently
-        # broken.
-        global _bedrock_pricing_unavailable  # noqa: PLW0603
+        # broken. Round-23 (#1889): ``global _bedrock_pricing_unavailable``
+        # now declared at the top of the function alongside
+        # ``_bedrock_pricing_map`` so all three assignments (env-var-unset,
+        # empty-result, exception) share one declaration and Python
+        # doesn't SyntaxError on assign-before-global.
         logger.warning(
             "ConfigurationTable returned 0 pricing entries; caching empty "
             "within THIS invocation so workers don't stampede DynamoDB. "
@@ -2136,7 +2198,11 @@ def _run_athena(
     if idempotency_key:
         # Athena requires ClientRequestToken be 32-128 chars, letters/digits/dash.
         # Truncate defensively; callers should already meet this.
-        kwargs["ClientRequestToken"] = idempotency_key[:128]
+        # Round-23 review fix (#2208): reserve space so the fresh-salt
+        # restart below can append ``-r<10 digits>`` (12 chars) without
+        # the salt being chopped off by the 128-char cap. Effective
+        # user-controlled budget = 128 - 12 = 116 chars.
+        kwargs["ClientRequestToken"] = idempotency_key[:116]
     response = athena_client.start_query_execution(**kwargs)
     query_id = response["QueryExecutionId"]
     # Round-19 review fix (#1948): Athena's ClientRequestToken idempotency
@@ -2187,12 +2253,34 @@ def _run_athena(
                     )
                     initial_state = "FAILED"  # trigger the restart
 
+        # Round-23 review fix (#2374): track whether the RETURNED query
+        # is a cached SUCCEEDED result — in that case ``_wait_for_athena``
+        # will see SUCCEEDED at the first poll and emit
+        # AthenaBytesScanned AGAIN, double-counting the cost that the
+        # ORIGINAL query already emitted. Skip the emit on the cached-
+        # success path.
+        cached_success = initial_state == "SUCCEEDED"
+
         if initial_state in ("FAILED", "CANCELLED"):
             logger.warning(
                 f"Athena returned cached {initial_state} QueryExecutionId "
                 f"{query_id!r} for idempotency token — retry would loop "
                 f"forever. Starting a FRESH query with a fresh token."
             )
+            # Round-23 review fix (#2210): the cached-failure was
+            # detected on a probe that could ALSO happen while the
+            # original was still RUNNING (probe-exhausted default-to-
+            # FAILED path). Stop the original before starting the fresh
+            # one so we don't run two salted executions in parallel,
+            # billing twice and racing writes to Glue metadata.
+            try:
+                athena_client.stop_query_execution(QueryExecutionId=query_id)
+                logger.info(f"Stopped original query {query_id} before restarting.")
+            except Exception as stop_err:  # nosec — best-effort
+                logger.warning(
+                    f"stop_query_execution({query_id}) failed before "
+                    f"restart: {stop_err}"
+                )
             # Round-20 review fix (#1949): don't DROP ClientRequestToken
             # on the restart — that forfeits dedup for the logical
             # write, so a Lambda hard-timeout race could double-INSERT.
@@ -2205,11 +2293,22 @@ def _run_athena(
             # (dedup wins), but every subsequent async-retry gets a
             # different one (breaks lock).
             fresh_salt = str(int(time.time()))
-            restart_key = f"{idempotency_key}-r{fresh_salt}"[:128]
+            # Round-23 (#2208): input token was truncated to 116 chars
+            # above so the "-r<10-digit-timestamp>" suffix (12 chars)
+            # fits under the 128-char cap without being chopped.
+            restart_key = f"{idempotency_key[:116]}-r{fresh_salt}"[:128]
             kwargs["ClientRequestToken"] = restart_key
             response = athena_client.start_query_execution(**kwargs)
             query_id = response["QueryExecutionId"]
-    _wait_for_athena(query_id, emit_self_cost=emit_self_cost)
+            cached_success = False  # fresh execution, real emit is expected
+    else:
+        cached_success = False
+    # Round-23 review fix (#2374): pass ``emit_self_cost=False`` when the
+    # returned QueryExecutionId is a cached SUCCEEDED — the ORIGINAL
+    # attempt already emitted AthenaBytesScanned for this query. Emitting
+    # again would double-count in the next control_plane_hourly rollup.
+    effective_emit = emit_self_cost and not cached_success
+    _wait_for_athena(query_id, emit_self_cost=effective_emit)
     return query_id
 
 
