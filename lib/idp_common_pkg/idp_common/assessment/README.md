@@ -276,6 +276,13 @@ an `assessment_schema_mismatch` **error** naming the field and the real fix:
 correct the class schema or the extraction prompt so the attribute is defined (as
 an array where it should be). A validly array-typed field is never blocked.
 
+The property is dereferenced (`config/schema_utils.deref_schema`) before its
+`type` is read, since a property declared as `{"$ref": "#/$defs/Foo"}` carries
+none. So a `$defs` group is reported as `declared as 'object'` rather than
+mislabelled `'scalar'`, and a `$defs` **array** — which hand-authored configs
+can declare, though the UI's schema editor only emits objects — is correctly
+recognized as validly list-typed instead of having its rows abandoned.
+
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
 > agentic `validation` gate won't catch *extra* attributes unless the class schema

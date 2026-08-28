@@ -64,7 +64,48 @@ if not result["valid"]:
 | `constants.py` | Configuration constants. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `schema_constants.py` | JSON Schema extension keys (e.g. `x-aws-idp-document-type`, `x-aws-idp-extraction-model`, `x-aws-idp-extraction-system-prompt`, `x-aws-idp-extraction-task-prompt`). |
+| `schema_utils.py` | `deref_schema()` — resolve a local `#/$defs/<name>` `$ref` against a class schema. See [Dereferencing `$ref` subschemas](#dereferencing-ref-subschemas). |
 | `system_defaults/` | Packaged default configuration YAML used as the merge base. |
+
+## Dereferencing `$ref` subschemas
+
+The Web UI's schema editor emits every group and list-item shape into the
+class's `$defs` and references it, so a group property looks like
+`{"$ref": "#/$defs/Signatures"}` — carrying **no** `type` and **no**
+`description` of its own. Any consumer that reads those keys straight off the
+property therefore sees an untyped, undescribed leaf and silently treats a
+whole group as a scalar.
+
+`deref_schema(node, root)` is the single shared fix. It returns the referenced
+subschema with sibling keys on the referencing node layered on top (a local
+`description` overrides the definition's) and follows `$ref` chains. Anything
+unresolvable — a remote `$ref`, a dangling name, a cycle, a non-dict node —
+is returned as-is so callers degrade to the un-dereferenced reading rather
+than raising.
+
+```python
+from idp_common.config.schema_utils import deref_schema
+
+prop = deref_schema(class_schema["properties"]["Signatures"], class_schema)
+prop["type"]  # "object", not None
+```
+
+Callers: the confidence prompt's attribute-description formatter
+(`assessment/service.py`), the classification attribute-name walk
+(`classification/service.py`), and the assessment escalation-skip reason
+(`assessment/batching.py`).
+
+> **Note:** `assessment/threshold_resolver.py` keeps its own `_deref`. Its
+> dangling-ref and definition-wins-over-sibling semantics are load-bearing for
+> threshold inheritance in `resolve_threshold_for_path()`, so it is
+> deliberately not routed through this helper.
+
+Anything that walks a class schema after dereferencing must guard against
+**recursive** `$defs` (a definition whose member references the definition):
+dereferencing makes those reachable where reading the raw property did not.
+`deref_schema` itself is cycle-safe, but a recursive *walk* over the result is
+not — track the `$ref` targets already entered on the current branch, as
+`_get_attribute_names_for_class()` does.
 
 ## Class ids
 

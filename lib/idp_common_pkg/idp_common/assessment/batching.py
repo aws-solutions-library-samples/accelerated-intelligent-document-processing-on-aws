@@ -358,12 +358,26 @@ def _schema_field_mismatch_reason(
 
     Returns None (do not skip) when no schema was threaded in, so behavior is
     unchanged for callers that don't supply one.
+
+    The property is dereferenced before its ``type`` is read, because a property
+    declared as ``{"$ref": "#/$defs/Foo"}`` carries no ``type`` of its own. That
+    matters twice:
+
+    * A ``$defs`` **group** resolves to ``type: object``, so the reason now names
+      ``'object'`` instead of claiming ``'scalar'`` and sending whoever reads it
+      hunting for a ``type: string`` that does not exist. Same skip decision.
+    * A ``$defs`` **array** (hand-authored configs can put one there; the UI's
+      schema editor only emits objects) resolves to ``type: array``, so the field
+      is correctly recognized as validly list-typed and is no longer skipped.
+      Previously such a field read as untyped and the ladder abandoned rows it
+      could in fact have recovered.
     """
     from idp_common.config.schema_constants import (
         SCHEMA_PROPERTIES,
         SCHEMA_TYPE,
         TYPE_ARRAY,
     )
+    from idp_common.config.schema_utils import deref_schema
 
     if not isinstance(class_schema, dict) or not class_schema:
         return None
@@ -376,7 +390,7 @@ def _schema_field_mismatch_reason(
             "(extraction produced an off-schema/hallucinated field); its "
             "list rows cannot be confidence-scored"
         )
-    prop_type = (properties.get(field) or {}).get(SCHEMA_TYPE)
+    prop_type = deref_schema(properties.get(field) or {}, class_schema).get(SCHEMA_TYPE)
     if prop_type != TYPE_ARRAY:
         return (
             f"attribute '{field}' is declared as '{prop_type or 'scalar'}' in "

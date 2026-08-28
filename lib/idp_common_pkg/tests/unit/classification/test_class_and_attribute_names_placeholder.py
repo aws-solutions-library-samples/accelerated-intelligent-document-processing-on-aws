@@ -191,6 +191,158 @@ class TestGetAttributeNamesForClass:
         service = _build_service(config)
         assert service._get_attribute_names_for_class("invoice") == []
 
+    def test_ref_group_children_surface_like_inline_group(self):
+        """A ``$ref`` group must walk exactly like an equivalent inline group.
+
+        The UI schema editor emits every group as ``{"$ref": "#/$defs/Name"}``,
+        which carries no ``type``. Before dereferencing, such a group fell to
+        the scalar branch and was emitted as a bare leaf, silently dropping all
+        of its child names while an identical inline group walked correctly
+        (GitHub issue #678).
+        """
+        schema = _make_class_schema(
+            "tax_form",
+            "A tax form",
+            properties={
+                "TaxpayerName": {"type": "string"},
+                "Signatures": {"$ref": "#/$defs/Signatures"},
+                "InlineGroup": {
+                    "type": "object",
+                    "properties": {"Child": {"type": "string"}},
+                },
+            },
+        )
+        schema["$defs"] = {
+            "Signatures": {
+                "type": "object",
+                "properties": {
+                    "Signature-of-taxpayer1": {"type": "boolean"},
+                    "Signature-of-taxpayer2": {"type": "boolean"},
+                },
+            },
+        }
+        service = _build_service(_make_config([schema]))
+
+        assert service._get_attribute_names_for_class("tax_form") == [
+            "TaxpayerName",
+            "Signatures.Signature-of-taxpayer1",
+            "Signatures.Signature-of-taxpayer2",
+            "InlineGroup.Child",
+        ]
+
+    def test_ref_array_items_and_ref_chains_resolve(self):
+        """``items: {$ref}}``, a ``$ref`` array container, and ref chains resolve."""
+        schema = _make_class_schema(
+            "statement",
+            "A bank statement",
+            properties={
+                # array declared inline, item shape behind a $ref
+                "Transactions": {"type": "array", "items": {"$ref": "#/$defs/Txn"}},
+                # the whole array property behind a $ref
+                "Fees": {"$ref": "#/$defs/FeeList"},
+                # $ref -> $ref chain
+                "Holder": {"$ref": "#/$defs/HolderAlias"},
+            },
+        )
+        schema["$defs"] = {
+            "Txn": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "amount": {"type": "number"},
+                },
+            },
+            "FeeList": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"label": {"type": "string"}},
+                },
+            },
+            "HolderAlias": {"$ref": "#/$defs/Holder"},
+            "Holder": {"type": "object", "properties": {"name": {"type": "string"}}},
+        }
+        service = _build_service(_make_config([schema]))
+
+        assert service._get_attribute_names_for_class("statement") == [
+            "Transactions.date",
+            "Transactions.amount",
+            "Fees.label",
+            "Holder.name",
+        ]
+
+    def test_recursive_ref_definition_terminates(self):
+        """A self-referential ``$defs`` entry must not recurse forever.
+
+        Dereferencing makes recursive definitions reachable for the first time,
+        so the walk guards on the ``$ref`` targets already entered on the
+        current branch and emits a re-entered property as a leaf instead.
+        """
+        schema = _make_class_schema(
+            "tree",
+            "A recursive tree",
+            properties={"root": {"$ref": "#/$defs/Node"}},
+        )
+        schema["$defs"] = {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "child": {"$ref": "#/$defs/Node"},
+                    "kids": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
+                },
+            },
+        }
+        service = _build_service(_make_config([schema]))
+
+        assert service._get_attribute_names_for_class("tree") == [
+            "root.label",
+            "root.child",
+            "root.kids",
+        ]
+
+    def test_tuple_form_items_list_does_not_raise(self):
+        """``items`` as a LIST (draft-07 tuple form) must not be read as a dict."""
+        schema = _make_class_schema(
+            "tuple_items",
+            "Schema using tuple-form items",
+            properties={
+                "pair": {
+                    "type": "array",
+                    "items": [{"type": "string"}, {"type": "number"}],
+                },
+                "plain": {"type": "string"},
+            },
+        )
+        service = _build_service(_make_config([schema]))
+
+        # Tuple-form items carry no single item shape → parent name only.
+        assert service._get_attribute_names_for_class("tuple_items") == [
+            "pair",
+            "plain",
+        ]
+
+    def test_unresolvable_refs_degrade_to_leaf_names(self):
+        """Dangling / remote / non-dict properties are emitted, never raised on."""
+        schema = _make_class_schema(
+            "odd",
+            "Odd schema",
+            properties={
+                "dangling": {"$ref": "#/$defs/Nope"},
+                "remote": {"$ref": "https://example.com/schema.json"},
+                "notadict": "oops",
+                "plain": {"type": "string"},
+            },
+        )
+        schema["$defs"] = {}
+        service = _build_service(_make_config([schema]))
+
+        assert service._get_attribute_names_for_class("odd") == [
+            "dangling",
+            "remote",
+            "plain",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # 2. Formatter methods

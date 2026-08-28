@@ -857,6 +857,11 @@ similar names but have very different extraction schemas (e.g.
 - Per-class attribute counts are soft-capped at
   `ClassificationService.MAX_ATTRIBUTES_PER_CLASS` (default 50) to
   prevent pathologically large schemas from bloating prompts.
+- Groups and list-item shapes declared as a local `$ref` into the class's
+  `$defs` (what the UI's schema editor emits) are dereferenced via
+  `idp_common.config.schema_utils.deref_schema` before their `type` is
+  read, so they contribute their child names just like an inline group.
+  Unresolvable and self-recursive refs degrade to the property name.
 
 Example:
 

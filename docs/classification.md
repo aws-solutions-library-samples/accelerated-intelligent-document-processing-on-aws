@@ -909,6 +909,13 @@ classification:
   `parent.child` (no `[]` indexing).
 - Arrays of scalars (or arrays without item properties) surface by their
   parent name only.
+- Subschemas declared as a local `$ref` into the class's `$defs` — which
+  is what the Web UI's schema editor emits for every group and list-item
+  shape — are dereferenced first, so a `$ref` group renders exactly like
+  an equivalent inline group (`Signatures.Signature-of-taxpayer1`, not a
+  bare `Signatures`). `$ref` chains are followed; a `$ref` that cannot be
+  resolved (dangling, remote, or self-recursive) surfaces by its property
+  name only rather than failing the classification.
 - Classes that have no JSON Schema render
   `<attributes>(no schema)</attributes>` so the absence is obvious for
   debugging.

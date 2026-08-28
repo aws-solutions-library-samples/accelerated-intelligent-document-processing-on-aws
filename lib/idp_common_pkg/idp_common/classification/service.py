@@ -40,6 +40,7 @@ from idp_common.classification.models import (
 )
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
+    REF_FIELD,
     SCHEMA_ITEMS,
     SCHEMA_PROPERTIES,
     SCHEMA_TYPE,
@@ -52,6 +53,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_EXCLUSION_REASON,
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
+from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document, Section, Status
 from idp_common.utils import extract_json_from_text, extract_structured_data_from_text
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
@@ -829,6 +831,13 @@ class ClassificationService:
         are surfaced (without explicit ``[]`` indexing) in the same flat
         listing. Non-object/non-array properties contribute their own name.
 
+        Groups and list-item shapes are commonly declared as a ``$ref`` into
+        the class's ``$defs`` (this is what the UI's schema editor emits), so
+        every subschema is dereferenced before its ``type`` is read. Without
+        that, a ``$ref`` group carries no ``type`` and is emitted as a bare
+        leaf, dropping all of its child names — while an otherwise identical
+        inline group is walked correctly.
+
         Args:
             class_name: The ``x-aws-idp-document-type`` of the class to look up.
 
@@ -853,44 +862,70 @@ class ClassificationService:
         names: List[str] = []
         seen: Set[str] = set()
 
-        def _walk(props: Dict[str, Any], parent_path: str = "") -> None:
+        def _walk(
+            props: Dict[str, Any],
+            parent_path: str = "",
+            active_refs: frozenset = frozenset(),
+        ) -> None:
+            """Emit leaf names under ``props``.
+
+            ``active_refs`` holds the ``$ref`` targets already entered on this
+            branch of the descent. Dereferencing makes recursive definitions
+            reachable (``$defs/Node`` with a ``child: {"$ref": "#/$defs/Node"}``
+            member), which would otherwise recurse forever — such a property is
+            emitted as a leaf instead of re-entered.
+            """
             if not isinstance(props, dict):
                 return
             for prop_name, prop_schema in props.items():
                 if not isinstance(prop_schema, dict):
                     continue
                 full_path = f"{parent_path}.{prop_name}" if parent_path else prop_name
+
+                ref = prop_schema.get(REF_FIELD)
+                if isinstance(ref, str) and ref in active_refs:
+                    if full_path not in seen:
+                        seen.add(full_path)
+                        names.append(full_path)
+                    continue
+                branch_refs = (
+                    active_refs | {ref} if isinstance(ref, str) else active_refs
+                )
+
+                prop_schema = deref_schema(prop_schema, target_schema)
                 prop_type = prop_schema.get(SCHEMA_TYPE)
 
                 if prop_type == TYPE_OBJECT:
                     nested = prop_schema.get(SCHEMA_PROPERTIES) or {}
                     if isinstance(nested, dict) and nested:
-                        _walk(nested, full_path)
-                    else:
-                        # Object with no declared properties — emit the
-                        # parent name itself so the model still sees it.
-                        if full_path not in seen:
-                            seen.add(full_path)
-                            names.append(full_path)
+                        _walk(nested, full_path, branch_refs)
+                        continue
+                    # Object with no declared properties — emit the
+                    # parent name itself so the model still sees it.
                 elif prop_type == TYPE_ARRAY:
-                    items_schema = prop_schema.get(SCHEMA_ITEMS) or {}
-                    if (
-                        isinstance(items_schema, dict)
-                        and items_schema.get(SCHEMA_TYPE) == TYPE_OBJECT
-                    ):
-                        nested = items_schema.get(SCHEMA_PROPERTIES) or {}
-                        if isinstance(nested, dict) and nested:
-                            _walk(nested, full_path)
-                            continue
+                    # ``items`` may legally be a LIST (draft-07 tuple form), so
+                    # only a dict is safe to read keys off.
+                    items_raw = prop_schema.get(SCHEMA_ITEMS)
+                    items_raw = items_raw if isinstance(items_raw, dict) else {}
+                    items_ref = items_raw.get(REF_FIELD)
+                    if not (isinstance(items_ref, str) and items_ref in branch_refs):
+                        items_schema = deref_schema(items_raw, target_schema)
+                        if items_schema.get(SCHEMA_TYPE) == TYPE_OBJECT:
+                            nested = items_schema.get(SCHEMA_PROPERTIES) or {}
+                            if isinstance(nested, dict) and nested:
+                                item_refs = (
+                                    branch_refs | {items_ref}
+                                    if isinstance(items_ref, str)
+                                    else branch_refs
+                                )
+                                _walk(nested, full_path, item_refs)
+                                continue
                     # Scalar array (or array with no item properties) —
                     # emit the parent name itself.
-                    if full_path not in seen:
-                        seen.add(full_path)
-                        names.append(full_path)
-                else:
-                    if full_path not in seen:
-                        seen.add(full_path)
-                        names.append(full_path)
+
+                if full_path not in seen:
+                    seen.add(full_path)
+                    names.append(full_path)
 
         _walk(properties)
         return names
