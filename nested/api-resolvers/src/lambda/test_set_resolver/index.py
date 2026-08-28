@@ -46,16 +46,56 @@ def validate_description(description):
     return len(description) <= 500
 
 
-# Configure S3 client with S3v4 signature.
-# When S3_ENDPOINT_URL is set (private VPC mode), use virtual-host addressing
-# so the SigV4 host header matches the VPC endpoint DNS.
+# Two S3 clients, deliberately. They differ only in endpoint, and conflating
+# them is what made Test Studio return an opaque 504 in private deployments.
+#
+# S3_ENDPOINT_URL (set only when S3PresignedUrlViaVpcEndpoint=true or a BYO
+# endpoint override is configured) is the *S3 interface VPC endpoint* hostname.
+# Its purpose is the URL string handed to the BROWSER: presigning is an offline
+# signing operation, so a Lambda can mint a VPCE-hosted URL from anywhere.
+#
+# Data-plane calls are the opposite. This function is NOT VPC-attached (see the
+# cfn_nag/checkov notes on TestSetResolverFunction in the nested template), and
+# a VPCE hostname resolves to the endpoint's PRIVATE addresses. Sending LIST /
+# GET / PUT there from outside the VPC does not fail — it hangs until the
+# connect timeout, and since REST API Gateway abandons an integration at 29s the
+# browser only ever sees `504`, with nothing in the resolver log to explain it.
+# getTestSets is where this bites first: it lists the whole test-set bucket plus
+# ~4 more calls per prefix on every poll.
+#
+# So: presign with the endpoint, talk to S3 without it. The regular client also
+# matches what the rest of the codebase already does from these Lambdas
+# (idp_common.s3 builds a plain client), which is why only the calls made
+# through this module were affected.
 _s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL") or None
 _s3_addressing = "virtual" if _s3_endpoint_url else "path"
-s3_config = Config(
+
+# Browser-facing presigned POST/GET URLs only.
+s3_presign_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": _s3_addressing},
 )
-s3_client = boto3.client("s3", endpoint_url=_s3_endpoint_url, config=s3_config)
+s3_presign_client = boto3.client(
+    "s3", endpoint_url=_s3_endpoint_url, config=s3_presign_config
+)
+
+# Every actual S3 API call this resolver makes. Bounded so a future
+# endpoint/network misconfiguration surfaces as a fast, logged error instead of
+# stalling past the API Gateway ceiling into an unexplained 504. botocore reads
+# max_attempts as a RETRY count, so this is 2 total attempts and a worst case of
+# 2 x (2s connect + 6s read) = 16s — one retry kept for genuinely transient S3
+# errors (503 SlowDown), while still leaving room inside the 29s budget for the
+# response to be built. 6s between socket reads is generous for the small
+# LIST/GET responses this resolver makes; an unroutable host burns the full
+# budget with nothing to show, which is the failure this replaces.
+s3_config = Config(
+    signature_version="s3v4",
+    s3={"addressing_style": "path"},
+    connect_timeout=2,
+    read_timeout=6,
+    retries={"mode": "standard", "max_attempts": 1},
+)
+s3_client = boto3.client("s3", config=s3_config)
 db_client = DynamoDBClient(table_name=os.environ["TRACKING_TABLE"])
 
 
@@ -206,8 +246,9 @@ def add_test_set_from_upload(args):
     # Upload with .zip extension in the test set folder
     key = f"{test_set_id}/{zip_filename}"
 
-    # Generate presigned URL for zip file
-    presigned_post = s3_client.generate_presigned_post(
+    # Generate presigned URL for zip file. Presign client: the URL goes to the
+    # browser, so it must carry the VPC-endpoint host in private deployments.
+    presigned_post = s3_presign_client.generate_presigned_post(
         Bucket=test_set_bucket,
         Key=key,
         Fields={"Content-Type": "application/zip"},
@@ -453,8 +494,9 @@ def add_documents_to_test_set_from_upload(args):
     # Upload with .zip extension in the test set folder
     key = f"{test_set_id}/{zip_filename}"
 
-    # Generate presigned URL for zip file
-    presigned_post = s3_client.generate_presigned_post(
+    # Generate presigned URL for zip file. Presign client: the URL goes to the
+    # browser, so it must carry the VPC-endpoint host in private deployments.
+    presigned_post = s3_presign_client.generate_presigned_post(
         Bucket=test_set_bucket,
         Key=key,
         Fields={"Content-Type": "application/zip"},
