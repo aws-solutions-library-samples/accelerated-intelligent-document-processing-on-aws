@@ -164,3 +164,33 @@ describe('GroundTruthVisualEditor class gating', () => {
     expect(EDITOR).toMatch(/canChangeClass \?\? !isReadOnly/);
   });
 });
+
+/**
+ * What the class control does when the class LIST cannot be read.
+ *
+ * `getConfigVersion` is `Admin, Author, Viewer` and excludes Annotator — the role
+ * this screen exists for. So an annotator's config fetch is denied and the editor
+ * used to fall through to its free-text branch, handing the one role most in need of
+ * a constrained vocabulary an unconstrained box, with three words dropping out of the
+ * description as the only sign. A typed class no config defines produces a section
+ * with no schema, which extracts nothing.
+ */
+describe('GroundTruthVisualEditor class list unavailable', () => {
+  it('distinguishes "could not read the classes" from "there are none"', () => {
+    expect(EDITOR).toMatch(/const classListUnavailable = classOptions\.length === 0 && \(Boolean\(configError\) \|\| configLoading\)/);
+    // Both signals have to be pulled off the hook, or the distinction is unavailable.
+    expect(EDITOR).toMatch(/loading: configLoading, error: configError/);
+  });
+
+  it('locks the field rather than offering free text', () => {
+    // Free text is for a config that genuinely defines no classes. When the list
+    // merely could not be read, an unconstrained box is worse than a locked one.
+    const branch = EDITOR.slice(EDITOR.indexOf('{classListUnavailable ? ('), EDITOR.indexOf('{classListUnavailable ? (') + 200);
+    expect(branch).toMatch(/<Input value=\{documentClassType \?\? ''\} disabled \/>/);
+  });
+
+  it('says why, and who can do it instead', () => {
+    expect(EDITOR).toMatch(/valid classes could not be loaded/);
+    expect(EDITOR).toMatch(/An Admin or Author can change the class/);
+  });
+});

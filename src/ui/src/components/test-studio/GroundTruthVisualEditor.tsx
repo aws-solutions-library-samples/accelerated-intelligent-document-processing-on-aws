@@ -300,8 +300,24 @@ const GroundTruthVisualEditor = ({
     [stampedConfigVersion, configVersion, activeConfigVersion],
   );
   const classConfigVersion = classConfig.version;
-  const { mergedConfig } = useConfiguration(classConfigVersion);
+  const { mergedConfig, loading: configLoading, error: configError } = useConfiguration(classConfigVersion);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
+  /**
+   * True when the class list could not be read, as opposed to being genuinely empty.
+   *
+   * `getConfigVersion` is `Admin, Author, Viewer` (schema.graphql:1557-1558) and
+   * excludes **Annotator** — the role this screen exists for. So an annotator's
+   * config fetch is denied, `classOptions` comes back empty, and the editor used to
+   * fall through to its free-text branch: the one role most in need of a constrained
+   * vocabulary got an unconstrained box, and the only visible difference was three
+   * words dropping out of the description.
+   *
+   * That matters more since the class became editable for annotators: a typed class
+   * that no config defines produces a section with no schema, which extracts nothing.
+   * The resolver bounds the characters but deliberately not the membership, because
+   * it has no config-table grant either.
+   */
+  const classListUnavailable = classOptions.length === 0 && (Boolean(configError) || configLoading);
   // A class the config no longer lists stays selectable; otherwise a document whose
   // class was since renamed would silently blank the field.
   const classOptionsWithCurrent = useMemo(() => {
@@ -601,14 +617,18 @@ const GroundTruthVisualEditor = ({
                           description={
                             classOptions.length > 0
                               ? 'What this section is classified as, from this config version. Distinct from the extraction labels below.'
-                              : 'What this section is classified as. Distinct from the extraction labels below.'
+                              : classListUnavailable
+                                ? 'What this section is classified as. The list of valid classes could not be loaded, so it cannot be changed here.'
+                                : 'What this section is classified as. Distinct from the extraction labels below.'
                           }
                           constraintText={
                             isReextracting
                               ? 'Locked while the re-extraction runs.'
-                              : !mayChangeClass
-                                ? 'You do not have permission to change this class.'
-                                : undefined
+                              : classListUnavailable
+                                ? 'Your role cannot read the configuration this set was labelled with, so the valid classes are unknown. An Admin or Author can change the class.'
+                                : !mayChangeClass
+                                  ? 'You do not have permission to change this class.'
+                                  : undefined
                           }
                         >
                           <SpaceBetween size="xs">
@@ -616,7 +636,9 @@ const GroundTruthVisualEditor = ({
                                 schema cannot be extracted against, so the correction
                                 could never take effect. Free text only when no
                                 config resolves. */}
-                            {classOptions.length > 0 ? (
+                            {classListUnavailable ? (
+                              <Input value={documentClassType ?? ''} disabled />
+                            ) : classOptions.length > 0 ? (
                               <Select
                                 selectedOption={
                                   documentClassType
