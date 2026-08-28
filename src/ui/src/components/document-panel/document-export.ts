@@ -22,12 +22,18 @@ export interface ExportProgress {
   currentFile: string;
   /** Soft-errors encountered so far (fetch failures recorded in manifest). */
   errors: ExportErrorEntry[];
+  /** Number of documents in this export (1 for a single-document export). */
+  documentsTotal?: number;
+  /** Documents whose files have all been processed. */
+  documentsCompleted?: number;
 }
 
 export interface ExportErrorEntry {
   path: string;
   uri?: string;
   message: string;
+  /** Document this failure belongs to. Only set for multi-document exports. */
+  document?: string;
 }
 
 export interface ExportOptions {
@@ -40,6 +46,13 @@ export interface ExportOptions {
   signal?: AbortSignal;
   /** Required at runtime; must include credentials and bucket config. */
   credentials?: Record<string, unknown>;
+  /**
+   * Number of S3 fetches issued in parallel. Bulk exports of many documents are
+   * dominated by round-trip latency, so a small pool keeps them tolerable
+   * without hammering the browser's connection limit. Defaults to
+   * {@link DEFAULT_FETCH_CONCURRENCY}.
+   */
+  concurrency?: number;
   // --- Test-only seams ------------------------------------------------------
   /** Override for the presigned URL generator (defaults to the shared util). */
   presignFn?: (s3Uri: string, credentials: Record<string, unknown>) => Promise<string>;
@@ -301,24 +314,91 @@ const buildPlan = (doc: ExportableDocument, settings: ExportSettings | undefined
 };
 
 // ---------------------------------------------------------------------------
-// Main entry point
+// Main entry points
 // ---------------------------------------------------------------------------
 
+/** Default number of S3 fetches issued in parallel. */
+export const DEFAULT_FETCH_CONCURRENCY = 5;
+
+interface PreparedDocument {
+  doc: ExportableDocument;
+  key: string;
+  /** Collision-free top-level folder for this document inside the archive. */
+  rootFolder: string;
+  plan: ExportPlan;
+  manifestFiles: Array<{ path: string; uri?: string; bytes?: number }>;
+  errors: ExportErrorEntry[];
+  pendingFetches: number;
+}
+
 /**
- * Build a ZIP archive containing the requested document assets, fetched via
- * S3 presigned URLs (so image bytes survive intact and AppSync payload limits
- * do not apply). The ZIP layout mirrors the OutputBucket / EvaluationBaselineBucket
- * / InputBucket key structures under `output/`, `baseline/`, and `input/`
- * folders so the archive can be diffed with a direct `aws s3 sync` dump.
+ * Reserve a collision-free ZIP root folder for a document. `sanitizeDocumentKey`
+ * maps both `a/b.pdf` and `a_b.pdf` to `a_b.pdf`, which is harmless for a
+ * single-document archive but would silently overwrite entries in a shared one,
+ * so repeats get a numeric suffix.
  */
-export const exportDocument = async (
-  doc: ExportableDocument,
+const reserveRootFolder = (key: string, used: Set<string>): string => {
+  const base = sanitizeDocumentKey(key);
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}__${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+};
+
+/**
+ * Run thunks through a bounded worker pool. Thunks are started in order, so
+ * fetch issue order stays deterministic. The first thrown error (only aborts
+ * throw — fetch failures are recorded as soft errors by the thunks themselves)
+ * stops further work and is re-thrown.
+ */
+const runWithConcurrency = async (thunks: Array<() => Promise<void>>, limit: number): Promise<void> => {
+  let next = 0;
+  let failure: unknown = null;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (failure) return;
+      const index = next;
+      next += 1;
+      if (index >= thunks.length) return;
+      try {
+        await thunks[index]();
+      } catch (err) {
+        failure = failure ?? err;
+        return;
+      }
+    }
+  };
+  const workerCount = Math.max(1, Math.min(limit, thunks.length));
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  if (failure) throw failure;
+};
+
+/**
+ * Build a ZIP archive containing the requested assets for one or more documents,
+ * fetched via S3 presigned URLs (so image bytes survive intact and API payload
+ * limits do not apply). Each document gets its own top-level folder whose
+ * contents mirror the OutputBucket / EvaluationBaselineBucket / InputBucket key
+ * structures under `output/`, `baseline/`, and `input/`, so the archive can be
+ * diffed against a direct `aws s3 sync` dump.
+ *
+ * Multi-document archives additionally carry a root-level `manifest.json`
+ * summarising every document and all soft errors.
+ */
+export const exportDocuments = async (
+  docs: ExportableDocument[],
   settings: ExportSettings | undefined | null,
   opts: ExportOptions,
 ): Promise<ExportResult> => {
   const credentials = opts.credentials;
   if (!credentials && !opts.presignFn) {
-    throw new Error('exportDocument: credentials are required');
+    throw new Error('exportDocuments: credentials are required');
+  }
+  if (docs.length === 0) {
+    throw new Error('exportDocuments: no documents to export');
   }
   const presign = opts.presignFn ?? ((uri: string, creds: Record<string, unknown>) => generateS3PresignedUrl(uri, creds));
   const doFetch =
@@ -329,15 +409,7 @@ export const exportDocument = async (
     });
   const zip = (opts.zipFactory ?? (() => new JSZip()))();
   const now = (opts.now ?? (() => new Date()))();
-  const errors: ExportErrorEntry[] = [];
-  const manifestFiles: Array<{ path: string; uri?: string; bytes?: number }> = [];
-
-  const rootFolder = sanitizeDocumentKey(getDocumentKey(doc));
-  const plan = buildPlan(doc, settings, opts, now);
-
-  const addToZip = (zipPath: string, data: string | Uint8Array) => {
-    zip.file(`${rootFolder}/${zipPath}`, data);
-  };
+  const isBulk = docs.length > 1;
 
   const throwIfAborted = () => {
     if (opts.signal?.aborted) {
@@ -345,68 +417,129 @@ export const exportDocument = async (
     }
   };
 
-  // Synthetic files (manifest is rewritten at the end with real data)
-  for (const synthetic of plan.syntheticFiles) {
-    if (synthetic.zipPath === 'manifest.json') continue;
-    addToZip(synthetic.zipPath, synthetic.content);
-    manifestFiles.push({ path: synthetic.zipPath, bytes: synthetic.content.length });
-  }
+  // Plan every document up front so the progress total is known before fetching.
+  const usedFolders = new Set<string>();
+  const prepared: PreparedDocument[] = docs.map((doc) => {
+    const key = getDocumentKey(doc);
+    const plan = buildPlan(doc, settings, opts, now);
+    return {
+      doc,
+      key,
+      rootFolder: reserveRootFolder(key, usedFolders),
+      plan,
+      manifestFiles: [],
+      errors: [],
+      pendingFetches: plan.fetchTasks.length,
+    };
+  });
 
-  const totalSteps = plan.fetchTasks.length + 1; // +1 for the zip-generation step
-  let completed = 0;
-  const emit = (currentFile: string) => {
-    opts.onProgress?.({ completed, total: totalSteps, currentFile, errors: [...errors] });
-  };
-
-  emit(plan.fetchTasks.length === 0 ? 'Generating archive…' : plan.fetchTasks[0].zipPath);
-
-  for (const task of plan.fetchTasks) {
-    throwIfAborted();
-    try {
-      const url = await presign(task.uri, credentials as Record<string, unknown>);
-      const resp = await doFetch(url);
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-      }
-      const buf = await resp.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      addToZip(task.zipPath, bytes);
-      manifestFiles.push({ path: task.zipPath, uri: task.uri, bytes: bytes.length });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to fetch ${task.uri}:`, err);
-      errors.push({ path: task.zipPath, uri: task.uri, message });
-    } finally {
-      completed += 1;
-      emit(task.zipPath);
+  // Synthetic files (each document's manifest is rewritten at the end with real data)
+  for (const entry of prepared) {
+    for (const synthetic of entry.plan.syntheticFiles) {
+      if (synthetic.zipPath === 'manifest.json') continue;
+      zip.file(`${entry.rootFolder}/${synthetic.zipPath}`, synthetic.content);
+      entry.manifestFiles.push({ path: synthetic.zipPath, bytes: synthetic.content.length });
     }
   }
 
+  const allTasks = prepared.flatMap((entry) => entry.plan.fetchTasks.map((task) => ({ entry, task })));
+  const totalSteps = allTasks.length + 1; // +1 for the zip-generation step
+  let completed = 0;
+  let documentsCompleted = prepared.filter((entry) => entry.pendingFetches === 0).length;
+  const allErrors = (): ExportErrorEntry[] => prepared.flatMap((entry) => entry.errors);
+  const emit = (currentFile: string) => {
+    opts.onProgress?.({
+      completed,
+      total: totalSteps,
+      currentFile,
+      errors: allErrors(),
+      documentsTotal: prepared.length,
+      documentsCompleted,
+    });
+  };
+  /** Progress labels are folder-qualified for bulk exports so the doc is identifiable. */
+  const progressLabel = (entry: PreparedDocument, zipPath: string): string => (isBulk ? `${entry.rootFolder}/${zipPath}` : zipPath);
+
+  throwIfAborted();
+  emit(allTasks.length === 0 ? 'Generating archive…' : progressLabel(allTasks[0].entry, allTasks[0].task.zipPath));
+
+  await runWithConcurrency(
+    allTasks.map(({ entry, task }) => async () => {
+      throwIfAborted();
+      try {
+        const url = await presign(task.uri, credentials as Record<string, unknown>);
+        const resp = await doFetch(url);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        }
+        const buf = await resp.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        zip.file(`${entry.rootFolder}/${task.zipPath}`, bytes);
+        entry.manifestFiles.push({ path: task.zipPath, uri: task.uri, bytes: bytes.length });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Failed to fetch ${task.uri}:`, err);
+        entry.errors.push({ path: task.zipPath, uri: task.uri, message, ...(isBulk ? { document: entry.key } : {}) });
+      } finally {
+        completed += 1;
+        entry.pendingFetches -= 1;
+        if (entry.pendingFetches === 0) documentsCompleted += 1;
+        emit(progressLabel(entry, task.zipPath));
+      }
+    }),
+    opts.concurrency ?? DEFAULT_FETCH_CONCURRENCY,
+  );
+
   throwIfAborted();
 
-  // Finalise manifest with accurate file list, errors, and bucket mapping
-  const manifest = {
+  // Finalise each document's manifest with its accurate file list and errors
+  const commonManifestFields = {
     exportedAt: now.toISOString(),
     scope: opts.scope,
     includePageImages: !!opts.includePageImages,
     includeSourceDocument: !!opts.includeSourceDocument,
-    document: {
-      objectKey: getDocumentKey(doc),
-      objectStatus: doc.objectStatus ?? null,
-      configVersion: doc.configVersion ?? null,
-      pageCount: doc.pageCount ?? null,
-      evaluationStatus: doc.evaluationStatus ?? null,
-    },
     buckets: {
       output: settings?.OutputBucket ?? null,
       baseline: settings?.EvaluationBaselineBucket ?? null,
       input: settings?.InputBucket ?? null,
     },
-    sourceFileUri: plan.sourceFileUri,
-    files: manifestFiles,
-    errors,
   };
-  addToZip('manifest.json', JSON.stringify(manifest, null, 2));
+
+  for (const entry of prepared) {
+    const manifest = {
+      ...commonManifestFields,
+      document: {
+        objectKey: entry.key,
+        objectStatus: entry.doc.objectStatus ?? null,
+        configVersion: entry.doc.configVersion ?? null,
+        pageCount: entry.doc.pageCount ?? null,
+        evaluationStatus: entry.doc.evaluationStatus ?? null,
+      },
+      sourceFileUri: entry.plan.sourceFileUri,
+      files: entry.manifestFiles,
+      errors: entry.errors,
+    };
+    zip.file(`${entry.rootFolder}/manifest.json`, JSON.stringify(manifest, null, 2));
+  }
+
+  // Bulk archives get a root-level index across all documents. Single-document
+  // archives keep their historical layout (manifest lives inside the doc folder).
+  if (isBulk) {
+    const bulkManifest = {
+      ...commonManifestFields,
+      documentCount: prepared.length,
+      documents: prepared.map((entry) => ({
+        objectKey: entry.key,
+        folder: entry.rootFolder,
+        objectStatus: entry.doc.objectStatus ?? null,
+        evaluationStatus: entry.doc.evaluationStatus ?? null,
+        fileCount: entry.manifestFiles.length,
+        errorCount: entry.errors.length,
+      })),
+      errors: allErrors(),
+    };
+    zip.file('manifest.json', JSON.stringify(bulkManifest, null, 2));
+  }
 
   emit('Generating archive…');
   const blob = await zip.generateAsync({ type: 'blob' }, (meta) => {
@@ -414,7 +547,9 @@ export const exportDocument = async (
       completed,
       total: totalSteps,
       currentFile: `Generating archive… ${Math.round(meta.percent)}%`,
-      errors: [...errors],
+      errors: allErrors(),
+      documentsTotal: prepared.length,
+      documentsCompleted,
     });
   });
 
@@ -422,9 +557,16 @@ export const exportDocument = async (
   emit('Done');
 
   const suffix = opts.scope === 'all' ? 'export' : opts.scope;
-  const filename = `${rootFolder}_${suffix}.zip`;
-  return { blob, filename, errors };
+  const filename = isBulk ? `documents_${prepared.length}docs_${suffix}.zip` : `${prepared[0].rootFolder}_${suffix}.zip`;
+  return { blob, filename, errors: allErrors() };
 };
+
+/** Single-document convenience wrapper around {@link exportDocuments}. */
+export const exportDocument = async (
+  doc: ExportableDocument,
+  settings: ExportSettings | undefined | null,
+  opts: ExportOptions,
+): Promise<ExportResult> => exportDocuments([doc], settings, opts);
 
 /** Trigger a browser download for an export result. */
 export const triggerBrowserDownload = (result: ExportResult): void => {

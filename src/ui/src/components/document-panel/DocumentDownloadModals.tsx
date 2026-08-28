@@ -3,7 +3,13 @@
 
 import React from 'react';
 import { Alert, Box, Button, Checkbox, Modal, ProgressBar, SpaceBetween } from '@cloudscape-design/components';
-import type { ExportErrorEntry, ExportProgress } from './document-export';
+import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
+
+/**
+ * Selecting more documents than this triggers a size/time warning: the archive is
+ * assembled in browser memory, so very large bulk exports can exhaust the tab.
+ */
+export const LARGE_SELECTION_THRESHOLD = 25;
 
 interface DownloadOptionsModalProps {
   visible: boolean;
@@ -13,9 +19,27 @@ interface DownloadOptionsModalProps {
   onIncludeSourceDocumentChange: (value: boolean) => void;
   onConfirm: () => void;
   onDismiss: () => void;
+  /** Scope being confirmed. Optional-asset toggles only apply to `all`. */
+  scope?: ExportScope;
+  /** Number of documents in the export; omit (or 1) for a single-document export. */
+  documentCount?: number;
 }
 
-/** Shown only when the user selects "Download All"; toggles heavy optional assets. */
+const SCOPE_DESCRIPTIONS: Record<ExportScope, React.ReactNode> = {
+  all: (
+    <>
+      Packages the document summary, section predictions, baselines (when available), per-page text, and confidence into a single ZIP
+      archive.
+    </>
+  ),
+  predictions: <>Packages the extracted section predictions (the model&apos;s output JSON) into a single ZIP archive.</>,
+  baselines: <>Packages the evaluation baseline (ground truth) JSON into a single ZIP archive.</>,
+};
+
+/**
+ * Confirmation shown before a ZIP export: toggles heavy optional assets for the
+ * "all" scope, and for bulk exports states how many documents are included.
+ */
 export const DownloadOptionsModal = ({
   visible,
   includePageImages,
@@ -24,38 +48,61 @@ export const DownloadOptionsModal = ({
   onIncludeSourceDocumentChange,
   onConfirm,
   onDismiss,
-}: DownloadOptionsModalProps): React.JSX.Element => (
-  <Modal
-    visible={visible}
-    onDismiss={onDismiss}
-    header="Download all document data"
-    footer={
-      <Box float="right">
-        <SpaceBetween direction="horizontal" size="xs">
-          <Button variant="link" onClick={onDismiss}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={onConfirm}>
-            Start download
-          </Button>
-        </SpaceBetween>
-      </Box>
-    }
-  >
-    <SpaceBetween size="s">
-      <Box>
-        Packages the document summary, section predictions, baselines (when available), per-page text, and confidence into a single ZIP
-        archive. Folder structure mirrors the S3 buckets (<code>output/</code>, <code>baseline/</code>, <code>input/</code>).
-      </Box>
-      <Checkbox checked={includePageImages} onChange={({ detail }) => onIncludePageImagesChange(detail.checked)}>
-        Include page images (can significantly increase archive size)
-      </Checkbox>
-      <Checkbox checked={includeSourceDocument} onChange={({ detail }) => onIncludeSourceDocumentChange(detail.checked)}>
-        Include source document (original uploaded file from the input bucket)
-      </Checkbox>
-    </SpaceBetween>
-  </Modal>
-);
+  scope = 'all',
+  documentCount,
+}: DownloadOptionsModalProps): React.JSX.Element => {
+  const isBulk = (documentCount ?? 1) > 1;
+  const header = isBulk ? `Download data for ${documentCount} documents` : 'Download all document data';
+
+  return (
+    <Modal
+      visible={visible}
+      onDismiss={onDismiss}
+      header={header}
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button variant="link" onClick={onDismiss}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={onConfirm}>
+              Start download
+            </Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <SpaceBetween size="s">
+        <Box>
+          {SCOPE_DESCRIPTIONS[scope]} Folder structure mirrors the S3 buckets (<code>output/</code>, <code>baseline/</code>,{' '}
+          <code>input/</code>)
+          {isBulk && (
+            <>
+              , with one top-level folder per document and a root <code>manifest.json</code> index
+            </>
+          )}
+          .
+        </Box>
+        {isBulk && (documentCount ?? 0) > LARGE_SELECTION_THRESHOLD && (
+          <Alert type="warning" header={`${documentCount} documents selected`}>
+            Large exports are assembled in browser memory and may take several minutes. Consider exporting in smaller batches, and leave
+            page images out unless you need them.
+          </Alert>
+        )}
+        {scope === 'all' && (
+          <>
+            <Checkbox checked={includePageImages} onChange={({ detail }) => onIncludePageImagesChange(detail.checked)}>
+              Include page images (can significantly increase archive size)
+            </Checkbox>
+            <Checkbox checked={includeSourceDocument} onChange={({ detail }) => onIncludeSourceDocumentChange(detail.checked)}>
+              Include source document (original uploaded file from the input bucket)
+            </Checkbox>
+          </>
+        )}
+      </SpaceBetween>
+    </Modal>
+  );
+};
 
 interface DownloadProgressModalProps {
   visible: boolean;
@@ -78,6 +125,10 @@ export const DownloadProgressModal = ({
   const total = progress?.total ?? 1;
   const completed = progress?.completed ?? 0;
   const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  const documentsTotal = progress?.documentsTotal ?? 1;
+  const fileProgress = `${completed} of ${total} files processed`;
+  const description =
+    documentsTotal > 1 ? `${fileProgress} · ${progress?.documentsCompleted ?? 0} of ${documentsTotal} documents` : fileProgress;
 
   return (
     <Modal
@@ -99,12 +150,7 @@ export const DownloadProgressModal = ({
       }
     >
       <SpaceBetween size="s">
-        <ProgressBar
-          value={pct}
-          additionalInfo={progress?.currentFile ?? ''}
-          description={`${completed} of ${total} files processed`}
-          label="Export progress"
-        />
+        <ProgressBar value={pct} additionalInfo={progress?.currentFile ?? ''} description={description} label="Export progress" />
         {errors.length > 0 && (
           <Alert type="warning" header={`${errors.length} file(s) could not be included`}>
             <Box>
@@ -112,8 +158,8 @@ export const DownloadProgressModal = ({
             </Box>
             <ul style={{ marginTop: '8px', maxHeight: '160px', overflow: 'auto' }}>
               {errors.slice(0, 25).map((e) => (
-                <li key={`${e.path}-${e.message}`}>
-                  <code>{e.path}</code>: {e.message}
+                <li key={`${e.document ?? ''}-${e.path}-${e.message}`}>
+                  <code>{e.document ? `${e.document} → ${e.path}` : e.path}</code>: {e.message}
                 </li>
               ))}
               {errors.length > 25 && <li>…and {errors.length - 25} more</li>}

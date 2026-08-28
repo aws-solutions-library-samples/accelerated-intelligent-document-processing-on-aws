@@ -16,6 +16,7 @@ interface DateRange {
 import useDocumentsContext from '../../contexts/documents';
 import { Document } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
+import useAppContext from '../../contexts/app';
 import useUserRole from '../../hooks/use-user-role';
 
 import mapDocumentsAttributes from '../common/map-document-attributes';
@@ -26,6 +27,9 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
+import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
+import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
+import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
 
 import type { MappedDocument } from './documents-table-config';
@@ -59,9 +63,22 @@ const DocumentList = (): React.JSX.Element => {
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
   const [currentUsername, setCurrentUsername] = useState('');
-  const { settings: _settings } = useSettingsContext();
+  const { settings } = useSettingsContext();
+  const { currentCredentials } = useAppContext();
   const { isAdmin, isReviewerOnly, canWrite, canReview } = useUserRole();
   const navigate = useNavigate();
+
+  // Bulk artifact download (ZIP) for the selected documents
+  const [downloadScope, setDownloadScope] = useState<ExportScope | null>(null);
+  const [pendingDownloadScope, setPendingDownloadScope] = useState<ExportScope | null>(null);
+  const [includePageImages, setIncludePageImages] = useState(false);
+  const [includeSourceDocument, setIncludeSourceDocument] = useState(false);
+  const [isDownloadInProgress, setIsDownloadInProgress] = useState(false);
+  const [isDownloadFinished, setIsDownloadFinished] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<ExportProgress | null>(null);
+  const [downloadErrors, setDownloadErrors] = useState<ExportErrorEntry[]>([]);
+  const [downloadDocumentCount, setDownloadDocumentCount] = useState(0);
+  const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
 
   // Get current username on mount
   useEffect(() => {
@@ -313,6 +330,88 @@ const DocumentList = (): React.JSX.Element => {
     actions.setSelectedItems([]);
   };
 
+  /**
+   * Bulk artifact export for the selected rows. List rows carry no Sections/Pages
+   * (those only come from the getDocument detail query), so the selection is
+   * hydrated first and then handed to the shared exporter.
+   */
+  const startBulkDownload = async (scope: ExportScope) => {
+    const selected = (collectionProps.selectedItems ?? []) as MappedDocument[];
+    if (selected.length === 0) return;
+
+    const controller = new AbortController();
+    setDownloadScope(scope);
+    setDownloadErrors([]);
+    setDownloadProgress({
+      completed: 0,
+      total: 1,
+      currentFile: `Loading details for ${selected.length} document${selected.length === 1 ? '' : 's'}…`,
+      errors: [],
+      documentsTotal: selected.length,
+      documentsCompleted: 0,
+    });
+    setIsDownloadFinished(false);
+    setIsDownloadInProgress(true);
+    setDownloadAbortController(controller);
+
+    try {
+      const objectKeys = selected.map((item) => item.objectKey);
+      const details = await getDocumentDetailsFromIds(objectKeys);
+      const mapped = mapDocumentsAttributes(details as unknown as { ObjectKey: string }[]) as MappedDocument[];
+      const detailByKey = new Map(mapped.map((doc) => [doc.objectKey, doc]));
+      // Keep the table's ordering, and fall back to the list row if a detail
+      // fetch failed so the document still appears (attributes only) rather than
+      // vanishing from the archive.
+      const docs = selected.map((row) => detailByKey.get(row.objectKey) ?? row);
+
+      const result = await exportDocuments(docs as unknown as Parameters<typeof exportDocuments>[0], settings, {
+        scope,
+        includePageImages: scope === 'all' ? includePageImages : false,
+        includeSourceDocument: scope === 'all' ? includeSourceDocument : false,
+        credentials: currentCredentials as Record<string, unknown>,
+        signal: controller.signal,
+        onProgress: (p) => {
+          setDownloadProgress(p);
+          setDownloadErrors(p.errors);
+        },
+      });
+      triggerBrowserDownload(result);
+      setDownloadErrors(result.errors);
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') {
+        logger.info('Bulk document export cancelled by user');
+      } else {
+        logger.error('Bulk document export failed:', err);
+        alert(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+      }
+    } finally {
+      setIsDownloadInProgress(false);
+      setIsDownloadFinished(true);
+      setDownloadAbortController(null);
+    }
+  };
+
+  // Every bulk scope confirms first: the modal states how many documents are
+  // included, warns on large selections, and offers the heavy-asset toggles.
+  const handleDownloadSelected = (scope: ExportScope) => {
+    const selectedCount = (collectionProps.selectedItems ?? []).length;
+    if (selectedCount === 0) return;
+    setDownloadDocumentCount(selectedCount);
+    setPendingDownloadScope(scope);
+  };
+
+  const handleConfirmDownload = () => {
+    const scope = pendingDownloadScope;
+    setPendingDownloadScope(null);
+    if (scope) void startBulkDownload(scope);
+  };
+
+  const handleCloseDownloadProgress = () => {
+    setIsDownloadFinished(false);
+    setDownloadProgress(null);
+    setDownloadScope(null);
+  };
+
   return (
     <>
       <Table
@@ -339,6 +438,8 @@ const DocumentList = (): React.JSX.Element => {
               }));
               exportToExcel(exportData, 'Document-List');
             }}
+            onDownloadSelected={handleDownloadSelected}
+            isDownloadInProgress={isDownloadInProgress}
             onReprocess={canWrite ? () => setIsReprocessModalVisible(true) : null}
             onDelete={canWrite ? () => setIsDeleteModalVisible(true) : null}
             onAbort={canWrite ? () => setIsAbortModalVisible(true) : null}
@@ -391,6 +492,27 @@ const DocumentList = (): React.JSX.Element => {
         onConfirm={handleAbortConfirm}
         selectedItems={collectionProps.selectedItems}
         isLoading={isAbortLoading}
+      />
+
+      <DownloadOptionsModal
+        visible={pendingDownloadScope !== null}
+        scope={pendingDownloadScope ?? 'all'}
+        documentCount={downloadDocumentCount}
+        includePageImages={includePageImages}
+        includeSourceDocument={includeSourceDocument}
+        onIncludePageImagesChange={setIncludePageImages}
+        onIncludeSourceDocumentChange={setIncludeSourceDocument}
+        onConfirm={handleConfirmDownload}
+        onDismiss={() => setPendingDownloadScope(null)}
+      />
+
+      <DownloadProgressModal
+        visible={(isDownloadInProgress || isDownloadFinished) && downloadScope !== null}
+        progress={downloadProgress}
+        errors={downloadErrors}
+        isFinished={isDownloadFinished}
+        onCancel={() => downloadAbortController?.abort()}
+        onClose={handleCloseDownloadProgress}
       />
 
       <DateRangeModal

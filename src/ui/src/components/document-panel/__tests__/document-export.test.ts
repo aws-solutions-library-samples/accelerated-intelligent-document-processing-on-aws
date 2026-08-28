@@ -6,10 +6,12 @@ import JSZip from 'jszip';
 import {
   constructBaselineUri,
   exportDocument,
+  exportDocuments,
   parseS3Uri,
   sanitizeDocumentKey,
   uriToZipPath,
   type ExportableDocument,
+  type ExportProgress,
   type ExportSettings,
 } from '../document-export';
 
@@ -413,5 +415,241 @@ describe('exportDocument', () => {
 
   it('throws when neither credentials nor presignFn are provided', async () => {
     await expect(exportDocument(DOC, SETTINGS, { scope: 'predictions' })).rejects.toThrow(/credentials are required/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// exportDocuments (bulk)
+// ---------------------------------------------------------------------------
+
+/** Second document, distinct key/sections, no baseline available. */
+const DOC_B: ExportableDocument = {
+  objectKey: 'tenant/two/statement.pdf',
+  objectStatus: 'COMPLETED',
+  evaluationStatus: 'NOT_EVALUATED',
+  sections: [{ Id: 's1', Class: 'Bank', OutputJSONUri: 's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json' }],
+  pages: [{ Id: 1, TextUri: 's3://output-bkt/tenant/two/statement.pdf/pages/1/result.json' }],
+};
+
+describe('exportDocuments', () => {
+  it('packs multiple documents into one archive, each under its own folder', async () => {
+    const mocks = makeMocks({
+      's3://output-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{"a":1}')),
+      's3://output-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{"a":2}')),
+      's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': ok(textBody('{"b":1}')),
+    });
+
+    const result = await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+      now: () => new Date('2024-01-02T03:04:05Z'),
+    });
+
+    expect(result.filename).toBe('documents_2docs_predictions.zip');
+    expect(result.errors).toEqual([]);
+
+    const zip = await readZip(result.blob);
+    expect(zipFiles(zip)).toEqual(
+      [
+        'manifest.json',
+        'tenant_one_lending.pdf/document-attributes.json',
+        'tenant_one_lending.pdf/manifest.json',
+        'tenant_one_lending.pdf/output/tenant/one/lending.pdf/sections/s1/result.json',
+        'tenant_one_lending.pdf/output/tenant/one/lending.pdf/sections/s2/result.json',
+        'tenant_two_statement.pdf/document-attributes.json',
+        'tenant_two_statement.pdf/manifest.json',
+        'tenant_two_statement.pdf/output/tenant/two/statement.pdf/sections/s1/result.json',
+      ].sort(),
+    );
+  });
+
+  it('writes a root manifest indexing every document, plus intact per-document manifests', async () => {
+    const mocks = makeMocks({
+      's3://output-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': ok(textBody('{}')),
+    });
+
+    const result = await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+    });
+
+    const zip = await readZip(result.blob);
+    const root = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(root.documentCount).toBe(2);
+    expect(root.documents.map((d: { objectKey: string }) => d.objectKey)).toEqual(['tenant/one/lending.pdf', 'tenant/two/statement.pdf']);
+    expect(root.documents.map((d: { folder: string }) => d.folder)).toEqual(['tenant_one_lending.pdf', 'tenant_two_statement.pdf']);
+    expect(root.documents[0].fileCount).toBe(3); // attributes + 2 sections
+    expect(root.errors).toEqual([]);
+
+    // Per-document manifests stay scoped to their own document
+    const docB = JSON.parse(await zip.file('tenant_two_statement.pdf/manifest.json')!.async('string'));
+    expect(docB.document.objectKey).toBe('tenant/two/statement.pdf');
+    expect(docB.files.every((f: { path: string }) => !f.path.includes('lending'))).toBe(true);
+  });
+
+  it('gives colliding sanitized keys distinct folders instead of overwriting', async () => {
+    // 'a/b.pdf' and 'a_b.pdf' both sanitize to 'a_b.pdf'
+    const docA: ExportableDocument = {
+      objectKey: 'a/b.pdf',
+      sections: [{ Id: 's1', OutputJSONUri: 's3://output-bkt/a/b.pdf/sections/s1/result.json' }],
+    };
+    const docB: ExportableDocument = {
+      objectKey: 'a_b.pdf',
+      sections: [{ Id: 's1', OutputJSONUri: 's3://output-bkt/a_b.pdf/sections/s1/result.json' }],
+    };
+    const mocks = makeMocks({
+      's3://output-bkt/a/b.pdf/sections/s1/result.json': ok(textBody('first')),
+      's3://output-bkt/a_b.pdf/sections/s1/result.json': ok(textBody('second')),
+    });
+
+    const result = await exportDocuments([docA, docB], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+    });
+
+    const zip = await readZip(result.blob);
+    expect(await zip.file('a_b.pdf/output/a/b.pdf/sections/s1/result.json')!.async('string')).toBe('first');
+    expect(await zip.file('a_b.pdf__2/output/a_b.pdf/sections/s1/result.json')!.async('string')).toBe('second');
+    const root = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(root.documents.map((d: { folder: string }) => d.folder)).toEqual(['a_b.pdf', 'a_b.pdf__2']);
+  });
+
+  it('attributes soft errors to their document in the returned errors and root manifest', async () => {
+    const mocks = makeMocks({
+      's3://output-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': {
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        arrayBuffer: async () => new ArrayBuffer(0),
+      },
+    });
+
+    const result = await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].document).toBe('tenant/two/statement.pdf');
+    expect(result.errors[0].message).toContain('403');
+
+    const zip = await readZip(result.blob);
+    const root = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(root.documents.find((d: { folder: string }) => d.folder === 'tenant_one_lending.pdf').errorCount).toBe(0);
+    expect(root.documents.find((d: { folder: string }) => d.folder === 'tenant_two_statement.pdf').errorCount).toBe(1);
+    // The healthy document is still fully exported
+    expect(zip.file('tenant_one_lending.pdf/output/tenant/one/lending.pdf/sections/s1/result.json')).toBeTruthy();
+  });
+
+  it('skips baselines for documents without one while still exporting those that have one', async () => {
+    const mocks = makeMocks({
+      's3://baseline-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),
+      's3://baseline-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{}')),
+    });
+
+    const result = await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'baselines',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(mocks.presigned.every((u) => u.startsWith('s3://baseline-bkt/tenant/one/'))).toBe(true);
+    const zip = await readZip(result.blob);
+    // DOC_B (evaluationStatus NOT_EVALUATED) contributes attributes + manifest only
+    expect(zipFiles(zip).filter((p) => p.startsWith('tenant_two_statement.pdf/'))).toEqual([
+      'tenant_two_statement.pdf/document-attributes.json',
+      'tenant_two_statement.pdf/manifest.json',
+    ]);
+  });
+
+  it('reports aggregate file and document progress across the whole selection', async () => {
+    const mocks = makeMocks({
+      's3://output-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/one/lending.pdf/sections/s2/result.json': ok(textBody('{}')),
+      's3://output-bkt/tenant/two/statement.pdf/sections/s1/result.json': ok(textBody('{}')),
+    });
+    const events: ExportProgress[] = [];
+
+    await exportDocuments([DOC, DOC_B], SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn: mocks.presignFn,
+      fetchFn: mocks.fetchFn,
+      onProgress: (p) => events.push(p),
+    });
+
+    const last = events.at(-1)!;
+    expect(last.total).toBe(4); // 3 fetches + zip generation
+    expect(last.completed).toBe(4);
+    expect(last.documentsTotal).toBe(2);
+    expect(last.documentsCompleted).toBe(2);
+    expect(events.every((e) => (e.documentsCompleted ?? 0) <= 2)).toBe(true);
+  });
+
+  it('honours the concurrency limit while fetching every file', async () => {
+    const uris = Array.from({ length: 8 }, (_, i) => `s3://output-bkt/doc/sections/s${i}/result.json`);
+    const docs: ExportableDocument[] = uris.map((uri, i) => ({
+      objectKey: `doc-${i}.pdf`,
+      sections: [{ Id: 's1', OutputJSONUri: uri }],
+    }));
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const presignFn = vi.fn(async (uri: string) => `https://presigned.example/?uri=${encodeURIComponent(uri)}`);
+    const fetchFn = vi.fn(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return ok(textBody('{}'));
+    });
+
+    const result = await exportDocuments(docs, SETTINGS, {
+      scope: 'predictions',
+      credentials: {},
+      presignFn,
+      fetchFn,
+      concurrency: 3,
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(8);
+    expect(peakInFlight).toBeLessThanOrEqual(3);
+    expect(peakInFlight).toBeGreaterThan(1);
+    const zip = await readZip(result.blob);
+    expect(zipFiles(zip).filter((p) => p.includes('/output/doc/sections/'))).toHaveLength(8);
+  });
+
+  it('aborts a bulk export via signal', async () => {
+    const mocks = makeMocks({});
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      exportDocuments([DOC, DOC_B], SETTINGS, {
+        scope: 'predictions',
+        credentials: {},
+        presignFn: mocks.presignFn,
+        fetchFn: mocks.fetchFn,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.presignFn).not.toHaveBeenCalled();
+  });
+
+  it('throws when given an empty selection', async () => {
+    await expect(exportDocuments([], SETTINGS, { scope: 'predictions', credentials: {} })).rejects.toThrow(/no documents/);
   });
 });
