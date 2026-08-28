@@ -32,6 +32,12 @@ its `make` target and the skill that documents how to run it.
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
 | Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |
 
+Once a release has been validated with these tiers, the outcome is recorded — one
+file per release, never overwritten — in
+[`docs/release-validation/`](../../../docs/release-validation/README.md). That is
+the answer to "what was actually run against a live stack for release X, and what
+did it find?", since none of these tiers appear in a pipeline log.
+
 VPC stack-tests auto-discover a suitable VPC via the `run-stack-tests` skill
 (it lists candidates, confirms with you, then passes `VPC_ID`/`SUBNET_IDS`/
 `LAMBDA_SG_ID`/`APIGW_VPCE_ID` as make params).
