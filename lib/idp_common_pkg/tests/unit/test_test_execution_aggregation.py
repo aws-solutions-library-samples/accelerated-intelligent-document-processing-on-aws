@@ -1298,6 +1298,34 @@ class TestRunLevelCountsFromRows:
         assert m["fa"] == 1
         assert m["fp"] == 1
 
+    def test_multi_leaf_extra_item_leaf_normalized_fa(self, mock_env):
+        """Hallucinated-item row weighted by leaf count on the FA side.
+
+        Bob's test-coverage finding: ``test_extra_fields_count_as_fa`` above
+        uses a single-leaf value so ``_row_weight`` returns 1 trivially and
+        the leaf-normalization on the fa side isn't covered. This case
+        pins the multi-leaf shape: a 3-leaf hallucinated item contributes
+        3 fa (leaf-normalized), not 1.
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "expected_key": "Items[]",
+                        "match": False,
+                        "expected_value": None,
+                        "actual_value": {"name": "X", "amount": 99, "unit": "kg"},
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        # 3 leaves in the hallucinated item → 3 fa, not 1
+        assert m["fa"] == 3
+        assert m["fp"] == 3
+        assert m["tp"] == m["fd"] == m["fn"] == 0
+
     def test_empty_field_pair_counts_as_tn(self, mock_env):
         """Both sides empty and matched → tn (correctly-empty field)."""
         index = import_test_module()
@@ -1438,6 +1466,122 @@ class TestRunLevelCountsFromRows:
         ]
         m = index._run_level_counts_from_rows(docs)
         assert m["tp"] == 1
+
+
+@pytest.mark.unit
+class TestVersionDriftWarning:
+    """Version-stamp gate: on rolling deploy or after a Stickler shape change,
+    a v1.0 payload read by v2.0 code (or vice-versa) fires a soft-gate warning
+    so operators know before aggregation numbers silently corrupt. Warning is
+    rate-limited: once per unique payload version per run, not per document —
+    otherwise a historical S3 test set on a new stack would flood CloudWatch
+    (findings 9 + 10 from #625 adversarial review).
+    """
+
+    def _one_doc_payload(self, version: str = "2.0") -> dict:
+        return {
+            "stickler_result_version": version,
+            "section_results": [
+                {
+                    "stickler_comparison_result": {
+                        "field_scores": {"a": 1.0},
+                        "overall_score": 1.0,
+                        "field_comparisons": [
+                            {
+                                "expected_key": "a",
+                                "match": True,
+                                "expected_value": "x",
+                                "actual_value": "x",
+                            }
+                        ],
+                        "confusion_matrix": {"aggregate": {"tp": 1}},
+                    }
+                }
+            ],
+            "overall_metrics": {"weighted_overall_score": 1.0},
+        }
+
+    def _run_loader(self, index, payloads_by_doc, caplog):
+        """Exercise load_document_results by mocking dynamodb + S3 loader."""
+        import logging
+
+        table = MagicMock()
+        table.scan.return_value = {
+            "Items": [
+                {
+                    "PK": f"doc#run#{doc}",
+                    "ObjectKey": doc,
+                    "EvaluationStatus": "COMPLETED",
+                    "EvaluationReportUri": f"s3://b/{doc}/evaluation/report.md",
+                }
+                for doc in payloads_by_doc
+            ]
+        }
+
+        def _load(uri):
+            for doc, payload in payloads_by_doc.items():
+                if doc in uri:
+                    return payload
+            return {}
+
+        with patch.object(index, "dynamodb") as mock_dynamodb:
+            mock_dynamodb.Table.return_value = table
+            with patch.object(index, "_load_s3_json", side_effect=_load):
+                with caplog.at_level(logging.WARNING):
+                    index._load_comparison_results("run", "test-table")
+
+    def test_drift_warning_fires_on_v1_payload(self, mock_env, caplog):
+        """A payload stamped ``1.0`` while code expects ``2.0`` fires a warning."""
+        index = import_test_module()
+        # Two v1.0-stamped documents — expect ONE warning (rate-limited)
+        payloads = {
+            "d1": self._one_doc_payload(version="1.0"),
+            "d2": self._one_doc_payload(version="1.0"),
+        }
+        self._run_loader(index, payloads, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.message.lower()
+            or "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert len(drift_records) == 1, (
+            "expected ONE drift warning across two v1.0 payloads (rate-limited); "
+            f"got {len(drift_records)}: {[r.getMessage() for r in drift_records]}"
+        )
+        assert "1.0" in drift_records[0].getMessage()
+
+    def test_drift_warning_silent_on_current_version(self, mock_env, caplog):
+        """A payload stamped with the current version fires no warning."""
+        index = import_test_module()
+        from idp_common.evaluation.contract import STICKLER_RESULT_VERSION
+
+        payloads = {"d1": self._one_doc_payload(version=STICKLER_RESULT_VERSION)}
+        self._run_loader(index, payloads, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert drift_records == [], (
+            f"expected no drift warnings; got: {[r.getMessage() for r in drift_records]}"
+        )
+
+    def test_drift_warning_silent_when_stamp_missing(self, mock_env, caplog):
+        """Legacy payload with no stamp is tolerated (soft gate)."""
+        index = import_test_module()
+        payload = self._one_doc_payload()
+        del payload["stickler_result_version"]
+        self._run_loader(index, {"d1": payload}, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert drift_records == [], (
+            "missing stamp should be tolerated (soft gate), not warn: "
+            f"got {[r.getMessage() for r in drift_records]}"
+        )
 
 
 class TestConfidenceCurveRecording:

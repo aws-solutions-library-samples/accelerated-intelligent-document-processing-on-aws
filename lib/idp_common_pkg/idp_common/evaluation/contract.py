@@ -39,43 +39,86 @@ def _is_empty_value(v: Any) -> bool:
     return False
 
 
-def _count_leaves(value: Any) -> int:
-    """Count scalar leaves in a possibly-nested value.
+def leaf_paths(value: Any, prefix: str = "") -> List[str]:
+    """Return the list of leaf paths in a possibly-nested value.
 
-    An "item-level" Stickler row for a rejected/missing/extra list item carries
-    the whole item as one side of the comparison. To keep counts truly leaf-
-    normalized we weight that row by the number of scalar leaves inside the
-    item — otherwise dropping N items counts as N fn while dropping N leaves
-    inside a kept item counts as N fn, so a truncated 5-item / 2-leaf-per-item
-    list under-counts fn by 2× and recall inflates from 0.40 to 0.57 (#625,
-    finding 1 from adversarial review).
+    Semantics: one path per SCHEMA SLOT (dict key or scalar leaf position),
+    NOT per non-None value. A ``{'name': 'A', 'amount': None}`` item has TWO
+    leaf paths (``name``, ``amount``) — an Optional-typed schema field is
+    still a slot, whether or not it happens to be null in this specific item.
+    A ``[{'x': 1}, {'x': 2}]`` list has TWO leaf paths (both ``x``) — list
+    indices are collapsed since per-field metrics bucket on collapsed paths.
 
-    Recurses through dicts, lists, and Stickler / pydantic models. Returns 0
-    for None and empty containers (caller applies min-1 floor).
+    Consumers:
+    * ``_count_leaves`` (via ``len(leaf_paths(...))``) for row weighting in
+      ``aggregate_row_counts`` — the top-level side of the leaf-normalized
+      counting invariant.
+    * The aggregation Lambda's per-field bucketing —  the per-field side.
+
+    Kept as ONE function so the two sides can't diverge (finding 1 from
+    #625 adversarial review: unequal handling of None-valued keys and
+    nested lists broke ``sum(per-field counts) == top-level counts``).
+
+    Returns ``[]`` when the top-level value is None or a bare scalar with
+    no attributable prefix — the caller applies the min-1 floor for row
+    weighting.
     """
-    if value is None:
-        return 0
-    if isinstance(value, (str, int, float, bool)):
-        return 1
+    result: List[str] = []
+    _collect_leaf_paths(value, prefix, result)
+    return result
+
+
+def _collect_leaf_paths(value: Any, prefix: str, result: List[str]) -> None:
+    """Recursive worker for ``leaf_paths``. See there for semantics."""
     if isinstance(value, dict):
-        return sum(_count_leaves(v) for v in value.values())
+        if not value:
+            if prefix:
+                result.append(prefix)
+            return
+        for k, v in value.items():
+            child_prefix = f"{prefix}.{k}" if prefix else k
+            _collect_leaf_paths(v, child_prefix, result)
+        return
     if isinstance(value, (list, tuple, set)):
-        return sum(_count_leaves(v) for v in value)
-    # Stickler / pydantic model — prefer model_dump if present, else __dict__.
+        if not value:
+            if prefix:
+                result.append(prefix)
+            return
+        for elem in value:
+            _collect_leaf_paths(elem, prefix, result)
+        return
     if hasattr(value, "model_dump"):
         try:
-            return _count_leaves(value.model_dump())
-        except Exception:  # noqa: BLE001 — fall through to __dict__
+            _collect_leaf_paths(value.model_dump(), prefix, result)
+            return
+        except Exception:  # noqa: BLE001
             pass
-    if hasattr(value, "__dict__"):
+    if hasattr(value, "__dict__") and not isinstance(value, (str, int, float, bool)):
         try:
-            return _count_leaves(
-                {k: v for k, v in vars(value).items() if not k.startswith("_")}
+            _collect_leaf_paths(
+                {k: v for k, v in vars(value).items() if not k.startswith("_")},
+                prefix,
+                result,
             )
-        except Exception:  # noqa: BLE001 — unknown object shape
+            return
+        except Exception:  # noqa: BLE001
             pass
-    # Unknown scalar-like → 1
-    return 1
+    # Scalar, None, or unknown scalar-like — this position IS the leaf slot.
+    if prefix:
+        result.append(prefix)
+
+
+def _count_leaves(value: Any) -> int:
+    """Count leaf slots in a value. Wraps ``leaf_paths`` so top-level row
+    weighting (``_row_weight``) and per-field metrics use the SAME enumeration.
+
+    Diverging these counted None-valued keys and nested-list elements
+    inconsistently before, so top-level and per-field metrics disagreed on
+    the same input (#625 adversarial finding 1).
+    """
+    # Use a synthetic prefix so a bare scalar at top-level counts as 1 slot —
+    # matches the original semantics used by _row_weight (min-1 floor).
+    return len(leaf_paths(value, prefix="_"))
 
 
 def _row_weight(fc: Dict[str, Any]) -> int:

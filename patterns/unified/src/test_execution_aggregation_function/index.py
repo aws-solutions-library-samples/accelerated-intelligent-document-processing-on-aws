@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -450,6 +451,14 @@ def _load_comparison_results(
     # Use max 20 workers to balance parallelism with Lambda memory/network limits
     max_workers = min(20, len(docs_to_load)) if docs_to_load else 1
 
+    # Rate-limit the version-drift warning: log ONCE per unique payload
+    # version per run rather than once per document. On a rolling deploy over
+    # a large historical test set, per-payload logging floods CloudWatch and
+    # drowns any legitimate future drift signal (finding 10 from #625
+    # adversarial review).
+    _seen_payload_versions: set[str] = set()
+    _version_warning_lock = threading.Lock()
+
     def load_document_results(doc_key):
         """Load and parse a single document's evaluation results.
 
@@ -470,19 +479,29 @@ def _load_comparison_results(
 
             # Version-stamp check: the writer stamps STICKLER_RESULT_VERSION
             # onto each results.json; if the payload carries a different
-            # version, log a warning so a shape change surfaces before it
-            # corrupts aggregation output. Missing stamp (old payload) is
-            # tolerated — this is a soft gate for now, not a hard block.
+            # version, log a warning (once per unique payload version per
+            # run) so a shape change surfaces before it corrupts aggregation
+            # output. Missing stamp (old payload) is tolerated — soft gate.
             payload_version = eval_data.get("stickler_result_version")
             if (
                 payload_version is not None
                 and payload_version != STICKLER_RESULT_VERSION
             ):
-                logger.warning(
-                    f"stickler_result_version mismatch on {eval_results_uri}: "
-                    f"payload={payload_version!r} expected={STICKLER_RESULT_VERSION!r}. "
-                    f"Blob shape may have drifted."
-                )
+                should_log = False
+                with _version_warning_lock:
+                    if payload_version not in _seen_payload_versions:
+                        _seen_payload_versions.add(payload_version)
+                        should_log = True
+                if should_log:
+                    logger.warning(
+                        "stickler_result_version mismatch: payload=%r "
+                        "expected=%r. Blob shape may have drifted. First "
+                        "example: %s. Further payloads with this version are "
+                        "not logged individually.",
+                        payload_version,
+                        STICKLER_RESULT_VERSION,
+                        eval_results_uri,
+                    )
 
             section_results = eval_data.get("section_results", [])
 
@@ -656,13 +675,18 @@ def _run_level_counts_from_rows(
 
 
 def _collapse_indices(path: str) -> str:
-    """Strip ``[N]`` list-index tokens from a Stickler field path.
+    """Strip ``[…]`` list-index tokens from a Stickler field path.
 
-    ``Items[3].name`` → ``Items.name``. Matches the pattern
-    ``_IndexCollapsingConfidenceAccumulator`` already uses so per-field metrics
-    and confidence metrics bucket on the same key.
+    ``Items[3].name`` → ``Items.name``. Bare-bracket ``Items[]`` (which
+    Stickler emits for extras / hallucinated items) also collapses to
+    ``Items`` — a previous digits-only regex would have left ``Items[]``
+    as a stray bucket alongside ``Items.name`` (finding 11 from #625
+    adversarial review).
+
+    Matches the pattern ``_IndexCollapsingConfidenceAccumulator`` uses so
+    per-field metrics and confidence metrics bucket on the same key.
     """
-    return re.sub(r"\[\d+\]", "", path)
+    return re.sub(r"\[[^\]]*\]", "", path)
 
 
 def _run_level_field_metrics_from_rows(
@@ -682,41 +706,10 @@ def _run_level_field_metrics_from_rows(
     counts), not a single fn to Items.
     """
     from idp_common.evaluation.contract import (
-        _count_leaves,
         classify_field_comparison,
         iter_countable_rows,
+        leaf_paths,
     )
-
-    def _leaf_paths(value: Any) -> List[str]:
-        """Return leaf paths (dot-joined) within a structured value.
-
-        ``{'name': 'A', 'amount': 1}`` → ``['name', 'amount']``.
-        Empty/scalar/unknown → ``[]``; caller falls back to root path.
-        """
-        if isinstance(value, dict):
-            out: List[str] = []
-            for k, v in value.items():
-                child = _leaf_paths(v)
-                if child:
-                    out.extend(f"{k}.{c}" for c in child)
-                else:
-                    out.append(k)
-            return out
-        if hasattr(value, "model_dump"):
-            try:
-                return _leaf_paths(value.model_dump())
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(value, "__dict__") and not isinstance(
-            value, (str, int, float, bool, list, tuple)
-        ):
-            try:
-                return _leaf_paths(
-                    {k: v for k, v in vars(value).items() if not k.startswith("_")}
-                )
-            except Exception:  # noqa: BLE001
-                pass
-        return []
 
     field_counts: Dict[str, Dict[str, int]] = {}
 
@@ -750,28 +743,29 @@ def _run_level_field_metrics_from_rows(
             exp = fc.get("expected_value")
             act = fc.get("actual_value")
             value = exp if exp is not None else act
-            is_item_level = (
-                isinstance(value, (dict,))
-                or hasattr(value, "model_dump")
-                or (
-                    value is not None
-                    and hasattr(value, "__dict__")
-                    and not isinstance(value, (str, int, float, bool, list, tuple))
-                )
-            )
-            leaves = _leaf_paths(value) if is_item_level else []
+            # Use the SHARED ``leaf_paths`` helper so per-field bucketing
+            # counts the same slots ``_count_leaves`` counts for top-level row
+            # weighting (finding 1 from #625 adversarial review — divergence
+            # on Optional None fields and nested lists broke
+            # sum(per-field) == top-level).
+            leaves = leaf_paths(value) if value is not None else []
             if leaves:
                 # Spread across each leaf field so a dropped 2-leaf item
                 # contributes 1 fn to each of its 2 leaf fields.
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
             else:
-                # Leaf row (or empty structured value) — attribute to the
-                # collapsed path directly. Weight by leaf count of the value
-                # if it's a plain list (rare) so a hallucinated flat list
-                # still normalizes.
-                weight = max(1, _count_leaves(value)) if value is not None else 1
-                _add(collapsed, bucket, weight if isinstance(value, list) else 1)
+                # Scalar row or None value — attribute to the collapsed path
+                # directly with weight 1 (row_weight already handles empty
+                # containers via the top-level path).
+                _add(collapsed, bucket, 1)
+
+    # Synthesize parent buckets — sum descendants' counts into every prefix
+    # level so Test Studio's hierarchical table can still expand from
+    # ``Items`` → ``Items.name`` / ``Items.amount`` etc. (finding 3 from
+    # #625 adversarial review: v2 dropped the parent aggregate row and
+    # broke the UI's expand/collapse on list-heavy configs).
+    _synthesize_parent_buckets(field_counts)
 
     # Derived metrics per field
     out: Dict[str, Dict[str, Any]] = {}
@@ -787,6 +781,30 @@ def _run_level_field_metrics_from_rows(
             "cm_accuracy": _safe_div(c["tp"] + c["tn"], total),
         }
     return out
+
+
+def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
+    """For every dotted leaf path in ``field_counts``, add parent-prefix
+    buckets summing all descendants.
+
+    ``Items.name`` and ``Items.amount`` → also emit ``Items`` with the sum of
+    both. If a leaf bucket already exists at the parent path (e.g. a scalar
+    attribute named the same as another attribute's prefix), it's kept and
+    descendants are added to it. Mutates ``field_counts`` in place; no return
+    value.
+    """
+    # Snapshot before mutation so we don't count synthesized parents as
+    # descendants of a grandparent (which would double-count).
+    leaves = list(field_counts.items())
+    for path, counts in leaves:
+        parts = path.split(".")
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            entry = field_counts.setdefault(
+                parent, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
+            )
+            for k in ("tp", "fa", "fd", "tn", "fn"):
+                entry[k] += counts[k]
 
 
 def _transform_stickler_metrics(

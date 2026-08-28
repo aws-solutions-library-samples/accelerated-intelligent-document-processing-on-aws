@@ -1972,10 +1972,12 @@ def test_section_metrics_include_list_item_false_discoveries():
 
 def _list_of_five_kept_but_wrong_leaves_service():
     """CASE 5 config + gt/pred: 5-item list where every per-item score is
-    exactly 0.5 (one right child, one wrong) so all items pass the
-    ``match_threshold=0.5`` Hungarian gate — but 4 of the 10 leaves inside
-    are wrong. Sirikaro's original bug shape (issue #625): parent used to
-    show ✓ while the drilldown showed leaf ✗s."""
+    ≈ 0.667 (two right children, one wrong) so all items pass the
+    ``match_threshold=0.5`` Hungarian gate with strict `>` OR inclusive `>=`
+    (finding 13 from #625 adversarial review — a previous 2-leaf shape sat
+    exactly at 0.5 and would flip under any future Stickler gate change).
+    4 of the 15 leaves inside are wrong. Sirikaro's original bug shape:
+    parent used to show ✓ while the drilldown showed leaf ✗s."""
     config = {
         "classes": [
             {
@@ -2000,6 +2002,10 @@ def _list_of_five_kept_but_wrong_leaves_service():
                                     "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
                                     "x-aws-idp-evaluation-threshold": 0.01,
                                 },
+                                "unit": {
+                                    "type": "string",
+                                    "x-aws-idp-evaluation-method": "EXACT",
+                                },
                             },
                         },
                     }
@@ -2011,20 +2017,20 @@ def _list_of_five_kept_but_wrong_leaves_service():
     section = Section(section_id="s", classification="Doc", page_ids=["1"])
     gt = {
         "Items": [
-            {"name": "Widget A", "amount": 1.0},
-            {"name": "Widget B", "amount": 2.0},
-            {"name": "Widget C", "amount": 3.0},
-            {"name": "Widget D", "amount": 4.0},
-            {"name": "Widget E", "amount": 5.0},
+            {"name": "Widget A", "amount": 1.0, "unit": "ea"},
+            {"name": "Widget B", "amount": 2.0, "unit": "ea"},
+            {"name": "Widget C", "amount": 3.0, "unit": "ea"},
+            {"name": "Widget D", "amount": 4.0, "unit": "ea"},
+            {"name": "Widget E", "amount": 5.0, "unit": "ea"},
         ]
     }
     pred = {
         "Items": [
-            {"name": "Widget A", "amount": 1.0},  # right
-            {"name": "Foo", "amount": 2.0},  # name wrong, amount right
-            {"name": "Bar", "amount": 3.0},  # ditto
-            {"name": "Baz", "amount": 4.0},  # ditto
-            {"name": "Qux", "amount": 5.0},  # ditto
+            {"name": "Widget A", "amount": 1.0, "unit": "ea"},  # right
+            {"name": "Foo", "amount": 2.0, "unit": "ea"},  # name wrong
+            {"name": "Bar", "amount": 3.0, "unit": "ea"},  # ditto
+            {"name": "Baz", "amount": 4.0, "unit": "ea"},  # ditto
+            {"name": "Qux", "amount": 5.0, "unit": "ea"},  # ditto
         ]
     }
     return svc, section, gt, pred
@@ -2033,8 +2039,9 @@ def _list_of_five_kept_but_wrong_leaves_service():
 @pytest.mark.unit
 def test_case5_parent_verdict_reflects_leaf_failures_inside_kept_items():
     """Issue #625, sirikaro's original bug shape: every item is Hungarian-
-    paired above ``match_threshold`` (per-item score = 0.5, exactly at the
-    cutoff), but 4 of the 10 leaves inside are wrong. Under Stickler's
+    paired above ``match_threshold`` (per-item score ≈ 0.667, comfortably
+    above threshold 0.5 with room for a future Stickler `>` vs `>=` gate
+    change), but 4 of the 15 leaves inside are wrong. Under Stickler's
     item-level rollups (``cm.overall`` and ``all_fields_matched`` at the
     field cell), the parent reads ✓ — contradicting the drilldown's ✗ rows.
     Post-fix (v2.0): parent verdict comes from row-level ``field_comparisons``
@@ -2043,7 +2050,7 @@ def test_case5_parent_verdict_reflects_leaf_failures_inside_kept_items():
     result = svc.evaluate_section(section, gt, pred)
     items = next(a for a in result.attributes if a.name == "Items")
     assert items.matched is False, (
-        f"parent Items must be ✗ when 4 of 10 leaves failed — pre-fix showed "
+        f"parent Items must be ✗ when 4 of 15 leaves failed — pre-fix showed "
         f"✓ because Stickler's item-level rollup masked leaf failures inside "
         f"paired items; got matched={items.matched}"
     )
@@ -2065,7 +2072,8 @@ def test_case5_parent_verdict_reflects_leaf_failures_inside_kept_items():
     red_under_items = [
         fc
         for fc in rows
-        if fc["field_path"].startswith("Items[") and fc.get("match") is False
+        if (fc.get("expected_key") or fc.get("field_path") or "").startswith("Items[")
+        and fc.get("match") is False
     ]
     assert len(red_under_items) == 4, (
         f"expected 4 red drilldown rows under Items; got {len(red_under_items)}"
@@ -2076,20 +2084,20 @@ def test_case5_parent_verdict_reflects_leaf_failures_inside_kept_items():
 def test_case5_section_metrics_reflect_leaf_failures_inside_kept_items():
     """Same CASE 5 scenario. Section-level precision/F1/accuracy must reflect
     the 4 wrong leaves — under v0.6.3–v0.6.5 semantics these all read 1.0
-    on this doc, silently claiming perfect extraction on 60%-correct data.
+    on this doc, silently claiming perfect extraction on ~73%-correct data.
     v2.0 counts every ``field_comparisons`` row, so failures surface."""
     svc, section, gt, pred = _list_of_five_kept_but_wrong_leaves_service()
     result = svc.evaluate_section(section, gt, pred)
     metrics = result.metrics
-    # 10 leaf rows: 6 correct (5 amounts + 1 name) + 4 wrong (4 names).
-    # precision = 6/10 = 0.60. F1 = 2*6 / (2*6 + 4 + 0) = 12/16 = 0.75.
-    assert metrics["precision"] == pytest.approx(0.6)
+    # 15 leaf rows: 11 correct (5 amounts + 5 units + 1 name) + 4 wrong (4 names).
+    # precision = 11/15 ≈ 0.733. F1 = 2*11 / (2*11 + 4 + 0) = 22/26 ≈ 0.846.
+    assert metrics["precision"] == pytest.approx(11.0 / 15.0)
     assert metrics["recall"] == pytest.approx(1.0)  # no FN — all items paired
-    assert metrics["f1_score"] == pytest.approx(0.75)
-    assert metrics["accuracy"] == pytest.approx(0.6)
-    assert metrics["false_discovery_rate"] == pytest.approx(0.4)
+    assert metrics["f1_score"] == pytest.approx(22.0 / 26.0)
+    assert metrics["accuracy"] == pytest.approx(11.0 / 15.0)
+    assert metrics["false_discovery_rate"] == pytest.approx(4.0 / 15.0)
     counts: Dict[str, int] = metrics["_stickler_counts"]  # type: ignore[assignment]
-    assert counts.get("tp") == 6
+    assert counts.get("tp") == 11
     assert counts.get("fd") == 4
     assert counts.get("fp") == 4
     assert counts.get("fn") == 0
@@ -2137,16 +2145,19 @@ def test_section_metrics_unchanged_on_flat_all_pass_doc():
 
 
 @pytest.mark.unit
-def test_section_metrics_fall_back_to_cm_aggregate_when_no_field_comparisons(
-    monkeypatch,
-):
-    """Defensive fallback: if a Stickler result has an empty ``field_comparisons``
-    but a populated ``cm.aggregate`` (unusual but possible under future Stickler
-    variants or an odd schema), section counts fall back to the aggregate node
-    rather than collapsing to zeros. Without this, a fully-correct extraction
-    would report precision/recall/F1/accuracy = 0.0 when the row list happens
-    to be empty. Simulates the shape by stripping ``field_comparisons`` from
-    Stickler's real output on a flat all-pass doc."""
+def test_empty_field_comparisons_logs_warning_and_reports_zero(monkeypatch, caplog):
+    """When Stickler emits a populated ``confusion_matrix`` but zero
+    ``field_comparisons`` rows (a shape change we do NOT silently paper over),
+    section counts are honestly zero and a warning surfaces the mismatch.
+
+    Previously (v0.6.6-dev) the code fell back to ``cm.aggregate`` on this
+    shape — but that stamped v2.0-semantics on v1.0-semantics counts, silently
+    bypassing the drift-warning gate downstream (finding 2 from #625
+    adversarial review). Better to loudly report zeros and let the operator
+    investigate than to fabricate plausible-looking numbers under the wrong
+    counting model."""
+    import logging
+
     config = {
         "classes": [
             {
@@ -2164,8 +2175,7 @@ def test_section_metrics_fall_back_to_cm_aggregate_when_no_field_comparisons(
     section = Section(section_id="s", classification="D", page_ids=["1"])
 
     # Patch Stickler's compare_with to return a result with rows stripped —
-    # simulates the "cm present, rows absent" shape without depending on
-    # future Stickler behavior for real inputs.
+    # the "cm present, rows absent" shape we want to catch loudly.
     from stickler import StructuredModel
 
     orig = StructuredModel.compare_with
@@ -2176,9 +2186,18 @@ def test_section_metrics_fall_back_to_cm_aggregate_when_no_field_comparisons(
         return r
 
     monkeypatch.setattr(StructuredModel, "compare_with", _strip_rows)
-    result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+    with caplog.at_level(
+        logging.WARNING, logger="idp_common.evaluation.stickler_backend.results"
+    ):
+        result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+
     counts: Dict[str, int] = result.metrics["_stickler_counts"]  # type: ignore[assignment]
-    # tp from cm.aggregate fallback → precision/accuracy non-zero
-    assert counts.get("tp", 0) >= 1
-    assert result.metrics["precision"] == pytest.approx(1.0)
-    assert result.metrics["accuracy"] == pytest.approx(1.0)
+    # Counts are honestly zero — no silent fabrication from cm.aggregate.
+    assert counts.get("tp", 0) == 0
+    assert result.metrics["precision"] == 0.0
+    # Warning surfaced the shape mismatch.
+    assert any(
+        "empty field_comparisons" in r.message.lower() for r in caplog.records
+    ), (
+        f"expected shape-mismatch warning, got records: {[r.message for r in caplog.records]}"
+    )

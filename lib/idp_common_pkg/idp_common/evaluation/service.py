@@ -21,10 +21,7 @@ if TYPE_CHECKING:
 
 from idp_common import s3
 from idp_common.config.models import IDPConfig
-from idp_common.evaluation.contract import (
-    STICKLER_RESULT_VERSION,
-    evaluation_results_key,
-)
+from idp_common.evaluation.contract import evaluation_results_key
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     DocSplitMetrics,
@@ -2052,12 +2049,11 @@ class EvaluationService:
                 output_key = evaluation_results_key(actual_document.input_key)
 
                 # Store evaluation results in S3.
+                # ``to_dict()`` writes the ``stickler_result_version`` stamp
+                # so the aggregation Lambda can detect shape drift at read
+                # time. Kept inside ``to_dict()`` (not stamped here) so future
+                # callers can't silently skip it.
                 result_dict = evaluation_result.to_dict()
-                # Stamp the Stickler-result-blob version so the aggregation
-                # Lambda can detect shape drift at read time rather than
-                # silently emit wrong dashboard numbers if Stickler's raw
-                # ``compare_with`` output ever changes shape.
-                result_dict["stickler_result_version"] = STICKLER_RESULT_VERSION
                 # Convert numpy types to native Python types for JSON serialization
                 result_dict = _convert_numpy_types(result_dict)
                 s3.write_content(

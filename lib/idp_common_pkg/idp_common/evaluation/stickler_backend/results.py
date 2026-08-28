@@ -479,22 +479,21 @@ def transform_stickler_result(
     # This view captures both list-item FDs (which ``cm.aggregate`` misses) and
     # leaf-level FDs inside kept items (which ``cm.overall`` misses).
     #
-    # Fallback: if Stickler emits an empty ``field_comparisons`` list but a
-    # populated ``cm.aggregate`` (unusual but possible with future Stickler
-    # variants), use the aggregate node so a perfectly-scoring extraction
-    # doesn't collapse to 0.0.
-    if countable_rows:
-        counts = aggregate_row_counts(countable_rows)
-    else:
-        aggregate = cm.get("aggregate") or {}
-        counts = {
-            "tp": int(aggregate.get("tp", 0) or 0),
-            "fa": int(aggregate.get("fa", 0) or 0),
-            "fd": int(aggregate.get("fd", 0) or 0),
-            "tn": int(aggregate.get("tn", 0) or 0),
-            "fn": int(aggregate.get("fn", 0) or 0),
-        }
-        counts["fp"] = counts["fa"] + counts["fd"]
+    # If Stickler emits no rows we do NOT silently fall back to
+    # ``cm.aggregate`` — that would stamp v2.0-semantics on v1.0-semantics
+    # counts, defeating the drift-warning gate downstream (finding 2 from #625
+    # adversarial review). An empty row list is either a genuinely empty
+    # document (0 counts is correct) or a Stickler shape change we want to
+    # surface loudly rather than paper over.
+    if not countable_rows and (cm.get("aggregate") or cm.get("overall")):
+        logger.warning(
+            "Stickler emitted a populated confusion_matrix but empty "
+            "field_comparisons on section %s — reporting 0 counts. This may "
+            "indicate a Stickler shape change; investigate before trusting "
+            "the run's metrics.",
+            section.section_id,
+        )
+    counts = aggregate_row_counts(countable_rows)
     agg_tp = counts["tp"]
     agg_fa = counts["fa"]
     agg_fd = counts["fd"]

@@ -401,18 +401,34 @@ The evaluation produces:
 
 ## Metrics
 
-The evaluation calculates the following metrics:
+The evaluation calculates the following metrics. Counts come directly from
+Stickler's row-level `field_comparisons` — one count per drilldown row the
+UI displays — with item-level rejected/missing/extra rows weighted by their
+leaf count so a truncated 5-item list and a partially-wrong 5-item list
+contribute the same leaf-normalized units.
 
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate (FAR)**: Rate of false positives among negatives (FP / (FP + TN))
-  - Measures how often the system extracts information that wasn't present in the document
-- **False Discovery Rate (FDR)**: Rate of false positives among positive predictions (FP / (FP + TP))
-  - Measures what proportion of the extracted information is incorrect
+- **Precision**: `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: `TP / (TP + FN)`
+- **F1 Score**: `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: `FA / (FA + TN)`
+  - Rate of *hallucinated* fields (predicted values where none was expected)
+    among true-negatives. Stickler splits `FP` into `fa` (false alarm) and
+    `fd` (false discovery); FAR measures the hallucination side.
+- **False Discovery Rate (FDR)**: `FD / (FD + TP)`
+  - Rate of *wrong-value* fields among positive predictions. The other side
+    of the `fa`/`fd` split — measures incorrect extractions.
 
-These metrics are calculated at both the attribute level (per field), section level (per document class), and document level (overall performance).
+The `fa`/`fd` distinction matters because they represent different failure
+modes and warrant different remediations — FAR isolates hallucinations, FDR
+isolates wrong extractions. These metrics are calculated at attribute
+level (per field), section level (per document class), and document level.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.5 predate this
+counting semantics and may show inflated (leaves-inside-kept-items masked)
+or deflated (item-level rows counted as one unit each) section metrics on
+list-heavy configs. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625);
+re-run those evaluations after upgrading for accurate comparison.
 
 ### Failure and exclusion flags in section metrics
 
