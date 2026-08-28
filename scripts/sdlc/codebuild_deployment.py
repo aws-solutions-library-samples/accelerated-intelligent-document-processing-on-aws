@@ -290,6 +290,84 @@ def publish_templates():
         raise Exception("Failed to extract template URL from publish output")
 
 
+def validate_headless_template(main_template_url):
+    """Validate the `--headless` template variant through real CloudFormation.
+
+    WHY THIS EXISTS. Nothing in CI has ever exercised the `--headless` template
+    transform. The deployment-variant probes all deploy the STANDARD template
+    with different parameters (see the Probe list; `jobsapi` was once called
+    "headless" but tests the EnableJobsApi *parameter*, not the transform), and
+    the transform's only other coverage is offline unit tests. That gap shipped a
+    template CloudFormation rejects outright: the `SuppressAdminInvite` condition
+    referenced the `AdminEmail` parameter that headless removes, so for six weeks
+    EVERY headless deploy failed at validation with
+
+        Template format error: Unresolved dependencies [AdminEmail].
+        Cannot reference resources in the Conditions block of the template
+
+    before creating a single resource. `publish --headless` does run exactly this
+    check — but no CI job invokes it.
+
+    WHY IT IS CHEAP. It reuses the PACKAGED template the publish step just built
+    (`.aws-sam/idp-main.yaml`), so there is no second SAM build: one S3 put plus
+    one ValidateTemplate call. Validating the packaged template also closes the
+    gap the offline unit tests cannot — they transform the *source*
+    `template.yaml`, which differs from the packaged artifact (SAM expansion,
+    nested-stack URLs).
+
+    Deliberately does NOT deploy a headless stack. This proves the template is
+    well-formed and every reference resolves; it does not prove a headless stack
+    stands up. That would need its own ~1h probe.
+
+    Returns (ok: bool, detail: str) and never raises — a failure here must be
+    reported in the verdict, not crash the harness before the primary suite runs.
+    """
+    from urllib.parse import urlparse
+
+    print("🔎 Validating the --headless template variant...")
+
+    packaged = os.path.join(".aws-sam", "idp-main.yaml")
+    if not os.path.exists(packaged):
+        return False, f"packaged template not found at {packaged}"
+
+    # Derive bucket/prefix/region from the published main-template URL
+    # (https://s3.<region>.amazonaws.com/<bucket>/<prefix>/idp-main.yaml) so this
+    # lands beside it rather than recomputing the timestamped prefix.
+    parsed = urlparse(main_template_url)
+    host_parts = parsed.netloc.split(".")
+    region = host_parts[1] if len(host_parts) > 2 else get_env_var(
+        "AWS_DEFAULT_REGION", "us-east-1"
+    )
+    path_parts = [p for p in parsed.path.split("/") if p]
+    if len(path_parts) < 2:
+        return False, f"could not parse bucket/prefix from {main_template_url}"
+    bucket, key_prefix = path_parts[0], "/".join(path_parts[1:-1])
+
+    out_path = os.path.join(".aws-sam", "idp-headless.yaml")
+    try:
+        from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+
+        if not HeadlessTemplateTransformer().transform(packaged, out_path):
+            return False, "headless transform reported failure (see log above)"
+    except Exception as e:  # noqa: BLE001
+        return False, f"headless transform raised: {e}"
+
+    key = f"{key_prefix}/idp-headless.yaml" if key_prefix else "idp-headless.yaml"
+    url = f"https://s3.{region}.amazonaws.com/{bucket}/{key}"
+    try:
+        boto3.client("s3", region_name=region).upload_file(
+            out_path, bucket, key, ExtraArgs={"ContentType": "text/yaml"}
+        )
+        boto3.client("cloudformation", region_name=region).validate_template(
+            TemplateURL=url
+        )
+    except Exception as e:  # noqa: BLE001
+        return False, f"{e}"
+
+    print(f"✅ Headless template validated: {url}")
+    return True, url
+
+
 # boto3's default retry mode is "legacy" (max ~4 attempts, no adaptive
 # rate-limiting). When the primary suite + N probes each create their IAM stack
 # at once, the account-wide (low, non-adjustable) IAM mutating-call rate is
@@ -5380,6 +5458,16 @@ def main():
         failure_reason = f"publish/build failed: {e}"
         ai_summary = generate_publish_failure_summary(str(e))
 
+    # Step 1a: Validate the --headless template variant against real
+    # CloudFormation, reusing the packaged template publish just built. Failure
+    # does NOT short-circuit here — the primary suite still runs so its signal
+    # isn't lost — it is folded into the final verdict below.
+    headless_ok, headless_detail = True, ""
+    if publish_success:
+        headless_ok, headless_detail = validate_headless_template(template_url)
+        if not headless_ok:
+            print(f"❌ Headless template validation failed: {headless_detail}")
+
     if publish_success:
         # Step 2: Launch the deployment-variant probes on their OWN supervisor
         # thread FIRST so their ~30m stack deploys overlap the primary suite's
@@ -5550,6 +5638,14 @@ def main():
                     f"--- Deployment-variant probe: {probe_name} (Step 4b) ---\n"
                     f"{probe_summary}"
                 )
+
+    # Fold the headless-template gate (Step 1a) into the verdict. Applied HERE,
+    # not at the check itself, because stack_success is assigned (not and-ed) by
+    # the primary suite above, so an early False would be overwritten.
+    if not headless_ok:
+        stack_success = False
+        if not failure_reason:
+            failure_reason = f"--headless template validation failed: {headless_detail}"
 
     # Step 5: Print the deterministic consolidated status table FIRST (always
     # renders, Bedrock or not — the GitLab log needs a reliable "every test +
