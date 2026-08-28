@@ -9,6 +9,8 @@ from typing import Optional
 
 import boto3
 
+from idp_common.bda.bda_ocr import build_profile_arn
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,11 +32,24 @@ class BdaService:
             identity = session.client("sts").get_caller_identity()
             account_id = identity.get("Account")
 
-            # Extract region prefix (us, eu, ap, ca, sa, etc.) for profile ARN
-            region_prefix = region.split("-")[0]
-            profile_id = f"{region_prefix}.data-automation-v1"
-
-            self._dataAutomationProfileArn = f"arn:aws:bedrock:{region}:{account_id}:data-automation-profile/{profile_id}"
+            # Build via the shared helper rather than formatting the ARN here.
+            # The hand-rolled version hardcoded `arn:aws:` and used a naive
+            # region.split("-")[0], which is wrong twice:
+            #   * outside the commercial partition the ARN can never resolve —
+            #     us-gov-west-1 yielded `arn:aws:...`, so every BDA invoke failed
+            #     with "The provided ARN is invalid" (reported from a live
+            #     GovCloud deployment, issue #527);
+            #   * ap-* regions need the geo prefix `apac`, not `ap`.
+            # build_profile_arn handles both; the partition comes from the caller
+            # ARN (arn:<partition>:...) exactly as ocr/service.py derives it.
+            partition = (
+                (identity.get("Arn") or "arn:aws:").split(":")[1] or "aws"
+            )  # arn-partition-ok: fallback used only to PARSE the partition out
+            # `or ""` guards a missing Account: without it the ARN would read
+            # "…:None:data-automation-profile/…" and fail opaquely at invoke time.
+            self._dataAutomationProfileArn = build_profile_arn(
+                region, account_id or "", partition
+            )
 
         self._bda_client = boto3.client("bedrock-data-automation-runtime")
 

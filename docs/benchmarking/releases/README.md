@@ -32,4 +32,5 @@ Generate a new entry with **`make benchmark-release VERSION=<new> PREV=<publishe
 - **Reproduce** — the exact commands, plus honesty caveats (n, pricing estimate date).
 
 Raw scored data for each side lives (unpublished) under
-`benchmarks/results/<release>/summary.{json,csv}` + `meta.json`.
+`benchmarks/results/<release>/<suite>/summary.{json,csv}` + `meta.json` — one release
+directory per release, per [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).

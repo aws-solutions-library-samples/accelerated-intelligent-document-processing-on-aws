@@ -144,7 +144,10 @@ suites:
   # non-deterministic and silent (schema-valid, scalar accuracy 1.000, status
   # COMPLETED), so a single run cannot settle it. `core-tt-adv-sep` runs alongside
   # as a same-doc control. Run it with `--set extraction_model=sonnet5`, the model
-  # the failure was observed on. Evidence: benchmarks/results/v0.6.5-advverify/.
+  # the failure was observed on. Evidence: docs/benchmarking/releases/v0.6.5.md and
+  # the pre/post-#668 advverify runs, pruned per results/RETENTION.md — restore with
+  # `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-advverify/` (and
+  # `benchmarks/results/v0.6.6-advverify-post668/`).
   advverify: {cells: [core-tt-adv-int, core-tt-adv-sep], docs: [longdesc_100], repeats: 4}
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}

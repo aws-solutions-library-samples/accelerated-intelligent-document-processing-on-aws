@@ -2,9 +2,12 @@
 """Score every run in a runmap, roll into summary tables, compare to a baseline.
 
 Usage:
-  AWS_PROFILE=default python3 aggregate.py --run results/run-XXXX --out results/<release>
-  python3 aggregate.py --compare results/<release>/summary.json --baseline results/baseline.json
-  python3 aggregate.py --figures results/<release>/summary.json   # emit charts
+  AWS_PROFILE=default python3 aggregate.py --run results/run-XXXX --out results/<release>/<suite>
+  python3 aggregate.py --compare results/<release>/<suite>/summary.json --baseline results/baseline.json
+  python3 aggregate.py --figures results/<release>/<suite>/summary.json   # emit charts
+
+Scored output goes in a <suite>/ subdirectory of the release dir; results/ keeps one
+complete set per release (see results/RETENTION.md).
 
 Writes summary.json (per (cell,doc) full scores) + summary.csv (+ meta.json).
 Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration -0.03.
