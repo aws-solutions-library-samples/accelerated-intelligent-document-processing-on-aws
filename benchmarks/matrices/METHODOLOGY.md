@@ -53,7 +53,7 @@ Every run is scored on SEVEN dimensions:
 Scoring is **resolver-free** (reads S3 + DDB directly) so it works on any stack version.
 
 ## 5. Aggregation + comparison — aggregate.py
-- Rolls per-run scores into `results/<release>/summary.{json,csv}`: one row per
+- Rolls per-run scores into `results/<release>/<suite>/summary.{json,csv}`: one row per
   (cell, doc) with all seven dimensions, plus per-cell and per-doc marginals.
 - Cross-release comparison: diff a release's `summary.json` against `baseline.json`
   on matched (cell, doc) keys; flag deltas beyond thresholds (accuracy −>2%, cost

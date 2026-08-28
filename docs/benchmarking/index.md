@@ -31,7 +31,8 @@ separate — they answer different questions and are regenerated on different ca
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
 compares each `develop` prerelease to the previous **published** release, and the
 [index](./releases/) table links them all. Raw data lives (unpublished) under
-`benchmarks/results/<release>/`.
+`benchmarks/results/<release>/<suite>/` — **one complete set per release**, per
+[`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).
 
 ## What it measures (seven dimensions)
 
@@ -89,9 +90,9 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
    `Config#default`), launches each (cell × doc) via the stack test runner, and polls the
    tracking table to completion. `--estimate` prints projected doc-count/cost/time first.
 4. **Score & aggregate** — `aggregate.py` scores every run on the seven dimensions, rolls
-   them into `results/<release>/summary.{json,csv}` with a `meta.json` (commit, stack,
-   pricing hash, date), diffs against `results/baseline.json` to flag regressions, and
-   emits figures.
+   them into `results/<release>/<suite>/summary.{json,csv}` with a `meta.json` (commit,
+   stack, pricing hash, date), diffs against `results/baseline.json` to flag regressions,
+   and emits figures.
 
 ## Suites (cost-tiered)
 
@@ -185,8 +186,15 @@ This single target (see the repo `Makefile` and the `run-benchmarks` skill):
 4. Promotes the PREV summary to `benchmarks/results/baseline.json`.
 
 Commit the new `docs/benchmarking/releases/v<VERSION>.md`, its figures under `images/`,
-the `benchmarks/results/{vPREV,vVERSION}/` data dirs, and the updated `baseline.json`
-and `releases/README.md`. That is the durable, per-release audit trail.
+the `benchmarks/results/{vPREV,vVERSION}/corefast/` data dirs, and the updated
+`baseline.json` and `releases/README.md`. That is the durable, per-release audit trail.
+
+> **Retention.** `benchmarks/results/` keeps **one complete set per release** and nothing
+> else: the `corefast` A/B grid behind each audit-trail entry. One-off suite slices
+> (`config-*`, `intconf`, `advverify`, post-fix re-runs) are pruned once their finding is
+> written into the prose here — the published page is the durable record, and the data stays
+> recoverable from git history. Rules and recovery commands:
+> [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).
 
 > The step-by-step mechanics (and the cross-version config-compatibility handling the
 > harness performs) are documented in the `run-benchmarks` skill and
