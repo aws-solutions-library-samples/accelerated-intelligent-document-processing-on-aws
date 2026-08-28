@@ -41,7 +41,8 @@ failure only once CloudFormation started creating resources:
 
 Variables: `REGION=`, `ADMIN_EMAIL=`, `STACK_NAME=` (validate an existing stack;
 no deploy, no teardown), `KEEP=1` (leave the stack up), `SKIP_DOC_TEST=1`
-(structural only), `JSON_OUT=path`.
+(structural only), `JSON_OUT=path`. The script also takes
+`--with-knowledge-base` — see the cost section below for why it is off by default.
 
 Always `AWS_PROFILE=default` — see CLAUDE.md. **Confirm the account first:**
 `AWS_PROFILE=default aws sts get-caller-identity`.
@@ -58,8 +59,33 @@ idp-cli deploy --govcloud --from-code . --wait
 So publish → transform → deploy is all under test, and the CLI handles the
 per-variant parameter differences itself — notably that the headless template has
 **no `AdminEmail` parameter**, and passing one is a CloudFormation
-`ValidationError`. Each run is a full publish + deploy: **budget 1–2 hours per
-variant.** Warn the user before starting.
+`ValidationError`.
+
+## Cost and duration — tell the user before starting
+
+Each run is a **full publish + deploy**: SAM build (Docker images, UI bundle) then
+a complete IDP stack, then teardown. **Budget 1–2 hours per variant**, and real
+spend for that window — Bedrock/Textract calls for the sample document plus every
+resource in the stack.
+
+The dominant avoidable cost is the **Bedrock Knowledge Base**.
+`DocumentKnowledgeBase` defaults to `BEDROCK_KNOWLEDGE_BASE (Create)`, and the
+`--govcloud` transform forces `KnowledgeBaseVectorStore=OPENSEARCH_SERVERLESS` —
+so a naive run stands up an **OpenSearch Serverless collection**: minimum-OCU
+billing, and the slowest resource in the stack to both create *and* delete. It has
+nothing to do with what a template transform does, so the runner **disables the
+Knowledge Base by default** on `--govcloud`. Pass `--with-knowledge-base` (or
+`KEEP=1` plus a manual deploy) only when you specifically want full fidelity, and
+say so in the report — a run without it has not exercised the KB path.
+
+`--headless` is unaffected: the transform removes the Knowledge Base outright.
+Note that both of these parameters are *absent* from the headless template, so the
+runner only ever sends them for `--govcloud` — passing one to a headless deploy
+would be a CloudFormation `ValidationError`, the same class of mistake as
+`AdminEmail`.
+
+`SKIP_DOC_TEST=1` cuts the document-processing time but proves much less; say
+which mode was used.
 
 ## ⚠️ The caveat you MUST include when reporting a `govcloud` result
 
