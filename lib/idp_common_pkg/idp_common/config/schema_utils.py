@@ -66,18 +66,20 @@ def deref_schema(
 
     prefix = f"#/{DEFS_FIELD}/"
     if not ref.startswith(prefix):
-        logger.debug(f"Unsupported non-local $ref '{ref}'; using it as-is")
+        logger.debug("Unsupported non-local $ref '%s'; using it as-is", ref)
         return node
 
     seen = _seen or set()
     if ref in seen:
-        logger.warning(f"Circular $ref '{ref}' in class schema; stopping resolution")
+        logger.warning(
+            "Circular $ref '%s' in class schema; stopping resolution", ref
+        )
         return node
     seen.add(ref)
 
     target = root.get(DEFS_FIELD, {}).get(ref[len(prefix) :])
     if not isinstance(target, dict):
-        logger.warning(f"Dangling $ref '{ref}' in class schema; using it as-is")
+        logger.warning("Dangling $ref '%s' in class schema; using it as-is", ref)
         return node
 
     # Sibling keys on the referencing node win over the definition's.

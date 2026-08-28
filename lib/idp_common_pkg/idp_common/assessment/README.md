@@ -278,10 +278,21 @@ an array where it should be). A validly array-typed field is never blocked.
 
 The property is dereferenced (`config/schema_utils.deref_schema`) before its
 `type` is read, since a property declared as `{"$ref": "#/$defs/Foo"}` carries
-none. So a `$defs` group is reported as `declared as 'object'` rather than
-mislabelled `'scalar'`, and a `$defs` **array** — which hand-authored configs
-can declare, though the UI's schema editor only emits objects — is correctly
-recognized as validly list-typed instead of having its rows abandoned.
+none — so a `$defs` group is reported as `declared as 'object'` rather than
+mislabelled `'scalar'` (a type the schema contains nowhere).
+
+An **array** declared as a bare `$ref` (hand-authored configs can do this; the
+UI's schema editor only emits objects into `$defs`) used to be a genuine
+dead-end for the same reason one level down: `_assess_core` also read `type` off
+the raw property, treated the attribute as a scalar, and collapsed the model's
+per-row list into one default leaf. That read is dereferenced too, so such a
+field is now row-scored normally — and only because of that is it correct for
+this guard to stop skipping it. Note the two reads are deliberately split: the
+**type** is taken from the dereferenced subschema, while the property's own
+`x-aws-idp-confidence-threshold` is still read from the raw property, because
+honoring a threshold declared on the `$defs` definition instead of the property
+is a change to threshold *inheritance* and belongs with `threshold_resolver`'s
+rules.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the

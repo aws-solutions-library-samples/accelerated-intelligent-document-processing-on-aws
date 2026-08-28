@@ -368,9 +368,11 @@ def _schema_field_mismatch_reason(
       hunting for a ``type: string`` that does not exist. Same skip decision.
     * A ``$defs`` **array** (hand-authored configs can put one there; the UI's
       schema editor only emits objects) resolves to ``type: array``, so the field
-      is correctly recognized as validly list-typed and is no longer skipped.
-      Previously such a field read as untyped and the ladder abandoned rows it
-      could in fact have recovered.
+      is recognized as validly list-typed and is no longer skipped. This is only
+      correct because ``_assess_core`` now dereferences before reading ``type``
+      too — previously that attribute really was collapsed to a single default
+      leaf, so skipping was the right call and only the label was wrong. Do not
+      relax this guard without checking the enhancer still sees the same type.
     """
     from idp_common.config.schema_constants import (
         SCHEMA_PROPERTIES,

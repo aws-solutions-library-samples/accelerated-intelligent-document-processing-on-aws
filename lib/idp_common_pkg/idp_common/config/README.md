@@ -90,10 +90,16 @@ prop = deref_schema(class_schema["properties"]["Signatures"], class_schema)
 prop["type"]  # "object", not None
 ```
 
-Callers: the confidence prompt's attribute-description formatter
-(`assessment/service.py`), the classification attribute-name walk
-(`classification/service.py`), and the assessment escalation-skip reason
-(`assessment/batching.py`).
+Callers: the confidence prompt's attribute-description formatter and the
+confidence enhancer's attribute-type read (`assessment/service.py`), the
+classification attribute-name walk (`classification/service.py`), and the
+assessment escalation-skip reason (`assessment/batching.py`).
+
+Dereference for the **type/description** read specifically; do not hoist it over
+a property wholesale. `_assess_core` reads a property's own
+`x-aws-idp-confidence-threshold` right beside its `type`, and honoring one
+declared on the `$defs` definition rather than the property is a change to
+threshold *inheritance* — the carve-out below, not a bug to fix in passing.
 
 > **Note:** `assessment/threshold_resolver.py` keeps its own `_deref`. Its
 > dangling-ref and definition-wins-over-sibling semantics are load-bearing for

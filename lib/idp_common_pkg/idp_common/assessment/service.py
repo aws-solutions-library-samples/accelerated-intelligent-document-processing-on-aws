@@ -1120,6 +1120,11 @@ class AssessmentService:
 
         for attr_name, attr_assessment in assessment_data.items():
             prop_schema = properties.get(attr_name, {})
+            # NOTE: deliberately read off the RAW property, not the dereferenced
+            # one. Honoring a threshold declared on the ``$defs`` definition
+            # rather than the property is a change to threshold *inheritance*
+            # semantics, which belongs with threshold_resolver's rules — not
+            # here. See config/schema_utils.py.
             attr_threshold = _safe_float_conversion(
                 prop_schema.get(
                     X_AWS_IDP_CONFIDENCE_THRESHOLD, default_confidence_threshold
@@ -1127,7 +1132,14 @@ class AssessmentService:
                 default_confidence_threshold,
             )
 
-            prop_type_json = prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
+            # The type MUST be read off the dereferenced subschema: a property
+            # declared as ``{"$ref": "#/$defs/TxnList"}`` carries no ``type``, so
+            # the raw read defaulted an array to TYPE_STRING -> attr_type
+            # "simple", and the list assessment below was collapsed to a single
+            # default 0.5 leaf that reconciliation padded to N null placeholders
+            # no model could ever fill.
+            deref_prop_schema = deref_schema(prop_schema, class_schema)
+            prop_type_json = deref_prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
             if prop_type_json == TYPE_OBJECT:
                 attr_type = "group"
             elif prop_type_json == TYPE_ARRAY:
@@ -1152,8 +1164,13 @@ class AssessmentService:
                         resolve_array_item_thresholds,
                     )
 
+                    # Dereferenced: a ``$ref``-wrapped array property has no
+                    # ``items`` of its own, so the raw schema yielded {} and every
+                    # sub-field silently fell back to the uniform container
+                    # threshold. Reachable only now that such a property is
+                    # correctly typed "list" above.
                     item_thresholds = resolve_array_item_thresholds(
-                        prop_schema, class_schema, attr_threshold
+                        deref_prop_schema, class_schema, attr_threshold
                     )
 
                     enhanced_list = []
