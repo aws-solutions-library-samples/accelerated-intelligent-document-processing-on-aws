@@ -248,3 +248,99 @@ def test_page_document_boundary_round_trips_through_document():
 
 def test_page_default_document_boundary_is_none():
     assert Page(page_id="1").document_boundary is None
+
+
+# --------------------------------------------------------------------------
+# Designate mode: x-aws-idp-instance-array
+#
+# A class already modelled as a PACKET of records names its own instance axis.
+# The count then comes from that array's length with NO schema transform and NO
+# output-shape change, so configs that already solved multi-record packets by
+# hand (the #565 workaround) get instance_count and the UI badge for free.
+# --------------------------------------------------------------------------
+
+
+def _packet_svc(instance_array="records") -> ExtractionService:
+    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": False}}})
+    svc = ExtractionService(config=cfg)
+    svc._class_schema = {
+        "type": "object",
+        "x-aws-idp-instance-array": instance_array,
+        "properties": {
+            "records": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"patient_name": {"type": "string"}},
+                },
+            }
+        },
+    }
+    svc._class_label = "patient_packet"
+    return svc
+
+
+def test_designated_instance_count_uses_declared_array_length():
+    svc = _packet_svc()
+    fields = {
+        "records": [{"patient_name": "A"}, {"patient_name": "B"}, {"patient_name": "C"}]
+    }
+    assert svc._designated_instance_count(fields) == 3
+
+
+def test_designated_instance_count_one_record():
+    svc = _packet_svc()
+    assert svc._designated_instance_count({"records": [{"patient_name": "A"}]}) == 1
+
+
+def test_designated_instance_count_null_array_is_zero_not_error():
+    """Extracted as null = genuinely no records, not a misconfiguration."""
+    svc = _packet_svc()
+    assert svc._designated_instance_count({"records": None}) == 0
+
+
+def test_no_declaration_returns_none():
+    """The overwhelmingly common case: the class declares no instance axis."""
+    svc = _svc()
+    assert svc._designated_instance_count({"patient_name": "A"}) is None
+
+
+def test_designated_instance_count_forgiving_at_runtime():
+    """A misconfiguration costs a log line, never an extraction."""
+    svc = _packet_svc()
+    # Declared property absent from this result.
+    assert svc._designated_instance_count({"something_else": []}) is None
+    # Declared property is not a list.
+    assert svc._designated_instance_count({"records": {"a": 1}}) is None
+    # Non-dict result.
+    assert svc._designated_instance_count(["not", "a", "dict"]) is None
+    # Declaration itself is the wrong type.
+    bad = _packet_svc(instance_array=["records"])
+    assert bad._designated_instance_count({"records": [{}, {}]}) is None
+
+
+def test_declared_multi_instance_does_not_raise_the_warning():
+    """A declared packet holding N records is CORRECT, not a problem.
+
+    The warning exists for the case where the model returned extra documents
+    unexpectedly and only the first is scored. A class that declared its own
+    instance axis extracts and scores every record, so warning would be noise.
+    """
+    svc = _packet_svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"records": [{"patient_name": "A"}, {"patient_name": "B"}]},
+        metadata={"instance_count": 2, "instance_source": "declared"},
+        section_id="1",
+    )
+    assert not [i for i in issues if i.code == "extraction_multi_instance_detected"]
+
+
+def test_recovered_multi_instance_still_raises_the_warning():
+    """The unexpected case must still be flagged — contrast with the test above."""
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+        metadata={"instance_count": 2, "instance_source": "recovered"},
+        section_id="1",
+    )
+    assert [i for i in issues if i.code == "extraction_multi_instance_detected"]

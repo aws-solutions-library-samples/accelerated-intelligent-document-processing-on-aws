@@ -528,6 +528,66 @@ Common issues and solutions:
    - Improve example quality and accuracy
    - Ensure examples demonstrate proper null handling
 
+## Multi-document sections (`instance_count`)
+
+Classification splits sections on document *type*. When a packet concatenates
+several records of the **same** type with no separator, there is no type change
+to split on, so they land in one section — and extraction, whose class schema
+describes one document, returns one record. See
+[#565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/565).
+
+`Section.instance_count` reports how many documents of the class a section turned
+out to hold: `0` = undetermined, `1` = normal, `> 1` = the section spans several.
+The UI surfaces `> 1` so this is obvious at a glance. It is populated from
+whichever of two sources applies.
+
+### Recovered (automatic, no config)
+
+If the model returns a **JSON array** for the single-object schema — which is
+what it tends to do when it notices several records — every element is kept.
+The first populates `inference_result` (so the output shape is identical to a
+normal extraction and no downstream consumer changes), the rest are recorded in
+`metadata.recovered_instances`, and the section gets an
+`extraction_multi_instance_detected` **warning** because only the first is scored
+and reviewed.
+
+This replaced the previous behaviour, which stored the array under a `raw_array`
+key that nothing read, failed the section, and reported a misleading
+`extraction_sparse`. Note what it does *not* fix: if the model returns a single
+object for a two-document section, only the first record exists in the response
+and there is nothing to recover.
+
+### Declared (`x-aws-idp-instance-array`)
+
+A class whose schema is already modelled as a **packet of records** can name its
+own instance axis:
+
+```yaml
+classes:
+  - $id: patient_packet
+    type: object
+    x-aws-idp-instance-array: records   # each element is one document
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+          properties:
+            patient_name: { type: string }
+            patient_dob:  { type: string, format: date }
+```
+
+`instance_count` becomes `len(inference_result["records"])`. Nothing else
+changes — **no schema transform, no output-shape change, no downstream impact** —
+because the pipeline is only being told which existing array means "one document
+per element". This exists so configs that already solved multi-record packets by
+hand keep working unchanged while still getting the count and the UI badge.
+
+A declared count above 1 is *correct*, not a problem, so it raises **no** warning
+— unlike the recovered case. The declaration is validated at config-validate
+time (the property must exist and be an array of objects), because a typo would
+otherwise fail silently by simply never producing a count.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:

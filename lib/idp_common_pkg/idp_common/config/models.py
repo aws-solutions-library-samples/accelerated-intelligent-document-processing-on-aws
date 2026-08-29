@@ -2665,6 +2665,83 @@ class IDPConfig(BaseModel):
     classes: List[Dict[str, Any]] = Field(
         default_factory=list, description="Document class definitions (JSON Schema)"
     )
+
+    @field_validator("classes", mode="after")
+    @classmethod
+    def validate_instance_array(cls, v: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Validate ``x-aws-idp-instance-array`` names a real array-of-object.
+
+        The key tells the pipeline which top-level array means "one document per
+        element", so ``Section.instance_count`` can be populated for a class whose
+        schema is already modelled as a packet of records. A typo would otherwise
+        fail silently at runtime (the count simply never appears), which is
+        exactly the class of silent-no-op bug this whole workstream exists to
+        remove — so it is caught here instead.
+
+        Note ``_validate_schema_fields`` only walks ``properties``/``$defs`` and
+        never inspects class-level keys, hence this validator.
+        """
+        from idp_common.config.schema_constants import (
+            SCHEMA_ITEMS,
+            SCHEMA_PROPERTIES,
+            SCHEMA_TYPE,
+            TYPE_ARRAY,
+            TYPE_OBJECT,
+            X_AWS_IDP_DOCUMENT_TYPE,
+            X_AWS_IDP_INSTANCE_ARRAY,
+        )
+
+        for doc_class in v:
+            if not isinstance(doc_class, dict):
+                continue
+            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
+            if prop_name is None:
+                continue
+            label = (
+                doc_class.get("$id") or doc_class.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
+            )
+            if not isinstance(prop_name, str) or not prop_name:
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' must be the "
+                    f"name of a top-level array property, got {prop_name!r}"
+                )
+            properties = doc_class.get(SCHEMA_PROPERTIES)
+            if not isinstance(properties, dict) or prop_name not in properties:
+                available = sorted(properties) if isinstance(properties, dict) else []
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', which is not a top-level property of that "
+                    f"class. Available properties: {available}"
+                )
+            prop_schema = properties[prop_name]
+            if not isinstance(prop_schema, dict):
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', whose schema is not an object"
+                )
+            if prop_schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', which is type "
+                    f"'{prop_schema.get(SCHEMA_TYPE)}' — it must be an array, "
+                    f"since each element is one document instance"
+                )
+            items = prop_schema.get(SCHEMA_ITEMS)
+            # Allow $ref'd items (resolved at runtime); only reject an inline
+            # items schema that is explicitly a non-object.
+            if (
+                isinstance(items, dict)
+                and "$ref" not in items
+                and items.get(SCHEMA_TYPE) not in (None, TYPE_OBJECT)
+            ):
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', whose items are type "
+                    f"'{items.get(SCHEMA_TYPE)}' — each element must be an "
+                    f"object representing one document instance"
+                )
+        return v
+
     policy_classes: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Policy class definitions for rule validation (JSON Schema). Also receives rule classes extracted by Policy Discovery.",
@@ -2763,9 +2840,7 @@ class IDPConfig(BaseModel):
                 # how hand-written and notebook-produced configs ended up with
                 # rule validation that never fired.
                 discarded = data.get("rule_classes")
-                count = (
-                    len(discarded) if isinstance(discarded, (list, dict)) else 1
-                )
+                count = len(discarded) if isinstance(discarded, (list, dict)) else 1
                 logger.warning(
                     "Both 'rule_classes' (deprecated) and 'policy_classes' are "
                     "present in this configuration; DISCARDING 'rule_classes' "

@@ -31,6 +31,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_EXTRACTION_MODEL,
     X_AWS_IDP_EXTRACTION_SYSTEM_PROMPT,
     X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
 from idp_common.extraction.page_type_resolver import (
@@ -1879,6 +1880,65 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         return {k: v for k, v in extracted_fields.items() if k in allowed}
 
+    def _designated_instance_count(self, extracted_fields: Any) -> int | None:
+        """Count instances via the class's declared instance axis, or None.
+
+        A class whose schema is already modelled as a *packet* — one top-level
+        array of objects, one element per record — can name that array with
+        ``x-aws-idp-instance-array``. This is the cheap half of multi-instance
+        support (plan D3, "Designate mode"): it performs **no** schema transform
+        and changes **no** output shape, so it costs nothing downstream. It only
+        tells the pipeline which existing array means "one document per element",
+        which is enough to populate ``Section.instance_count`` and light the UI
+        badge.
+
+        It exists so configs that already solved multi-record packets by hand —
+        the workaround validated in GitHub #565 — get the count without
+        restructuring their schema or migrating their evaluation baselines.
+
+        Returns None when the class declares no instance axis (the overwhelmingly
+        common case), or when the declared property is missing or not a list in
+        this particular result. Deliberately forgiving at runtime: a
+        misconfiguration should cost a log line, not an extraction. The shape of
+        the declaration itself is checked at config-validate time.
+        """
+        prop = (self._class_schema or {}).get(X_AWS_IDP_INSTANCE_ARRAY)
+        if not prop:
+            return None
+        if not isinstance(prop, str):
+            logger.warning(
+                "%s on class '%s' must be a property name (got %s); ignoring",
+                X_AWS_IDP_INSTANCE_ARRAY,
+                self._class_label,
+                type(prop).__name__,
+            )
+            return None
+        if not isinstance(extracted_fields, dict):
+            return None
+        if prop not in extracted_fields:
+            logger.warning(
+                "Class '%s' declares instance array '%s' but the extraction "
+                "result has no such field; instance count not determined",
+                self._class_label,
+                prop,
+            )
+            return None
+        value = extracted_fields[prop]
+        if value is None:
+            # Extracted as null — genuinely zero records found, not a config
+            # error. 0 reads back as "undetermined", which is the honest answer.
+            return 0
+        if not isinstance(value, list):
+            logger.warning(
+                "Class '%s' declares instance array '%s' but the extracted value "
+                "is %s, not a list; instance count not determined",
+                self._class_label,
+                prop,
+                type(value).__name__,
+            )
+            return None
+        return len(value)
+
     @staticmethod
     def _normalize_list_result(
         parsed: Any, *, context: str
@@ -2115,8 +2175,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # being silent, which is exactly what made this hard to find — the old
         # code marked the section FAILED and reported "0/N fields populated",
         # which described neither what happened nor what to do about it.
+        # Only when the extra documents were UNEXPECTED. A class that declared its
+        # own instance axis (x-aws-idp-instance-array) is meant to hold several
+        # records, and every one of them is extracted and scored, so warning about
+        # it would be pure noise on a correctly-configured class.
         instance_count = int(metadata.get("instance_count") or 0)
-        if instance_count > 1:
+        if instance_count > 1 and metadata.get("instance_source") != "declared":
             issues.append(
                 ProcessingIssue(
                     stage="extraction",
@@ -4071,9 +4135,29 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # keeps the first so the output shape is unchanged; these carry the rest
         # so nothing is discarded, and _build_extraction_issues turns the count
         # into a user-visible warning.
-        if result.instance_count:
-            metadata["instance_count"] = result.instance_count
-            section.instance_count = result.instance_count
+        instance_count = result.instance_count
+        # "recovered" = the model returned a list for a single-object schema, so
+        # the extra documents were unexpected and only the first is scored —
+        # that is worth a warning. "declared" = the class named its own instance
+        # axis with x-aws-idp-instance-array, so several documents are exactly
+        # what the config asked for and there is nothing to warn about.
+        instance_source = "recovered" if instance_count else None
+
+        # Designate mode: a class whose schema is ALREADY modelled as a packet of
+        # records names its own instance axis. The count comes from that array's
+        # length, and nothing else changes — no schema transform, no shape change,
+        # no downstream impact. This is how configs that already solved
+        # multi-record packets by hand get the count and the UI badge without
+        # restructuring anything.
+        designated = self._designated_instance_count(result.extracted_fields)
+        if designated is not None:
+            instance_count = designated
+            instance_source = "declared"
+
+        if instance_count:
+            metadata["instance_count"] = instance_count
+            metadata["instance_source"] = instance_source
+            section.instance_count = instance_count
         if result.recovered_instances:
             metadata["recovered_instances"] = result.recovered_instances
             # Surface on the dashboard so multi-document sections are visible

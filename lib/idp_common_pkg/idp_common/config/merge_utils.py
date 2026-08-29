@@ -832,8 +832,16 @@ def _validate_discovery_openai(
     # Sub-sections that carry a per-section model: model_id for the class/auto
     # discovery sections, model for rules discovery.
     checks = [
-        ("discovery.without_ground_truth.model_id", discovery.get("without_ground_truth", {}), "model_id"),
-        ("discovery.with_ground_truth.model_id", discovery.get("with_ground_truth", {}), "model_id"),
+        (
+            "discovery.without_ground_truth.model_id",
+            discovery.get("without_ground_truth", {}),
+            "model_id",
+        ),
+        (
+            "discovery.with_ground_truth.model_id",
+            discovery.get("with_ground_truth", {}),
+            "model_id",
+        ),
         ("discovery.auto_split.model_id", discovery.get("auto_split", {}), "model_id"),
         ("discovery.rules.model", discovery.get("rules", {}), "model"),
     ]
@@ -1047,6 +1055,7 @@ def _validate_schema_fields(
         "x-aws-idp-list-item-description",
         "x-aws-idp-page-types",
         "x-aws-idp-source-page-types",
+        "x-aws-idp-instance-array",
     }
 
     non_standard_fields = {}
