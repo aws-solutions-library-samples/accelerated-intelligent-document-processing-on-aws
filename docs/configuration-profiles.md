@@ -13,20 +13,41 @@ compare results across configurations — all without redeploying your stack. Ea
 profile keeps a **revision history**, so saving a change never loses the
 configuration it replaced.
 
-> **Terminology.** This page used to be called *Configuration Versions*, and
-> "version" meant the named entity itself — which made the history of one
-> configuration impossible to talk about ("versions of a config version").
-> The vocabulary is now:
->
-> | Term | Meaning |
-> |---|---|
-> | **Configuration Profile** (UI: "Profile") | The named entity — `default`, `Production`, `lending`. The access-control unit, the document partition, and what you activate. |
-> | **Revision** (`r7`) | An immutable numbered snapshot of one profile's configuration, cut on every save. |
-> | **Configuration** | The content itself: OCR/classification/extraction settings, classes, prompts. |
+> This page used to be called *Configuration Versions*, and "version" meant the
+> named entity itself — which made the history of one configuration impossible to
+> talk about ("versions of a config version"). See
+> [Terminology](#terminology-which-word-means-what) for the vocabulary that
+> replaced it.
 >
 > API, CLI, and stored field names are unchanged for compatibility —
 > `getConfigVersions`, `versionName`, `--config-version`, `ConfigVersion`, and
 > `allowedConfigVersions` all still refer to **profiles**.
+
+## Terminology: which word means what
+
+Four things in this product keep a history, and they do not all use the same word.
+This is the whole vocabulary in one place:
+
+| Term | Belongs to | What it is |
+|---|---|---|
+| **Configuration Profile** (UI: "Profile") | — | The named configuration entity: `default`, `Production`, `lending`. The access-control unit (`allowedConfigVersions`), the document-visibility partition, and what you activate. |
+| **Configuration** | a profile | The content itself: OCR/classification/extraction settings, document classes, prompts. What the editor form edits. |
+| **Revision** (`r7`) | a profile | An immutable numbered snapshot of one profile's *configuration*, cut on every save. See [Revision History](#revision-history). |
+| **Version** | a document, a test set | An immutable numbered snapshot produced by an *event* — a processing run completing ([document versions](document-versions.md)) or someone publishing a test set ([test sets](test-studio.md)). |
+| **Edit history** | an extracted value or a label | A log of field-level edits someone made, with who and when. Not numbered, not a snapshot. Surfaced as the **Edit history** tab. |
+
+Why two words for what looks like the same idea: a *version* is a snapshot an event
+produced and is identified by what happened (a run id, a publish number); a
+*revision* is a snapshot of content somebody authored and saved. The practical
+reason is plainer, and worth stating rather than dressing up — "version" is already
+baked into the public API (`listDocumentVersions`, `publishTestSetVersion`,
+`TestSetVersion`) and into stored DynamoDB keys (`version#000001`), so renaming it
+for symmetry would mean a data migration and a breaking API change with no benefit
+to anyone using the product.
+
+The rule that keeps this stable: **the noun that owns the snapshot picks the word.**
+Documents and test sets have versions. Configuration profiles have revisions. Values
+and labels have an edit history.
 
 
 https://github.com/user-attachments/assets/b1e0cf16-d2c4-4927-a9ec-767b8ac49c9d
@@ -115,10 +136,6 @@ revisions a profile has. Click it to open **Configuration revisions**, listing e
 retained revision newest-first with who saved it and when. The same panel is
 reachable from **Actions → Configuration revisions…** while you have a profile open
 in the editor, which is where you are standing when you want to undo a save.
-
-> The panel is called *Configuration revisions* rather than *Revision history*
-> because the extraction-value editors already use "Revision History" for the edit
-> history of a labeled field — a different thing entirely.
 
 From the panel you can:
 

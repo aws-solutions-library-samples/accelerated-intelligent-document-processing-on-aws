@@ -17,6 +17,11 @@ This directly supports enterprise use cases like reprocessing a mortgage or
 lending package after a few days and keeping every prior extraction result
 linked to the same logical document.
 
+> **Terminology.** A document *version* is a snapshot of one processing run. A
+> Configuration Profile *revision* is a snapshot of a configuration. Both are
+> immutable and numbered, and they are deliberately different words — see the
+> [terminology table](configuration-profiles.md#terminology-which-word-means-what).
+
 ## What is a "version"?
 
 A version is one **successful processing run** of a document. The document's

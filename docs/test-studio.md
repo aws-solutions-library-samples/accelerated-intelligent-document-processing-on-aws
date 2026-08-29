@@ -590,6 +590,12 @@ follows.
 
 ### Publishing a version
 
+> **Terminology.** A test set *version* is a published snapshot of the set's
+> documents and labels. A Configuration Profile *revision* is a snapshot of a
+> configuration, and the **Edit history** tab is a log of label edits — three
+> different things. See the
+> [terminology table](configuration-profiles.md#terminology-which-word-means-what).
+
 Select a COMPLETED test set and click **Publish version**. This freezes the
 current document and label state into a numbered version (`v1`, `v2`, …) and, by
 default, marks it the **active reference** — the version that test runs record
@@ -886,11 +892,16 @@ Two consequences worth knowing:
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
 
-### Revision history
+### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Revision History** tab — the same tab, and the same view, as the
+and use the **Edit history** tab — the same tab, and the same view, as the
 document detail editor in the main app.
+
+> Not to be confused with a Configuration Profile **revision**, which is an
+> immutable numbered snapshot of a *configuration*. This is a log of edits to
+> *labels*. See the terminology table in
+> [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
 
 Confirming labels with no edits is recorded too: the sign-off is itself the
 auditable event. The history lives inside the label, so it travels with a published
