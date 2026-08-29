@@ -645,7 +645,8 @@ labels are produced the same way as the ones a real evaluation reports, rather
 than by a parallel code path that could drift.
 
 By default the job labels every document in the set using the deployment's
-active configuration; you can specify a different configuration version.
+active configuration; you can specify a different Configuration Profile, and a
+specific revision of it.
 
 ### Label provenance
 
@@ -718,9 +719,16 @@ The curve comes from three sources of increasing fidelity:
    *whole* confidence range, including the high-confidence documents review never
    opens. This is the only source that can fully validate the estimate.
 
-Curves are kept per **configuration version**, because confidence means
+Curves are kept per **Configuration Profile**, because confidence means
 different things across models and prompts — a curve measured under one config is
 not reused after a change that shifts those semantics.
+
+> **Revisions of a profile currently share one curve.** That is right for a prompt
+> tweak and wrong after a model swap, which changes what a confidence number means.
+> Each revision records a *confidence fingerprint* (a hash of the
+> confidence-relevant configuration) so a future release can branch curves
+> automatically; until then, reset the affected curve after changing the extraction
+> model or the assessment configuration.
 
 ### Every estimate states how much to trust it
 
@@ -922,10 +930,13 @@ be able to discard the team's annotation work.
 7. View results in integrated listing
 
 ### Configuration Versioning
-The Test Studio supports running tests with specific configuration versions:
-- **Version Selection**: Choose from available configuration versions (e.g., `default`, `Production`, `v1`)
-- **Version Tracking**: Test results display which configuration version was used
-- **Version Comparison**: Compare test runs across different configuration versions
+The Test Studio supports running tests with specific Configuration Profiles and
+revisions:
+- **Profile selection**: Choose from available Configuration Profiles (e.g., `default`, `Production`, `lending`)
+- **Revision selection**: Pin an exact revision of that profile, or leave it on **Current**. The picker appears only when the profile has revision history.
+- **Tracking**: Each run records both the profile and the pinned revision, shown in the run list, results, comparison view, and exports
+- **Comparison**: Compare two runs of the *same* profile at different revisions — this is how you tell "the prompt change helped" from "the ground truth moved", because each run also pins the test-set version it scored against
+- **Retention**: A revision pinned by a run is exempt from revision pruning, so a comparison stays readable later
 - **Context Generation**: Test context automatically includes the selected version information
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).

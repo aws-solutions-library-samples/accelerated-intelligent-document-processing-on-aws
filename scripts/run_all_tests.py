@@ -107,6 +107,8 @@ RUN_ROOTS = [
     # privilege-escalation bug.
     "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
+    # Configuration-revision pinning on a test run.
+    "nested/api-resolvers/src/lambda/test_runner",
     "nested/api-resolvers/src/lambda/test_set_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",

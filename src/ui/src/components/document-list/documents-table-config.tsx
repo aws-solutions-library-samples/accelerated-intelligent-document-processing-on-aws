@@ -23,6 +23,7 @@ export interface MappedDocument {
   completionTime: string;
   duration: string;
   configVersion: string;
+  configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
   processingIssueCount: number;
@@ -155,7 +156,13 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
   {
     id: 'configVersion',
     header: 'Config Version',
-    cell: (item) => formatConfigVersionLink(item.configVersion, versions as unknown as ConfigVersion[]),
+    cell: (item) =>
+      formatConfigVersionLink(
+        item.configVersion,
+        versions as unknown as ConfigVersion[],
+        undefined,
+        item.configRevision as number | null | undefined,
+      ),
     sortingField: 'configVersion',
     width: 150,
   },

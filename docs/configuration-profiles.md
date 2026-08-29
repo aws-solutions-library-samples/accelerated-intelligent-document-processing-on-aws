@@ -155,6 +155,63 @@ managed profile whether or not the shipped configuration moved — without this,
 handful of upgrades would fill the retention window with identical revisions and
 push your real history out of it.
 
+### Selecting a revision for processing or testing
+
+By default everything runs under a profile's **current** revision. Wherever a
+profile is chosen you can instead pin an earlier one:
+
+| Surface | Behavior |
+|---|---|
+| **Test Executions** | Profile picker plus a **Configuration revision** picker. Pinning is how two runs of the same profile stay comparable — the run records which revision produced its numbers. |
+| **Upload Documents** | Pin a revision for the documents being uploaded. |
+| **Reprocess Document** | Pin a revision to reproduce what an earlier run produced. |
+| **Generate draft labels** | Pin the revision that drafts the labels. |
+| **CLI** | `--config-revision 7` alongside `--config-version` on `process` / `run-inference`. |
+
+The revision picker appears only when the profile actually has history — a
+dropdown whose only entry is "Current" is noise rather than a choice.
+
+**Every document is pinned, whether or not you chose a revision.** The queue
+processor stamps the profile's current revision onto the document as it starts. So
+a save made while a document is in flight cannot change the configuration
+underneath it — without that, extraction could run under r7 and assessment under
+r8, and the result would correspond to no single configuration. The pinned
+revision is recorded as `ConfigRevision` on the document and shown next to the
+configuration profile in the document list, document details, and exports.
+
+A pinned revision that has been deleted or pruned **fails the step** rather than
+falling back to the profile's current configuration: a run that silently used the
+wrong configuration would look successful, and its numbers would go into a
+comparison. Retention protects any revision a test run pinned (below), so this
+only arises after an explicit delete.
+
+### Test Studio: comparing two revisions of one profile
+
+Run the same test set twice, pinning a different revision each time. Each run
+records both its **configuration revision** and the **test-set version** it scored
+against, so a metric difference between two runs is attributable rather than
+ambiguous:
+
+| Both runs | A metric difference means |
+|---|---|
+| Same test-set version, different config revision | The configuration change moved it |
+| Same config revision, different test-set version | The ground truth moved |
+| Both differ | Nothing conclusive — re-run holding one fixed |
+
+The revision appears in the test-run list, the results view, the comparison view,
+and CSV/JSON exports. Pinning a revision in a run also marks it exempt from
+retention pruning, so the comparison stays readable later.
+
+> **Confidence curves are still keyed per profile, not per revision.** Test
+> Studio's review-effort estimate measures a confidence→accuracy curve per
+> configuration, because confidence means different things across models and
+> prompts. Those curves are keyed by *profile*, so revisions of one profile share
+> a curve — which is right for a prompt tweak and wrong after a model swap. Each
+> revision now records a **confidence fingerprint** (a hash of the
+> confidence-relevant configuration) so a future release can branch curves
+> automatically; until then, after changing the extraction model or assessment
+> configuration, reset the affected curve so a stale one is not reused.
+
 ### Retention
 
 The last **20** revisions per profile are retained by default, plus — regardless of
@@ -288,9 +345,13 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 ### Process Documents with a Specific Version
 
 ```bash
-# Process with a specific configuration version
+# Process with a specific configuration profile
 idp-cli run-inference --stack-name my-stack --dir ./documents/ \
     --config-version Production --monitor
+
+# Pin an exact revision of that profile (reproduces what r7 recorded)
+idp-cli process --stack-name my-stack --dir ./documents/ \
+    --config-version Production --config-revision 7 --monitor
 
 # Process test set with version and context
 idp-cli run-inference --stack-name my-stack --test-set fcc-example-test \
@@ -300,9 +361,12 @@ idp-cli run-inference --stack-name my-stack --test-set fcc-example-test \
 ```
 
 The `--config-version` parameter:
-1. Validates the version exists before starting processing
-2. Stores the version name as S3 object metadata (`config-version`) on uploaded documents
-3. The processing pipeline reads and uses the specified version's configuration
+1. Validates the profile exists before starting processing
+2. Stores the profile name as S3 object metadata (`config-version`) on uploaded documents
+3. The processing pipeline reads and uses the specified profile's configuration
+
+`--config-revision` travels the same way, as `config-revision` object metadata. Omit
+it and the queue processor pins the profile's current revision instead.
 
 ## Profile Tracking in Document Processing
 

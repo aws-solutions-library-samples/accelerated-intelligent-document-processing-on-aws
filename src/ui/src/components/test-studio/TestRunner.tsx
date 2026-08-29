@@ -8,6 +8,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { startTestRun, getTestSets } from '../../graphql/generated';
 import handlePrint from './PrintUtils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import { getErrorMessage } from '../../utils/errorUtils';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,6 +48,9 @@ const TestRunner = ({
   const [testSetsLoading, setTestSetsLoading] = useState(true);
   const [selectedTestSet, setSelectedTestSet] = useState<SelectProps.Option | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
+  // null = the profile's current configuration. Pinning an explicit revision is
+  // what makes two runs of the same profile comparable.
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const [numberOfFiles, setNumberOfFiles] = useState('');
   const [context, setContext] = useState('');
   const [error, setError] = useState('');
@@ -137,6 +141,7 @@ const TestRunner = ({
         ...(context && { context }),
         ...(numberOfFiles.trim() && { numberOfFiles: parseInt(numberOfFiles.trim(), 10) }),
         ...(selectedVersion && { configVersion: selectedVersion.value }),
+        ...(selectedRevision !== null && { configRevision: selectedRevision }),
       };
       console.log('TestRunner: Starting test run with input:', input);
 
@@ -271,6 +276,14 @@ const TestRunner = ({
             loadingText="Loading versions..."
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedVersion?.value}
+          value={selectedRevision}
+          onChange={setSelectedRevision}
+          description="Defaults to the profile’s current configuration. Pick an earlier revision to score exactly what it recorded — that is how two runs of the same profile stay comparable."
+          disabled={loading}
+        />
 
         <FormField
           label="Number of Files"

@@ -99,6 +99,10 @@ def handler(event, context):
         # first N of the set.
         object_keys = input_data.get("objectKeys") or []
         config_version = input_data.get("configVersion")
+        # Revision of that profile to score against. Pinning it is what makes two
+        # runs of the same profile comparable — otherwise a run records only which
+        # profile it used, and a later save silently changes what that meant.
+        config_revision = input_data.get("configRevision")
         # A draft-labeling run produces ground truth rather than being scored
         # against it, so it is never evaluated. Carried as its own flag; the
         # free-text `context` is a user-facing label and must not be load-bearing.
@@ -142,7 +146,17 @@ def handler(event, context):
         effective_config_version = config_version or _active_config_version(
             config_table
         )
-        config = _capture_config(config_table, effective_config_version)
+        # Resolve the profile's current revision when the caller did not name one,
+        # for the same reason the version is resolved here: the run must record
+        # which configuration it actually ran, not "whatever was current".
+        effective_config_revision = config_revision
+        if effective_config_revision is None and effective_config_version:
+            effective_config_revision = _published_revision(
+                config_table, effective_config_version
+            )
+        config = _capture_config(
+            config_table, effective_config_version, effective_config_revision
+        )
 
         # Pin the ground-truth version scored against (symmetric to ConfigVersion),
         # so comparisons can separate config drift from ground-truth drift. None for
@@ -161,6 +175,7 @@ def handler(event, context):
             files_to_process,
             effective_config_version,
             test_set_version,
+            config_revision=effective_config_revision,
         )
 
         # Send file copying job to SQS queue
@@ -203,6 +218,10 @@ def handler(event, context):
         # the documents were never processed with.
         if effective_config_version is not None:
             message_body["configVersion"] = effective_config_version
+        # The copier stamps this onto each object, so the documents process under
+        # the exact revision the run says it scored.
+        if effective_config_revision is not None:
+            message_body["configRevision"] = int(effective_config_revision)
 
         # The copier must not stage baselines for a draft-labeling run: the baseline
         # is what the run is creating, so scoring against it would compare the
@@ -409,11 +428,76 @@ def _active_config_version(config_table):
     return key[len("Config#") :] or None
 
 
-def _capture_config(config_table, config_version=None):
-    """Capture configuration - specific version or current active config"""
+def _published_revision(config_table, config_version):
+    """The profile's current revision, or None when it has no history.
+
+    None is normal: an older deployment, or a profile untouched since the upgrade
+    that introduced revisions. The run then records no revision and the documents
+    process under the profile head, exactly as before.
+    """
+    try:
+        table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
+        item = table.get_item(
+            Key={"Configuration": f"Config#{config_version}"},
+            ProjectionExpression="PublishedRevision",
+        ).get("Item") or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not resolve the published revision: {e}")
+        return None
+    published = item.get("PublishedRevision")
+    if published is None:
+        return None
+    try:
+        return int(published)
+    except (TypeError, ValueError):
+        logger.warning(f"Ignoring unusable PublishedRevision {published!r}")
+        return None
+
+
+def _pin_revision(config_table, config_version, revision):
+    """Mark a revision as pinned so retention cannot prune it.
+
+    A comparison between two runs is only interpretable while both runs'
+    configurations still exist, and the default retention window is 20 revisions.
+    Best-effort: failing to mark it must not fail the run.
+    """
+    try:
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        ConfigurationManager(table_name=config_table).mark_revision_pinned(
+            config_version, revision
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Could not pin r{revision} of '{config_version}' against retention: {e}"
+        )
+
+
+def _capture_config(config_table, config_version=None, config_revision=None):
+    """Capture configuration - specific revision, specific profile, or active"""
     table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
 
     config = {}
+
+    # A pinned revision is captured from its stored body, so the run records the
+    # configuration it actually scored rather than the profile's current state.
+    if config_version and config_revision is not None:
+        try:
+            from idp_common.config.configuration_manager import ConfigurationManager
+
+            body = ConfigurationManager(table_name=config_table).get_revision(
+                config_version, config_revision
+            )
+            if body is not None:
+                config["Config"] = body
+                _pin_revision(config_table, config_version, config_revision)
+                return config
+            logger.warning(
+                f"Revision r{config_revision} of '{config_version}' is not retained; "
+                f"capturing the profile's current configuration instead"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not capture revision r{config_revision}: {e}")
 
     # Get Config (versioned) - this is what's used for comparisons
     try:
@@ -450,6 +534,7 @@ def _store_test_run_metadata(
     file_count=0,
     config_version=None,
     test_set_version=None,
+    config_revision=None,
 ):
     """Store test run metadata in tracking table"""
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
@@ -481,6 +566,12 @@ def _store_test_run_metadata(
 
         if test_set_version is not None:
             item["TestSetVersion"] = test_set_version
+
+        # Recorded alongside TestSetVersion: together they make a metric delta
+        # between two runs attributable to the configuration or the ground truth
+        # rather than ambiguous.
+        if config_revision is not None:
+            item["ConfigRevision"] = int(config_revision)
 
         table.put_item(Item=item)
         logger.info(f"Stored test run metadata for {test_run_id}")

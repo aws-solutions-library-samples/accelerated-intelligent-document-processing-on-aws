@@ -15,7 +15,14 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from idp_common.dynamodb.client import DynamoDBClient
-from idp_common.models import Document, Page, ProcessingIssue, Section, Status
+from idp_common.models import (
+    Document,
+    Page,
+    ProcessingIssue,
+    Section,
+    Status,
+    coerce_revision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +260,14 @@ class DocumentDynamoDBService:
             expression_names["#ConfigVersion"] = "ConfigVersion"
             expression_values[":ConfigVersion"] = document.config_version
 
+        # The revision of that profile the document is pinned to, so a result can
+        # be traced back to the exact configuration that produced it even after
+        # the profile has been saved again.
+        if document.config_revision is not None:
+            set_expressions.append("#ConfigRevision = :ConfigRevision")
+            expression_names["#ConfigRevision"] = "ConfigRevision"
+            expression_values[":ConfigRevision"] = int(document.config_revision)
+
         # Set workflow status based on document status
         if document.status == Status.FAILED:
             workflow_status = "FAILED"
@@ -489,6 +504,7 @@ class DocumentDynamoDBService:
             trace_id=item.get("TraceId"),
             initial_event_time=item.get("InitialEventTime"),
             config_version=item.get("ConfigVersion"),
+            config_revision=coerce_revision(item.get("ConfigRevision")),
         )
 
         # Convert status
@@ -1170,6 +1186,8 @@ class DocumentDynamoDBService:
             item["WorkflowExecutionArn"] = document.workflow_execution_arn
         if document.config_version:
             item["ConfigVersion"] = document.config_version
+        if document.config_revision is not None:
+            item["ConfigRevision"] = int(document.config_revision)
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
         if document.metering:

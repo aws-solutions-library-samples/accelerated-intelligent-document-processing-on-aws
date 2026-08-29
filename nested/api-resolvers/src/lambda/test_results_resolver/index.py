@@ -59,6 +59,16 @@ class DecimalEncoder(json.JSONEncoder):
 
 
 logger = logging.getLogger()
+
+def _as_int(value):
+    """DynamoDB returns numbers as Decimal; the GraphQL Int field needs an int."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 # SQL-injection defense for Athena queries
@@ -692,6 +702,7 @@ def get_test_results(test_run_id):
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "configVersion": metadata.get("ConfigVersion"),
+            "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
             "config": _get_test_run_config(test_run_id),
         }
@@ -735,6 +746,7 @@ def get_test_results(test_run_id):
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "configVersion": metadata.get("ConfigVersion"),
+            "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
         }
 
@@ -843,6 +855,7 @@ def _build_test_run_list(items):
                 "completedAt": _format_datetime(item.get("CompletedAt")),
                 "context": item.get("Context"),
                 "configVersion": item.get("ConfigVersion"),
+                "configRevision": _as_int(item.get("ConfigRevision")),
                 "testSetVersion": item.get("TestSetVersion"),
             }
         )

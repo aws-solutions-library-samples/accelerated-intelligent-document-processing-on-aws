@@ -221,29 +221,41 @@ class ConfigurationManager:
             logger.error(f"Error retrieving raw configuration {config_type}: {e}")
             raise
 
-    def get_merged_configuration(self, version: str) -> Optional[IDPConfig]:
+    def get_merged_configuration(
+        self, version: str, revision: Optional[int] = None
+    ) -> Optional[IDPConfig]:
         """
-        Get the full configuration for a version, ready for runtime processing.
+        Get the full configuration for a profile, ready for runtime processing.
 
         NEW BEHAVIOR (full config format):
-        - Each version stores a complete configuration
-        - Simply read and return the version's config
+        - Each profile stores a complete configuration
+        - Simply read and return the profile's config
 
         LEGACY SUPPORT (sparse delta format):
-        - If a version is detected as sparse (missing key sections), merge with default
+        - If a profile is detected as sparse (missing key sections), merge with default
         - Auto-migrate the sparse config to full format for future reads
 
         Args:
-            version: Version to load. If None/empty, uses active version.
+            version: Configuration Profile to load. If None/empty, uses the active one.
+            revision: Optional revision to load instead of the profile's current
+                configuration. Used when a document or test run is pinned to a
+                specific revision.
 
         Returns:
             IDPConfig ready for runtime use, or None if not found
 
         Raises:
             ClientError: If DynamoDB operation fails
-            ValueError: If version not found
+            ValueError: If the requested revision is no longer retained
         """
         from copy import deepcopy
+
+        if revision is not None:
+            # An explicitly pinned revision is authoritative. Note there is no
+            # "published revision" branch: the profile head always holds the
+            # published revision's content, and reading the head is one get_item
+            # against an S3 GET, so the unpinned path below stays on the head.
+            return self._load_revision_config(version, revision)
 
         if not version:
             # Find and use active version
@@ -554,6 +566,45 @@ class ConfigurationManager:
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
         """Full configuration recorded in one revision, or None if not retained."""
         return self.revisions.get_body(profile, revision)
+
+    def _load_revision_config(self, profile: str, revision: int) -> IDPConfig:
+        """
+        Load a pinned revision as a validated IDPConfig.
+
+        Raises rather than falling back to the profile head: a document or test run
+        pinned to r5 must never be silently processed under r9. A wrong-config run
+        that looks successful is worse than a failed one, because its numbers go
+        into a comparison.
+        """
+        body = self.revisions.get_body(profile, revision)
+        if body is None:
+            raise ValueError(
+                f"Revision r{revision} of configuration profile '{profile}' is not "
+                f"available (deleted, pruned, or history is disabled)"
+            )
+        config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
+        config_dict.pop("config_type", None)
+        logger.info(f"Loaded configuration profile '{profile}' revision r{revision}")
+        return IDPConfig(**config_dict)
+
+    def resolve_published_revision(self, profile: str) -> Optional[int]:
+        """
+        The revision a new document processed under this profile should be pinned to.
+
+        Returns None when the profile has no revision history (an older deployment,
+        or a profile untouched since the upgrade), in which case consumers fall back
+        to the profile head — the pre-revision behavior.
+        """
+        try:
+            item = self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item") or {}
+        except ClientError as e:
+            logger.warning(f"Could not resolve the published revision for '{profile}': {e}")
+            return None
+        published = item.get("PublishedRevision")
+        return int(published) if published is not None else None
 
     def restore_revision(
         self, profile: str, revision: int, created_by: Optional[str] = None

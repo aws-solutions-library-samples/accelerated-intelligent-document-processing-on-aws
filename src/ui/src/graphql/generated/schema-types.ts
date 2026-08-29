@@ -327,6 +327,7 @@ export type CopyToBaselineResponse = {
 };
 
 export type CreateDocumentInput = {
+  ConfigRevision?: InputMaybe<Scalars['Int']['input']>;
   ConfigVersion?: InputMaybe<Scalars['String']['input']>;
   ExpiresAfter?: InputMaybe<Scalars['AWSTimestamp']['input']>;
   InitialEventTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
@@ -411,6 +412,7 @@ export type DiscoveryJobListItem = {
 export type Document = DynamoDbBase & {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
   ConfidenceAlertCount?: Maybe<Scalars['Int']['output']>;
+  ConfigRevision?: Maybe<Scalars['Int']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
   EvaluationReportUri?: Maybe<Scalars['String']['output']>;
   EvaluationStatus?: Maybe<Scalars['String']['output']>;
@@ -482,6 +484,7 @@ export type DocumentPage = {
 
 export type DocumentVersion = {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
+  ConfigRevision?: Maybe<Scalars['Int']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
   EvaluationReportUri?: Maybe<Scalars['String']['output']>;
   FileCount?: Maybe<Scalars['Int']['output']>;
@@ -635,6 +638,7 @@ export type FinetuningJobStatus =
   | 'VALIDATING';
 
 export type GenerateDraftLabelsInput = {
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
   configVersion?: InputMaybe<Scalars['String']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
@@ -1105,6 +1109,7 @@ export type MutationRemoveFeatureConfigPresetArgs = {
 
 export type MutationReprocessDocumentArgs = {
   objectKeys: Array<Scalars['String']['input']>;
+  revision?: InputMaybe<Scalars['Int']['input']>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -1325,6 +1330,7 @@ export type MutationUploadDocumentArgs = {
   contentType?: InputMaybe<Scalars['String']['input']>;
   fileName: Scalars['String']['input'];
   prefix?: InputMaybe<Scalars['String']['input']>;
+  revision?: InputMaybe<Scalars['Int']['input']>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -1956,6 +1962,7 @@ export type TestRun = {
   completedFiles?: Maybe<Scalars['Int']['output']>;
   confidenceMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   config?: Maybe<Scalars['AWSJSON']['output']>;
+  configRevision?: Maybe<Scalars['Int']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   confusionMatrix?: Maybe<Scalars['AWSJSON']['output']>;
   context?: Maybe<Scalars['String']['output']>;
@@ -1983,6 +1990,7 @@ export type TestRunComparison = {
 };
 
 export type TestRunInput = {
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
   configVersion?: InputMaybe<Scalars['String']['input']>;
   context?: InputMaybe<Scalars['String']['input']>;
   draftLabeling?: InputMaybe<Scalars['Boolean']['input']>;
@@ -2116,6 +2124,7 @@ export type UpdateConfigurationResponse = {
 export type UpdateDocumentInput = {
   CompletionTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
   ConfidenceAlertCount?: InputMaybe<Scalars['Int']['input']>;
+  ConfigRevision?: InputMaybe<Scalars['Int']['input']>;
   ConfigVersion?: InputMaybe<Scalars['String']['input']>;
   EvaluationReportUri?: InputMaybe<Scalars['String']['input']>;
   EvaluationStatus?: InputMaybe<Scalars['String']['input']>;

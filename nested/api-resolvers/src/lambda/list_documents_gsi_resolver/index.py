@@ -422,6 +422,11 @@ def _gsi_item_to_document(item):
         "InitialEventTime": item.get("InitialEventTime"),
         "CompletionTime": item.get("CompletionTime"),
         "ConfigVersion": item.get("ConfigVersion") or item.get("ConfigurationVersion"),
+        # int() because DynamoDB numbers come back as Decimal, which the JSON
+        # response encoder rejects.
+        "ConfigRevision": int(item["ConfigRevision"])
+        if item.get("ConfigRevision") is not None
+        else None,
         "EvaluationStatus": item.get("EvaluationStatus"),
         "HITLStatus": item.get("HITLStatus"),
         "HITLTriggered": item.get("HITLTriggered"),

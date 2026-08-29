@@ -23,7 +23,7 @@ export interface DocumentsContextValue {
   setCustomDateRange: React.Dispatch<React.SetStateAction<DateRange | null>>;
   toolsOpen: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
-  reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
+  reprocessDocuments: (objectKeys: string[], version?: string, revision?: number) => Promise<unknown>;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
 }
 
