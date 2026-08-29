@@ -1293,116 +1293,116 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
-                  validation:
-                    type: object
-                    sectionLabel: Schema Validation & Escalation
-                    description: "Only used when Agentic Extraction is enabled. Validates the agent's output against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce) and optionally escalates failing fields to a stronger model. Off by default."
-                    order: 5
-                    properties:
-                      enabled:
-                        type: boolean
-                        description: "Enable full JSON-Schema validation of the extraction result. Violations are fed back to the agent for self-correction; remaining failures are handled per Fail Action below."
-                        order: 0
-                        default: false
-                      check_formats:
-                        type: boolean
-                        description: "Enforce JSON-Schema 'format' keywords (date, date-time, email, uri, uuid, ...). Note: 'format: date' means ISO-8601 (YYYY-MM-DD); disable this if your schema uses 'format: date' for non-ISO values such as MM/DD/YYYY (or use a 'pattern' instead). Default: on."
-                        order: 1
-                        default: true
-                        dependsOn: { field: "enabled", value: true }
-                      fail_action:
-                        type: string
-                        description: "What to do when validation still fails after the agent's own retries. 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: escalate."
-                        enum: ["warn", "escalate", "reject"]
-                        order: 2
-                        default: "escalate"
-                        dependsOn: { field: "enabled", value: true }
-                      escalation_model:
-                        type: string
-                        description: "Stronger Bedrock model used to re-extract failing fields (used when Fail Action is 'escalate'). Select blank to retry with the extraction model. Can be overridden per document class via the 'x-aws-idp-extraction-escalation-model' schema extension in the Document Schema editor."
-                        order: 3
-                        dependsOn: { field: "fail_action", value: "escalate" }
-                        hideWhen: { field: "extraction.agentic.validation.enabled", value: false }
-                        enum:
-                          - ""
-                          - "us.amazon.nova-lite-v1:0"
-                          - "us.amazon.nova-pro-v1:0"
-                          - "us.amazon.nova-premier-v1:0"
-                          - "us.amazon.nova-2-lite-v1:0"
-                          - "us.amazon.nova-2-lite-v1:0:priority"
-                          - "us.amazon.nova-2-lite-v1:0:flex"
-                          - "global.amazon.nova-2-lite-v1:0"
-                          - "global.amazon.nova-2-lite-v1:0:priority"
-                          - "global.amazon.nova-2-lite-v1:0:flex"
-                          - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "us.anthropic.claude-sonnet-4-6"
-                          - "us.anthropic.claude-sonnet-4-6:1m"
-                          - "us.anthropic.claude-sonnet-5"
-                          - "us.anthropic.claude-sonnet-5:1m"
-                          - "us.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "us.anthropic.claude-opus-4-6-v1"
-                          - "us.anthropic.claude-opus-4-6-v1:1m"
-                          - "us.anthropic.claude-opus-4-7"
-                          - "us.anthropic.claude-opus-4-7:1m"
-                          - "us.anthropic.claude-opus-4-8"
-                          - "us.anthropic.claude-opus-4-8:1m"
-                          - "us.anthropic.claude-opus-5"
-                          - "us.anthropic.claude-opus-5:1m"
-                          - "openai.gpt-5.4"
-                          - "openai.gpt-5.5"
-                          - "openai.gpt-5.6-sol"
-                          - "openai.gpt-5.6-terra"
-                          - "openai.gpt-5.6-luna"
-                          - "eu.amazon.nova-lite-v1:0"
-                          - "eu.amazon.nova-pro-v1:0"
-                          - "eu.amazon.nova-2-lite-v1:0"
-                          - "eu.amazon.nova-2-lite-v1:0:priority"
-                          - "eu.amazon.nova-2-lite-v1:0:flex"
-                          - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "eu.anthropic.claude-sonnet-4-6"
-                          - "eu.anthropic.claude-sonnet-4-6:1m"
-                          - "eu.anthropic.claude-sonnet-5"
-                          - "eu.anthropic.claude-sonnet-5:1m"
-                          - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "eu.anthropic.claude-opus-4-6-v1"
-                          - "eu.anthropic.claude-opus-4-6-v1:1m"
-                          - "eu.anthropic.claude-opus-4-7"
-                          - "eu.anthropic.claude-opus-4-7:1m"
-                          - "eu.anthropic.claude-opus-4-8"
-                          - "eu.anthropic.claude-opus-4-8:1m"
-                          - "eu.anthropic.claude-opus-5"
-                          - "eu.anthropic.claude-opus-5:1m"
-                          - "qwen.qwen3-vl-235b-a22b"
-                          - "us.meta.llama4-maverick-17b-instruct-v1:0"
-                          - "us.meta.llama4-scout-17b-instruct-v1:0"
-                          - "google.gemma-3-27b-it"
-                          - "nvidia.nemotron-nano-12b-v2"
-                          - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "global.anthropic.claude-sonnet-4-6"
-                          - "global.anthropic.claude-sonnet-4-6:1m"
-                          - "global.anthropic.claude-sonnet-5"
-                          - "global.anthropic.claude-sonnet-5:1m"
-                          - "global.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "global.anthropic.claude-opus-4-6-v1"
-                          - "global.anthropic.claude-opus-4-6-v1:1m"
-                          - "global.anthropic.claude-opus-4-7"
-                          - "global.anthropic.claude-opus-4-7:1m"
-                          - "global.anthropic.claude-opus-4-8"
-                          - "global.anthropic.claude-opus-4-8:1m"
-                          - "global.anthropic.claude-opus-5"
-                          - "global.anthropic.claude-opus-5:1m"
-                        default: ""
-                      min_population_ratio:
-                        type: number
-                        description: "Advisory completeness threshold (0-1). After extraction, the fraction of schema-defined fields that came back populated is computed; if it falls below this value a warning is logged and metadata.population_check is flagged (catches silent loss such as nested fields returning null or a table extracting zero rows). Advisory only - never fails extraction. Set to 0 to disable. Default: 0.5."
-                        minimum: 0
-                        maximum: 1
-                        order: 4
-                        default: 0.5
-                        dependsOn: { field: "enabled", value: true }
+              validation:
+                type: object
+                sectionLabel: Schema Validation & Escalation
+                description: "Validates the extraction result against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce), and optionally escalates failing fields to a stronger model. Applies to BOTH Simple and Advanced extraction. On by default at Fail Action 'warn', which adds no inference cost."
+                order: 5
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Enable full JSON-Schema validation of the extraction result. Violations are fed back to the model for self-correction; remaining failures are handled per Fail Action below. On by default: at Fail Action 'warn' this is free and only makes an otherwise-silent schema violation visible."
+                    order: 0
+                    default: true
+                  check_formats:
+                    type: boolean
+                    description: "Enforce JSON-Schema 'format' keywords (date, date-time, email, uri, uuid, ...). Note: 'format: date' means ISO-8601 (YYYY-MM-DD); disable this if your schema uses 'format: date' for non-ISO values such as MM/DD/YYYY (or use a 'pattern' instead). Default: on."
+                    order: 1
+                    default: true
+                    dependsOn: { field: "enabled", value: true }
+                  fail_action:
+                    type: string
+                    description: "What to do when validation still fails after the agent's own retries. 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    enum: ["warn", "escalate", "reject"]
+                    order: 2
+                    default: "warn"
+                    dependsOn: { field: "enabled", value: true }
+                  escalation_model:
+                    type: string
+                    description: "Stronger Bedrock model used to re-extract failing fields (used when Fail Action is 'escalate'). Select blank to retry with the extraction model. Can be overridden per document class via the 'x-aws-idp-extraction-escalation-model' schema extension in the Document Schema editor."
+                    order: 3
+                    dependsOn: { field: "fail_action", value: "escalate" }
+                    hideWhen: { field: "extraction.validation.enabled", value: false }
+                    enum:
+                      - ""
+                      - "us.amazon.nova-lite-v1:0"
+                      - "us.amazon.nova-pro-v1:0"
+                      - "us.amazon.nova-premier-v1:0"
+                      - "us.amazon.nova-2-lite-v1:0"
+                      - "us.amazon.nova-2-lite-v1:0:priority"
+                      - "us.amazon.nova-2-lite-v1:0:flex"
+                      - "global.amazon.nova-2-lite-v1:0"
+                      - "global.amazon.nova-2-lite-v1:0:priority"
+                      - "global.amazon.nova-2-lite-v1:0:flex"
+                      - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "us.anthropic.claude-sonnet-4-6"
+                      - "us.anthropic.claude-sonnet-4-6:1m"
+                      - "us.anthropic.claude-sonnet-5"
+                      - "us.anthropic.claude-sonnet-5:1m"
+                      - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "us.anthropic.claude-opus-4-6-v1"
+                      - "us.anthropic.claude-opus-4-6-v1:1m"
+                      - "us.anthropic.claude-opus-4-7"
+                      - "us.anthropic.claude-opus-4-7:1m"
+                      - "us.anthropic.claude-opus-4-8"
+                      - "us.anthropic.claude-opus-4-8:1m"
+                      - "us.anthropic.claude-opus-5"
+                      - "us.anthropic.claude-opus-5:1m"
+                      - "openai.gpt-5.4"
+                      - "openai.gpt-5.5"
+                      - "openai.gpt-5.6-sol"
+                      - "openai.gpt-5.6-terra"
+                      - "openai.gpt-5.6-luna"
+                      - "eu.amazon.nova-lite-v1:0"
+                      - "eu.amazon.nova-pro-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0:priority"
+                      - "eu.amazon.nova-2-lite-v1:0:flex"
+                      - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-6"
+                      - "eu.anthropic.claude-sonnet-4-6:1m"
+                      - "eu.anthropic.claude-sonnet-5"
+                      - "eu.anthropic.claude-sonnet-5:1m"
+                      - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "eu.anthropic.claude-opus-4-6-v1"
+                      - "eu.anthropic.claude-opus-4-6-v1:1m"
+                      - "eu.anthropic.claude-opus-4-7"
+                      - "eu.anthropic.claude-opus-4-7:1m"
+                      - "eu.anthropic.claude-opus-4-8"
+                      - "eu.anthropic.claude-opus-4-8:1m"
+                      - "eu.anthropic.claude-opus-5"
+                      - "eu.anthropic.claude-opus-5:1m"
+                      - "qwen.qwen3-vl-235b-a22b"
+                      - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                      - "us.meta.llama4-scout-17b-instruct-v1:0"
+                      - "google.gemma-3-27b-it"
+                      - "nvidia.nemotron-nano-12b-v2"
+                      - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "global.anthropic.claude-sonnet-4-6"
+                      - "global.anthropic.claude-sonnet-4-6:1m"
+                      - "global.anthropic.claude-sonnet-5"
+                      - "global.anthropic.claude-sonnet-5:1m"
+                      - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "global.anthropic.claude-opus-4-6-v1"
+                      - "global.anthropic.claude-opus-4-6-v1:1m"
+                      - "global.anthropic.claude-opus-4-7"
+                      - "global.anthropic.claude-opus-4-7:1m"
+                      - "global.anthropic.claude-opus-4-8"
+                      - "global.anthropic.claude-opus-4-8:1m"
+                      - "global.anthropic.claude-opus-5"
+                      - "global.anthropic.claude-opus-5:1m"
+                    default: ""
+                  min_population_ratio:
+                    type: number
+                    description: "Advisory completeness threshold (0-1). After extraction, the fraction of schema-defined fields that came back populated is computed; if it falls below this value a warning is logged and metadata.population_check is flagged (catches silent loss such as nested fields returning null or a table extracting zero rows). Advisory only - never fails extraction. Set to 0 to disable. Default: 0.5."
+                    minimum: 0
+                    maximum: 1
+                    order: 4
+                    default: 0.5
+                    dependsOn: { field: "enabled", value: true }
               image:
                 type: object
                 sectionLabel: Image Processing Settings

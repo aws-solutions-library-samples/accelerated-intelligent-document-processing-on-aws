@@ -1314,10 +1314,12 @@ list is populated, the check stays quiet — the detected tables plausibly belon
 that one, and an empty sibling may be genuinely absent.
 
 **This check needs no configuration.** It runs on every Advanced-mode section, and
-in particular it is *not* behind `extraction.agentic.validation.enabled` (which is
-off by default) — a guard against silent data loss that has to be switched on
-protects nobody who did not already know to look. Its only effect is one more agent
-turn; it can never fail a document.
+in particular it is *not* behind `extraction.validation.enabled` — a guard against
+silent data loss that has to be switched on protects nobody who did not already
+know to look. (That argument is also why `extraction.validation.enabled` itself now
+defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+turning validation off does not also disable a check that costs nothing.) Its only
+effect is one more agent turn; it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as

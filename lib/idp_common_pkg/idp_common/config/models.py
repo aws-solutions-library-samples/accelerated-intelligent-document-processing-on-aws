@@ -35,8 +35,11 @@ from typing_extensions import Self
 # Current config schema/shape version. Bump when the stored config shape changes
 # in a way that requires a migration (see config/migrations/). v0.6 folded the
 # top-level `assessment` block into `extraction.confidence` / `extraction.geometry`
-# and introduced the top-level `hitl` block.
-CONFIG_FORMAT_VERSION = "0.6"
+# and introduced the top-level `hitl` block. v0.7 moved
+# `extraction.agentic.validation` up to `extraction.validation`, because simple
+# extraction now runs the same validate-and-retry path and the knob is no longer
+# agentic-only.
+CONFIG_FORMAT_VERSION = "0.7"
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -219,10 +222,12 @@ class ValidationConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable full JSON-Schema constraint validation of the "
         "extraction result (in addition to the Pydantic type validation that "
-        "always runs).",
+        "always runs). ON by default as of v0.7 — previously off, which left the "
+        "guard against silent schema violations disabled on exactly the "
+        "configurations that needed it. Free when paired with fail_action='warn'.",
     )
     check_formats: bool = Field(
         default=True,
@@ -231,11 +236,15 @@ class ValidationConfig(BaseModel):
         "uses 'format: date' for non-ISO values such as MM/DD/YYYY.",
     )
     fail_action: str = Field(
-        default="escalate",
-        description="What to do when validation fails after the agent's own "
-        "retries: 'warn' (record alert only), 'escalate' (re-extract with "
-        "escalation_model, then warn if still invalid), or 'reject' (mark "
-        "parsing_succeeded=false).",
+        default="warn",
+        description="What to do when validation fails after the model's own "
+        "retries: 'warn' (record a ProcessingIssue only), 'escalate' (re-extract "
+        "the failing fields with escalation_model, then warn if still invalid), "
+        "or 'reject' (mark parsing_succeeded=false). Defaults to 'warn' as of "
+        "v0.7 because 'warn' is FREE, and validation is now enabled by default — "
+        "pairing an on-by-default guard with a default action that spends money "
+        "on every failure would be a cost surprise. Opt into 'escalate' "
+        "deliberately.",
     )
     escalation_model: str | None = Field(
         default=None,
@@ -307,10 +316,6 @@ class AgenticConfig(BaseModel):
     review_agent_model: str | None = Field(
         default=None,
         description="Model used for reviewing and correcting extraction work",
-    )
-    validation: ValidationConfig = Field(
-        default_factory=ValidationConfig,
-        description="Schema-constraint validation and model-escalation settings.",
     )
     max_concurrent_batches: int = Field(
         default=1,
@@ -908,6 +913,16 @@ class ExtractionConfig(BaseModel):
         description=(
             "Field bounding-box (geometry) configuration (v0.6 — replaces "
             "'assessment.geometry_mode')."
+        ),
+    )
+    validation: ValidationConfig = Field(
+        default_factory=ValidationConfig,
+        description=(
+            "Full JSON-Schema validation of the extraction result, and the "
+            "optional model escalation that follows a failure (v0.7 — moved up "
+            "from 'extraction.agentic.validation', because simple extraction "
+            "now runs the same validate-and-retry path and the setting is no "
+            "longer agentic-only)."
         ),
     )
     missing_field_handling: MissingFieldHandlingConfig = Field(
@@ -2824,9 +2839,9 @@ class IDPConfig(BaseModel):
             # Migrate v0.5 config shape → v0.6 (assessment.* → extraction.confidence
             # / extraction.geometry / top-level hitl). Idempotent: a no-op once the
             # config is already stamped config_format_version == CONFIG_FORMAT_VERSION.
-            from .migrations.v05_to_v06 import migrate_v05_to_v06
+            from .migrations import migrate_config
 
-            data = migrate_v05_to_v06(data)
+            data = migrate_config(data)
 
             # Migrate rule_classes → policy_classes (renamed in v0.5.9)
             if "rule_classes" in data and "policy_classes" not in data:

@@ -5,6 +5,9 @@
 
 import pytest
 
+from idp_common.config.migrations.v05_to_v06 import (
+    TARGET_VERSION as V05_TO_V06_TARGET,
+)
 from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
 from idp_common.config.models import CONFIG_FORMAT_VERSION, IDPConfig
 
@@ -105,7 +108,9 @@ class TestV05ToV06Migration:
 
     def test_stamps_format_version(self):
         out = migrate_v05_to_v06({"assessment": {"enabled": True}})
-        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
+        assert (
+            out["config_format_version"] == V05_TO_V06_TARGET
+        )  # this step stamps 0.6; the chain then reaches current
 
     def test_idempotent(self):
         v05 = {
@@ -155,7 +160,9 @@ class TestV05ToV06Migration:
         assert "confidence" not in out["extraction"]
         assert "geometry" not in out["extraction"]
         assert "hitl" not in out
-        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
+        assert (
+            out["config_format_version"] == V05_TO_V06_TARGET
+        )  # this step stamps 0.6; the chain then reaches current
 
     def test_non_dict_passthrough(self):
         assert migrate_v05_to_v06(None) is None  # type: ignore[arg-type]

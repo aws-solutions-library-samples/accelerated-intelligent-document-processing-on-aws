@@ -1152,8 +1152,9 @@ model** generated from the class JSON Schema (`field_constraints=True`), so
 `enum`, `pattern`, numeric bounds and `minItems`/`maxItems` violations are fed
 back to the agent for self-correction during extraction.
 
-The optional `extraction.agentic.validation` block adds **full JSON-Schema
-validation** of the final result — most importantly the `format` keyword
+The `extraction.validation` block (moved up from `extraction.agentic.validation`
+in v0.7, since Simple extraction runs this path too; stored configs migrate
+automatically) adds **full JSON-Schema validation** of the final result — most importantly the `format` keyword
 (`date`, `date-time`, `email`, `uri`, `uuid`, ...), which the generated Pydantic
 model does **not** enforce — and an optional **bounded model escalation** when
 validation still fails.

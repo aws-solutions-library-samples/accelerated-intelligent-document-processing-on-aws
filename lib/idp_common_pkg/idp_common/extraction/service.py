@@ -1808,7 +1808,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             schema, extracted_fields
         )
         ratio = (populated / defined) if defined else 1.0
-        threshold = self.config.extraction.agentic.validation.min_population_ratio
+        threshold = self.config.extraction.validation.min_population_ratio
         below = defined > 0 and ratio < threshold
 
         if below:
@@ -2746,7 +2746,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """
         return (
             self._class_schema.get(X_AWS_IDP_EXTRACTION_ESCALATION_MODEL)
-            or self.config.extraction.agentic.validation.escalation_model
+            or self.config.extraction.validation.escalation_model
         )
 
     def _build_schema_validator(self, ocr_analysis: dict[str, Any] | None = None):
@@ -2756,9 +2756,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         Two independent checks, with **independent enablement**:
 
         1. **Full JSON-Schema validation** — gated on
-           ``extraction.agentic.validation.enabled`` (default **false**, so
-           upgrading changes no behavior). Catches what the generated Pydantic
-           model does not, notably ``format`` keywords.
+           ``extraction.validation.enabled``, **on by default as of v0.7**.
+           Catches what the generated Pydantic model does not, notably ``format``
+           keywords. Free at the default ``fail_action: warn``: no extra
+           inference, just a visible ProcessingIssue instead of a silent
+           violation.
 
         2. **Empty declared list with OCR table evidence** — NOT gated. When the
            pre-flight found a substantial table and *every* declared list field
@@ -2768,10 +2770,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         Check 2 is deliberately ungated, and that is a considered decision rather
         than an oversight. It was originally written behind ``validation.enabled``
         and **live verification caught the mistake**: the very config that
-        produced the bug has ``validation.enabled: false`` — the documented
-        default — so the safety net was dead on exactly the configurations that
-        needed it. A guard against *silent data loss* that is itself off by
-        default reproduces the problem it was written to fix.
+        produced the bug had ``validation.enabled: false`` — the documented
+        default at the time — so the safety net was dead on exactly the
+        configurations that needed it. A guard against *silent data loss* that is
+        itself off by default reproduces the problem it was written to fix.
+
+        v0.7 acted on that argument for check 1 as well by flipping its default
+        on. Check 2 nevertheless stays ungated: it guards against silent data
+        loss, and a config that explicitly turns validation off should not
+        thereby turn off a check that costs nothing and only ever asks the model
+        to try again.
 
         The blast radius is small enough to justify that:
 
@@ -2790,7 +2798,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         a 100-row table, and the section was reported COMPLETED with scalar
         accuracy 1.000.
         """
-        vcfg = self.config.extraction.agentic.validation
+        vcfg = self.config.extraction.validation
         class_schema = self._class_schema
         check_formats = vcfg.check_formats
         schema_checks = bool(vcfg.enabled)
@@ -2850,9 +2858,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         Returns ``(extracted_fields, structured_data, validation_metadata,
         escalation_metering, parsing_succeeded)``. A no-op (returns inputs
         unchanged with ``validation_metadata=None``) unless
-        ``extraction.agentic.validation.enabled``.
+        ``extraction.validation.enabled``.
         """
-        vcfg = self.config.extraction.agentic.validation
+        vcfg = self.config.extraction.validation
         escalation_metering: dict[str, Any] = {}
         if not vcfg.enabled:
             return (
@@ -2973,7 +2981,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             f"{escalation_model} (scope={scope}, fields={failed_fields})",
         )
 
-        check_formats = self.config.extraction.agentic.validation.check_formats
+        check_formats = self.config.extraction.validation.check_formats
         instruction = (
             (custom_instruction + "\n\n" if custom_instruction else "")
             + "A previous extraction attempt produced data that violated the "
@@ -3495,7 +3503,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
             # Full JSON-Schema validation of the final result, with optional
             # bounded escalation to a stronger model. No-op unless
-            # extraction.agentic.validation.enabled. Updates extracted_fields,
+            # extraction.validation.enabled. Updates extracted_fields,
             # may flip parsing_succeeded (fail_action="reject"), and records the
             # outcome under metadata["validation"].
             (
@@ -4310,7 +4318,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             metadata["repair_method"] = result.repair_method
 
         # Add full-schema validation outcome (set by _validate_and_maybe_escalate
-        # when extraction.agentic.validation.enabled).
+        # when extraction.validation.enabled).
         if self._pending_validation_metadata is not None:
             metadata["validation"] = self._pending_validation_metadata
 

@@ -311,9 +311,9 @@ class ConfigurationManager:
         # v0.6-over-v0.6 deep_update — the delta's confidence/geometry/hitl keys
         # correctly override the default's, instead of a hybrid where a legacy
         # `assessment.*` delta would be shadowed by the default's new-home keys.
-        from .migrations.v05_to_v06 import migrate_v05_to_v06
+        from .migrations import migrate_config
 
-        version_dict = migrate_v05_to_v06(version_dict)
+        version_dict = migrate_config(version_dict)
 
         # Merge: Start with Default, deep update with version deltas
         default_dict = default_config.model_dump(mode="python")
@@ -1194,9 +1194,9 @@ class ConfigurationManager:
         # input. (saveAsVersion/saveAsDefault/normal-update all merge, so migrate once
         # here at the single choke point.)
         if isinstance(config_dict, dict) and config_dict:
-            from .migrations.v05_to_v06 import migrate_v05_to_v06
+            from .migrations import migrate_config
 
-            config_dict = migrate_v05_to_v06(config_dict)
+            config_dict = migrate_config(config_dict)
 
         # === Reset to default ===
         if reset_to_default:
