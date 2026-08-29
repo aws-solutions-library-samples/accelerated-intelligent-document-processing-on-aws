@@ -507,6 +507,17 @@ type AbortWorkflowResponse @aws_cognito_user_pools @aws_iam {
   errors: [String]
 }
 
+input DocumentSectionGroupingInput {
+  # The section whose content should carry over. A value not currently on the document
+  # is treated as a new section with no extraction result.
+  sectionId: String!
+  classification: String
+  # Page ids in the document's own numbering — 1-based, except BDA / Pattern-1 which is
+  # 0-based. Passed through unconverted, unlike the test-set path which stores 0-based
+  # page_indices.
+  pageIds: [String!]!
+}
+
 input ModifiedSectionInput {
   sectionId: String!
   classification: String!
@@ -1395,6 +1406,20 @@ type Mutation {
     modifiedPages: [ModifiedPageInput!]
   ): ProcessChangesResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Re-group a processed document's pages WITHOUT reprocessing it.
+  #
+  # processChanges clears each changed section's extraction data and requeues the
+  # document, because it delegates persistence to the pipeline — it never writes the
+  # document back, so the run is the only thing that saves the change. A grouping-only
+  # edit persists itself instead (as completeSectionReview does for field edits), which
+  # is why the extracted values survive. They may no longer match their pages, which the
+  # UI says while offering processChanges as the opt-in reprocess.
+  #
+  # Admin/Reviewer/Annotator, matching completeSectionReview — the sibling that edits a
+  # section's content — rather than processChanges' narrower pair. Refused while the
+  # document is QUEUED or RUNNING, since a direct write would race the pipeline.
+  updateDocumentSections(objectKey: String!, sections: [DocumentSectionGroupingInput!]!): ProcessChangesResponse!
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   skipAllSectionsReview(objectKey: String!): Document

@@ -501,6 +501,16 @@ operations:
   # ==========================================================================
   # HITL review (Admin + Reviewer)
   # ==========================================================================
+  updateDocumentSections:
+    # Re-groups a document's pages without reprocessing it, so the extracted values
+    # survive. Admin/Reviewer/Annotator matches completeSectionReview, the sibling that
+    # edits a section's content — processChanges stays narrower because it destroys and
+    # regenerates extraction data. Refused while the document is in flight.
+    groups: [Admin, Reviewer, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
+    args: { objectKey: "__nonexistent__.pdf", sections: [] }
+
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation

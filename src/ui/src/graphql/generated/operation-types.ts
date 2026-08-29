@@ -448,6 +448,12 @@ export type DocumentPage = {
   nextToken?: Maybe<Scalars['String']['output']>;
 };
 
+export type DocumentSectionGroupingInput = {
+  classification?: InputMaybe<Scalars['String']['input']>;
+  pageIds: Array<Scalars['String']['input']>;
+  sectionId: Scalars['String']['input'];
+};
+
 export type DocumentVersion = {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
@@ -831,6 +837,7 @@ export type Mutation = {
   updateDiscoveryJobStatus?: Maybe<DiscoveryJob>;
   updateDocument?: Maybe<Document>;
   updateDocumentSection?: Maybe<Document>;
+  updateDocumentSections: ProcessChangesResponse;
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
@@ -1215,6 +1222,12 @@ export type MutationUpdateDocumentArgs = {
 
 export type MutationUpdateDocumentSectionArgs = {
   input: UpdateDocumentSectionInput;
+};
+
+
+export type MutationUpdateDocumentSectionsArgs = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<DocumentSectionGroupingInput>;
 };
 
 
@@ -2523,6 +2536,14 @@ export type UpdateConfigurationMutationVariables = Exact<{
 
 
 export type UpdateConfigurationMutation = { updateConfiguration?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null, validationErrors?: Array<{ field?: string | null, message?: string | null, type?: string | null } | null> | null } | null } | null };
+
+export type UpdateDocumentSectionsMutationVariables = Exact<{
+  objectKey: Scalars['String']['input'];
+  sections: Array<DocumentSectionGroupingInput> | DocumentSectionGroupingInput;
+}>;
+
+
+export type UpdateDocumentSectionsMutation = { updateDocumentSections: { success: boolean, message?: string | null, processingJobId?: string | null } };
 
 export type UpdateModelConfigLimitsMutationVariables = Exact<{
   modelConfigLimits: Scalars['AWSJSON']['input'];

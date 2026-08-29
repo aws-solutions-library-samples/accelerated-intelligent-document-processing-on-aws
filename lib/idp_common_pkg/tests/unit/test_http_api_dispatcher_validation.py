@@ -377,14 +377,16 @@ def test_empty_args_accepted_unless_non_null_required(validation, spec):
 
 def test_required_arg_count_is_stable(spec):
     """Guardrail so a schema change that alters the required-arg surface is
-    visible in the diff (102 fields require a non-null arg as of this spec — the
+    visible in the diff (104 fields require a non-null arg as of this spec — the
     test-set lifecycle ops getTestSetVersions/publishTestSetVersion/
     removeDocumentsFromTestSet/sendTestRunToReview added 91–94, the
     draft-labeling ops generateDraftLabels/getDraftLabelJob added 95–96,
     estimateReviewEffort the 97th, getAnnotationQueue the 98th,
     reextractTestSetDocument the 99th, clearDraftLabels the 100th,
-    resetTestSetLabels the 101st, and generateRuleJson the 102nd)."""
+    resetTestSetLabels the 101st, generateRuleJson the 102nd, and the
+    page-regrouping pair updateTestSetDocumentSections/updateDocumentSections
+    103–104)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 102
+    assert len(required) == 104
