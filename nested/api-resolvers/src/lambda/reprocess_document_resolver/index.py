@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.docs_service import create_document_service
+from idp_common.config_scope import scope_allows
 from idp_common.document_versions import runs_prefix
 
 # Import IDP Common modules
