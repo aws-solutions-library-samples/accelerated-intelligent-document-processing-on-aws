@@ -266,16 +266,21 @@ def iter_countable_rows(
                 # are one critical section — separately they'd race under
                 # the aggregation Lambda's 20-worker executor. The bound
                 # caps memory growth in a warm Lambda that serves many
-                # runs; when we hit the cap we let the warning fire again
-                # rather than silently swallowing new contexts.
+                # runs; once the cap is reached we STOP logging further
+                # new contexts (rather than logging every one, which would
+                # flood CloudWatch in a long-lived warm Lambda that sees
+                # 256+ distinct doc/section contexts). Reaching the cap
+                # means "this warning is now silent for the rest of the
+                # container's life" — acceptable because 256 fired warnings
+                # already surface the shape change well before that point.
                 should_log = False
                 with _seen_anonymous_root_lock:
-                    if ctx not in _seen_anonymous_root_contexts:
-                        if (
-                            len(_seen_anonymous_root_contexts)
-                            < _SEEN_ANONYMOUS_ROOT_MAX
-                        ):
-                            _seen_anonymous_root_contexts.add(ctx)
+                    if (
+                        ctx not in _seen_anonymous_root_contexts
+                        and len(_seen_anonymous_root_contexts)
+                        < _SEEN_ANONYMOUS_ROOT_MAX
+                    ):
+                        _seen_anonymous_root_contexts.add(ctx)
                         should_log = True
                 if should_log:
                     logger.warning(

@@ -830,8 +830,14 @@ def _run_level_row_aggregates(
     per_field_metrics)`` — same shape the individual helpers produce, so
     the caller's downstream code is unaffected.
 
-    The two individual helpers are retained as thin wrappers around this
-    one so external tests that hit them directly still work.
+    The two individual helpers ``_run_level_counts_from_rows`` and
+    ``_run_level_field_metrics_from_rows`` are retained (as independent
+    implementations) so external unit tests that hit them directly still
+    work; only the production ``_transform_stickler_metrics`` call site
+    reaches this fused helper. Kept independent rather than refactored
+    into wrappers to preserve the tightly-scoped surface each test
+    already exercises — a fused implementation returning both metrics
+    would change the tests' assertion shape.
     """
     from idp_common.evaluation.contract import (
         _row_weight,

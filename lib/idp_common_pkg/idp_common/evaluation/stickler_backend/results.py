@@ -243,6 +243,20 @@ def _instance_to_dict(instance: Any) -> Dict[str, Any]:
     return dict(instance)
 
 
+def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
+    """True iff a Stickler confusion-matrix cell dict has ANY positive count.
+
+    Used to distinguish "genuinely-empty section" (all-zero populated
+    ``cm.aggregate``/``overall`` dict, which is what Stickler emits for
+    that shape and is NOT a Stickler shape change to warn about) from
+    "row list is empty but counts say otherwise" (a shape drift we DO
+    want to log).
+    """
+    if not node:
+        return False
+    return any(int(node.get(k, 0) or 0) > 0 for k in ("tp", "fa", "fd", "tn", "fn"))
+
+
 def transform_stickler_result(
     section: "Section",
     expected_instance: "StructuredModel",
@@ -490,14 +504,6 @@ def transform_stickler_result(
     # adversarial review). An empty row list is either a genuinely empty
     # document (0 counts is correct) or a Stickler shape change we want to
     # surface loudly rather than paper over.
-    # Check for NON-ZERO cm.aggregate/overall counts, not just presence — an
-    # all-zero populated dict is what Stickler emits for a genuinely-empty
-    # section and is not a shape change to warn about.
-    def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
-        if not node:
-            return False
-        return any(int(node.get(k, 0) or 0) > 0 for k in ("tp", "fa", "fd", "tn", "fn"))
-
     if not countable_rows and (
         _has_nonzero_counts(cm.get("aggregate"))
         or _has_nonzero_counts(cm.get("overall"))

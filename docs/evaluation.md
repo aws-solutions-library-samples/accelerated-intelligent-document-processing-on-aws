@@ -1225,7 +1225,7 @@ The evaluation framework includes comprehensive monitoring through CloudWatch me
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics.** As of v0.6.5+, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+**Extraction Accuracy Metrics.** As of v0.6.6, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
 
 - **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
 - **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`

@@ -228,9 +228,10 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
         if my_rows:
             expected_matched = all(fc.get("match") is True for fc in my_rows)
         else:
-            # No rows for this attribute — the code falls through to the
-            # cm-cell path in ``results.py``. Skip the assertion here; the
-            # golden byte-comparison already pins that rare case.
+            # No rows for this attribute — production ``results.py`` reports
+            # ``matched = False`` here (no evidence of correctness). Skip
+            # the drilldown-derived assertion; the golden byte-comparison
+            # already pins that rare case.
             continue
         assert attr.matched == expected_matched, (
             f"{fixture_name}.{attr.name}: IDP matched={attr.matched} vs "
