@@ -13,6 +13,7 @@ neutral evaluation configuration that can be translated to Stickler's format.
 
 import copy
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from idp_common.config.schema_constants import (
@@ -730,9 +731,16 @@ class SticklerConfigMapper:
                     ctx = schema.setdefault("x-aws-stickler-comparator-config", {})
                     if isinstance(ctx, dict):
                         ctx.setdefault("document_class", document_class or "")
-                        ctx.setdefault(
-                            "attribute_name", field_path.split(".")[-1] or field_path
-                        )
+                        # Strip bracket suffixes (``Items[]`` → ``Items``) so
+                        # the LLM judge's prompt shows the schema attribute
+                        # name, not the list-index punctuation that a
+                        # top-level list retains from Stickler's field-path
+                        # syntax (finding from code review — a top-level
+                        # list attribute previously sent ``ATTRIBUTE_NAME
+                        # = "Items[]"`` to the judge).
+                        raw_name = field_path.split(".")[-1] or field_path
+                        clean_name = re.sub(r"\[[^\]]*\]", "", raw_name) or raw_name
+                        ctx.setdefault("attribute_name", clean_name)
                         ctx.setdefault(
                             "attribute_description", schema.get("description") or ""
                         )

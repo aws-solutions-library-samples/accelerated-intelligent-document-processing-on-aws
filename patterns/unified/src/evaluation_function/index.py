@@ -173,9 +173,16 @@ def handler(event, context):
         try:
             actual_document = extract_document_from_event(event)
             reason = event.get('failure_reason') or 'Evaluation did not complete'
+            # Match both Lambda ``Sandbox.Timedout`` and Step Functions
+            # ``States.Timeout`` / ``Lambda.Timeout`` — a state-level timeout
+            # is a timeout even though it uses a different substring than
+            # the Lambda-level one (case-insensitive ``timeout`` covers both
+            # spellings; both are retried as timeouts in the state machine
+            # so both should be labeled TIMED_OUT here).
+            error_blob = json.dumps(event.get('error', '')).lower()
             status = (
                 EvaluationStatus.TIMED_OUT
-                if 'Timedout' in json.dumps(event.get('error', ''))
+                if 'timedout' in error_blob or 'timeout' in error_blob
                 else EvaluationStatus.FAILED
             )
             logger.error(
@@ -188,7 +195,11 @@ def handler(event, context):
             # Never let the failure-recorder itself break the workflow — the whole
             # point of this branch is that the document survives.
             logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
-            return event.get('document') or {}
+            # Return the wrapped ``{'document': ...}`` shape the success path
+            # returns, so the downstream ``$.document`` reference in the
+            # state machine still resolves. Returning the raw doc dict here
+            # would break PostprocessingHook.
+            return {'document': event.get('document') or {}}
 
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")

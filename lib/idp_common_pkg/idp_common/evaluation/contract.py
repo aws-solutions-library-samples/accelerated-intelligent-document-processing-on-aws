@@ -131,17 +131,36 @@ def _row_weight(fc: Dict[str, Any]) -> int:
     structured (dict / list / model), we weight by ``max(1, leaf_count)`` so
     both shapes contribute the same leaf-normalized units to the confusion
     matrix. For a scalar leaf row, the weight is 1.
+
+    Uses the MAX of expected and actual leaf counts (not just "exp if exp is
+    not None"): a hallucinated multi-leaf actual against an empty-but-present
+    expected (``{}``/``[]``/``""``) has real leaves on the actual side that
+    should contribute to the confusion-matrix weight. Picking exp
+    unconditionally undercounts the hallucination as weight=1
+    (finding from #625 high review — a false-alarm row emitting a 5-key
+    dict on the actual side had weight 1 instead of 5).
     """
     exp = fc.get("expected_value")
     act = fc.get("actual_value")
-    value = exp if exp is not None else act
-    if isinstance(value, (dict, list, tuple, set)) or (
-        value is not None
-        and not isinstance(value, (str, int, float, bool))
-        and (hasattr(value, "model_dump") or hasattr(value, "__dict__"))
-    ):
-        return max(1, _count_leaves(value))
+    exp_leaves = _count_leaves(exp) if _is_structured(exp) else 0
+    act_leaves = _count_leaves(act) if _is_structured(act) else 0
+    max_leaves = max(exp_leaves, act_leaves)
+    if max_leaves > 0:
+        return max(1, max_leaves)
     return 1
+
+
+def _is_structured(value: Any) -> bool:
+    """True iff ``value`` is a container / model — the shapes ``_count_leaves``
+    can meaningfully enumerate slots inside. Bare scalars (str, int, bool,
+    None) all count as one slot at their prefix and are handled by the
+    ``return 1`` branch of ``_row_weight``.
+    """
+    if isinstance(value, (dict, list, tuple, set)):
+        return True
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return False
+    return hasattr(value, "model_dump") or hasattr(value, "__dict__")
 
 
 def classify_field_comparison(fc: Dict[str, Any]) -> str:

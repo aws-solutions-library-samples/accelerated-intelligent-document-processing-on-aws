@@ -85,6 +85,50 @@ class TestAnonymousRootDedup:
 
 
 @pytest.mark.unit
+class TestRowWeight:
+    """``_row_weight`` picks the max of expected/actual leaf counts, not just
+    the expected side, so a hallucinated multi-leaf actual against an empty
+    expected still contributes its real leaf count to the confusion matrix
+    (finding from #625 high review — previous ``exp if exp is not None else
+    act`` undercounted hallucinations whose expected side was ``{}``/``[]``).
+    """
+
+    def test_scalar_leaf_row_weight_is_one(self):
+        fc = {"expected_value": "Alice", "actual_value": "Alice"}
+        assert contract._row_weight(fc) == 1
+
+    def test_multi_leaf_structured_expected_weights_by_leaves(self):
+        fc = {
+            "expected_value": {"name": "A", "amount": "1"},
+            "actual_value": None,
+        }
+        assert contract._row_weight(fc) == 2
+
+    def test_hallucinated_multi_leaf_actual_against_empty_expected(self):
+        # Expected present-but-empty ({}) — earlier code picked exp and got
+        # weight=1 despite a 2-leaf hallucination on the actual side.
+        fc = {
+            "expected_value": {},
+            "actual_value": {"a": 1, "b": 2},
+        }
+        assert contract._row_weight(fc) == 2
+
+    def test_hallucinated_multi_leaf_actual_against_none_expected(self):
+        fc = {
+            "expected_value": None,
+            "actual_value": {"a": 1, "b": 2, "c": 3},
+        }
+        assert contract._row_weight(fc) == 3
+
+    def test_missing_expected_multi_leaf_against_none_actual(self):
+        fc = {
+            "expected_value": {"a": 1, "b": 2},
+            "actual_value": None,
+        }
+        assert contract._row_weight(fc) == 2
+
+
+@pytest.mark.unit
 class TestSafeDiv:
     """``safe_div`` is imported by both the per-doc and run-level paths;
     its zero-denominator convention (return 0.0, not None) is what keeps

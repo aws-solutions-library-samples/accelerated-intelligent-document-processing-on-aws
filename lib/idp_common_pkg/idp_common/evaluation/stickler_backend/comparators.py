@@ -22,6 +22,8 @@ registry raises on duplicates.
 import json
 import logging
 import re
+import threading
+from collections import OrderedDict
 from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -153,10 +155,22 @@ class LLMComparator(BaseComparator):
         # lifetime. Structured-list matching compares the same value pairs
         # repeatedly across the assignment matrix and again when scoring the
         # matched pairs, and the judge is deterministic at temperature 0, so a
-        # repeat is a wasted round trip. Bounded because comparator instances are
-        # cached per (model, field) for the life of a warm Lambda container, which
-        # processes many documents — an unbounded dict would be a slow leak.
-        self._verdict_cache: dict[Tuple[str, str], float] = {}
+        # repeat is a wasted round trip.
+        #
+        # Bounded, LRU-evicting, thread-safe:
+        # * Bounded because comparator instances are cached per (model, field)
+        #   for the life of a warm Lambda container, which processes many
+        #   documents — an unbounded dict would be a slow leak.
+        # * LRU rather than "insert until full, then never evict" so a warm
+        #   Lambda that filled the cache on one big document still caches
+        #   later documents' pairs (finding from code review — earlier
+        #   design froze the cache at 10 000 entries for the container's
+        #   lifetime).
+        # * Locked because Stickler's Hungarian matching drives ``compare``
+        #   from a thread pool, and OrderedDict's move_to_end + popitem +
+        #   __setitem__ combo used below is a three-op critical section.
+        self._verdict_cache: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+        self._verdict_cache_lock = threading.Lock()
 
         logger.debug(
             f"Initialized LLMComparator with model={self.llm_config['model']}, threshold={self.threshold}"
@@ -177,10 +191,14 @@ class LLMComparator(BaseComparator):
         """
         try:
             cache_key = (repr(value1), repr(value2))
-            if cache_key in self._verdict_cache:
-                return self._verdict_cache[cache_key]
+            with self._verdict_cache_lock:
+                if cache_key in self._verdict_cache:
+                    self._verdict_cache.move_to_end(cache_key)
+                    return self._verdict_cache[cache_key]
 
             # Call the existing LLM comparison logic, WITH this field's context.
+            # Bedrock invocation is outside the lock — locking across a
+            # network call would serialize the Hungarian-matching thread pool.
             matched, score, reason = compare_llm(
                 expected=value1,
                 actual=value2,
@@ -194,8 +212,15 @@ class LLMComparator(BaseComparator):
                 f"LLM comparison: matched={matched}, score={score:.3f}, reason='{reason}'"
             )
 
-            if len(self._verdict_cache) < _VERDICT_CACHE_MAX:
-                self._verdict_cache[cache_key] = score
+            with self._verdict_cache_lock:
+                # Recheck after acquiring the lock: another thread may have
+                # scored the same pair while we were waiting on Bedrock.
+                if cache_key in self._verdict_cache:
+                    self._verdict_cache.move_to_end(cache_key)
+                else:
+                    if len(self._verdict_cache) >= _VERDICT_CACHE_MAX:
+                        self._verdict_cache.popitem(last=False)
+                    self._verdict_cache[cache_key] = score
             return score
 
         except Exception as e:
@@ -329,7 +354,25 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         # correctly. Deliberately conservative: case, surrounding and repeated
         # whitespace only — no punctuation or abbreviation folding, since deciding
         # those is exactly the judge's job.
-        if _trivially_equal(expected_str, actual_str):
+        #
+        # Compare on the RAW values (not the display strings): the display path
+        # renders ``None`` as the literal ``"None"`` for the LLM prompt, so
+        # ``expected=None`` vs ``actual="None"`` (the string) would otherwise
+        # short-circuit as a match — they are NOT equal, one is null and the
+        # other is a literal string (finding from code review: real bug on any
+        # document whose ground truth or extraction emits the string
+        # ``"None"``).
+        if expected is None or actual is None:
+            if expected is None and actual is None:
+                return (
+                    True,
+                    1.0,
+                    "Both values are None (correctly-empty; no LLM call required).",
+                )
+            # Exactly one side is None: not equal, don't short-circuit — let
+            # the judge decide (some comparators still want to reason about
+            # partial-null matches).
+        elif _trivially_equal(expected_str, actual_str):
             return (
                 True,
                 1.0,
