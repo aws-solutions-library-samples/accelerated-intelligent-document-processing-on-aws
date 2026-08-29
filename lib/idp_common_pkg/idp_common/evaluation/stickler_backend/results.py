@@ -314,7 +314,13 @@ def transform_stickler_result(
     root_model_cls = type(expected_instance) if expected_instance is not None else None
 
     field_scores = stickler_result.get("field_scores", {})
-    field_comparisons = stickler_result.get("field_comparisons", [])
+    # ``or []`` (not ``.get(key, [])``) so a ``{"field_comparisons": null}``
+    # payload from a Stickler variant emitting an explicit null still
+    # iterates safely — the default in ``.get`` only fires when the key
+    # is missing, not when the value is None.
+    field_comparisons: List[Dict[str, Any]] = (
+        stickler_result.get("field_comparisons") or []
+    )
 
     # Group field comparisons by top-level field name for attachment to
     # attributes: field_comparisons is a flat list, group by root field.
