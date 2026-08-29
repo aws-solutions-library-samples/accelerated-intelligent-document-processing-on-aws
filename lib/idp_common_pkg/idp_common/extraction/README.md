@@ -528,6 +528,41 @@ Common issues and solutions:
    - Improve example quality and accuracy
    - Ensure examples demonstrate proper null handling
 
+## Coercion and validation (Simple mode)
+
+Simple extraction used to do a raw `json.loads` and pass whatever came back
+downstream, so a wrong *type* or a non-ISO date reached DynamoDB unchallenged.
+Advanced (agentic) extraction has had full-schema validation and escalation for
+some time; as of v0.7 the simple path gets the same guarantee, in two steps.
+
+**1. Deterministic coercion (always, free).** Before validating, obvious
+type/format mismatches are repaired without a model call: `"$1,234.00"` and
+`"1.234,00"` into a `number` field, named-month and unambiguous numeric dates
+into `format: date`, boolean-ish strings into `boolean`. Every change is recorded
+under `metadata.coercion` and anything ambiguous (`01/02/2024`, a 2-digit year,
+fractional-to-integer) is **refused** rather than guessed. Nothing is ever
+rewritten without a record. See `idp_common.extraction.coercion`.
+
+**2. Full JSON-Schema validation**, then `extraction.validation.fail_action`:
+
+| `fail_action` | Behaviour | Extra inference? |
+|---|---|---|
+| `warn` (default) | Record the outcome in `metadata.validation` and raise a ProcessingIssue | **No — free** |
+| `reject` | Same, plus `parsing_succeeded=False` so downstream/HITL treats the section as failed | **No — free** |
+| `escalate` | Re-extract ONLY the failing top-level fields with `escalation_model`, merged back over the fields that already validated | **Yes** |
+
+Validation is **on by default** precisely because the default action is free: it
+turns an otherwise-silent schema violation into something visible at no cost.
+`escalate` is the opt-in that spends money.
+
+Escalation is deliberately **not** preceded by a same-model retry: re-asking the
+model that just produced invalid output, with the same prompt, mostly buys
+another invalid answer at full document cost. Only the failing fields are
+re-extracted, and only those fields are merged back — an over-eager escalation
+response cannot overwrite fields that already validated. A failed escalation
+returns the original extraction unchanged; a broken repair must never be worse
+than no repair.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates

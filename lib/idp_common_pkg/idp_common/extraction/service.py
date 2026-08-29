@@ -183,6 +183,9 @@ class ExtractionService:
         # consumed by _save_results when building the metadata block. Reset per
         # section so a prior section's result can never leak into the next.
         self._pending_validation_metadata: dict[str, Any] | None = None
+        # Deterministic type/format repairs applied to the most recent section's
+        # simple-mode result, so nothing is silently rewritten. Reset per section.
+        self._pending_coercion_metadata: dict[str, Any] | None = None
         # Model actually used for the most recent section's extraction (after
         # per-class override resolution), recorded in metadata for audit. Reset
         # per section.
@@ -2841,6 +2844,236 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         return _validate
 
+    def _coerce_simple_result(
+        self, extracted_fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Deterministically fix type/format mismatches before validating.
+
+        Returns ``(fields, coercion_metadata_or_None)``.
+
+        Constrained decoding makes a model emit *a* number; it does not make it
+        emit the *right* one. The mismatches that actually occur are
+        ``"$1,234.00"`` in a ``number`` field and ``"03/15/2024"`` under
+        ``format: date`` — cheap to fix exactly, and wasteful to fix by paying for
+        another inference. So this runs BEFORE validation, and validation then
+        only reports what could not be repaired deterministically.
+
+        Free: no model call. Every change is recorded in metadata so nothing is
+        silently rewritten, and anything ambiguous is refused rather than guessed
+        (see ``extraction.coercion``).
+
+        Runs on the simple path only. Agentic extraction validates through a
+        generated Pydantic model, which already coerces on the way in.
+        """
+        from idp_common.extraction.coercion import coerce_extraction
+
+        try:
+            report = coerce_extraction(extracted_fields, self._class_schema)
+        except Exception as e:  # noqa: BLE001 - never fail extraction on a repair
+            logger.warning("Coercion failed; leaving values as extracted: %s", e)
+            return extracted_fields, None
+
+        if not report.changed and not report.refusals:
+            return extracted_fields, None
+
+        if report.changed:
+            logger.info("Coercion: %s", report.summary_line())
+        return report.data, report.to_metadata()
+
+    def _validate_simple_result(
+        self,
+        *,
+        extracted_fields: dict[str, Any],
+        content: list[dict[str, Any]],
+        system_prompt: str,
+        model_id: str,
+        metering: dict[str, Any],
+        section_info: SectionInfo,
+        parsing_succeeded: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
+        """Validate a simple-mode result and act on ``fail_action``.
+
+        Returns ``(extracted_fields, validation_metadata_or_None,
+        parsing_succeeded)``.
+
+        Simple extraction had no validation at all: it did a raw ``json.loads``
+        and passed whatever came back downstream, so a wrong *type* or a
+        non-ISO date reached DynamoDB unchallenged. Agentic extraction has had
+        full-schema validation plus escalation for some time; this brings the
+        same guarantee to the path most deployments actually run.
+
+        Cost, which is the design constraint:
+
+        - ``warn`` (the default) — validate and record. **No extra inference.**
+          Validation is on by default precisely because this combination is free;
+          a default that quietly spent money on every schema violation would be a
+          cost surprise rather than a safety net.
+        - ``reject`` — same, plus ``parsing_succeeded=False`` so downstream/HITL
+          treats the section as failed. Also free.
+        - ``escalate`` — one scoped re-extraction of ONLY the failing top-level
+          fields with the stronger ``escalation_model``, merged back over the
+          fields that already validated. This is the opt-in that costs money.
+
+        Deliberately NOT a same-model retry loop before escalating: re-asking the
+        model that just produced invalid output, with the same prompt, mostly buys
+        another invalid answer at full document cost. The escalation model is the
+        thing likely to do better.
+        """
+        vcfg = self.config.extraction.validation
+        if not vcfg.enabled or not parsing_succeeded:
+            return extracted_fields, None, parsing_succeeded
+
+        report = validate_extraction(
+            extracted_fields, self._class_schema, check_formats=vcfg.check_formats
+        )
+        initial_error_count = len(report.errors)
+        initial_failed_fields = sorted(report.failed_top_level_fields)
+
+        escalated = False
+        escalation_model: str | None = None
+        if not report.valid:
+            logger.warning(
+                "Simple extraction failed full-schema validation for '%s'",
+                section_info.class_label,
+                extra={
+                    "error_count": initial_error_count,
+                    "failed_fields": initial_failed_fields,
+                    "fail_action": vcfg.fail_action,
+                },
+            )
+
+        if not report.valid and vcfg.fail_action == "escalate":
+            escalation_model = self._resolve_escalation_model() or model_id
+            escalated = True
+            extracted_fields, report, escalation_metering = (
+                self._escalate_simple_fields(
+                    extracted_fields=extracted_fields,
+                    report=report,
+                    escalation_model=escalation_model,
+                    content=content,
+                    system_prompt=system_prompt,
+                    section_info=section_info,
+                )
+            )
+            if escalation_metering:
+                metering.update(
+                    utils.merge_metering_data(metering, escalation_metering)
+                )
+
+        if not report.valid and vcfg.fail_action == "reject":
+            parsing_succeeded = False
+
+        validation_metadata: dict[str, Any] = {
+            **report.to_metadata(),
+            "check_formats": vcfg.check_formats,
+            "fail_action": vcfg.fail_action,
+            "escalated": escalated,
+            "initial_error_count": initial_error_count,
+            "initial_failed_fields": initial_failed_fields,
+            "mode": "simple",
+        }
+        if escalated:
+            validation_metadata["escalation_model"] = escalation_model
+            validation_metadata["escalation_scope"] = "field-subset"
+            validation_metadata["escalation_fields"] = initial_failed_fields
+            validation_metadata["resolved_by_escalation"] = report.valid
+
+        return extracted_fields, validation_metadata, parsing_succeeded
+
+    def _escalate_simple_fields(
+        self,
+        *,
+        extracted_fields: dict[str, Any],
+        report: ValidationReport,
+        escalation_model: str,
+        content: list[dict[str, Any]],
+        system_prompt: str,
+        section_info: SectionInfo,
+    ) -> tuple[dict[str, Any], ValidationReport, dict[str, Any]]:
+        """Re-extract only the failing fields with a stronger model (simple mode).
+
+        Mirrors the agentic ``_escalate_failing_fields`` intent — scope the retry
+        to what actually failed, so the fields that already validated are neither
+        re-paid for nor put at risk of regressing — but over a single plain
+        Converse call rather than an agent loop.
+
+        Best-effort: on any failure the inputs are returned unchanged, because a
+        broken escalation must not be worse than no escalation.
+        """
+        failed_fields = sorted(report.failed_top_level_fields)
+        if not failed_fields:
+            return extracted_fields, report, {}
+
+        subset_schema = build_subset_schema(self._class_schema, failed_fields)
+        vcfg = self.config.extraction.validation
+
+        logger.info(
+            "Escalating simple extraction for '%s' to %s (fields=%s)",
+            section_info.class_label,
+            escalation_model,
+            failed_fields,
+        )
+
+        corrective = (
+            "\n\nA previous extraction attempt produced data that violated the "
+            "schema. Re-extract ONLY the following fields and correct these "
+            "issues. Return a JSON object containing exactly these keys: "
+            f"{failed_fields}\n\n{report.agent_feedback()}\n\n"
+            "Schema for these fields:\n"
+            f"{self._format_schema_for_prompt(subset_schema)}"
+        )
+        retry_content = [*content, {"text": corrective}]
+
+        try:
+            response = bedrock.invoke_model(
+                model_id=escalation_model,
+                system_prompt=system_prompt,
+                content=retry_content,
+                temperature=self.config.extraction.temperature,
+                top_k=self.config.extraction.top_k,
+                top_p=self.config.extraction.top_p,
+                max_tokens=None,
+                context="Extraction-Escalation",
+                model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
+                reasoning_effort=self.config.extraction.reasoning_effort,
+            )
+            text = bedrock.extract_text_from_response(dict(response))
+            corrected = json.loads(extract_json_from_text(text))
+            corrected, ok, _count, _rec = self._normalize_list_result(
+                corrected, context="escalation"
+            )
+            if not ok or not isinstance(corrected, dict):
+                logger.warning(
+                    "Escalation response was not a usable object; keeping the "
+                    "original extraction"
+                )
+                return extracted_fields, report, response.get("metering", {})
+
+            # Merge back ONLY the fields we asked for, so an over-eager
+            # escalation response cannot overwrite fields that already validated.
+            merged = dict(extracted_fields)
+            for field_name in failed_fields:
+                if field_name in corrected:
+                    merged[field_name] = corrected[field_name]
+
+            merged, _ = self._coerce_simple_result(merged)
+            new_report = validate_extraction(
+                merged, self._class_schema, check_formats=vcfg.check_formats
+            )
+            if new_report.valid:
+                logger.info("Escalation resolved all schema violations")
+            else:
+                logger.warning(
+                    "Escalation reduced violations from %d to %d but the result "
+                    "is still invalid",
+                    len(report.errors),
+                    len(new_report.errors),
+                )
+            return merged, new_report, response.get("metering", {})
+        except Exception as e:  # noqa: BLE001 - escalation is best-effort
+            logger.warning("Simple-mode escalation failed: %s", e)
+            return extracted_fields, report, {}
+
     def _validate_and_maybe_escalate(
         self,
         extracted_fields: dict[str, Any],
@@ -3153,6 +3386,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Clear any per-section audit state from a previously processed section.
         self._pending_validation_metadata = None
+        self._pending_coercion_metadata = None
         self._pending_extraction_model = None
 
         # Get extraction config — use per-class model override if specified,
@@ -3655,6 +3889,34 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # a real object (not an error/raw_output sentinel) and a schema exists.
             if parsing_succeeded and isinstance(extracted_fields, dict):
                 extracted_fields = self._filter_extracted_to_schema(extracted_fields)
+
+            # Deterministic type/format repair, then full-schema validation.
+            # Order matters: coercion first, so validation only reports what could
+            # NOT be fixed for free. Both run before the integrated-confidence
+            # split below, which reshapes the dict into values + candidates and
+            # would no longer match the class schema.
+            if parsing_succeeded and isinstance(extracted_fields, dict):
+                extracted_fields, coercion_metadata = self._coerce_simple_result(
+                    extracted_fields
+                )
+                if coercion_metadata is not None:
+                    self._pending_coercion_metadata = coercion_metadata
+
+                (
+                    extracted_fields,
+                    validation_metadata,
+                    parsing_succeeded,
+                ) = self._validate_simple_result(
+                    extracted_fields=extracted_fields,
+                    content=content,
+                    system_prompt=system_prompt,
+                    model_id=model_id,
+                    metering=metering,
+                    section_info=section_info,
+                    parsing_succeeded=parsing_succeeded,
+                )
+                if validation_metadata is not None:
+                    self._pending_validation_metadata = validation_metadata
 
             # Non-agentic INTEGRATED confidence: the single extraction inference
             # was asked (via the 1S-TopK prompt) to return, per field, its top-K
@@ -4318,9 +4580,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             metadata["repair_method"] = result.repair_method
 
         # Add full-schema validation outcome (set by _validate_and_maybe_escalate
-        # when extraction.validation.enabled).
+        # on the agentic path, or _validate_simple_result on the simple path, when
+        # extraction.validation.enabled).
         if self._pending_validation_metadata is not None:
             metadata["validation"] = self._pending_validation_metadata
+
+        # Deterministic type/format repairs. Recorded so a human can audit exactly
+        # what was rewritten and what was refused — coercion must never silently
+        # alter extracted document data.
+        if self._pending_coercion_metadata is not None:
+            metadata["coercion"] = self._pending_coercion_metadata
 
         # Record scalar-field conflicts detected when merging sharded concurrent
         # extraction (two shards disagreed on a scalar; first value kept).
