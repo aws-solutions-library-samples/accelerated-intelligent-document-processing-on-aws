@@ -756,6 +756,10 @@ type TestSet @aws_cognito_user_pools @aws_iam {
 type TestSetDocumentSection @aws_cognito_user_pools @aws_iam {
   sectionId: String!
   baselineKey: String!
+  # This section's own class. Distinct from TestSetDocument.documentClasses, which is
+  # the deduplicated badge list for the whole document — the regrouping board needs one
+  # per section, and the editor loads only the section being viewed.
+  documentClass: String
   # 0-based page indices this section covers, from split_document.page_indices.
   # Returned so the page-regrouping editor can render every section's grouping at
   # once; the resolver already reads each result.json for label state and class, so

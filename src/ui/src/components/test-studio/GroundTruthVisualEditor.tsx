@@ -37,7 +37,13 @@ import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { getErrorMessage } from '../../utils/errorUtils';
-import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
+import {
+  getFilePresignedUrl,
+  uploadDocument,
+  reextractTestSetDocument,
+  getDraftLabelJob,
+  updateTestSetDocumentSections,
+} from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
 import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
@@ -50,6 +56,9 @@ import JSONEditorTab from '../document-viewer/JSONEditorTab';
 import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import useTestDocPages from '../../hooks/use-test-doc-pages';
 import { renderLoadedLabelSource } from './TestSetDetail';
+import PageGroupingEditor from '../common/PageGroupingEditor';
+import { pageIdsToIndices, pageIndicesToIds } from '../common/section-grouping';
+import type { GroupedSection } from '../common/section-grouping';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
@@ -62,6 +71,8 @@ const REEXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
 export interface TestSetDocumentSectionRef {
   sectionId: string;
   baselineKey: string;
+  /** This section's class, so the regrouping board can show one per section. */
+  documentClass?: string | null;
   /**
    * 0-based page indices this section covers, from the queue/documents payload.
    *
@@ -166,6 +177,16 @@ const GroundTruthVisualEditor = ({
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
   // Canonical path of the field the reviewer last clicked, so it can be linked.
   const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
+  const [isRegrouping, setIsRegrouping] = useState(false);
+  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
+  /**
+   * Sections whose pages changed in the last re-grouping.
+   *
+   * Kept so the warning names them: their field values were extracted from a different
+   * set of pages and may no longer match. Deliberately not acted on — re-extracting
+   * automatically is the annotation loss this whole feature exists to avoid.
+   */
+  const [regroupedSectionIds, setRegroupedSectionIds] = useState<string[]>([]);
   // See the prop's doc comment: the class is a wider capability than field editing.
   const mayChangeClass = canChangeClass ?? !isReadOnly;
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -367,6 +388,71 @@ const GroundTruthVisualEditor = ({
    * harvested on read, so this poll loop is what drives the write-back; it is not
    * merely observing.
    */
+  /**
+   * Every section's grouping, in the board's 1-based page-id space.
+   *
+   * Comes from the queue/documents payload rather than a fetch: the editor only ever
+   * loads the section being viewed, and the board needs all of them at once. A section
+   * whose file could not be read arrives without `pageIndices` and is shown as empty,
+   * which the board's validation then blocks — correct, because saving it would drop
+   * whatever pages it held.
+   */
+  const groupingForBoard = useMemo<GroupedSection[]>(
+    () =>
+      sections.map((section) => ({
+        sectionId: section.sectionId,
+        documentClass:
+          // The open section's class may have unsaved edits, so prefer local state for
+          // it; the rest come from the payload.
+          section.sectionId === selectedSectionId ? (documentClassType ?? null) : (section.documentClass ?? null),
+        pageIds: pageIndicesToIds(section.pageIndices ?? []),
+      })),
+    [sections, selectedSectionId, documentClassType],
+  );
+
+  /** Pages for the board, in the same 1-based space. */
+  const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
+
+  const handleSaveGrouping = async (next: GroupedSection[]) => {
+    if (!testSetId) return;
+    setIsSavingGrouping(true);
+    setError(null);
+    try {
+      const payload = next.map((section) => ({
+        sectionId: section.sectionId,
+        documentClass: section.documentClass ?? undefined,
+        // Back to the 0-based space the baseline stores. The only arithmetic in the
+        // feature, and the one thing that would corrupt data silently — hence the
+        // round-trip tests on these two helpers.
+        pageIndices: pageIdsToIndices(section.pageIds),
+      }));
+
+      const response = await client.graphql({
+        query: updateTestSetDocumentSections,
+        variables: { input: { testSetId, objectKey, sections: payload } },
+      });
+      const written = response.data?.updateTestSetDocumentSections?.sections ?? [];
+
+      // Which sections actually changed, compared BEFORE the reload replaces the refs.
+      const before = new Map(sections.map((sec) => [sec.sectionId, JSON.stringify(sec.pageIndices ?? [])]));
+      const changed = written
+        .filter((sec) => sec && before.get(sec.sectionId) !== JSON.stringify(sec.pageIndices ?? []))
+        .map((sec) => (sec as { sectionId: string }).sectionId);
+
+      setRegroupedSectionIds(changed);
+      setIsRegrouping(false);
+      setReloadToken((token) => token + 1);
+      // The caller refreshes its queue: section ids and classes have moved, so its
+      // cached refs are stale.
+      if (onReextracted) onReextracted();
+    } catch (err) {
+      logger.error('Re-grouping failed:', err);
+      setError(`Could not save the page grouping: ${getErrorMessage(err)}`);
+    } finally {
+      setIsSavingGrouping(false);
+    }
+  };
+
   const handleReextract = async () => {
     if (!documentClassType || !testSetId) return;
     setIsReextracting(true);
@@ -571,7 +657,43 @@ const GroundTruthVisualEditor = ({
         </SpaceBetween>
       )}
 
-      {sections.length > 1 && (
+      {/* Named sections rather than a count: after a re-group the reviewer needs to
+          know WHICH sections to look at. Not acted on automatically — re-extracting
+          would regenerate exactly the field values this feature exists to preserve. */}
+      {regroupedSectionIds.length > 0 && (
+        <Alert
+          type="warning"
+          header={`Pages moved in section${regroupedSectionIds.length > 1 ? 's' : ''} ${regroupedSectionIds.join(', ')}`}
+          dismissible
+          onDismiss={() => setRegroupedSectionIds([])}
+        >
+          The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
+          their values may no longer match. Check them, and use <b>Change class &amp; re-extract</b> on a section if you would rather the
+          model redo it.
+        </Alert>
+      )}
+
+      {isRegrouping && (
+        <PageGroupingEditor
+          pages={boardPages}
+          sections={groupingForBoard}
+          classOptions={classOptions}
+          canChangeClass={mayChangeClass}
+          consequence={
+            <>
+              Moving pages rewrites this document&apos;s <b>section grouping</b> — the ground truth for how the packet splits. Your
+              extracted field values, their <b>Reviewed (human)</b> provenance and the edit history are all kept. Sections are renumbered so
+              their ids follow page order.
+            </>
+          }
+          saveLabel="Save page grouping"
+          isSaving={isSavingGrouping}
+          onSave={handleSaveGrouping}
+          onCancel={() => setIsRegrouping(false)}
+        />
+      )}
+
+      {sections.length > 1 && !isRegrouping && (
         <SegmentedControl
           selectedId={selectedSectionId}
           onChange={({ detail }) => handleSectionChange(detail.selectedId)}
@@ -704,8 +826,19 @@ const GroundTruthVisualEditor = ({
                         </FormField>
                       )}
                       {splitPageIndices !== undefined && (
-                        <FormField label="Page indices" description="0-based pages of this section within the document (read-only)">
-                          <Input value={JSON.stringify(splitPageIndices)} disabled />
+                        <FormField
+                          label="Pages in this section"
+                          description="Which pages of the document this section covers. Wrong groupings are corrected by moving pages between sections."
+                        >
+                          <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+                            <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
+                            {/* The affordance that was missing entirely: the grouping was
+                                displayed read-only, so a wrong packet split could be seen
+                                and not fixed. */}
+                            <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
+                              Edit page grouping
+                            </Button>
+                          </SpaceBetween>
                         </FormField>
                       )}
                       {inferenceResult ? (

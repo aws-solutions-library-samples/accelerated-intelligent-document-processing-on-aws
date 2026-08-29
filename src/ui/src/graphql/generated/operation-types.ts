@@ -1977,6 +1977,7 @@ export type TestSetDocument = {
 
 export type TestSetDocumentSection = {
   baselineKey: Scalars['String']['output'];
+  documentClass?: Maybe<Scalars['String']['output']>;
   pageIndices?: Maybe<Array<Scalars['Int']['output']>>;
   sectionId: Scalars['String']['output'];
 };
@@ -2544,6 +2545,13 @@ export type UpdateTestSetMutationVariables = Exact<{
 
 export type UpdateTestSetMutation = { updateTestSet?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, createdAt: string, error?: string | null, lastAddResult?: string | null, documentClassType?: DocumentClassType | null } | null };
 
+export type UpdateTestSetDocumentSectionsMutationVariables = Exact<{
+  input: UpdateTestSetDocumentSectionsInput;
+}>;
+
+
+export type UpdateTestSetDocumentSectionsMutation = { updateTestSetDocumentSections?: { testSetId: string, objectKey: string, sections: Array<{ sectionId: string, documentClass?: string | null, pageIndices: Array<number> }> } | null };
+
 export type UpdateUserMutationVariables = Exact<{
   userId: Scalars['ID']['input'];
   allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>> | InputMaybe<Scalars['String']['input']>>;
@@ -2645,7 +2653,7 @@ export type GetAnnotationQueueQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
 
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];
@@ -2800,7 +2808,7 @@ export type GetTestSetDocumentsQueryVariables = Exact<{
 }>;
 
 
-export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, pageIndices?: Array<number> | null }> }> } | null };
+export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> }> } | null };
 
 export type GetTestSetVersionsQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];

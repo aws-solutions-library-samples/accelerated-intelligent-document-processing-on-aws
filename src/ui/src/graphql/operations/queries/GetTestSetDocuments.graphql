@@ -8,6 +8,7 @@ query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, 
       sections {
         sectionId
         baselineKey
+        documentClass
         pageIndices
       }
       labelSource

@@ -24,6 +24,7 @@ query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Bo
       sections {
         sectionId
         baselineKey
+        documentClass
         pageIndices
       }
       claimedBy

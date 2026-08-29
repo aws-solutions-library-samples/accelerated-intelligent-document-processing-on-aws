@@ -1977,6 +1977,7 @@ export type TestSetDocument = {
 
 export type TestSetDocumentSection = {
   baselineKey: Scalars['String']['output'];
+  documentClass?: Maybe<Scalars['String']['output']>;
   pageIndices?: Maybe<Array<Scalars['Int']['output']>>;
   sectionId: Scalars['String']['output'];
 };

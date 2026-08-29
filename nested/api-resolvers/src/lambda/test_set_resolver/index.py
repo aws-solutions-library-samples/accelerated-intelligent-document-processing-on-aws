@@ -3282,6 +3282,12 @@ def _attach_label_metadata(test_set_bucket, documents):
             # file is already open for label state and class, same as `classes` below.
             # Left absent rather than empty when unreadable — an empty grouping would
             # read as "this section has no pages", which is a different claim.
+            # The section's OWN class, distinct from the document-level
+            # `documentClasses` badge list: the regrouping board shows a class per
+            # section, and the editor only ever loads the section being viewed.
+            section_class = (result.get("document_class") or {}).get("type")
+            if section_class:
+                section["documentClass"] = str(section_class)
             indices = (result.get("split_document") or {}).get("page_indices")
             if isinstance(indices, list):
                 section["pageIndices"] = [
