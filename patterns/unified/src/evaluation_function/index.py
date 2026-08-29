@@ -173,16 +173,21 @@ def handler(event, context):
         try:
             actual_document = extract_document_from_event(event)
             reason = event.get('failure_reason') or 'Evaluation did not complete'
-            # Match both Lambda ``Sandbox.Timedout`` and Step Functions
-            # ``States.Timeout`` / ``Lambda.Timeout`` — a state-level timeout
-            # is a timeout even though it uses a different substring than
-            # the Lambda-level one (case-insensitive ``timeout`` covers both
-            # spellings; both are retried as timeouts in the state machine
-            # so both should be labeled TIMED_OUT here).
-            error_blob = json.dumps(event.get('error', '')).lower()
+            # Match AWS-emitted timeout error codes only, not any substring
+            # containing ``timeout`` — an upstream service returning a
+            # message like "connection timeout to Bedrock" should read as
+            # FAILED, not TIMED_OUT. The state machine's Catch normalizes
+            # its error to a Python dict/str; the specific codes we retry
+            # as timeouts are Lambda's ``Sandbox.Timedout`` and Step
+            # Functions' ``States.Timeout`` / ``Lambda.Timeout``.
+            error_blob = json.dumps(event.get('error', ''))
             status = (
                 EvaluationStatus.TIMED_OUT
-                if 'timedout' in error_blob or 'timeout' in error_blob
+                if (
+                    'Sandbox.Timedout' in error_blob
+                    or 'States.Timeout' in error_blob
+                    or 'Lambda.Timeout' in error_blob
+                )
                 else EvaluationStatus.FAILED
             )
             logger.error(

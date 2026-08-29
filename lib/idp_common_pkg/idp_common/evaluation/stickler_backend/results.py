@@ -424,11 +424,25 @@ def transform_stickler_result(
         if my_rows:
             matched = all(fc.get("match") is True for fc in my_rows)
         else:
-            # No rows — nothing in ``field_comparisons`` for this attribute,
-            # so it contributed zero to the section counts. Report ✗ rather
-            # than ✓ (no evidence of correctness); anything else would
-            # disagree with the row-derived section aggregate.
-            matched = False
+            # No rows — nothing in ``field_comparisons`` for this attribute.
+            # Section counts are unaffected (no rows contributed), so any
+            # verdict here is compatible with the section-count source.
+            # Defer to Stickler's ``score`` compared to the field's match
+            # threshold: keeping the verdict and the score on the SAME row
+            # in agreement avoids "✗ with score 1.0" contradictions in the
+            # UI (finding from #625 review-effort code review — earlier
+            # unconditional False produced score/matched drift). Field-
+            # specific threshold takes precedence; falls back to the
+            # section-level ``match_threshold`` (Stickler's 0.8 default).
+            attr_threshold = (
+                field_config.get("applied_threshold")
+                if field_config.get("applied_threshold") is not None
+                else match_threshold
+            )
+            try:
+                matched = float(score) >= float(attr_threshold)
+            except (TypeError, ValueError):
+                matched = False
 
         reason = generate_reason(
             field_name,

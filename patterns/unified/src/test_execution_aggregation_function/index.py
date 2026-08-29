@@ -509,12 +509,19 @@ def _load_comparison_results(
             # parent doc_key + section_id so run-level aggregation can locate
             # warnings back to a specific document (finding 6 from round-4
             # review — the previous ``idx=N`` fallback labeled the section
-            # index, not the document). Shallow-copy before adding the tag
-            # so the original dict — which is also passed to Stickler's
-            # accumulator / serialization — is not mutated with our internal
-            # sentinel key (finding from #625 high review — an internal key
-            # riding along into downstream code would surface as an unknown
-            # field in serialization / accumulator state).
+            # index, not the document). Shallow-copy first so the ``eval_data``
+            # dict loaded from S3 (transient — discarded on function return)
+            # is not mutated with our sentinel key.
+            #
+            # NOTE: the ``tagged`` copy IS what flows to
+            # ``aggregate_from_comparisons`` (Stickler) as well as to
+            # ``_run_level_row_aggregates`` (our code) — Stickler ignores
+            # unknown top-level keys in each row, so the ``_idp_source``
+            # namespace prefix simply rides along without effect. If a
+            # future Stickler version reflects unknown keys into its
+            # output (e.g. through serialization), the ``_idp_source``
+            # would leak; the namespace prefix is what keeps it from
+            # colliding with any Stickler-owned field name.
             doc_comparisons = []
             for section in section_results:
                 stickler_result = section.get("stickler_comparison_result")
@@ -769,10 +776,22 @@ def _run_level_row_aggregates(
             if not collapsed:
                 continue
 
+            # Enumerate leaves from the SAME side ``_row_weight`` used
+            # (the side with more leaves) so ``sum(per-field) ==
+            # top-level`` when expected and actual have DIFFERENT leaf
+            # counts (finding from #625 review-effort code review — a
+            # hallucinated 5-leaf ``actual`` against a 2-leaf ``expected``
+            # weighed 5 at the top but only spread to 2 per-field buckets
+            # under a "pick exp side" rule).
             exp = fc.get("expected_value")
             act = fc.get("actual_value")
-            value = exp if exp is not None else act
-            leaves = leaf_paths(value) if value is not None else []
+            exp_leaves_list = leaf_paths(exp) if exp is not None else []
+            act_leaves_list = leaf_paths(act) if act is not None else []
+            leaves = (
+                act_leaves_list
+                if len(act_leaves_list) > len(exp_leaves_list)
+                else exp_leaves_list
+            )
             if leaves:
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
@@ -839,6 +858,20 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
     counts still show under ``Items.name`` / ``Items.amount``. A
     warning is logged so this case is visible in CloudWatch and can be
     disambiguated (e.g. by renaming the attribute in one schema).
+
+    Deeper levels of the same walk still synthesize (finding from
+    #625 review-effort code review — the ``continue`` skips only the
+    exact collision level). Given a leaf ``Items.line.qty`` and a
+    pre-existing scalar bucket at ``Items``:
+
+    * The walk hits ``Items`` (collision → skip synthesis at that level).
+    * The walk continues to ``Items.line`` — not in the original set —
+      and DOES synthesize an intermediate bucket there.
+
+    This is intentional: the intermediate bucket lets the UI still
+    expand the *structured* subtree, while the top-level parent stays
+    the scalar's cell. See
+    ``test_three_level_collision_preserves_scalar_and_synthesizes_intermediates``.
 
     Mutates ``field_counts`` in place; no return value.
     """

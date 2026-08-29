@@ -26,11 +26,9 @@ class TestAnonymousRootDedup:
          remaining lifetime (finding from #625 xhigh review).
     """
 
-    def setup_method(self):
-        contract._seen_anonymous_root_contexts.clear()
-
-    def teardown_method(self):
-        contract._seen_anonymous_root_contexts.clear()
+    # The evaluation-suite conftest.py resets the LRU between every test
+    # (autouse fixture), so no explicit setup_method is needed here — the
+    # LRU is guaranteed empty at the start of each test in this class.
 
     def test_same_context_logs_once(self, caplog):
         # A row with no root attribute (bare-bracket path) — Stickler

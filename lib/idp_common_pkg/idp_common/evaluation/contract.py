@@ -145,9 +145,11 @@ def _row_weight(fc: Dict[str, Any]) -> int:
     exp_leaves = _count_leaves(exp) if _is_structured(exp) else 0
     act_leaves = _count_leaves(act) if _is_structured(act) else 0
     max_leaves = max(exp_leaves, act_leaves)
-    if max_leaves > 0:
-        return max(1, max_leaves)
-    return 1
+    # ``max_leaves == 0`` covers "both sides are scalars/None/empty" — one
+    # confusion-matrix event, weight 1. Otherwise ``max_leaves`` is already
+    # ≥ 1 (a non-empty structured value has at least one slot) so we return
+    # it directly.
+    return max_leaves if max_leaves > 0 else 1
 
 
 def _is_structured(value: Any) -> bool:

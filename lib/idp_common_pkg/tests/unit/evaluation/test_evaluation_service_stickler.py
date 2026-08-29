@@ -2204,17 +2204,17 @@ def test_empty_field_comparisons_logs_warning_and_reports_zero(monkeypatch, capl
 
 
 @pytest.mark.unit
-def test_no_rows_fallback_verdict_reports_false(monkeypatch):
-    """Fallback path (no rows for a field) reports ✗ regardless of what
-    ``cm.fields[name].overall`` says.
+def test_no_rows_fallback_verdict_uses_score_threshold(monkeypatch):
+    """Fallback path (no rows for a field) defers to Stickler's
+    ``field_scores`` compared against the field's match threshold.
 
-    Rationale (finding 2 from #625 round-4 review): section-level metrics
-    are derived from ``field_comparisons`` rows. If a field emitted zero
-    rows, it contributed zero counts to the section aggregate. Reading a
-    ✓ from ``cm.fields.overall`` while the section counts show nothing for
-    the field would let the two sides drift on the same document. The
-    aligned rule is: no rows → no evidence of correctness → matched=False,
-    same as the section-count source.
+    Rationale (finding from #625 review-effort code review): the
+    ``AttributeEvaluationResult`` carries BOTH ``matched`` and ``score``.
+    Unconditional ``matched=False`` produced a "✗ with score 1.0"
+    contradiction on any field whose row list was empty but whose
+    Stickler score was above threshold. Deferring to the score keeps
+    the two values on the same row consistent, and the section-count
+    source is unaffected either way (no rows contributed to it).
     """
     config = {
         "classes": [
@@ -2238,17 +2238,54 @@ def test_no_rows_fallback_verdict_reports_false(monkeypatch):
 
     def _clean_no_rows(self, other, **kwargs):
         r = orig(self, other, **kwargs)
-        # Wipe rows so the parent-verdict fallback path fires. Even a
-        # clean cm.fields cell (tp=1, no failures) must not lift the
-        # verdict to ✓ if no rows were emitted — that would disagree
-        # with the row-derived section aggregate.
+        # Wipe rows so the fallback fires; leave field_scores populated
+        # (a real Stickler run produces both) so the fallback has a
+        # non-zero score to consult.
         r["field_comparisons"] = []
-        r.setdefault("confusion_matrix", {}).setdefault("fields", {})["a"] = {
-            "overall": {"tp": 1, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
-        }
         return r
 
     monkeypatch.setattr(StructuredModel, "compare_with", _clean_no_rows)
+    # Matching values → Stickler score 1.0 → over the 0.8 threshold → ✓
     result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
+    a = next(attr for attr in result.attributes if attr.name == "a")
+    assert a.matched is True
+    assert a.score == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_no_rows_fallback_verdict_reports_false_below_threshold(monkeypatch):
+    """Complement to the above: a low field_score in the no-rows fallback
+    still reports ✗, so a mismatch doesn't accidentally read ✓."""
+    config = {
+        "classes": [
+            {
+                "$id": "d",
+                "x-aws-idp-document-type": "D",
+                "x-aws-idp-evaluation-model-name": "D",
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "x-aws-idp-evaluation-method": "EXACT"}
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="D", page_ids=["1"])
+
+    from stickler import StructuredModel
+
+    orig = StructuredModel.compare_with
+
+    def _no_rows_low_score(self, other, **kwargs):
+        r = orig(self, other, **kwargs)
+        r["field_comparisons"] = []
+        # Force a low score for field ``a`` regardless of Stickler's raw
+        # exact-match verdict (some comparators emit both a score and a
+        # boolean; here we exercise the score path).
+        r.setdefault("field_scores", {})["a"] = 0.0
+        return r
+
+    monkeypatch.setattr(StructuredModel, "compare_with", _no_rows_low_score)
+    result = svc.evaluate_section(section, {"a": "x"}, {"a": "y"})
     a = next(attr for attr in result.attributes if attr.name == "a")
     assert a.matched is False

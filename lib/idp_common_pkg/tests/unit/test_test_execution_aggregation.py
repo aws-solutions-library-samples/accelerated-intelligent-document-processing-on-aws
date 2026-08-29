@@ -1651,6 +1651,43 @@ class TestRunLevelRowAggregates:
         assert top["cm_precision"] == 0.0
         assert per_field == {}
 
+    def test_top_and_per_field_match_on_different_leaf_counts_per_side(self, mock_env):
+        """Top-level and per-field counts must AGREE when expected and
+        actual have DIFFERENT leaf counts.
+
+        Setup: an ``fa`` row where the expected side is empty (``{}``, 0
+        leaves) and the actual side is a 3-key hallucination.
+
+        Before this fix (finding from #625 review-effort code review):
+          * Top-level weight = max(0, 3) = 3 → adds fa=3 at top.
+          * Per-field spread picked ``exp if exp is not None else act``
+            = empty ``{}`` → no leaves → single ``_add(Items, "fa", 3)``.
+            So per-field ``Items`` = 3, but summed across children = 0.
+
+        The fix: per-field spread picks the SAME side ``_row_weight``
+        picks (the one with more leaves). Both sides now enumerate the
+        3-leaf actual → per-field sum = top-level.
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        "expected_value": {},
+                        "actual_value": {"x": 1, "y": 2, "z": 3},
+                    }
+                ],
+            }
+        ]
+        top, per_field = index._run_level_row_aggregates(docs)
+        # Sum the leaf buckets' fa (parent bucket is synthesized last)
+        leaf_fa = sum(v["fa"] for k, v in per_field.items() if "." in k)
+        assert top["fa"] == leaf_fa
+        assert top["fa"] == 3
+
     def test_three_level_collision_preserves_scalar_and_synthesizes_intermediates(
         self, mock_env
     ):
