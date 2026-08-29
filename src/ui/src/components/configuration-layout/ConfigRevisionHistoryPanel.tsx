@@ -134,7 +134,7 @@ const ConfigRevisionHistoryPanel = ({
       visible={visible}
       onDismiss={onDismiss}
       size="max"
-      header={`Revision history — ${profileName}`}
+      header={`Configuration revisions — ${profileName}`}
       footer={
         <Box float="right">
           <Button variant="primary" onClick={onDismiss}>
@@ -153,7 +153,7 @@ const ConfigRevisionHistoryPanel = ({
         <Table
           variant="embedded"
           loading={loading}
-          loadingText="Loading revision history..."
+          loadingText="Loading configuration revisions..."
           selectionType="multi"
           selectedItems={selected}
           onSelectionChange={({ detail }) => {
@@ -181,12 +181,12 @@ const ConfigRevisionHistoryPanel = ({
                     Refresh
                   </Button>
                   <Button variant="primary" disabled={selected.length !== 2} loading={comparing} onClick={handleCompare}>
-                    Compare selected ({selected.length})
+                    Compare revisions ({selected.length})
                   </Button>
                 </SpaceBetween>
               }
             >
-              Revisions
+              Configuration revisions
             </Header>
           }
           columnDefinitions={[
@@ -265,12 +265,32 @@ const ConfigRevisionHistoryPanel = ({
             },
           ]}
         />
+      </SpaceBetween>
 
+      {/* Comparison in its own modal: with a long history the diff would
+          otherwise sit below a table the user has to scroll past to reach it. */}
+      <Modal
+        visible={comparing || compareConfigs !== null}
+        onDismiss={() => setCompareConfigs(null)}
+        size="max"
+        header={
+          compareVersionKeys.length === 2
+            ? `Compare ${compareVersionKeys[0]} → ${compareVersionKeys[1]} — ${profileName}`
+            : 'Compare revisions'
+        }
+        footer={
+          <Box float="right">
+            <Button variant="primary" onClick={() => setCompareConfigs(null)}>
+              Close
+            </Button>
+          </Box>
+        }
+      >
         {comparing && <StatusIndicator type="loading">Loading both revisions...</StatusIndicator>}
-        {compareConfigs && compareVersionKeys.length === 2 && (
+        {!comparing && compareConfigs && compareVersionKeys.length === 2 && (
           <ConfigurationComparison versions={compareVersionKeys} configs={compareConfigs} />
         )}
-      </SpaceBetween>
+      </Modal>
 
       {/* Restore confirmation */}
       <Modal

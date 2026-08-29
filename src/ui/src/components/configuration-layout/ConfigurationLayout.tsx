@@ -2345,6 +2345,12 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 <ButtonDropdown
                   items={[
                     { id: 'export', text: 'Export…' },
+                    {
+                      id: 'revision-history',
+                      text: 'Configuration revisions…',
+                      disabled: !currentVersionName,
+                      disabledReason: 'Open a configuration profile first',
+                    },
                     ...(isBdaConfigActive
                       ? [
                           {
@@ -2405,6 +2411,9 @@ const ConfigurationLayout = (): React.JSX.Element => {
                       case 'sync-to-bda':
                         setBdaSyncMode(currentVersion?.bdaProjectArn ? 'linked' : 'create');
                         setShowSyncToBdaConfirmModal(true);
+                        break;
+                      case 'revision-history':
+                        setHistoryProfile(currentVersionName);
                         break;
                       case 'save-as-version':
                         setSaveAsVersionName(`${currentVersionName}-copy`);

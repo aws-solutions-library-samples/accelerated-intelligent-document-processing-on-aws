@@ -296,8 +296,12 @@ const ConfigurationVersionsTable = ({
             <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Configuration Profiles ({filteredItemsCount})</Header>
             {/* Action buttons row */}
             <SpaceBetween direction="horizontal" size="xs">
+              {/* "profiles" is explicit because the revision-history panel has its
+                  own Compare button that compares WITHIN one profile. Two
+                  identically-labelled compare actions on different axes is the
+                  ambiguity this feature exists to remove. */}
               <Button onClick={onCompareVersions} disabled={selectedVersionsForCompare.length < 2}>
-                Compare Selected ({selectedVersionsForCompare.length})
+                Compare profiles ({selectedVersionsForCompare.length})
               </Button>
               <Button
                 onClick={() => onActivateVersion?.(selectedVersionsForCompare[0])}

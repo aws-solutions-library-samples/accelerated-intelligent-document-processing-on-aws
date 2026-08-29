@@ -111,12 +111,22 @@ can create a new profile.
 ### Viewing history
 
 In the **Configuration Profiles** table, the **History** column shows how many
-revisions a profile has. Click it to open the revision history, listing every
-retained revision newest-first with who saved it and when. From there you can:
+revisions a profile has. Click it to open **Configuration revisions**, listing every
+retained revision newest-first with who saved it and when. The same panel is
+reachable from **Actions → Configuration revisions…** while you have a profile open
+in the editor, which is where you are standing when you want to undo a save.
 
-- **Compare any two revisions** — select two rows and choose *Compare selected* for
-  the same field-by-field diff used to compare profiles, including the word-level
-  inline diff that makes prompt edits easy to read.
+> The panel is called *Configuration revisions* rather than *Revision history*
+> because the extraction-value editors already use "Revision History" for the edit
+> history of a labeled field — a different thing entirely.
+
+From the panel you can:
+
+- **Compare any two revisions** — select two rows and choose *Compare revisions*
+  for the same field-by-field diff used to compare profiles, including the
+  word-level inline diff that makes prompt edits easy to read. (The profiles table's
+  *Compare profiles* button is the other axis: across profiles rather than within
+  one.)
 - **Restore an earlier revision** — Admin or Author. Restoring is **forward-only**:
   the restored configuration is saved as a *new* revision, so the configuration it
   replaced remains in the history and can itself be restored. History is never
