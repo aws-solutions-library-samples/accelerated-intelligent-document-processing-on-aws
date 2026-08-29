@@ -96,10 +96,16 @@ RUN_ROOTS = [
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # Configuration Profile revision operations: group gate + profile-level scope.
+    "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",
+    # Guards the vendored config_scope copies against drifting from the canonical
+    # idp_common module — a scope matcher that differs per call site is a
+    # privilege-escalation bug.
+    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
     "nested/api-resolvers/src/lambda/test_set_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",

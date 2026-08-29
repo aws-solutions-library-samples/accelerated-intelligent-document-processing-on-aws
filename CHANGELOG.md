@@ -3,6 +3,24 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Configuration Profiles now keep a revision history, so saving a configuration no longer destroys the one it replaced.** Editing a configuration was a one-way overwrite: the only way to keep the previous state was to create a *new* named version (`usecaseA_v1`, `usecaseA_v2`, …) — and `Save as Version` is Admin-only, so a scoped Author could not iterate at all without either an admin or losing their previous work. Every save now records an immutable **revision**, listed per profile in a new **Revision history** panel where you can compare any two revisions with the existing field-level diff, restore an earlier one, label one to keep it, or (as an admin) delete one. Restoring is forward-only — the restored configuration is saved as a *new* revision, so nothing is ever rewritten. A stack upgrade also cuts a revision of `default` instead of overwriting it silently, which makes an upgrade's configuration changes diffable and rollback a single restore. The last 20 revisions per profile are retained, plus anything labeled, pinned by a test run, or currently in use. See [docs/configuration-profiles.md](docs/configuration-profiles.md).
+
+### Changed
+
+- **"Configuration version" is now "Configuration Profile", and "version" means a snapshot of one.** One term was doing two jobs — the named configuration you select and control access to, and (once history existed) a point in its history — which produced the unusable phrase "versions of a config version". A **profile** is the named entity (`default`, `Production`, `lending`): the access-control unit, the document partition, and what you activate. A **revision** (`r7`) is an immutable snapshot of one profile's configuration. This matches how *version* already worked for [document versions](docs/document-versions.md) and test set versions. **No API, CLI, or stored field was renamed** — `getConfigVersions`, `versionName`, `--config-version`, `ConfigVersion`, and `allowedConfigVersions` all still refer to profiles, so nothing you have scripted changes. `docs/configuration-versions.md` remains as a pointer to the new page.
+
+- **A scoped Author can now iterate on their own use case without an admin.** Restoring and labeling revisions of a profile in the caller's scope are Admin+Author, because a revision is *content* inside a profile the Author already owns; creating a profile (a new access-control object) and deleting a revision stay Admin-only. Scope is checked at the **profile** for every revision operation, so there is one rule rather than one per operation. `allowedConfigVersions` entries may now also be glob patterns (`lending-*`) for deployments that already encode iterations in profile names — an interim convenience that revisions make unnecessary for new deployments. See [docs/rbac.md](docs/rbac.md).
+
+- **Resolving the active profile no longer scans the configuration table on every queued document.** Activation writes a pointer record that the queue sender, the pipeline-hooks dispatcher, and `ConfigurationManager` read with a single `get_item`; the paginated scan remains as the fallback until the next activation writes the pointer. DynamoDB bills a scan on full item size regardless of the projection, so this path had been getting more expensive with every profile saved. `__active` is now a reserved profile name.
+
+### Fixed
+
+- 🔒 **A user restricted to specific configuration versions could see every document that carried no configuration version.** Both document-list resolvers, and the document-chat processor, admitted a document whose `ConfigVersion` was absent — so documents processed before config-version stamping (or whose stamp failed) were visible to, and chattable by, every scoped user regardless of their scope. All three now fail closed: an unstamped document cannot be proven to be in a user's scope, so it is not shown. ⚠️ **Scoped users will see fewer documents after this upgrade** — any that disappear were unstamped; reprocessing them under a profile in that user's scope restores visibility. Admins and unscoped users are unaffected. The matcher now lives in one place (`idp_common/config_scope.py`) with a test that fails if the two vendored copies drift, because a scope check that differs between call sites is exactly how this gap arose.
+
 ## [0.6.6]
 
 ### Added

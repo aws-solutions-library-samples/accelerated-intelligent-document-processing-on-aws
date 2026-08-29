@@ -34,10 +34,12 @@ from datetime import datetime
 
 import boto3
 from botocore.exceptions import ClientError
+
 from idp_common.bedrock.client import is_claude_4_7_model
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
+from idp_common.config_scope import scope_allows
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -652,12 +654,11 @@ def handler(event, _context):  # noqa: ANN001
         )
 
         # --- 2. RBAC scope enforcement --------------------------------------
+        # Fails CLOSED, matching the document-list resolvers: a scoped caller
+        # cannot chat with a document that carries no ConfigVersion, because an
+        # unstamped document cannot be proven to be in their scope.
         allowed_versions = _get_user_allowed_config_versions(caller_sub)
-        if (
-            allowed_versions is not None
-            and config_version
-            and config_version not in allowed_versions
-        ):
+        if not scope_allows(allowed_versions, config_version):
             logger.warning(
                 "Scope denied: caller_sub=%s allowed=%s doc_version=%s",
                 caller_sub,

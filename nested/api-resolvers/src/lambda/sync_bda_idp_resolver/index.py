@@ -132,7 +132,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         # scope. Admins are unrestricted.
         if not caller["is_admin"]:
             allowed_versions = _get_user_allowed_config_versions(caller["email"])
-            if allowed_versions and versionName not in allowed_versions:
+            if not scope_allows(allowed_versions, versionName):
                 logger.warning(
                     "Rejecting syncBdaIdp: caller %s is scoped to %s but requested "
                     "versionName=%r",

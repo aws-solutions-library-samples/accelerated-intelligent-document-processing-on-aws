@@ -2402,7 +2402,7 @@ idp-cli config-delete --stack-name my-stack --config-version old-version --force
 - **New version**: Creates a new independent version with the uploaded configuration
 - **Version descriptions**: Can be added to new versions for better organization
 
-For full details on configuration versioning, see [configuration-versions.md](configuration-versions.md).
+For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
 This uses the same mechanism as the Web UI configuration management system.
 

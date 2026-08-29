@@ -212,7 +212,7 @@ Manage multiple configuration snapshots for A/B testing, environment separation,
 
 https://github.com/user-attachments/assets/b1e0cf16-d2c4-4927-a9ec-767b8ac49c9d
 
-**Related Documentation**: [Configuration Versions Documentation](./configuration-versions.md)
+**Related Documentation**: [Configuration Profiles Documentation](./configuration-profiles.md)
 
 ---
 

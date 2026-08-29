@@ -51,8 +51,8 @@ export default defineConfig({
             { label: "VPC-Secured Mode", slug: "vpc-secured-mode" },
             { label: "Configuration", slug: "configuration" },
             {
-              label: "Configuration Versions",
-              slug: "configuration-versions",
+              label: "Configuration Profiles",
+              slug: "configuration-profiles",
             },
             {
               label: "Configuration Best Practices",

@@ -30,17 +30,31 @@ retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
 
 
 def resolve_active_config_version(config_table):
-    """Return the version segment of the IsActive=true Config# row, or None.
+    """Return the name of the active Configuration Profile, or None.
 
-    Paginates. DynamoDB applies the 1MB page size to the items EXAMINED, not
-    the items matching FilterExpression, so a single scan call finds the active
-    row only when it falls within the first page. ProjectionExpression keeps
-    that page as wide as possible: without it the scan reads whole config
-    bodies (tens to hundreds of KB each), so only a few versions fit per page
-    and the active one is easily missed. Missing it here silently processes the
-    document under the DEFAULT config rather than the active one — the same
-    filtered-scan defect as issue #599.
+    Reads the active-profile pointer item first — one get_item, on a path that
+    runs for EVERY document queued. The scan below remains as the fallback for a
+    stack that has not activated a profile since the pointer was introduced.
+
+    The fallback paginates. DynamoDB applies the 1MB page size to the items
+    EXAMINED, not the items matching FilterExpression, so a single scan call
+    finds the active row only when it falls within the first page.
+    ProjectionExpression keeps that page as wide as possible: without it the
+    scan reads whole config bodies (tens to hundreds of KB each), so only a few
+    profiles fit per page and the active one is easily missed. Missing it here
+    silently processes the document under the DEFAULT config rather than the
+    active one — the same filtered-scan defect as issue #599.
     """
+    try:
+        pointer = config_table.get_item(
+            Key={"Configuration": "Config#__active"},
+            ProjectionExpression="ActiveVersion",
+        ).get("Item")
+        if pointer and pointer.get("ActiveVersion"):
+            return str(pointer["ActiveVersion"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not read the active-profile pointer ({e}); scanning instead")
+
     scan_kwargs = {
         "FilterExpression": (
             "begins_with(Configuration, :config_prefix) AND IsActive = :active"

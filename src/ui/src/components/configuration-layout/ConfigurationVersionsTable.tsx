@@ -26,6 +26,10 @@ interface ConfigVersion {
   updatedAt?: string;
   description?: string;
   managed?: boolean;
+  /** Highest revision cut for this profile (null before revision history). */
+  latestRevision?: number | null;
+  /** Revision the profile's current configuration reflects. */
+  publishedRevision?: number | null;
 }
 
 interface ConfigurationVersionsTableProps {
@@ -39,6 +43,8 @@ interface ConfigurationVersionsTableProps {
   onActivateVersion?: (versionName: string) => void;
   onDeleteVersions?: (versionNames: string[]) => void;
   onImportAsNewVersion?: () => void;
+  /** Open the revision history for one profile. */
+  onShowHistory?: (versionName: string) => void;
   isAdmin?: boolean;
 }
 
@@ -46,29 +52,31 @@ type TypeFilter = 'all' | 'managed' | 'custom';
 
 // One-line explanations shown on hover for the version Type/state badges.
 const BADGE_TOOLTIPS = {
-  managed: 'Stack-managed: shipped with the solution and overwritten on stack updates; not directly editable.',
-  custom: 'Custom: a user-created version you can freely edit, save, and delete.',
-  active: 'Active: the version used to process newly uploaded documents.',
+  managed:
+    'Stack-managed: shipped with the solution. A stack update records a new revision of it rather than overwriting silently; not directly editable.',
+  custom: 'Custom: a user-created profile you can freely edit, save, and delete.',
+  active: 'Active: the profile used to process newly uploaded documents.',
 };
 
 const PAGE_SIZE_OPTIONS = [
-  { value: 5, label: '5 versions' },
-  { value: 10, label: '10 versions' },
-  { value: 20, label: '20 versions' },
-  { value: 50, label: '50 versions' },
+  { value: 5, label: '5 profiles' },
+  { value: 10, label: '10 profiles' },
+  { value: 20, label: '20 profiles' },
+  { value: 50, label: '50 profiles' },
 ];
 
 const VISIBLE_CONTENT_OPTIONS = [
-  { id: 'versionName', label: 'Version Name', editable: false },
+  { id: 'versionName', label: 'Profile Name', editable: false },
   { id: 'type', label: 'Type' },
   { id: 'description', label: 'Description' },
   { id: 'createdAt', label: 'Created' },
   { id: 'updatedAt', label: 'Updated' },
+  { id: 'history', label: 'History' },
 ];
 
 const DEFAULT_PREFERENCES = {
   pageSize: 10,
-  visibleContent: ['versionName', 'type', 'description', 'createdAt', 'updatedAt'],
+  visibleContent: ['versionName', 'type', 'description', 'createdAt', 'updatedAt', 'history'],
   wrapLines: false,
 };
 
@@ -83,6 +91,7 @@ const ConfigurationVersionsTable = ({
   onActivateVersion,
   onDeleteVersions,
   onImportAsNewVersion,
+  onShowHistory,
   isAdmin = false,
 }: ConfigurationVersionsTableProps): React.JSX.Element => {
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -108,7 +117,7 @@ const ConfigurationVersionsTable = ({
   const allColumnDefinitions = [
     {
       id: 'versionName',
-      header: 'Version Name',
+      header: 'Profile Name',
       cell: (item: ConfigVersion) => (
         <Box
           fontWeight={item.versionName === currentlyOpenVersion ? 'bold' : 'normal'}
@@ -176,6 +185,21 @@ const ConfigurationVersionsTable = ({
       sortingField: 'updatedAt',
       width: '20%',
     },
+    {
+      id: 'history',
+      header: 'History',
+      cell: (item: ConfigVersion) => (
+        <Button
+          variant="inline-link"
+          iconName="undo"
+          onClick={() => onShowHistory?.(item.versionName)}
+          ariaLabel={`Revision history for ${item.versionName}`}
+        >
+          {item.latestRevision ? `${item.latestRevision} revision${item.latestRevision === 1 ? '' : 's'}` : 'History'}
+        </Button>
+      ),
+      width: 140,
+    },
   ];
 
   // Filter column definitions based on visible content preferences.
@@ -224,7 +248,7 @@ const ConfigurationVersionsTable = ({
   return (
     <SpaceBetween size="s">
       {deleteError && (
-        <Alert type="error" dismissible onDismiss={() => setDeleteError(null)} header="Cannot Delete Version">
+        <Alert type="error" dismissible onDismiss={() => setDeleteError(null)} header="Cannot Delete Profile">
           {deleteError}
         </Alert>
       )}
@@ -233,7 +257,7 @@ const ConfigurationVersionsTable = ({
         columnDefinitions={columnDefinitions}
         items={items}
         loading={loading}
-        loadingText="Loading versions..."
+        loadingText="Loading profiles..."
         resizableColumns
         stripedRows
         selectionType="multi"
@@ -252,24 +276,24 @@ const ConfigurationVersionsTable = ({
         }}
         trackBy="versionName"
         ariaLabels={{
-          selectionGroupLabel: 'Version selection',
-          allItemsSelectionLabel: () => 'Select all versions',
-          itemSelectionLabel: (_sel, item) => `Select version ${item.versionName}`,
+          selectionGroupLabel: 'Profile selection',
+          allItemsSelectionLabel: () => 'Select all profiles',
+          itemSelectionLabel: (_sel, item) => `Select profile ${item.versionName}`,
         }}
         wrapLines={preferences.wrapLines}
         empty={
           <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
             <SpaceBetween size="m">
-              <b>No versions</b>
+              <b>No profiles</b>
               <Box variant="p" color="inherit">
-                No configuration versions found.
+                No configuration profiles found.
               </Box>
             </SpaceBetween>
           </Box>
         }
         header={
           <SpaceBetween size="s">
-            <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Configuration Versions ({filteredItemsCount})</Header>
+            <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Configuration Profiles ({filteredItemsCount})</Header>
             {/* Action buttons row */}
             <SpaceBetween direction="horizontal" size="xs">
               <Button onClick={onCompareVersions} disabled={selectedVersionsForCompare.length < 2}>
@@ -302,11 +326,11 @@ const ConfigurationVersionsTable = ({
                   });
 
                   if (activeVersions.length > 0) {
-                    setDeleteError(`Cannot delete active or default versions: ${activeVersions.join(', ')}`);
+                    setDeleteError(`Cannot delete active or default profiles: ${activeVersions.join(', ')}`);
                     return;
                   }
                   if (managedVersions.length > 0) {
-                    setDeleteError(`Cannot delete stack-managed versions: ${managedVersions.join(', ')}`);
+                    setDeleteError(`Cannot delete stack-managed profiles: ${managedVersions.join(', ')}`);
                     return;
                   }
 
@@ -323,7 +347,7 @@ const ConfigurationVersionsTable = ({
         }
         filter={
           <SpaceBetween direction="horizontal" size="m">
-            <TextFilter {...filterProps} {...({ placeholder: 'Search versions...' } as Record<string, unknown>)} />
+            <TextFilter {...filterProps} {...({ placeholder: 'Search profiles...' } as Record<string, unknown>)} />
             <SegmentedControl
               selectedId={typeFilter}
               onChange={({ detail }) => setTypeFilter(detail.selectedId as TypeFilter)}
@@ -357,7 +381,7 @@ const ConfigurationVersionsTable = ({
               title: 'Visible columns',
               options: [
                 {
-                  label: 'Version properties',
+                  label: 'Profile properties',
                   options: VISIBLE_CONTENT_OPTIONS,
                 },
               ],
@@ -374,7 +398,7 @@ const ConfigurationVersionsTable = ({
       <Modal
         visible={!!pendingDeleteVersions}
         onDismiss={() => setPendingDeleteVersions(null)}
-        header="Delete configuration versions"
+        header="Delete configuration profiles"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -399,8 +423,8 @@ const ConfigurationVersionsTable = ({
         <SpaceBetween size="s">
           <Box>
             {pendingDeleteVersions && pendingDeleteVersions.length === 1
-              ? `Permanently delete the configuration version "${pendingDeleteVersions[0]}"? This action cannot be undone.`
-              : `Permanently delete these ${pendingDeleteVersions?.length ?? 0} configuration versions? This action cannot be undone.`}
+              ? `Permanently delete the configuration profile "${pendingDeleteVersions[0]}" and its revision history? This action cannot be undone.`
+              : `Permanently delete these ${pendingDeleteVersions?.length ?? 0} configuration profiles and their revision histories? This action cannot be undone.`}
           </Box>
           {pendingDeleteVersions && pendingDeleteVersions.length > 1 && (
             <ul>

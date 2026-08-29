@@ -36,6 +36,7 @@ import useSettingsContext from '../../contexts/settings';
 import useAppContext from '../../contexts/app';
 import ConfigBuilder from './ConfigBuilder';
 import ConfigurationVersionsTable from './ConfigurationVersionsTable';
+import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
 import ConfigurationComparison from './ConfigurationComparison';
 import { deepMerge } from '../../utils/configUtils';
 import { syncBdaIdp } from '../../graphql/generated';
@@ -169,6 +170,8 @@ const ConfigurationLayout = (): React.JSX.Element => {
   // Expanded by default so the version list — central to the config mental model —
   // is visible on arrival (users pick / create / compare versions from here).
   const [versionsTableExpanded, setVersionsTableExpanded] = useState(true);
+  // Configuration Profile whose revision history is open, or null.
+  const [historyProfile, setHistoryProfile] = useState<string | null>(null);
 
   // Import as new version state
   const [importedConfigForNewVersion, setImportedConfigForNewVersion] = useState<Record<string, unknown> | null>(null);
@@ -1990,7 +1993,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
     <SpaceBetween size="s">
       {/* Configuration Versions Table */}
       <ExpandableSection
-        headerText="Configuration Versions"
+        headerText="Configuration Profiles"
         headingTagOverride="h1"
         expanded={versionsTableExpanded}
         onChange={({ detail }) => setVersionsTableExpanded(detail.expanded)}
@@ -2006,9 +2009,26 @@ const ConfigurationLayout = (): React.JSX.Element => {
           onActivateVersion={handleActivateVersion}
           onDeleteVersions={handleDeleteVersions}
           onImportAsNewVersion={handleImportAsNewVersion}
+          onShowHistory={(profileName) => setHistoryProfile(profileName)}
           isAdmin={isAdmin}
         />
       </ExpandableSection>
+
+      {historyProfile && (
+        <ConfigRevisionHistoryPanel
+          profileName={historyProfile}
+          visible={historyProfile !== null}
+          onDismiss={() => setHistoryProfile(null)}
+          onRestored={() => {
+            // The restored configuration is now the profile's current one, so
+            // reload the editor and the profile list (revision counters moved).
+            fetchVersions();
+            if (selectedVersion === historyProfile) {
+              handleVersionSelect(historyProfile);
+            }
+          }}
+        />
+      )}
 
       <Modal
         visible={showResetModal}

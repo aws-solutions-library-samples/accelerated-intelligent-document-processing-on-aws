@@ -48,7 +48,7 @@ The stack automatically deploys **managed configuration versions** for each pre-
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
 - **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
 
-For comprehensive documentation, see [configuration-versions.md](configuration-versions.md).
+For comprehensive documentation, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Configuration Management Features
 

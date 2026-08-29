@@ -716,6 +716,16 @@ Resources:
         - S3ReadPolicy:
             BucketName: !Ref ConfigurationBucketName
         - Statement:
+            # Write/prune configuration-profile revision bodies. Scoped to the
+            # revisions prefix: the resolver has no reason to write anywhere
+            # else in the configuration bucket.
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+        - Statement:
             - Effect: Allow
               Action:
                 - kms:Encrypt
