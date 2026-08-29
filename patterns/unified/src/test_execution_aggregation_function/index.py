@@ -505,11 +505,23 @@ def _load_comparison_results(
 
             section_results = eval_data.get("section_results", [])
 
-            # Extract comparison results from sections
+            # Extract comparison results from sections. Tag each SCR with the
+            # parent doc_key + section_id so run-level aggregation can locate
+            # warnings back to a specific document (finding 6 from round-4
+            # review — the previous ``idx=N`` fallback labeled the section
+            # index, not the document). The tag is namespaced so it can't
+            # collide with any Stickler-emitted key.
             doc_comparisons = []
             for section in section_results:
                 stickler_result = section.get("stickler_comparison_result")
                 if stickler_result:
+                    stickler_result.setdefault(
+                        "_idp_source",
+                        {
+                            "doc_key": doc_key,
+                            "section_id": section.get("section_id"),
+                        },
+                    )
                     doc_comparisons.append(stickler_result)
 
             # Extract weighted score. Docs whose sections were all no-ops
@@ -617,13 +629,6 @@ def _load_s3_json(s3_uri: str) -> Dict[str, Any]:
     return json.loads(content)
 
 
-def _safe_div(num: float, den: float) -> float:
-    """Zero-denominator convention: return 0.0. Matches per-doc
-    ``stickler_backend/results.py`` — both paths agree so per-doc and run-level
-    dashboards report the same shape (finding 7 from #625 adversarial review)."""
-    return float(num) / float(den) if den > 0 else 0.0
-
-
 def _run_level_counts_from_rows(
     comparison_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -650,20 +655,25 @@ def _run_level_counts_from_rows(
     from idp_common.evaluation.contract import (
         aggregate_row_counts,
         iter_countable_rows,
+        safe_div,
     )
 
     # Filter per-doc so the anonymous-root warning (when it fires) names
-    # WHICH document — a run-wide flat merge would attribute the warning
-    # to "run-level aggregation" with no locator.
+    # WHICH document. ``_idp_source`` is tagged by ``load_document_results``
+    # with doc_key + section_id — a run-wide flat merge would lose that
+    # locator (finding 6 from round-4 review — the previous ``idx=N``
+    # labeled the SECTION offset, not the source document).
     countable: List[Dict[str, Any]] = []
-    for doc_idx, scr in enumerate(comparison_results):
+    for scr in comparison_results:
         if not scr:
             continue
-        doc_id = scr.get("doc_id") or scr.get("input_key") or f"idx={doc_idx}"
+        src = scr.get("_idp_source") or {}
+        doc_key = src.get("doc_key") or "unknown"
+        section_id = src.get("section_id") or "unknown"
         countable.extend(
             iter_countable_rows(
                 scr.get("field_comparisons") or [],
-                context=f"run-level aggregation doc={doc_id}",
+                context=f"run-level aggregation doc={doc_key} section={section_id}",
             )
         )
     counts = aggregate_row_counts(countable)
@@ -675,26 +685,29 @@ def _run_level_counts_from_rows(
 
     return {
         **counts,
-        "cm_precision": _safe_div(tp, tp + fp),
-        "cm_recall": _safe_div(tp, tp + fn),
-        "cm_f1": _safe_div(2 * tp, 2 * tp + fp + fn),
-        "cm_accuracy": _safe_div(tp + tn, total),
+        "cm_precision": safe_div(tp, tp + fp),
+        "cm_recall": safe_div(tp, tp + fn),
+        "cm_f1": safe_div(2 * tp, 2 * tp + fp + fn),
+        "cm_accuracy": safe_div(tp + tn, total),
     }
+
+
+# Regex shared with ``_IndexCollapsingConfidenceAccumulator._INDEX_RE`` below
+# so per-field metrics and confidence metrics bucket on IDENTICAL keys. Matches
+# both digit-indexed ``[3]`` and bare-bracket ``[]`` (Stickler emits the
+# latter for extras / hallucinated items). A previous digits-only pattern
+# left ``Items[]`` as a stray bucket alongside ``Items.name`` (round-2
+# adversarial review) and diverged from the confidence accumulator's pattern
+# despite comments claiming they agreed (round-4 review).
+_INDEX_TOKEN_RE = re.compile(r"\[[^\]]*\]")
 
 
 def _collapse_indices(path: str) -> str:
     """Strip ``[…]`` list-index tokens from a Stickler field path.
 
-    ``Items[3].name`` → ``Items.name``. Bare-bracket ``Items[]`` (which
-    Stickler emits for extras / hallucinated items) also collapses to
-    ``Items`` — a previous digits-only regex would have left ``Items[]``
-    as a stray bucket alongside ``Items.name`` (finding 11 from #625
-    adversarial review).
-
-    Matches the pattern ``_IndexCollapsingConfidenceAccumulator`` uses so
-    per-field metrics and confidence metrics bucket on the same key.
+    ``Items[3].name`` → ``Items.name``. See ``_INDEX_TOKEN_RE`` above.
     """
-    return re.sub(r"\[[^\]]*\]", "", path)
+    return _INDEX_TOKEN_RE.sub("", path)
 
 
 def _run_level_field_metrics_from_rows(
@@ -718,6 +731,7 @@ def _run_level_field_metrics_from_rows(
         classify_field_comparison,
         iter_countable_rows,
         leaf_paths,
+        safe_div,
     )
 
     field_counts: Dict[str, Dict[str, int]] = {}
@@ -728,17 +742,18 @@ def _run_level_field_metrics_from_rows(
         )
         entry[bucket] += weight
 
-    for doc_idx, scr in enumerate(comparison_results):
+    for scr in comparison_results:
         if not scr:
             continue
-        # Include doc identity in context so an anonymous-root warning
-        # points at the specific offending payload (finding from #625
-        # round-3 code review — the previous "run-level field_metrics"
-        # generic context couldn't be located to a document).
-        doc_id = scr.get("doc_id") or scr.get("input_key") or f"idx={doc_idx}"
+        # Doc identity is threaded via ``_idp_source`` tagged by
+        # ``load_document_results`` — see the run-level counts helper for
+        # the rationale (finding 6 from round-4 review).
+        src = scr.get("_idp_source") or {}
+        doc_key = src.get("doc_key") or "unknown"
+        section_id = src.get("section_id") or "unknown"
         rows = iter_countable_rows(
             scr.get("field_comparisons") or [],
-            context=f"run-level field_metrics doc={doc_id}",
+            context=f"run-level field_metrics doc={doc_key} section={section_id}",
         )
         for fc in rows:
             bucket = classify_field_comparison(fc)
@@ -792,12 +807,113 @@ def _run_level_field_metrics_from_rows(
         out[fname] = {
             **c,
             "fp": fp,
-            "cm_precision": _safe_div(c["tp"], c["tp"] + fp),
-            "cm_recall": _safe_div(c["tp"], c["tp"] + c["fn"]),
-            "cm_f1": _safe_div(2 * c["tp"], 2 * c["tp"] + fp + c["fn"]),
-            "cm_accuracy": _safe_div(c["tp"] + c["tn"], total),
+            "cm_precision": safe_div(c["tp"], c["tp"] + fp),
+            "cm_recall": safe_div(c["tp"], c["tp"] + c["fn"]),
+            "cm_f1": safe_div(2 * c["tp"], 2 * c["tp"] + fp + c["fn"]),
+            "cm_accuracy": safe_div(c["tp"] + c["tn"], total),
         }
     return out
+
+
+def _run_level_row_aggregates(
+    comparison_results: List[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """Single-pass variant of the two ``_run_level_*_from_rows`` helpers.
+
+    ``_transform_stickler_metrics`` needs BOTH the top-level counts and the
+    per-field breakdown — computing them via separate calls walks
+    ``comparison_results`` (and re-runs ``iter_countable_rows``) twice.
+    On a large test run (200 docs × 50 rows/section × N sections) that's
+    twice the classification work and doubles the anonymous-root warning
+    bookkeeping. This helper fuses both into a single row iteration
+    (finding 9 from #625 round-4 review). Returns ``(top_metrics,
+    per_field_metrics)`` — same shape the individual helpers produce, so
+    the caller's downstream code is unaffected.
+
+    The two individual helpers are retained as thin wrappers around this
+    one so external tests that hit them directly still work.
+    """
+    from idp_common.evaluation.contract import (
+        _row_weight,
+        aggregate_row_counts,
+        classify_field_comparison,
+        iter_countable_rows,
+        leaf_paths,
+        safe_div,
+    )
+
+    all_countable: List[Dict[str, Any]] = []
+    field_counts: Dict[str, Dict[str, int]] = {}
+
+    def _add(field: str, bucket: str, weight: int = 1) -> None:
+        entry = field_counts.setdefault(
+            field, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
+        )
+        entry[bucket] += weight
+
+    for scr in comparison_results:
+        if not scr:
+            continue
+        src = scr.get("_idp_source") or {}
+        doc_key = src.get("doc_key") or "unknown"
+        section_id = src.get("section_id") or "unknown"
+        rows = iter_countable_rows(
+            scr.get("field_comparisons") or [],
+            context=f"run-level aggregation doc={doc_key} section={section_id}",
+        )
+        all_countable.extend(rows)
+
+        for fc in rows:
+            bucket = classify_field_comparison(fc)
+            path = (
+                fc.get("expected_key")
+                or fc.get("actual_key")
+                or fc.get("field_path")
+                or ""
+            )
+            collapsed = _collapse_indices(path)
+            if not collapsed:
+                continue
+
+            exp = fc.get("expected_value")
+            act = fc.get("actual_value")
+            value = exp if exp is not None else act
+            leaves = leaf_paths(value) if value is not None else []
+            if leaves:
+                for leaf in leaves:
+                    _add(f"{collapsed}.{leaf}", bucket)
+            else:
+                _add(collapsed, bucket, _row_weight(fc))
+
+    counts = aggregate_row_counts(all_countable)
+    tp = counts["tp"]
+    fp = counts["fp"]
+    fn = counts["fn"]
+    tn = counts["tn"]
+    total = tp + fp + fn + tn
+    top_metrics = {
+        **counts,
+        "cm_precision": safe_div(tp, tp + fp),
+        "cm_recall": safe_div(tp, tp + fn),
+        "cm_f1": safe_div(2 * tp, 2 * tp + fp + fn),
+        "cm_accuracy": safe_div(tp + tn, total),
+    }
+
+    _synthesize_parent_buckets(field_counts)
+
+    field_metrics: Dict[str, Dict[str, Any]] = {}
+    for fname, c in field_counts.items():
+        fp_f = c["fa"] + c["fd"]
+        total_f = c["tp"] + fp_f + c["fn"] + c["tn"]
+        field_metrics[fname] = {
+            **c,
+            "fp": fp_f,
+            "cm_precision": safe_div(c["tp"], c["tp"] + fp_f),
+            "cm_recall": safe_div(c["tp"], c["tp"] + c["fn"]),
+            "cm_f1": safe_div(2 * c["tp"], 2 * c["tp"] + fp_f + c["fn"]),
+            "cm_accuracy": safe_div(c["tp"] + c["tn"], total_f),
+        }
+    return top_metrics, field_metrics
 
 
 def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
@@ -805,12 +921,31 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
     buckets summing all descendants.
 
     ``Items.name`` and ``Items.amount`` → emit ``Items`` with the sum of
-    both. If a leaf bucket ALREADY EXISTS at the parent path (from some
-    other schema's scalar attribute that happens to share the name), the
-    existing bucket is preserved and no synthesis happens for that prefix —
-    otherwise a scalar ``Items`` field from schema A would be cross-
-    contaminated by structured ``Items.name`` / ``Items.amount`` from
-    schema B in the same test run (finding from #625 round-3 code review).
+    both, so Test Studio's hierarchical table can still expand from the
+    parent row.
+
+    Cross-schema name collision (Finding 7 from #625 round-4 review):
+    In a test run that mixes two schemas where the SAME parent name is
+    a *scalar* in schema A and a *structured list* in schema B, the two
+    interpretations disagree on what the parent row should mean. This
+    function's convention is to PRESERVE the pre-existing leaf bucket
+    (schema A's scalar counts) rather than mix it with the sum of
+    schema B's structured descendants. Rationale:
+
+    * The scalar counts are already a full confusion-matrix cell —
+      overwriting them would drop schema A's contribution silently.
+    * A "sum of both" bucket has no coherent semantic — it would mix
+      one-cell-per-doc scalars with per-leaf-per-item spread counts.
+    * The tree still expands correctly for schema B: the leaves are
+      present, they just don't aggregate into the parent row on
+      docs where schema A also fired.
+
+    Consequence for operators: on a run with such a collision, the
+    parent row reflects only the scalar schema's docs. The children's
+    counts still show under ``Items.name`` / ``Items.amount``. A
+    warning is logged so this case is visible in CloudWatch and can be
+    disambiguated (e.g. by renaming the attribute in one schema).
+
     Mutates ``field_counts`` in place; no return value.
     """
     # Snapshot the ORIGINAL leaf buckets (before any synthesis) so:
@@ -819,22 +954,36 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
     # 2. We can distinguish "pre-existing leaf bucket at parent path"
     #    (preserve) from "synthesized this pass" (accumulate into).
     original_paths = set(field_counts.keys())
+    collisions: List[str] = []
     for path, counts in list(field_counts.items()):
         parts = path.split(".")
         for i in range(1, len(parts)):
             parent = ".".join(parts[:i])
             if parent in original_paths:
                 # A leaf bucket already carries counts under this exact path
-                # — likely a scalar attribute from a different schema with
-                # a name that happens to prefix this leaf. Do NOT merge; a
-                # scalar ``Items`` field's counts are its own, not the sum
-                # of some other schema's ``Items.name`` + ``Items.amount``.
+                # — a scalar attribute from a different schema whose name
+                # happens to prefix this leaf. Preserve the scalar; see
+                # docstring for the collision convention.
+                collisions.append(parent)
                 continue
             entry = field_counts.setdefault(
                 parent, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
             )
             for k in ("tp", "fa", "fd", "tn", "fn"):
                 entry[k] += counts[k]
+
+    if collisions:
+        # De-dup and cap so a run with N structured children colliding with
+        # the same scalar parent doesn't emit N identical warnings.
+        unique = sorted(set(collisions))
+        logger.warning(
+            "Parent-bucket synthesis skipped for %d attribute name(s) whose "
+            "path is a scalar in one schema and a structured list in another "
+            "in this run: %s. The parent row shows only the scalar schema's "
+            "counts. Rename the attribute in one schema to disambiguate.",
+            len(unique),
+            unique[:10],
+        )
 
 
 def _transform_stickler_metrics(
@@ -863,8 +1012,7 @@ def _transform_stickler_metrics(
     # level ``cm.fields.X.overall`` rollup that hides leaves inside kept items,
     # so it would say ``Items.name`` precision = 1.00 while top-level says 0.20
     # (finding 3 from #625 adversarial review).
-    metrics = _run_level_counts_from_rows(comparison_results)
-    row_field_metrics = _run_level_field_metrics_from_rows(comparison_results)
+    metrics, row_field_metrics = _run_level_row_aggregates(comparison_results)
 
     # Use Stickler's bulk confidence metrics (computed by aggregate_from_comparisons)
     # Stickler automatically aggregates prediction_confidences from comparison results
@@ -1086,7 +1234,11 @@ class _IndexCollapsingConfidenceAccumulator:
     accumulator pipeline entirely.
     """
 
-    _INDEX_RE = re.compile(r"\[\d+\]")
+    # Shared with ``_collapse_indices`` at module scope — see
+    # ``_INDEX_TOKEN_RE`` for why the pattern matches ``[]`` as well as
+    # ``[N]``. Kept as a class attribute for backward-compat with existing
+    # tests / callers that reach in via ``cls._INDEX_RE``.
+    _INDEX_RE = _INDEX_TOKEN_RE
     name = "confidence_metrics"
 
     def __init__(self, metrics=None):

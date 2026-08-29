@@ -18,6 +18,7 @@ mismatched blobs (or migrate) instead of silently doubling counters.
 """
 
 import logging
+import threading
 from typing import Any, Dict, Iterable, List
 
 logger = logging.getLogger(__name__)
@@ -189,9 +190,24 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     Stickler emits ``expected_key`` (and ``field_path`` on some code paths) as
     either a scalar name (``customer_name``), a list index path
     (``Items[3].name``), or a nested-object path (``Address.city``). The root
-    is everything before the first ``[`` or ``.``. Rows whose path begins with
-    ``[`` or ``.`` have no attributable root — the caller decides what to do
-    (see ``iter_countable_rows``).
+    is everything before the first ``[`` or ``.``.
+
+    Rows whose path begins with ``[`` or ``.`` (no leading attribute name,
+    e.g. ``[3].name`` or ``.city``) return the empty string — the substring
+    up to the first delimiter *is* empty. These "anonymous-root" rows are
+    dropped by ``iter_countable_rows`` because they cannot be attributed to
+    a parent attribute in the section, and counting them at the section
+    level while excluding them from per-attribute buckets would break the
+    "parent ✓ iff no red row" invariant.
+
+    In practice current Stickler builds never emit anonymous-root rows;
+    each ``field_comparisons`` row is anchored to a named schema field.
+    The empty-return branch exists so a future Stickler change that
+    introduces such a shape surfaces via the warning in
+    ``iter_countable_rows`` instead of silently reintroducing parent-vs-
+    section drift (finding 11 from #625 round-4 review — the previous
+    docstring didn't explain what "cannot attribute" meant to a reader
+    who wasn't in the review discussion).
     """
     path = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
     idx_bracket = path.find("[")
@@ -206,7 +222,17 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
 # change that emits anonymous-root rows would fire the same warning
 # O(rows × sections) times without this — CloudWatch flood matching the
 # version-drift warning we explicitly rate-limited.
+#
+# Bounded to avoid unbounded growth in a warm Lambda that processes many
+# runs (a distinct ``context`` per doc means the set grows linearly with
+# lifetime runs otherwise). Guarded by a lock — the aggregation Lambda's
+# ``ThreadPoolExecutor`` calls ``iter_countable_rows`` from up to 20
+# workers concurrently, and while CPython's GIL makes ``add`` and ``in``
+# individually atomic, the *check-then-add* used here is two ops with a
+# race window that could log a duplicate warning.
+_SEEN_ANONYMOUS_ROOT_MAX = 256
 _seen_anonymous_root_contexts: set = set()
+_seen_anonymous_root_lock = threading.Lock()
 
 
 def iter_countable_rows(
@@ -235,13 +261,23 @@ def iter_countable_rows(
         root = row_root_attribute(fc)
         if not root:
             if not warned_this_call:
-                # One log per call at most, and only if this context hasn't
-                # already logged elsewhere in this process. Callers pass a
-                # doc-identifying context so an operator can locate the
-                # offending payload.
                 ctx = context or "unknown"
-                if ctx not in _seen_anonymous_root_contexts:
-                    _seen_anonymous_root_contexts.add(ctx)
+                # Thread-safe check-then-add with a bound. The check and add
+                # are one critical section — separately they'd race under
+                # the aggregation Lambda's 20-worker executor. The bound
+                # caps memory growth in a warm Lambda that serves many
+                # runs; when we hit the cap we let the warning fire again
+                # rather than silently swallowing new contexts.
+                should_log = False
+                with _seen_anonymous_root_lock:
+                    if ctx not in _seen_anonymous_root_contexts:
+                        if (
+                            len(_seen_anonymous_root_contexts)
+                            < _SEEN_ANONYMOUS_ROOT_MAX
+                        ):
+                            _seen_anonymous_root_contexts.add(ctx)
+                        should_log = True
+                if should_log:
                     logger.warning(
                         "Skipping field_comparisons row(s) with anonymous "
                         "root (first example path=%r, context=%r) — cannot "
@@ -256,6 +292,21 @@ def iter_countable_rows(
             continue
         kept.append(fc)
     return kept
+
+
+def safe_div(num: float, den: float) -> float:
+    """Zero-denominator convention: return 0.0.
+
+    Used by both the per-doc path (``stickler_backend/results.py``) and the
+    run-level aggregation Lambda so the same input produces the same shape
+    on both dashboards — otherwise a run-level FAR of 0/0 rendering as
+    ``None`` on one side and ``0.0`` on the other would show up in the UI
+    as ``N/A`` vs ``0.000`` on the same document. Kept as one function so
+    the two sides can't drift on this convention (finding 8 from #625
+    round-4 review — previously duplicated in two files with comments in
+    each citing the other as the source of truth).
+    """
+    return float(num) / float(den) if den > 0 else 0.0
 
 
 def aggregate_row_counts(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:

@@ -1493,7 +1493,7 @@ def test_document_rollup_weight_does_not_double_count_fps():
     doc.sections.append(Section(section_id="1", classification="T", page_ids=["1"]))
     doc.sections.append(Section(section_id="2", classification="T", page_ids=["2"]))
 
-    def fake_process_section(actual_section, expected_section):
+    def fake_process_section(actual_section, expected_section, document_context=""):
         if actual_section.section_id == "1":
             return section_a, {
                 "tp": 3,
@@ -1676,7 +1676,7 @@ def test_document_rollup_ignores_skipped_sections_and_weights_only_scored():
         Section(section_id="3", classification="DeliveryNote", page_ids=["3"])
     )
 
-    def fake_process_section(actual_section, _expected_section):
+    def fake_process_section(actual_section, _expected_section, _document_context=""):
         if actual_section.section_id == "1":
             return invoice_result, {
                 "tp": 4,
@@ -1758,7 +1758,7 @@ def test_document_rollup_all_sections_skipped_yields_none_score():
         Section(section_id="2", classification="DeliveryNote", page_ids=["2"])
     )
 
-    def fake_process_section(actual_section, _expected_section):
+    def fake_process_section(actual_section, _expected_section, _document_context=""):
         if actual_section.section_id == "1":
             return other_result, {
                 "tp": 0,
@@ -2204,68 +2204,18 @@ def test_empty_field_comparisons_logs_warning_and_reports_zero(monkeypatch, capl
 
 
 @pytest.mark.unit
-def test_no_rows_fallback_verdict_uses_counts_only(monkeypatch):
-    """The no-rows fallback verdict tightened silently from
-    ``tp > 0 or tn > 0`` to ``has_hit AND NOT has_fail`` — critical because
-    a Stickler cell with tp=1 AND fd=1 (mixed) now flips ``matched`` True→False
-    (finding from #625 round-3 code review). Verify the new semantics:
-    a mixed cell WITH failures reads ✗ even in the no-rows fallback branch.
+def test_no_rows_fallback_verdict_reports_false(monkeypatch):
+    """Fallback path (no rows for a field) reports ✗ regardless of what
+    ``cm.fields[name].overall`` says.
 
-    Simulates the no-rows-for-field shape by stripping ``field_comparisons``
-    from Stickler's output while leaving a cm.fields cell populated for the
-    field. Under production Stickler this shape is rare, but a Stickler
-    variant that emits per-field cells without per-leaf rows would hit this
-    path — and the pre-tightening rule would silently mark ✓ on a cell that
-    clearly has a false discovery.
+    Rationale (finding 2 from #625 round-4 review): section-level metrics
+    are derived from ``field_comparisons`` rows. If a field emitted zero
+    rows, it contributed zero counts to the section aggregate. Reading a
+    ✓ from ``cm.fields.overall`` while the section counts show nothing for
+    the field would let the two sides drift on the same document. The
+    aligned rule is: no rows → no evidence of correctness → matched=False,
+    same as the section-count source.
     """
-    config = {
-        "classes": [
-            {
-                "$id": "d",
-                "x-aws-idp-document-type": "D",
-                "x-aws-idp-evaluation-model-name": "D",
-                "type": "object",
-                "properties": {
-                    "a": {"type": "string", "x-aws-idp-evaluation-method": "EXACT"}
-                },
-            }
-        ]
-    }
-    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
-    section = Section(section_id="s", classification="D", page_ids=["1"])
-
-    from stickler import StructuredModel
-
-    orig = StructuredModel.compare_with
-
-    def _mixed_no_rows(self, other, **kwargs):
-        r = orig(self, other, **kwargs)
-        # Wipe rows so the parent-verdict fallback path fires.
-        r["field_comparisons"] = []
-        # Inject a mixed cell for field ``a`` — tp=1 AND fd=1.
-        r.setdefault("confusion_matrix", {}).setdefault("fields", {})["a"] = {
-            "overall": {"tp": 1, "fa": 0, "fd": 1, "tn": 0, "fn": 0}
-        }
-        return r
-
-    monkeypatch.setattr(StructuredModel, "compare_with", _mixed_no_rows)
-    result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
-    a = next(attr for attr in result.attributes if attr.name == "a")
-    # Pre-tightening rule (``tp > 0 or tn > 0``) would say True — the cell has
-    # tp=1. New rule says False because has_fail (fd=1) is truthy. This is
-    # the intended behavior after the sirikaro fix.
-    assert a.matched is False, (
-        f"mixed cell (tp=1, fd=1) with no rows must flip parent False under "
-        f"the tightened fallback rule; got matched={a.matched}"
-    )
-
-
-@pytest.mark.unit
-def test_no_rows_fallback_verdict_clean_hit_reads_true(monkeypatch):
-    """Companion to the mixed-cell test: a cell with tp=1 and no failures
-    STILL reads matched=True under the tightened rule (has_hit AND NOT
-    has_fail). Guards against over-tightening — a genuine clean hit
-    shouldn't flip False just because we changed the fallback logic."""
     config = {
         "classes": [
             {
@@ -2288,6 +2238,10 @@ def test_no_rows_fallback_verdict_clean_hit_reads_true(monkeypatch):
 
     def _clean_no_rows(self, other, **kwargs):
         r = orig(self, other, **kwargs)
+        # Wipe rows so the parent-verdict fallback path fires. Even a
+        # clean cm.fields cell (tp=1, no failures) must not lift the
+        # verdict to ✓ if no rows were emitted — that would disagree
+        # with the row-derived section aggregate.
         r["field_comparisons"] = []
         r.setdefault("confusion_matrix", {}).setdefault("fields", {})["a"] = {
             "overall": {"tp": 1, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
@@ -2297,4 +2251,4 @@ def test_no_rows_fallback_verdict_clean_hit_reads_true(monkeypatch):
     monkeypatch.setattr(StructuredModel, "compare_with", _clean_no_rows)
     result = svc.evaluate_section(section, {"a": "x"}, {"a": "x"})
     a = next(attr for attr in result.attributes if attr.name == "a")
-    assert a.matched is True
+    assert a.matched is False

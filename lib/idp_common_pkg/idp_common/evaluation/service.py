@@ -923,6 +923,7 @@ class EvaluationService:
         actual_instance: "StructuredModel",
         stickler_result: Dict[str, Any],
         confidence_scores: Dict[str, Any],
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """Delegate to ``stickler_backend.results.transform_stickler_result``.
 
@@ -942,6 +943,7 @@ class EvaluationService:
             get_confidence_for_field=self._get_confidence_for_field,
             generate_reason=self._generate_reason,
             format_evaluation_method=_format_evaluation_method,
+            document_context=document_context,
         )
 
     # _transform_stickler_result / _annotate_nested_comparison_methods /
@@ -1279,6 +1281,7 @@ class EvaluationService:
         expected_results: Dict[str, Any],
         actual_results: Dict[str, Any],
         confidence_scores: Optional[Dict[str, Any]] = None,
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """
         Evaluate extraction results for a document section using Stickler.
@@ -1471,6 +1474,7 @@ class EvaluationService:
                 actual_instance,
                 stickler_result,
                 confidence_scores or {},
+                document_context=document_context,
             )
 
             # Surface any fields that were skipped due to per-field validation
@@ -1615,7 +1619,10 @@ class EvaluationService:
     # (§6 reorg).
 
     def _process_section(
-        self, actual_section: Section, expected_section: Section
+        self,
+        actual_section: Section,
+        expected_section: Section,
+        document_context: str = "",
     ) -> Tuple[Optional[SectionEvaluationResult], Dict[str, int]]:
         """
         Process a single section for evaluation.
@@ -1647,6 +1654,7 @@ class EvaluationService:
             expected_results=expected_results,
             actual_results=actual_results,
             confidence_scores=confidence_scores,
+            document_context=document_context,
         )
 
         # Extract metrics from section result — R3: use Stickler counts stored
@@ -1872,12 +1880,22 @@ class EvaluationService:
             # sections table without re-scanning the document.
             actual_sections_by_id = {s.section_id: s for s, _ in section_pairs}
 
+            # Pass the document identity through so any per-doc log warnings
+            # can be located to the source document (a section_id like
+            # ``"s1"`` recurs across documents; without doc-scoping the
+            # first doc's warning would silence every subsequent doc's —
+            # finding 1 from round-4 review). Prefer input_key over id when
+            # present (more human-locatable in CloudWatch).
+            doc_ctx = actual_document.input_key or actual_document.id or ""
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor
                 future_to_section = {
                     executor.submit(
-                        self._process_section, actual_section, expected_section
+                        self._process_section,
+                        actual_section,
+                        expected_section,
+                        doc_ctx,
                     ): actual_section.section_id
                     for actual_section, expected_section in section_pairs
                 }

@@ -26,6 +26,7 @@ from idp_common.evaluation.contract import (
     aggregate_row_counts,
     iter_countable_rows,
     row_root_attribute,
+    safe_div,
 )
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
@@ -254,6 +255,7 @@ def transform_stickler_result(
     get_confidence_for_field: Callable[[Dict[str, Any], str], Optional[Dict[str, Any]]],
     generate_reason: Callable[..., str],
     format_evaluation_method: Callable[..., str],
+    document_context: str = "",
 ) -> SectionEvaluationResult:
     """Convert Stickler's ``compare_with`` dict into a ``SectionEvaluationResult``.
 
@@ -359,7 +361,6 @@ def transform_stickler_result(
     # false discoveries never reach the section counts. Only the raw
     # ``field_comparisons`` rows honor every failure mode.
     cm = stickler_result.get("confusion_matrix") or {}
-    cm_fields: Dict[str, Any] = cm.get("fields") or {}
     field_comparisons: List[Dict[str, Any]] = (
         stickler_result.get("field_comparisons") or []
     )
@@ -368,8 +369,15 @@ def transform_stickler_result(
     # run-level aggregators use the same shared filter so their counts agree
     # (issue #625 finding 2). Then bucket by root attribute for O(N) per-
     # attribute verdict evaluation.
+    # Include doc context so warnings from different documents with the
+    # same section_id don't dedupe against each other (a section_id like
+    # ``"s1"`` recurs across documents; without doc-scoping the first doc
+    # would silence every subsequent doc's warning — finding 1 from
+    # round-4 review). Falls back to section-only when no doc context is
+    # available.
+    ctx_prefix = f"doc={document_context} " if document_context else ""
     countable_rows = iter_countable_rows(
-        field_comparisons, context=f"section:{section.section_id}"
+        field_comparisons, context=f"{ctx_prefix}section:{section.section_id}"
     )
     rows_by_attr: Dict[str, List[Dict[str, Any]]] = {}
     for fc in countable_rows:
@@ -383,28 +391,25 @@ def transform_stickler_result(
         confidence_info = get_confidence_for_field(confidence_scores, field_name)
 
         # Verdict: parent is ✓ iff every drilldown row under it is ✓. Falls
-        # through to the confusion-matrix cell only if the field has no rows
-        # (rare — Stickler always emits at least one for scalars, and one per
-        # item or leaf for structured fields). Fallback deliberately does NOT
-        # consult ``all_fields_matched`` — that flag is item-level for list
-        # fields and is exactly the item-level rollup this module was rewritten
-        # to stop trusting (issue #625). Use the counts-only rule: at least one
-        # hit and no failures.
+        # through to a counts-only rule ONLY if the field has no rows (rare —
+        # Stickler always emits at least one for scalars, and one per item or
+        # leaf for structured fields). Fallback re-derives its counts from the
+        # SAME per-attribute rows source ``aggregate_row_counts`` reads for
+        # section-level metrics — reading ``cm_fields[name].overall`` here
+        # would let the row-based section aggregate and the attribute verdict
+        # drift on the same document (finding 2 from #625 round-4 review).
+        # Fallback deliberately does NOT consult ``all_fields_matched`` — that
+        # flag is item-level for list fields and is exactly the item-level
+        # rollup this module was rewritten to stop trusting (issue #625).
         my_rows = rows_by_attr.get(field_name) or []
         if my_rows:
             matched = all(fc.get("match") is True for fc in my_rows)
         else:
-            field_cell = cm_fields.get(field_name) or {}
-            field_overall = field_cell.get("overall") or {}
-            has_hit = (field_overall.get("tp", 0) > 0) or (
-                field_overall.get("tn", 0) > 0
-            )
-            has_fail = (
-                (field_overall.get("fa", 0) > 0)
-                or (field_overall.get("fd", 0) > 0)
-                or (field_overall.get("fn", 0) > 0)
-            )
-            matched = has_hit and not has_fail
+            # No rows — nothing in ``field_comparisons`` for this attribute,
+            # so it contributed zero to the section counts. Report ✗ rather
+            # than ✓ (no evidence of correctness); anything else would
+            # disagree with the row-derived section aggregate.
+            matched = False
 
         reason = generate_reason(
             field_name,
@@ -513,16 +518,13 @@ def transform_stickler_result(
     agg_fn = counts["fn"]
     total = agg_tp + agg_fp + agg_fn + agg_tn
 
-    def _safe_div(num: int, den: int) -> float:
-        return float(num) / float(den) if den > 0 else 0.0
-
     metrics: Dict[str, float] = {
-        "precision": _safe_div(agg_tp, agg_tp + agg_fp),
-        "recall": _safe_div(agg_tp, agg_tp + agg_fn),
-        "f1_score": _safe_div(2 * agg_tp, 2 * agg_tp + agg_fp + agg_fn),
-        "accuracy": _safe_div(agg_tp + agg_tn, total),
-        "false_alarm_rate": _safe_div(agg_fa, agg_fa + agg_tn),
-        "false_discovery_rate": _safe_div(agg_fd, agg_fd + agg_tp),
+        "precision": safe_div(agg_tp, agg_tp + agg_fp),
+        "recall": safe_div(agg_tp, agg_tp + agg_fn),
+        "f1_score": safe_div(2 * agg_tp, 2 * agg_tp + agg_fp + agg_fn),
+        "accuracy": safe_div(agg_tp + agg_tn, total),
+        "false_alarm_rate": safe_div(agg_fa, agg_fa + agg_tn),
+        "false_discovery_rate": safe_div(agg_fd, agg_fd + agg_tp),
     }
     # Raw counts for _process_section's document-level rollup (surfaced under
     # a stable key so the metrics dict stays visually clean).
