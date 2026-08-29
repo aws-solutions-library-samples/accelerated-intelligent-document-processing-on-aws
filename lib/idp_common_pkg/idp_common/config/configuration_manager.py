@@ -464,6 +464,12 @@ class ConfigurationManager:
         configuration that was there *before* this save is cut as a revision
         first, so the pre-history state is not lost by the very change that
         introduced history.
+
+        A save that does not change the configuration records nothing. Every
+        stack deployment re-saves `default` and each managed profile whether or
+        not the shipped configuration moved, so without this a handful of no-op
+        upgrades would fill the retention window with identical revisions and
+        push a user's real history out of it.
         """
         if not self.revisions.enabled:
             return None
@@ -472,22 +478,44 @@ class ConfigurationManager:
             Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
             ProjectionExpression="LatestRevision",
         ).get("Item", {})
+        has_history = bool(head.get("LatestRevision"))
 
-        if previous is not None and not head.get("LatestRevision"):
+        new_dict = self._config_to_dict(config)
+        previous_dict = self._config_to_dict(previous.config) if previous is not None else None
+        unchanged = previous_dict is not None and previous_dict == new_dict
+
+        if previous is not None and not has_history:
+            # First save since history was introduced: capture what was there
+            # before this save.
             try:
-                self.revisions.cut(
+                backfilled = self.revisions.cut(
                     profile,
-                    self._config_to_dict(previous.config),
+                    previous_dict,
                     created_by="system",
                     notes="Configuration as it stood before revision history was enabled",
-                    publish=False,
+                    publish=unchanged,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Could not backfill pre-history revision for '{profile}': {e}")
+            else:
+                if unchanged:
+                    # The backfill already records exactly this configuration —
+                    # publishing it there avoids an identical second revision.
+                    logger.info(
+                        f"Profile '{profile}' is unchanged by this save; its pre-history "
+                        f"snapshot r{backfilled} is the current revision"
+                    )
+                    return backfilled
+        elif unchanged and has_history:
+            logger.info(
+                f"Profile '{profile}' saved with no configuration change; "
+                f"not recording a revision"
+            )
+            return None
 
         return self.revisions.cut(
             profile,
-            self._config_to_dict(config),
+            new_dict,
             created_by=created_by,
             notes=notes,
         )

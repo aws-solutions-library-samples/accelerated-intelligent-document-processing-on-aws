@@ -213,6 +213,11 @@ Four decisions worth knowing before changing this code:
   `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
   working unchanged.
 
+`_record_revisions()` skips the cut entirely when the saved configuration equals
+what was already stored. Every deployment re-saves `default` and each managed
+profile, so without that check a few no-op upgrades would evict a user's real
+history from the retention window.
+
 Retention keeps the last `CONFIG_REVISION_CAP` (default 20) revisions per profile,
 plus the published revision and anything labeled or pinned by a test run. A
 count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning

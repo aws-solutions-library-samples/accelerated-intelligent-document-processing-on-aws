@@ -124,6 +124,32 @@ class TestCutOnSave:
         )
         assert manager.list_revisions("p")[0]["createdBy"] == "author@example.com"
 
+    def test_an_unchanged_save_records_nothing(self, monkeypatch):
+        """
+        Every stack deployment re-saves default and each managed profile. If a
+        no-op save cut a revision, a handful of upgrades would push a user's real
+        history out of the retention window.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        assert manager.list_revisions("p")[0]["published"] is True
+
+    def test_a_changed_save_after_an_unchanged_one_is_recorded(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("b"), version="p")
+
+        revisions = manager.list_revisions("p")
+        assert [r["revision"] for r in revisions] == [2, 1]
+        assert _notes_of(manager.get_revision("p", 2)) == "b"
+
     def test_cut_revision_false_records_nothing(self, monkeypatch):
         """The legacy-format auto-migration must not invent history."""
         _make_table()
@@ -159,6 +185,24 @@ class TestPreHistoryBackfill:
         assert _notes_of(manager.get_revision("p", 2)) == "new"
         # Only the new content is published; the backfill is history, not current.
         assert {r["revision"]: r["published"] for r in revisions} == {2: True, 1: False}
+
+    def test_an_upgrade_that_changes_nothing_leaves_one_revision(self, monkeypatch):
+        """
+        The common upgrade case: the shipped configuration is identical, so the
+        pre-history snapshot IS the current configuration and there is no reason
+        to store it twice.
+        """
+        _make_table()
+        manager = _manager(monkeypatch, with_bucket=False)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("same"), version="p")
+
+        manager = _manager(monkeypatch, with_bucket=True)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("same"), version="p")
+
+        revisions = manager.list_revisions("p")
+        assert [r["revision"] for r in revisions] == [1]
+        assert revisions[0]["published"] is True
+        assert _notes_of(manager.get_revision("p", 1)) == "same"
 
     def test_backfill_happens_only_once(self, monkeypatch):
         _make_table()

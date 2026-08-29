@@ -137,6 +137,14 @@ retained revision newest-first with who saved it and when. From there you can:
 | **Current** badge | The revision the profile's configuration currently reflects |
 | **Pinned** badge | Referenced by a test run, so retention keeps it and the run stays comparable |
 
+### A save that changes nothing records nothing
+
+Saving a profile whose configuration is byte-for-byte unchanged does not create a
+revision. This matters because every stack deployment re-saves `default` and each
+managed profile whether or not the shipped configuration moved — without this, a
+handful of upgrades would fill the retention window with identical revisions and
+push your real history out of it.
+
 ### Retention
 
 The last **20** revisions per profile are retained by default, plus — regardless of
