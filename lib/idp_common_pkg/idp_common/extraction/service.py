@@ -118,6 +118,15 @@ class ExtractionResult(BaseModel):
     repair_method: str | None = None
     schema_analysis: dict[str, Any] | None = None
     ocr_analysis: dict[str, Any] | None = None
+    instance_count: int = 0
+    """Number of documents (instances) of the section's class found. 0 =
+    undetermined, 1 = normal, >1 = the section holds several distinct
+    documents that classification did not split apart."""
+    recovered_instances: list[dict[str, Any]] | None = None
+    """Every instance parsed from a multi-instance response, in document order.
+    Set only when ``instance_count > 1``. ``extracted_fields`` holds the FIRST
+    instance (so the output shape is unchanged for every downstream consumer);
+    this carries the rest so nothing the model produced is thrown away."""
 
 
 class ExtractionService:
@@ -1870,6 +1879,102 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         return {k: v for k, v in extracted_fields.items() if k in allowed}
 
+    @staticmethod
+    def _normalize_list_result(
+        parsed: Any, *, context: str
+    ) -> tuple[dict[str, Any], bool, int, list[dict[str, Any]] | None]:
+        """Normalize a top-level JSON array response into a single-object result.
+
+        The class schema describes ONE document, so a well-behaved model returns
+        an object. When it returns an array instead, that is nearly always
+        because the section actually contains several documents of the same
+        class — a section that classification failed to split (GitHub #565).
+
+        Returns ``(fields, parsing_succeeded, instance_count, recovered)``.
+
+        Behaviour by array length:
+
+        - **1** — unwrap to the single object. Indistinguishable from a correct
+          response; ``instance_count = 1``.
+        - **>1** — **keep every instance.** ``fields`` becomes the FIRST one so
+          the output shape is identical to a normal extraction and no downstream
+          consumer changes, ``recovered`` carries all of them, and
+          ``instance_count = N``. Parsing is reported as SUCCEEDED.
+
+          This replaces the previous behaviour, which stored the array under a
+          ``raw_array`` key that **nothing in the codebase ever read**, marked
+          the section FAILED, and then reported the misleading
+          ``extraction_sparse`` issue ("0/N schema fields populated"). Every
+          record had been extracted correctly and all of them were discarded —
+          the worst outcome available. The caller pairs this with a
+          ``extraction_multi_instance_detected`` warning and a section
+          ``instance_count``, so the situation is visible and reviewable instead
+          of either silent or fatal.
+
+          Note the asymmetry this does NOT fix: when the model returns a single
+          object for a two-document section, only the first record exists in the
+          response and there is nothing here to recover. That case needs
+          multi-instance extraction (an opt-in per-class list schema), not
+          response normalization.
+        - **0**, or elements that are not objects — genuinely unusable; reported
+          as a parse failure, unchanged.
+        """
+        if not isinstance(parsed, list):
+            return parsed, True, 0, None
+
+        if len(parsed) == 1 and isinstance(parsed[0], dict):
+            logger.warning(
+                "LLM returned single-element array instead of object, unwrapping",
+                extra={"original_type": "list", "element_count": 1, "context": context},
+            )
+            return parsed[0], True, 1, None
+
+        if len(parsed) == 0:
+            logger.error(
+                "LLM returned empty array when single object expected",
+                extra={"element_count": 0, "context": context},
+            )
+            return (
+                {"error": "Received empty array instead of single object"},
+                False,
+                0,
+                None,
+            )
+
+        instances = [item for item in parsed if isinstance(item, dict)]
+        if len(instances) != len(parsed):
+            logger.error(
+                "LLM returned an array containing non-object elements; cannot "
+                "interpret it as multiple document instances",
+                extra={
+                    "element_count": len(parsed),
+                    "object_count": len(instances),
+                    "context": context,
+                },
+            )
+            return (
+                {
+                    "error": (
+                        f"Received array with {len(parsed)} elements, "
+                        f"{len(parsed) - len(instances)} of which were not objects"
+                    )
+                },
+                False,
+                0,
+                None,
+            )
+
+        logger.warning(
+            "LLM returned %d objects for a single-document schema — treating the "
+            "section as multi-instance and preserving every instance. The first "
+            "is reported as the section's inference_result; all %d are recorded "
+            "in metadata.recovered_instances.",
+            len(instances),
+            len(instances),
+            extra={"element_count": len(instances), "context": context},
+        )
+        return instances[0], True, len(instances), instances
+
     def _build_extraction_issues(
         self,
         *,
@@ -1994,6 +2099,47 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"off_schema_fields": off_schema, "agentic": is_agentic},
+                )
+            )
+
+        # 2b) The section holds MORE THAN ONE document of this class.
+        #
+        # Classification produced one section, but extraction found several
+        # distinct records in it (GitHub #565). The records are all preserved in
+        # metadata.recovered_instances and inference_result holds the first, so
+        # nothing is lost — but only the first is scored, reviewed and reported,
+        # so this must be visible rather than quietly accepted.
+        #
+        # A warning, not an error: the extracted data is real and usable, and
+        # failing the section would discard it. The point is to stop the loss
+        # being silent, which is exactly what made this hard to find — the old
+        # code marked the section FAILED and reported "0/N fields populated",
+        # which described neither what happened nor what to do about it.
+        instance_count = int(metadata.get("instance_count") or 0)
+        if instance_count > 1:
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code="extraction_multi_instance_detected",
+                    message=(
+                        f"This section contains {instance_count} separate "
+                        f"'{self._class_label}' documents. All {instance_count} were "
+                        f"extracted, but only the first is shown as the section "
+                        f"result — review the section and consider splitting it."
+                    ),
+                    root_cause=(
+                        "classification produced one section for several "
+                        "consecutive documents of the same class, so the model "
+                        "returned a list where the schema describes one document; "
+                        "every instance is preserved under "
+                        "metadata.recovered_instances"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "instance_count": instance_count,
+                        "agentic": is_agentic,
+                    },
                 )
             )
 
@@ -2966,6 +3112,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         output_repaired = False
         repair_method = None
 
+        # Multi-instance tracking (see _normalize_list_result). Stays 0/None on
+        # the agentic path, which validates through a Pydantic model and so can
+        # never receive a bare array.
+        instance_count = 0
+        recovered_instances: list[dict[str, Any]] | None = None
+
         # Initialize analysis tracking
         schema_analysis: dict[str, Any] | None = None
         ocr_analysis: dict[str, Any] | None = None
@@ -3358,38 +3510,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             output_truncated = False
             output_repaired = False
             repair_method = None
+            instance_count = 0
+            recovered_instances = None
 
             try:
                 extracted_fields = json.loads(extract_json_from_text(extracted_text))
 
-                # Handle case where LLM returns a single-element array instead of dict
-                # This happens when models mistakenly wrap the extraction in an array
-                if isinstance(extracted_fields, list):
-                    if len(extracted_fields) == 1:
-                        logger.warning(
-                            "LLM returned single-element array instead of object, unwrapping",
-                            extra={"original_type": "list", "element_count": 1},
-                        )
-                        extracted_fields = extracted_fields[0]
-                    elif len(extracted_fields) == 0:
-                        logger.error(
-                            "LLM returned empty array when single object expected",
-                            extra={"element_count": 0},
-                        )
-                        extracted_fields = {
-                            "error": "Received empty array instead of single object",
-                        }
-                        parsing_succeeded = False
-                    else:  # len > 1
-                        logger.error(
-                            "LLM returned multi-element array when single object expected",
-                            extra={"element_count": len(extracted_fields)},
-                        )
-                        extracted_fields = {
-                            "error": f"Received array with {len(extracted_fields)} elements instead of single object",
-                            "raw_array": extracted_fields,
-                        }
-                        parsing_succeeded = False
+                # A top-level array means either a needlessly wrapped single
+                # object or — far more often — several documents of the same
+                # class in one section. Both are handled (and preserved) here.
+                (
+                    extracted_fields,
+                    parsing_succeeded,
+                    instance_count,
+                    recovered_instances,
+                ) = self._normalize_list_result(extracted_fields, context="parsed")
 
             except Exception as e:
                 logger.warning(
@@ -3404,33 +3539,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Repair succeeded
                     extracted_fields = repaired_data
 
-                    # Handle case where repaired data is also a single-element array
-                    if isinstance(extracted_fields, list):
-                        if len(extracted_fields) == 1:
-                            logger.warning(
-                                "Repaired JSON is single-element array, unwrapping",
-                                extra={"original_type": "list", "element_count": 1},
-                            )
-                            extracted_fields = extracted_fields[0]
-                        elif len(extracted_fields) == 0:
-                            logger.error(
-                                "Repaired JSON is empty array when single object expected",
-                                extra={"element_count": 0},
-                            )
-                            extracted_fields = {
-                                "error": "Repaired empty array instead of single object",
-                            }
-                            parsing_succeeded = False
-                        else:  # len > 1
-                            logger.error(
-                                "Repaired JSON is multi-element array when single object expected",
-                                extra={"element_count": len(extracted_fields)},
-                            )
-                            extracted_fields = {
-                                "error": f"Repaired array with {len(extracted_fields)} elements instead of single object",
-                                "raw_array": extracted_fields,
-                            }
-                            parsing_succeeded = False
+                    # Repaired output can be an array for the same reasons the
+                    # cleanly-parsed output can; normalize identically. A
+                    # truncated multi-instance response is exactly the case worth
+                    # salvaging — the earlier instances are complete.
+                    (
+                        extracted_fields,
+                        parsing_succeeded,
+                        instance_count,
+                        recovered_instances,
+                    ) = self._normalize_list_result(
+                        extracted_fields, context="repaired"
+                    )
 
                     output_repaired = True
                     repair_method = repair_info.get("repair_method")
@@ -3492,6 +3612,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             repair_method=repair_method,
             schema_analysis=schema_analysis,
             ocr_analysis=ocr_analysis,
+            instance_count=instance_count,
+            recovered_instances=recovered_instances,
         )
 
     def _split_inline_confidence(
@@ -3943,6 +4065,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             "extraction_time_seconds": result.total_duration,
             "extraction_method": extraction_method,
         }
+
+        # How many documents of this class the section turned out to hold, and —
+        # when more than one — every instance the model produced. inference_result
+        # keeps the first so the output shape is unchanged; these carry the rest
+        # so nothing is discarded, and _build_extraction_issues turns the count
+        # into a user-visible warning.
+        if result.instance_count:
+            metadata["instance_count"] = result.instance_count
+            section.instance_count = result.instance_count
+        if result.recovered_instances:
+            metadata["recovered_instances"] = result.recovered_instances
+            # Surface on the dashboard so multi-document sections are visible
+            # without opening a document.
+            try:
+                metrics.put_metric("MultiInstanceSections", 1)
+                metrics.put_metric(
+                    "MultiInstanceRecordsRecovered", len(result.recovered_instances)
+                )
+            except Exception as e:  # noqa: BLE001 - telemetry must never fail a doc
+                logger.debug("Could not publish multi-instance metrics: %s", e)
 
         # Record 1S-TopK raw candidates for auditability (all K guesses per
         # field). assessment_method is an audit breadcrumb only — the downstream
