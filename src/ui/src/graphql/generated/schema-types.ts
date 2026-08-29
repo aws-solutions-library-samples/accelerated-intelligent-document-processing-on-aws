@@ -1349,6 +1349,7 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type Page = {
+  Boundary?: Maybe<Scalars['String']['output']>;
   Class?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['Int']['output']>;
   ImageUri?: Maybe<Scalars['String']['output']>;
@@ -1863,6 +1864,7 @@ export type Section = {
   Excluded?: Maybe<Scalars['Boolean']['output']>;
   ExclusionReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['String']['output']>;
+  InstanceCount?: Maybe<Scalars['Int']['output']>;
   OutputJSONUri?: Maybe<Scalars['String']['output']>;
   PageIds?: Maybe<Array<Maybe<Scalars['Int']['output']>>>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;

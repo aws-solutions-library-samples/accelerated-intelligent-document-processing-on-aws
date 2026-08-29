@@ -14,6 +14,7 @@ subscription OnUpdateDocument {
       PageIds
       Class
       OutputJSONUri
+      InstanceCount
       Excluded
       ExclusionReason
       ConfidenceThresholdAlerts {

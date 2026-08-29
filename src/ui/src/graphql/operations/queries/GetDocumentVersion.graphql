@@ -19,6 +19,7 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
       PageIds
       Class
       OutputJSONUri
+      InstanceCount
       ConfidenceThresholdAlerts {
         attributeName
         confidence
