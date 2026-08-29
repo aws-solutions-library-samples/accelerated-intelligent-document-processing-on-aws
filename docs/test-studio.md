@@ -941,6 +941,55 @@ To find *which* documents need this, use the
 rather than hunting through the queue — a misclassified document often raises few
 confidence alerts and so sorts low in worst-first order.
 
+### Correcting a wrong packet split
+
+A packet is split into sections before anything is extracted, and the split can be
+wrong: pages grouped into the wrong section, a section that should be two, two that
+should be one. That grouping **is** ground truth — `split_document.page_indices` is
+what the doc-split metrics score classification against — so a wrong split makes the
+classification ground truth wrong, not merely untidy.
+
+**Pages in this section** shows which pages a section covers, and **Edit page
+grouping** opens a board with every section side by side and each page as a
+thumbnail. Drag a page from one section to another, or use its **Move to** menu,
+which is the keyboard and screen-reader route to the same operation. Select several
+pages first — shift-click extends over document order — and they move together, which
+is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
+one.
+
+**Your field values are kept.** This is the whole point of the feature. Saving a new
+grouping writes the page grouping and the class and nothing else: extracted values,
+their **Reviewed (human)** provenance and the edit history all survive. Those values
+were extracted from a different set of pages, so they may no longer match — the
+warning afterwards names the sections that moved so you know which to check, and
+**Change class & re-extract** is there if you would rather the model redo one. It is
+never done for you, because re-extraction is exactly the annotation loss this exists
+to avoid.
+
+A few rules the board enforces, all for the same reason — a packet split is a
+**partition**, and ground truth that breaks that is worse than none:
+
+- Every page must belong to exactly one section. A page in none would assert, as
+  ground truth, that the page is not part of the document.
+- A section with no pages blocks the save rather than disappearing. Deleting a section
+  discards its field values, so it stays a deliberate act: drag the pages out, then
+  delete it.
+- A page the split had dropped entirely **can** be added. That is precisely the defect
+  a reviewer is here to fix, so it is allowed in.
+
+Sections are renumbered so their ids follow page order. Several consumers take a
+section's group index from its position in a list, and nothing otherwise guarantees
+that list is in page order, so making ids agree with it removes the ambiguity.
+
+Non-contiguous sections are supported, because the pipeline can produce them.
+
+Annotators can do this within their assigned sets, scope-checked per test set like
+every other annotation operation.
+
+The same board is available on a processed document, from **Document Sections** in
+the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+for the one difference that matters there.
+
 ### Asking someone about one field
 
 Some values cannot be settled by whoever is reviewing — the reviewer may not know

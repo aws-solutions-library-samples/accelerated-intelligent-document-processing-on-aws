@@ -117,6 +117,45 @@ For the run-level view of the same information across every document in a test
 set, see
 [Finding classification errors](./test-studio.md#finding-classification-errors).
 
+## Re-grouping a processed document's pages
+
+**Document Sections → Edit page grouping** opens a board with every section side by
+side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
+to** menu — the keyboard and screen-reader route to the same operation. Shift-click
+selects a run of pages so they move together, which is usually what a wrong split
+needs.
+
+**The extracted values are kept and the document is not reprocessed.** Saving writes
+the page grouping and the section classes and nothing else, so extracted fields and any
+a reviewer corrected by hand survive. They were extracted from a different set of pages,
+so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
+would rather the pipeline redo them.
+
+That is the difference between the two routes, and it is the reason both exist:
+
+| | Edit page grouping | Edit Mode → Process Changes |
+|---|---|---|
+| Page assignments | drag and drop | comma-separated text |
+| Section ids | not editable | editable |
+| Extracted values | **kept** | cleared and regenerated |
+| Reprocessing | none | the document is requeued |
+| Roles | Admin, Reviewer, Annotator | Admin, Reviewer |
+
+**Refused while the document is processing.** `Edit Mode → Process Changes` is safe to
+use mid-run because it never writes the document itself — it hands it to the pipeline,
+which saves it. A grouping-only save writes directly, so it would race a run in
+progress; if the document is queued or running the save is refused with a message, and
+the arrangement you made is left on screen rather than discarded.
+
+Not available for Pattern-1, where BDA owns the section structure.
+
+Every page must end up in exactly one section, and a section with no pages blocks the
+save rather than vanishing — deleting a section discards its extracted values, so it
+stays a deliberate act. The same board and the same rules are used for test-set ground
+truth; see
+[test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
+being preserved matters most because they are the annotations being built.
+
 ## Edit Sections
 
 The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
@@ -125,7 +164,7 @@ The Edit Sections feature provides an intelligent interface for modifying docume
 
 - **Section Management**: Create, update, and delete document sections with validation
 - **Classification Updates**: Change section document types with real-time validation
-- **Page Reassignment**: Move pages between sections with overlap detection
+- **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
 - **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
 - **Immediate Feedback**: Status updates appear instantly in the UI
 - **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
