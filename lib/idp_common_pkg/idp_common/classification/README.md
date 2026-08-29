@@ -58,6 +58,49 @@ Page 6: type="invoice", boundary="continue"   → Section 3 (Invoice #2)
 
 The system automatically creates three sections, properly separating the two invoices despite them having the same document type.
 
+### Where the `document_boundary` signal lives
+
+The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is **not persisted** — neither the DynamoDB page record nor the `document.json` page dict carries it (both store `Class` only) — so it exists only for the lifetime of the classification Lambda invocation.
+
+To keep merges auditable, `_create_llm_determined_sections` logs the complete page → boundary map on one line before building sections:
+
+```
+Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
+```
+
+`(absent)` means the model omitted the field, in which case the code defaults it to `"continue"`. That is deliberately reported as distinct from an explicit `"continue"`: an omitted signal merges pages *by accident*, while an explicit `"continue"` is the model's judgement. Distinguishing the two is what makes an unexpected merge diagnosable.
+
+### Section splitting strategies
+
+`classification.sectionSplitting` controls how classified pages become sections:
+
+| Value | Behavior |
+|-------|----------|
+| `llm_determined` (default) | Group pages using the `document_boundary` signal described above |
+| `page` | One section per page — no same-type joining is ever possible |
+| `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
+
+### Single-class configurations
+
+When the configuration defines exactly **one** document class, the class decision is predetermined and the service short-circuits: every page is labelled with that class and **no backend call is made**.
+
+Section boundaries are a separate question, though, and are still resolved from `sectionSplitting` (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
+
+| `sectionSplitting` | Single-class behavior |
+|--------------------|-----------------------|
+| `disabled` | One section over all pages |
+| `page` | One section per page |
+| `llm_determined` | **Degrades to `disabled`, with a warning** |
+
+`llm_determined` cannot be honored in this path: boundaries come from the model's per-page `document_boundary` signal, which only exists if a per-page inference call is made — exactly the cost the short-circuit exists to avoid. Rather than silently reintroducing that cost for every single-class deployment, the service logs an actionable warning and falls back to `disabled`.
+
+**If your packets can contain several separate documents of your single class**, either:
+
+- set `classification.sectionSplitting: page` to get one section per page, or
+- define a second document class so the full classification path (and real boundary detection) runs.
+
+Leaving the default `llm_determined` in place with a single class will produce one section spanning the entire packet.
+
 ## Regex-Based Classification for Enhanced Performance
 
 The classification service now supports optional regex-based pattern matching to provide significant performance improvements and deterministic classification for known document patterns. This feature enables instant classification without LLM API calls when regex patterns match.
@@ -394,6 +437,7 @@ The classification service uses the following configuration structure:
     "model": "anthropic.claude-3-sonnet-20240229-v1:0", // Specific model for classification (used if top-level model_id not specified)
     "temperature": 0,
     "top_k": 5,
+    "sectionSplitting": "llm_determined", // "llm_determined" (default) | "page" | "disabled" - see "Section splitting strategies"
     "system_prompt": "You are a document classification expert...",
     "task_prompt": "Classify the following document into one of these types: {CLASS_NAMES_AND_DESCRIPTIONS}...\n\nDocument text:\n{DOCUMENT_TEXT}"
   }

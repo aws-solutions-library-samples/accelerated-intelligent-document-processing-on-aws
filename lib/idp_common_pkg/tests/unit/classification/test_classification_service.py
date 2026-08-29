@@ -911,6 +911,196 @@ class TestClassificationService:
                 "Only one document class 'invoice' is defined. Automatically classifying all pages as this class without calling backend."
             )
 
+    # ------------------------------------------------------------------
+    # GitHub issue #686 - a single-class config must still honor
+    # sectionSplitting. Before the fix, all three strategies produced one
+    # section spanning every page, so `sectionSplitting: page` was silently
+    # ignored and multi-record packets collapsed by construction.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _single_class_service(single_class_config, section_splitting):
+        """Build a single-class service with an explicit sectionSplitting."""
+        config = json.loads(json.dumps(single_class_config))
+        config["classification"]["sectionSplitting"] = section_splitting
+        with patch("boto3.Session"):
+            return ClassificationService(
+                region="us-west-2", config=config, backend="bedrock"
+            )
+
+    @staticmethod
+    def _three_page_document():
+        doc = Document(
+            id="test-doc", input_key="test-document.pdf", status=Status.CLASSIFYING
+        )
+        for page_id in ("1", "2", "3"):
+            doc.pages[page_id] = Page(
+                page_id=page_id,
+                image_uri=f"s3://bucket/image{page_id}.jpg",
+                parsed_text_uri=f"s3://bucket/text{page_id}.txt",
+            )
+        return doc
+
+    def test_single_class_section_splitting_page(self, single_class_config):
+        """`page` yields one section per page - the #686 escape hatch."""
+        service = self._single_class_service(single_class_config, "page")
+        doc = self._three_page_document()
+
+        with patch.object(service, "classify_page") as spy_classify_page:
+            result = service.classify_document(doc)
+            # Still no backend call - the class decision remains predetermined.
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+        assert all(s.classification == "invoice" for s in result.sections)
+        assert all(p.classification == "invoice" for p in result.pages.values())
+
+    def test_single_class_section_splitting_disabled(self, single_class_config):
+        """`disabled` keeps the original one-section-over-all-pages behavior."""
+        service = self._single_class_service(single_class_config, "disabled")
+        doc = self._three_page_document()
+
+        with patch.object(service, "classify_page") as spy_classify_page:
+            result = service.classify_document(doc)
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 1
+        assert result.sections[0].classification == "invoice"
+        assert result.sections[0].page_ids == ["1", "2", "3"]
+
+    def test_single_class_section_splitting_llm_determined_degrades_with_warning(
+        self, single_class_config
+    ):
+        """`llm_determined` degrades to `disabled` and says so.
+
+        Boundary detection needs the model's per-page document_boundary signal,
+        which the single-class short-circuit deliberately never asks for. The
+        warning has to name the config key and the alternatives.
+        """
+        service = self._single_class_service(single_class_config, "llm_determined")
+        doc = self._three_page_document()
+
+        with (
+            patch.object(service, "classify_page") as spy_classify_page,
+            patch("logging.Logger.warning") as mock_log_warning,
+        ):
+            result = service.classify_document(doc)
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 1
+        assert result.sections[0].page_ids == ["1", "2", "3"]
+
+        warnings = [call.args[0] for call in mock_log_warning.call_args_list]
+        degrade_warnings = [w for w in warnings if "llm_determined" in w]
+        assert degrade_warnings, f"no degradation warning emitted: {warnings}"
+        warning = degrade_warnings[0]
+        assert "sectionSplitting" in warning
+        assert "page" in warning
+        assert "#686" in warning
+
+    def test_holistic_single_class_section_splitting_page(self, single_class_config):
+        """The holistic short-circuit honors `page` too."""
+        service = self._single_class_service(single_class_config, "page")
+        service.classification_method = service.TEXTBASED_HOLISTIC
+        doc = self._three_page_document()
+
+        with patch.object(service, "_invoke_bedrock_model") as spy_invoke:
+            result = service.holistic_classify_document(doc)
+            spy_invoke.assert_not_called()
+
+        assert len(result.sections) == 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+        assert all(s.classification == "invoice" for s in result.sections)
+
+    @patch("idp_common.classification.service.ClassificationService.classify_page")
+    def test_multi_class_section_splitting_unchanged(
+        self, mock_classify_page, mock_config
+    ):
+        """Regression: multi-class configs must not touch the single-class path.
+
+        Same 3-page shape as the single-class tests, but with a second class
+        defined the full boundary-detection path has to run and produce the
+        boundary-derived sections it always did.
+        """
+        with patch("boto3.Session"):
+            service = ClassificationService(
+                region="us-west-2", config=mock_config, backend="bedrock"
+            )
+        assert not service.has_single_class
+
+        doc = self._three_page_document()
+        mock_classify_page.side_effect = [
+            PageClassification(
+                page_id="1",
+                classification=DocumentClassification(
+                    doc_type="invoice", metadata={"document_boundary": "start"}
+                ),
+            ),
+            PageClassification(
+                page_id="2",
+                classification=DocumentClassification(
+                    doc_type="invoice", metadata={"document_boundary": "continue"}
+                ),
+            ),
+            PageClassification(
+                page_id="3",
+                classification=DocumentClassification(
+                    doc_type="invoice", metadata={"document_boundary": "start"}
+                ),
+            ),
+        ]
+
+        with patch.object(service, "_create_single_class_sections") as spy_single_class:
+            result = service.classify_document(doc)
+            spy_single_class.assert_not_called()
+
+        # Pages 1-2 merge (continue), page 3 starts a new document.
+        assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
+
+    @patch("idp_common.classification.service.ClassificationService.classify_page")
+    def test_document_boundary_signals_are_logged(
+        self, mock_classify_page, mock_config
+    ):
+        """The per-page boundary signal is not persisted anywhere, so the
+        llm_determined path logs the whole map - and reports an omitted signal
+        distinctly from an explicit "continue"."""
+        with patch("boto3.Session"):
+            service = ClassificationService(
+                region="us-west-2", config=mock_config, backend="bedrock"
+            )
+
+        doc = self._three_page_document()
+        mock_classify_page.side_effect = [
+            PageClassification(
+                page_id="1",
+                classification=DocumentClassification(
+                    doc_type="invoice", metadata={"document_boundary": "start"}
+                ),
+            ),
+            PageClassification(
+                page_id="2",
+                classification=DocumentClassification(
+                    doc_type="invoice", metadata={"document_boundary": "continue"}
+                ),
+            ),
+            # Model omitted the field entirely - the code defaults it to
+            # "continue", which is exactly the accidental-merge case that was
+            # expensive to diagnose in #565.
+            PageClassification(
+                page_id="3",
+                classification=DocumentClassification(doc_type="invoice", metadata={}),
+            ),
+        ]
+
+        with patch("logging.Logger.info") as mock_log_info:
+            service.classify_document(doc)
+
+        mock_log_info.assert_any_call(
+            "Page document_boundary signals: "
+            "{'1': 'start', '2': 'continue', '3': '(absent)'}"
+        )
+
     @patch("idp_common.s3.get_text_content")
     @patch(
         "idp_common.classification.service.ClassificationService._invoke_bedrock_model"
