@@ -345,6 +345,12 @@ class DocumentDynamoDBService:
                         section
                     )
 
+                # How many documents (instances) of this class the section holds.
+                # Omitted when undetermined (0) so items stay byte-identical to
+                # what older code wrote.
+                if section.instance_count:
+                    section_data["InstanceCount"] = section.instance_count
+
                 sections_data.append(section_data)
 
             if sections_data:
@@ -607,6 +613,7 @@ class DocumentDynamoDBService:
                         extraction_result_uri=section_data.get("OutputJSONUri"),
                         confidence_threshold_alerts=confidence_threshold_alerts,
                         processing_issues=processing_issues,
+                        instance_count=int(section_data.get("InstanceCount") or 0),
                     )
                 )
 
@@ -1103,6 +1110,19 @@ class DocumentDynamoDBService:
                 serialize_confidence_threshold_alerts(section)
             )
 
+        # Persist structured processing issues. This write REPLACES the whole
+        # section map (`SET #Sections[i] = :section`), so omitting them here does
+        # not merely skip them — it ERASES any issues an earlier stage wrote.
+        # Extraction persists through this path for immediate UI visibility
+        # (patterns/unified/src/extraction_function/index.py:367), so without
+        # this the section status icon stayed blank until the collate step
+        # rewrote the full document.
+        if section.processing_issues:
+            section_data["ProcessingIssues"] = serialize_processing_issues(section)
+
+        if section.instance_count:
+            section_data["InstanceCount"] = section.instance_count
+
         # Use SET Sections[index] = :value for atomic section update
         update_expression = f"SET #Sections[{section_index}] = :section"
         expression_names = {"#Sections": "Sections"}
@@ -1231,6 +1251,8 @@ class DocumentDynamoDBService:
                     section_data["ProcessingIssues"] = serialize_processing_issues(
                         section
                     )
+                if section.instance_count:
+                    section_data["InstanceCount"] = section.instance_count
                 sections_data.append(section_data)
             item["Sections"] = sections_data
 

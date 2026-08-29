@@ -164,6 +164,22 @@ class Section:
     """Optional category (e.g., "instructions", "legal") carried over from
     the class configuration for UI/report display."""
 
+    instance_count: int = 0
+    """How many separate documents (instances) of this section's class the
+    extraction found in this section.
+
+    ``0`` means "not determined" — the default, so sections written by older
+    code (or whose extraction failed before producing a result) read back
+    unchanged. ``1`` is the normal case. ``> 1`` means the section spans
+    several distinct documents of the same class, which classification did not
+    split apart; the UI surfaces this so a multi-document section is visible at
+    a glance instead of silently collapsing to its first record.
+
+    Populated by ``ExtractionService`` from whichever of these applies:
+    the length of a class's declared instance array, or the number of records
+    recovered when the model returned a JSON array for a single-object schema.
+    """
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Section":
         """Create a Section from a dictionary representation."""
@@ -185,6 +201,7 @@ class Section:
             ],
             excluded=bool(data.get("excluded", False)),
             exclusion_reason=data.get("exclusion_reason"),
+            instance_count=int(data.get("instance_count") or 0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -205,6 +222,8 @@ class Section:
             result["processing_issues"] = [
                 pi.to_dict() for pi in self.processing_issues
             ]
+        if self.instance_count:
+            result["instance_count"] = self.instance_count
         return result
 
 
@@ -516,6 +535,10 @@ class Document:
                 section_dict["excluded"] = True
                 if section.exclusion_reason:
                     section_dict["exclusion_reason"] = section.exclusion_reason
+            # Same convention: omit when undetermined (0) so existing payloads
+            # are byte-identical.
+            if section.instance_count:
+                section_dict["instance_count"] = section.instance_count
             result["sections"].append(section_dict)
 
         # Add rule_validation_result if present (optional)
@@ -621,6 +644,7 @@ class Document:
                     ],
                     excluded=bool(section_data.get("excluded", False)),
                     exclusion_reason=section_data.get("exclusion_reason"),
+                    instance_count=int(section_data.get("instance_count") or 0),
                 )
             )
 

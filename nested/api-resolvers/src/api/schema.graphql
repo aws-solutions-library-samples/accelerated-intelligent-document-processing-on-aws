@@ -166,6 +166,11 @@ type Section @aws_cognito_user_pools @aws_iam {
   # Optional short category for why the section is excluded (e.g.,
   # "instructions", "legal", "cover-page"). Used for the UI badge text.
   ExclusionReason: String
+  # How many separate documents (instances) of this section's Class extraction
+  # found here. Absent/0 = undetermined, 1 = normal, >1 = the section spans
+  # several distinct documents that classification did not split apart. The UI
+  # surfaces >1 so a multi-document section is visible at a glance.
+  InstanceCount: Int
 }
 
 type ConfidenceThresholdAlert @aws_cognito_user_pools @aws_iam {
