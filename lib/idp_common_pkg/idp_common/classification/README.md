@@ -60,7 +60,9 @@ The system automatically creates three sections, properly separating the two inv
 
 ### Where the `document_boundary` signal lives
 
-The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is **not persisted** — neither the DynamoDB page record nor the `document.json` page dict carries it (both store `Class` only) — so it exists only for the lifetime of the classification Lambda invocation.
+The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is also copied onto the declared `Page.document_boundary` field, which **is** persisted — it appears in the `document.json` page dict, in the DynamoDB page record as `Boundary`, in the `create_document_run` snapshot, and on the GraphQL `Page` type. So a merge decision can be inspected after the fact rather than re-derived from Lambda logs.
+
+(Note the older `setattr(page, "metadata", ...)` call next to it stashes the whole metadata dict on an attribute that is *not* a dataclass field, so that one does not survive serialization — `Page.document_boundary` is the durable one.)
 
 To keep merges auditable, `_create_llm_determined_sections` logs the complete page → boundary map on one line before building sections:
 
@@ -82,24 +84,27 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 ### Single-class configurations
 
-When the configuration defines exactly **one** document class, the class decision is predetermined and the service short-circuits: every page is labelled with that class and **no backend call is made**.
+When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured strategy genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
 
-Section boundaries are a separate question, though, and are still resolved from `sectionSplitting` (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
+| `sectionSplitting` | Single-class behavior | Backend call? |
+|--------------------|-----------------------|---------------|
+| `disabled` | One section over all pages | No |
+| `page` | One section per page | No |
+| `llm_determined`, single-page document | One section | No — one page cannot be split |
+| `llm_determined`, multi-page document | Real boundary detection | **Yes** |
 
-| `sectionSplitting` | Single-class behavior |
-|--------------------|-----------------------|
-| `disabled` | One section over all pages |
-| `page` | One section per page |
-| `llm_determined` | **Degrades to `disabled`, with a warning** |
+`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate documents of the single class became one section, and extraction then returned only the first record.
 
-`llm_determined` cannot be honored in this path: boundaries come from the model's per-page `document_boundary` signal, which only exists if a per-page inference call is made — exactly the cost the short-circuit exists to avoid. Rather than silently reintroducing that cost for every single-class deployment, the service logs an actionable warning and falls back to `disabled`.
+**Cost note.** `llm_determined` is the *default*, so a **multi-page** single-class deployment that never set `sectionSplitting` now performs classification inference where it previously performed none. Single-page documents are unaffected (nothing to split, so the call is skipped), which covers the common "one document per file" deployment at zero cost.
 
-**If your packets can contain several separate documents of your single class**, either:
+If one input file is always exactly one document and you want to keep the zero-cost path on multi-page files, set it explicitly:
 
-- set `classification.sectionSplitting: page` to get one section per page, or
-- define a second document class so the full classification path (and real boundary detection) runs.
+```yaml
+classification:
+  sectionSplitting: disabled   # one file is always one document
+```
 
-Leaving the default `llm_determined` in place with a single class will produce one section spanning the entire packet.
+`page` remains available when you want one section per page without inference.
 
 ## Regex-Based Classification for Enhanced Performance
 

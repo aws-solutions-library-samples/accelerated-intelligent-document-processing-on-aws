@@ -746,14 +746,23 @@ class TestClassificationService:
         assert result.sections[2].page_ids == ["3"]
 
     def test_classify_document_single_class_optimization(self, single_class_config):
-        """Test document classification optimization when only one class is defined."""
+        """The single-class backend skip applies when no boundary detection is needed.
+
+        This test used to assert the skip unconditionally, which encoded the #686
+        bug: a multi-page single-class document under the default
+        `sectionSplitting: llm_determined` was given one all-pages section
+        WITHOUT ever asking the model where the boundaries were. The skip is now
+        scoped to the cases where the model genuinely has nothing to contribute —
+        here, `sectionSplitting: disabled`.
+        """
+        config = json.loads(json.dumps(single_class_config))
+        config["classification"]["sectionSplitting"] = "disabled"
         with (
             patch("boto3.Session"),
             patch("logging.Logger.info") as mock_log_info,
         ):
-            # Create service with single class config
             service = ClassificationService(
-                region="us-west-2", config=single_class_config, backend="bedrock"
+                region="us-west-2", config=config, backend="bedrock"
             )
 
             # Create a test document
@@ -785,9 +794,14 @@ class TestClassificationService:
             assert result.pages["3"].classification == "invoice"
 
             # Verify log message was emitted
-            mock_log_info.assert_any_call(
-                "Only one document class 'invoice' is defined. Automatically classifying all pages as this class without calling backend."
-            )
+            info_messages = [
+                call.args[0] for call in mock_log_info.call_args_list if call.args
+            ]
+            assert any(
+                "Only one document class 'invoice' is defined" in msg
+                and "without calling backend" in msg
+                for msg in info_messages
+            ), f"no single-class skip message logged: {info_messages}"
 
     @patch("idp_common.s3.get_text_content")
     @patch(
@@ -865,14 +879,20 @@ class TestClassificationService:
     def test_holistic_classify_document_single_class_optimization(
         self, single_class_config
     ):
-        """Test holistic document classification optimization when only one class is defined."""
+        """The holistic backend skip also applies only when nothing needs detecting.
+
+        See the page-level counterpart: asserting the skip unconditionally was
+        what encoded #686. Holistic classification returns segment RANGES, which
+        is boundary detection, so `llm_determined` must reach the model.
+        """
+        config = json.loads(json.dumps(single_class_config))
+        config["classification"]["sectionSplitting"] = "disabled"
         with (
             patch("boto3.Session"),
             patch("logging.Logger.info") as mock_log_info,
         ):
-            # Create service with single class config
             service = ClassificationService(
-                region="us-west-2", config=single_class_config, backend="bedrock"
+                region="us-west-2", config=config, backend="bedrock"
             )
 
             # Set classification method to holistic
@@ -907,9 +927,14 @@ class TestClassificationService:
             assert result.pages["3"].classification == "invoice"
 
             # Verify log message was emitted
-            mock_log_info.assert_any_call(
-                "Only one document class 'invoice' is defined. Automatically classifying all pages as this class without calling backend."
-            )
+            info_messages = [
+                call.args[0] for call in mock_log_info.call_args_list if call.args
+            ]
+            assert any(
+                "Only one document class 'invoice' is defined" in msg
+                and "without calling backend" in msg
+                for msg in info_messages
+            ), f"no single-class skip message logged: {info_messages}"
 
     # ------------------------------------------------------------------
     # GitHub issue #686 - a single-class config must still honor
@@ -969,35 +994,96 @@ class TestClassificationService:
         assert result.sections[0].classification == "invoice"
         assert result.sections[0].page_ids == ["1", "2", "3"]
 
-    def test_single_class_section_splitting_llm_determined_degrades_with_warning(
+    def test_single_class_llm_determined_actually_detects_boundaries(
         self, single_class_config
     ):
-        """`llm_determined` degrades to `disabled` and says so.
+        """`llm_determined` performs real boundary detection, single class or not.
 
-        Boundary detection needs the model's per-page document_boundary signal,
-        which the single-class short-circuit deliberately never asks for. The
-        warning has to name the config key and the alternatives.
+        A knob that asks for LLM boundary detection has to perform it. Returning
+        one all-pages section instead — which is what the single-class
+        short-circuit used to do — is the #686 bug, and for a multi-record packet
+        it silently discarded every record after the first.
         """
         service = self._single_class_service(single_class_config, "llm_determined")
         doc = self._three_page_document()
 
-        with (
-            patch.object(service, "classify_page") as spy_classify_page,
-            patch("logging.Logger.warning") as mock_log_warning,
-        ):
+        # Three pages, each its own document: start / start / start.
+        def fake_classify_page(page_id, *args, **kwargs):
+            return PageClassification(
+                page_id=page_id,
+                classification=DocumentClassification(
+                    doc_type="invoice",
+                    confidence=1.0,
+                    metadata={"document_boundary": "start"},
+                ),
+            )
+
+        with patch.object(
+            service, "classify_page", side_effect=fake_classify_page
+        ) as spy_classify_page:
+            result = service.classify_document(doc)
+            # The backend IS called now — that is the whole point.
+            assert spy_classify_page.call_count == 3
+
+        assert len(result.sections) == 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+        # And the boundary signal is persisted, not discarded.
+        assert [p.document_boundary for p in result.pages.values()] == [
+            "start",
+            "start",
+            "start",
+        ]
+
+    def test_single_class_llm_determined_merges_when_model_says_continue(
+        self, single_class_config
+    ):
+        """The model's judgement is respected in both directions."""
+        service = self._single_class_service(single_class_config, "llm_determined")
+        doc = self._three_page_document()
+
+        boundaries = {"1": "start", "2": "continue", "3": "start"}
+
+        def fake_classify_page(page_id, *args, **kwargs):
+            return PageClassification(
+                page_id=page_id,
+                classification=DocumentClassification(
+                    doc_type="invoice",
+                    confidence=1.0,
+                    metadata={"document_boundary": boundaries[page_id]},
+                ),
+            )
+
+        with patch.object(service, "classify_page", side_effect=fake_classify_page):
+            result = service.classify_document(doc)
+
+        assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
+
+    def test_single_class_llm_determined_skips_backend_for_one_page(
+        self, single_class_config
+    ):
+        """One page cannot be split, so inference would be pure waste.
+
+        This is what keeps the common "one document per file" single-class
+        deployment at zero classification cost — the thing the original
+        short-circuit was really protecting.
+        """
+        service = self._single_class_service(single_class_config, "llm_determined")
+        doc = Document(
+            id="test-doc", input_key="test-document.pdf", status=Status.CLASSIFYING
+        )
+        doc.pages["1"] = Page(
+            page_id="1",
+            image_uri="s3://bucket/image1.jpg",
+            parsed_text_uri="s3://bucket/text1.txt",
+        )
+
+        with patch.object(service, "classify_page") as spy_classify_page:
             result = service.classify_document(doc)
             spy_classify_page.assert_not_called()
 
         assert len(result.sections) == 1
-        assert result.sections[0].page_ids == ["1", "2", "3"]
-
-        warnings = [call.args[0] for call in mock_log_warning.call_args_list]
-        degrade_warnings = [w for w in warnings if "llm_determined" in w]
-        assert degrade_warnings, f"no degradation warning emitted: {warnings}"
-        warning = degrade_warnings[0]
-        assert "sectionSplitting" in warning
-        assert "page" in warning
-        assert "#686" in warning
+        assert result.sections[0].page_ids == ["1"]
+        assert result.sections[0].classification == "invoice"
 
     def test_holistic_single_class_section_splitting_page(self, single_class_config):
         """The holistic short-circuit honors `page` too."""

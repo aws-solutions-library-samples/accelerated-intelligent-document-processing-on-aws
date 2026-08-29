@@ -2321,21 +2321,17 @@ class ClassificationService:
 
             return document
 
-        # If there's only one document class defined, automatically classify all pages as that class
-        # without calling any backend service
-        if self.has_single_class:
+        # If there's only one document class defined, the class decision is
+        # predetermined — but only skip the backend when the configured
+        # sectionSplitting strategy genuinely needs no model output.
+        if self._can_skip_backend_for_single_class(document):
             logger.info(
-                f"Only one document class '{self.single_class_name}' is defined. Automatically classifying all pages as this class without calling backend."
+                f"Only one document class '{self.single_class_name}' is defined "
+                f"and sectionSplitting needs no boundary detection. Classifying "
+                f"all pages as this class without calling backend."
             )
-
-            # The class decision is predetermined, but section boundaries are
-            # not - honor sectionSplitting rather than hard-coding one
-            # all-pages section (GitHub issue #686).
             document = self._create_single_class_sections(document)
-
-            # Update document status
             document = self._update_document_status(document)
-
             return document
 
         # Check for limited page classification
@@ -2454,6 +2450,59 @@ class ClassificationService:
         else:  # llm_determined (default)
             return self._create_llm_determined_sections(document, page_results)
 
+    def _can_skip_backend_for_single_class(self, document: Document) -> bool:
+        """True when a single-class config needs no backend call at all.
+
+        A single-class configuration makes the *class* decision predetermined, so
+        classification used to skip the backend entirely. But section boundaries
+        are a separate question, and skipping them along with the class is what
+        made ``sectionSplitting`` a no-op for these configs (GitHub issue #686).
+
+        The backend can only be skipped when the configured strategy genuinely
+        needs no model output:
+
+        - ``disabled`` — one section over all pages. Nothing to detect.
+        - ``page`` — one section per page. Nothing to detect.
+        - **any strategy on a single-page document** — there is no boundary
+          decision to make on one page, so the result is identical either way and
+          an inference call would be pure waste. This keeps the common
+          "one document per file" single-class deployment at zero classification
+          cost, which is what the original short-circuit was really protecting.
+
+        ``llm_determined`` on a multi-page document is NOT skippable. It asks for
+        boundary detection, boundaries come from the model, so the model must
+        run. Silently returning one all-pages section instead is the bug.
+
+        Note the cost consequence: ``llm_determined`` is the *default*, so a
+        multi-page single-class deployment that never set ``sectionSplitting``
+        now performs classification inference where it previously performed none.
+        That is the correct trade — the previous behaviour merged every record in
+        a multi-record packet into one section and extraction returned only the
+        first — and ``sectionSplitting: disabled`` is the explicit opt-out for
+        deployments that know one file is always one document.
+        """
+        if not self.has_single_class:
+            return False
+
+        strategy = self.config.classification.sectionSplitting.lower()
+        if strategy in ("disabled", "page"):
+            return True
+
+        # One page cannot be split, whatever the strategy says.
+        if len(document.pages) <= 1:
+            return True
+
+        logger.info(
+            "Single-class configuration '%s' with sectionSplitting='%s': running "
+            "classification for boundary detection across %d pages. Set "
+            "sectionSplitting: disabled to skip it when one file is always one "
+            "document.",
+            self.single_class_name,
+            strategy,
+            len(document.pages),
+        )
+        return False
+
     def _create_single_class_sections(self, document: Document) -> Document:
         """
         Assign every page to the sole configured class and split into sections
@@ -2468,17 +2517,19 @@ class ClassificationService:
         packet" configuration that silently merged every record in the packet
         into a single section, and extraction then returned only the first one.
 
-        Strategy handling:
+        Only reached when ``_can_skip_backend_for_single_class`` says the backend
+        is genuinely unnecessary, so the strategies handled here are the ones that
+        need no model output:
 
-        - ``disabled`` — one section over all pages. Unchanged.
+        - ``disabled`` — one section over all pages.
         - ``page`` — one section per page. This is the documented escape hatch
           for multi-record packets and now actually works.
-        - ``llm_determined`` — **cannot** be honoured here. Boundaries come from
-          the model's per-page ``document_boundary`` signal, which only exists if
-          we make a per-page inference call — precisely the cost this
-          short-circuit exists to avoid. Rather than silently reintroducing that
-          cost for every single-class deployment, we degrade to ``disabled`` and
-          log an actionable warning naming the config key and the alternatives.
+        - any strategy on a **single-page** document, where there is no boundary
+          decision to make.
+
+        ``llm_determined`` on a multi-page document does not arrive here at all —
+        it falls through to real classification, because boundaries come from the
+        model and a knob that asks for boundary detection has to perform it.
 
         Args:
             document: Document whose pages should all be classified as the single
@@ -2507,21 +2558,9 @@ class ClassificationService:
         if strategy == "page":
             return self._create_per_page_sections(document, page_results)
 
-        if strategy != "disabled":
-            # llm_determined (the config default) — see the docstring above.
-            logger.warning(
-                f"sectionSplitting='{strategy}' cannot be honored for the "
-                f"single-class configuration '{class_name}': boundary detection "
-                f"needs the model's per-page document_boundary signal, and the "
-                f"single-class path makes no backend call. Degrading to "
-                f"'disabled' — one section spanning all {len(document.pages)} "
-                f"pages. If a packet can hold several separate '{class_name}' "
-                f"documents, set classification.sectionSplitting: page for one "
-                f"section per page, or define a second document class so full "
-                f"classification (and real boundary detection) runs. "
-                f"See GitHub issue #686."
-            )
-
+        # `disabled`, or any strategy on a single-page document — one section.
+        # A multi-page `llm_determined` document never reaches here (it goes
+        # through real classification), so there is nothing to warn about.
         return self._create_single_section(document, page_results)
 
     def _create_single_section(
@@ -3038,20 +3077,18 @@ class ClassificationService:
                 error_message="Document has no pages to classify",
             )
 
-        # If there's only one document class defined, automatically classify all pages as that class
-        # without calling any backend service
-        if self.has_single_class:
+        # Same as the page-level path: the class is predetermined, but the
+        # section boundaries are not (GitHub issue #686). Holistic packet
+        # classification returns segment ranges, which IS boundary detection, so
+        # llm_determined falls through to it rather than being skipped.
+        if self._can_skip_backend_for_single_class(document):
             logger.info(
-                f"Only one document class '{self.single_class_name}' is defined. Automatically classifying all pages as this class without calling backend."
+                f"Only one document class '{self.single_class_name}' is defined "
+                f"and sectionSplitting needs no boundary detection. Classifying "
+                f"all pages as this class without calling backend."
             )
-
-            # Same as the page-level path: the class is predetermined, the
-            # section boundaries are not (GitHub issue #686).
             document = self._create_single_class_sections(document)
-
-            # Update document status
             document = self._update_document_status(document)
-
             return document
 
         t0 = time.time()
