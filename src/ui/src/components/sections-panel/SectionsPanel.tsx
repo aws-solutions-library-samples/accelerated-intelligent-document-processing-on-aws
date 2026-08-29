@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Container,
@@ -29,6 +29,11 @@ import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../c
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
+import PageGroupingEditor from '../common/PageGroupingEditor';
+import type { GroupedSection } from '../common/section-grouping';
+import { updateDocumentSections } from '../../graphql/generated';
+import usePageThumbnails from '../../hooks/use-page-thumbnails';
+import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
@@ -862,6 +867,10 @@ const SectionsPanel = ({
   classificationIndex = EMPTY_CLASSIFICATION_INDEX,
 }: SectionsPanelProps): React.JSX.Element => {
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isRegrouping, setIsRegrouping] = useState(false);
+  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
+  const [groupingNotice, setGroupingNotice] = useState<string | null>(null);
+  const thumbnailUrls = usePageThumbnails(pages);
   const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -916,6 +925,64 @@ const SectionsPanel = ({
   const processingStatuses = ['queued', 'running', 'processing', 'postprocessing', 'summarizing', 'evaluating'];
   const docStatus = documentItem?.objectStatus?.toLowerCase() || '';
   const isDocumentProcessing = processingStatuses.includes(docStatus);
+
+  /**
+   * Pages for the board, in the document's OWN numbering.
+   *
+   * Passed through unconverted, unlike the test-set path: document page ids are 1-based
+   * except BDA / Pattern-1, which is 0-based, and `section-grouping` is deliberately
+   * base-agnostic for exactly this reason. Converting here would put an off-by-one into
+   * the surface that has two numbering conventions.
+   */
+  const boardPages = useMemo(
+    () => (pages ?? []).map((page) => ({ id: page.Id, imageUri: thumbnailUrls[String(page.Id)] ?? null })),
+    [pages, thumbnailUrls],
+  );
+
+  const boardSections = useMemo<GroupedSection[]>(
+    () =>
+      (sections ?? []).map((section) => ({
+        sectionId: String(section.Id),
+        documentClass: section.Class ?? null,
+        pageIds: (section.PageIds ?? []).map((id) => Number(id)),
+      })),
+    [sections],
+  );
+
+  const handleSaveGrouping = async (next: GroupedSection[]) => {
+    const documentKey = documentItem?.objectKey || documentItem?.ObjectKey;
+    if (!documentKey) return;
+    setIsSavingGrouping(true);
+    try {
+      const response = await client.graphql({
+        query: updateDocumentSections,
+        variables: {
+          objectKey: documentKey,
+          sections: next.map((section) => ({
+            sectionId: section.sectionId,
+            classification: section.documentClass ?? undefined,
+            pageIds: section.pageIds.map((id) => String(id)),
+          })),
+        },
+      });
+      const result = response.data?.updateDocumentSections;
+      if (!result?.success) {
+        // Surfaced rather than thrown: the resolver returns a reasoned refusal for the
+        // cases a reviewer can act on — a document mid-pipeline, most of all.
+        setGroupingNotice(result?.message ?? 'The page grouping could not be saved.');
+        return;
+      }
+      setGroupingNotice(result.message ?? null);
+      setIsRegrouping(false);
+      // The document record changed underneath the page, so the caller refetches.
+      if (onDocumentUpdate) onDocumentUpdate((prev) => ({ ...prev }));
+    } catch (err) {
+      logger.error('Could not save the page grouping:', err);
+      setGroupingNotice(`Could not save the page grouping: ${getErrorMessage(err)}`);
+    } finally {
+      setIsSavingGrouping(false);
+    }
+  };
 
   // Disable edit mode if:
   // - User has no write or review permissions (Viewer role), OR
@@ -1463,6 +1530,16 @@ const SectionsPanel = ({
                         Skip All Reviews
                       </Button>
                     )}
+                    {/* Distinct from Edit Mode on purpose, and the labels carry the
+                        difference: this keeps the extracted values, whereas Edit Mode's
+                        save is already called "Process Changes" / "Save and Reprocess"
+                        because it regenerates them. Hidden for Pattern-1, where BDA owns
+                        the section structure. */}
+                    {!isPattern1() && (
+                      <Button iconName="edit" onClick={() => setIsRegrouping(true)} disabled={isEditModeDisabled}>
+                        Edit page grouping
+                      </Button>
+                    )}
                     <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick} disabled={isEditModeDisabled}>
                       Edit Mode
                     </Button>
@@ -1496,6 +1573,32 @@ const SectionsPanel = ({
           </Header>
         }
       >
+        {groupingNotice && (
+          <Alert type="info" dismissible onDismiss={() => setGroupingNotice(null)}>
+            {groupingNotice}
+          </Alert>
+        )}
+
+        {isRegrouping && (
+          <PageGroupingEditor
+            pages={boardPages}
+            sections={boardSections}
+            classOptions={getAvailableClasses()}
+            canChangeClass={!isEditModeDisabled}
+            consequence={
+              <>
+                Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> — including
+                any a reviewer corrected — and the document is <b>not</b> reprocessed, so they may no longer match their pages. Use{' '}
+                <b>Edit Mode → Process Changes</b> afterwards if you would rather the pipeline redo them.
+              </>
+            }
+            saveLabel="Save page grouping"
+            isSaving={isSavingGrouping}
+            onSave={handleSaveGrouping}
+            onCancel={() => setIsRegrouping(false)}
+          />
+        )}
+
         {hasValidationErrors && (
           <Alert type="error" header="Validation Errors">
             Please fix the following errors before saving:
