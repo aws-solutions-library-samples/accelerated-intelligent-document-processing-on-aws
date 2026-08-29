@@ -137,6 +137,47 @@ class TestRetentionPin:
         manager.get_revision.assert_called_once_with("lending", 5)
         manager.mark_revision_pinned.assert_called_once_with("lending", 5)
 
+    def test_the_captured_body_carries_no_floats(self, monkeypatch):
+        """
+        A revision body is JSON, so it carries Python floats. The captured config
+        goes straight into the run's DynamoDB item, and the DynamoDB resource
+        client rejects floats — "Float types are not supported. Use Decimal types
+        instead." — which failed every startTestRun that pinned a revision.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "test_runner_index_floats", Path(__file__).with_name("index.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["test_runner_index_floats"] = module
+        spec.loader.exec_module(module)
+
+        manager = MagicMock()
+        manager.get_revision.return_value = {
+            "extraction": {"temperature": 0.0, "top_p": 0.95},
+            "classes": [{"name": "W2", "threshold": 0.8}],
+        }
+        monkeypatch.setitem(
+            sys.modules,
+            "idp_common.config.configuration_manager",
+            MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+        )
+        module.dynamodb = MagicMock()
+
+        captured = module._capture_config("config-table", "lending", 5)
+
+        def floats(node):
+            if isinstance(node, float):
+                return [node]
+            if isinstance(node, dict):
+                return [f for v in node.values() for f in floats(v)]
+            if isinstance(node, list):
+                return [f for v in node for f in floats(v)]
+            return []
+
+        assert floats(captured) == [], "captured config still contains float values"
+        # And the values survive, as Decimal.
+        assert str(captured["Config"]["extraction"]["temperature"]) == "0.0"
+
     def test_an_unavailable_revision_falls_back_to_the_profile(self, monkeypatch):
         """
         Capture is for the run RECORD, not for processing: a pruned revision

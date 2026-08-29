@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from decimal import Decimal
 
 import boto3
 
@@ -489,7 +490,14 @@ def _capture_config(config_table, config_version=None, config_revision=None):
                 config_version, config_revision
             )
             if body is not None:
-                config["Config"] = body
+                # A revision body is JSON, so it carries Python floats (e.g.
+                # temperature: 0.0). The captured config is written straight into
+                # the run's DynamoDB item, and the DynamoDB resource client
+                # rejects floats outright — "Float types are not supported. Use
+                # Decimal types instead." — which failed every startTestRun that
+                # pinned a revision. The config read from DynamoDB never hit this
+                # because it comes back as Decimal already.
+                config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
                 _pin_revision(config_table, config_version, config_revision)
                 return config
             logger.warning(
