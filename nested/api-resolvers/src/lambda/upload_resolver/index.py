@@ -101,6 +101,7 @@ def _handle_upload_document(event):
         content_type = arguments.get('contentType', 'application/octet-stream')
         prefix = arguments.get('prefix', '')
         version = arguments.get('version')  # Optional version parameter
+        revision = arguments.get('revision')  # Optional revision of that version
         
         if not file_name:
             raise ValueError("fileName is required")
@@ -138,6 +139,12 @@ def _handle_upload_document(event):
         if version:
             fields['x-amz-meta-config-version'] = version
             conditions.append({'x-amz-meta-config-version': version})
+            # A revision only means something in the context of a profile, so it
+            # is only stamped when one was chosen. The queue processor pins the
+            # profile's current revision when this is absent.
+            if revision is not None:
+                fields['x-amz-meta-config-revision'] = str(revision)
+                conditions.append({'x-amz-meta-config-revision': str(revision)})
         
         presigned_post = s3_client.generate_presigned_post(
             Bucket=bucket_name,
@@ -219,6 +226,7 @@ def _handle_upload_sample_document(event):
         sample_id = arguments.get("sampleId")
         prefix = (arguments.get("prefix") or "").strip("/")
         version = arguments.get("version")
+        revision = arguments.get("revision")
         if not sample_id:
             raise ValueError("sampleId is required")
 
@@ -255,6 +263,8 @@ def _handle_upload_sample_document(event):
         extra_args = {}
         if version:
             extra_args["Metadata"] = {"config-version": version}
+            if revision is not None:
+                extra_args["Metadata"]["config-revision"] = str(revision)
             extra_args["MetadataDirective"] = "REPLACE"
 
         object_keys = []

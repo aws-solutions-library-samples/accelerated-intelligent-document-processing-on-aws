@@ -1,18 +1,20 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import boto3
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
-from botocore.exceptions import ClientError
-import logging
 from typing import Any, Dict, Optional, Tuple
-from idp_common.models import Document, Status
-from idp_common.docs_service import create_document_service
+
+import boto3
+from aws_xray_sdk.core import patch_all, xray_recorder
+from botocore.exceptions import ClientError
+
 from idp_common.config import ConfigurationManager
-from aws_xray_sdk.core import xray_recorder, patch_all
+from idp_common.docs_service import create_document_service
+from idp_common.models import Document, Status
 
 patch_all()
 
@@ -400,16 +402,42 @@ def start_workflow(document: Document) -> Dict[str, Any]:
     # writes Config#default with no IsActive attribute, so "no active version"
     # is a normal state and resolve_active_version() returns 'default' for it.
     # Failing here would reject documents that process correctly today.
+    #
+    # The REVISION of that profile is pinned here too. Without it a save made
+    # while a document is in flight would change the configuration under it
+    # mid-pipeline — extraction on r7 and assessment on r8 — and the result would
+    # not correspond to any single configuration. A revision of None means the
+    # profile has no history (an older deployment, or untouched since the
+    # upgrade), and consumers fall back to the profile head as before.
     config_table_name = os.environ.get("CONFIG_TABLE")
-    if not document.config_version and config_table_name:
+    needs_version = not document.config_version
+    needs_revision = document.config_revision is None
+    if config_table_name and (needs_version or needs_revision):
         try:
-            document.config_version = ConfigurationManager(
-                table_name=config_table_name
-            ).resolve_active_version()
-            logger.info(
-                f"Pinned config version '{document.config_version}' for document "
-                f"{document.id}"
-            )
+            manager = ConfigurationManager(table_name=config_table_name)
+            if needs_version:
+                document.config_version = manager.resolve_active_version()
+                logger.info(
+                    f"Pinned config version '{document.config_version}' for document "
+                    f"{document.id}"
+                )
+            if document.config_revision is None and document.config_version:
+                # Coerced inline (not via the shared helper) because this value is
+                # about to be serialized into the Step Functions input: anything
+                # non-numeric must degrade to "no pin" rather than break every
+                # workflow start.
+                published = manager.resolve_published_revision(document.config_version)
+                try:
+                    document.config_revision = (
+                        int(published) if published is not None else None
+                    )
+                except (TypeError, ValueError):
+                    document.config_revision = None
+                if document.config_revision is not None:
+                    logger.info(
+                        f"Pinned revision r{document.config_revision} of "
+                        f"'{document.config_version}' for document {document.id}"
+                    )
         except Exception as e:
             logger.warning(
                 f"Could not pin a config version for {document.id}: {e}. "
@@ -425,7 +453,7 @@ def start_workflow(document: Document) -> Dict[str, Any]:
             working_bucket, "workflow_start", logger
         )
         logger.info(
-            f"Document compressed for Step Functions workflow (always compress)"
+            "Document compressed for Step Functions workflow (always compress)"
         )
     else:
         # Fallback to direct document dict if no working bucket

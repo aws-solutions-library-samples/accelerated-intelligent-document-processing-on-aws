@@ -3887,6 +3887,9 @@ Resources:
           DB_NAME: !Ref BDAMetadataTable
           WORKING_BUCKET: !Ref WorkingBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref BDAProcessResultsFunctionLogGroup
       Policies:
@@ -3901,6 +3904,10 @@ Resources:
             TableName: !Ref BDAMetadataTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -4247,6 +4254,9 @@ Resources:
           METRIC_NAMESPACE: !Ref StackName
           MAX_WORKERS: 20
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTable
           DOCUMENT_TRACKING_MODE: dynamodb
@@ -4275,6 +4285,10 @@ Resources:
             BucketName: !Ref InputBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -4767,6 +4781,10 @@ Resources:
             BucketName: !Ref ConfigurationBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5029,6 +5047,9 @@ Resources:
           WORKING_BUCKET: !Ref WorkingBucket
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref ProcessResultsFunctionLogGroup
       Policies:
@@ -5044,6 +5065,10 @@ Resources:
             TableName: !Ref TrackingTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - Statement:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
@@ -5112,6 +5137,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5141,6 +5169,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5392,6 +5424,9 @@ Resources:
           BASELINE_BUCKET: !Ref BaselineBucket
           SAVE_REPORTING_FUNCTION_NAME: !Ref SaveReportingFunctionName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           WORKING_BUCKET: !Ref WorkingBucket
           DOCUMENT_TRACKING_MODE: dynamodb
           TRACKING_TABLE: !Ref TrackingTable
@@ -5410,6 +5445,10 @@ Resources:
             TableName: !Ref TrackingTable
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - S3ReadPolicy:
             BucketName: !Ref BaselineBucket
         - S3CrudPolicy:
@@ -5572,6 +5611,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTable
           DOCUMENT_TRACKING_MODE: dynamodb
@@ -5594,6 +5636,10 @@ Resources:
             BucketName: !Ref ReportingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5674,6 +5720,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5703,6 +5752,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5811,6 +5864,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5842,6 +5898,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:

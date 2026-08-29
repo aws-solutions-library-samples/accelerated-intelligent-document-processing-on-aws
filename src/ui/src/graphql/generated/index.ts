@@ -589,6 +589,7 @@ export const getDocument = /* GraphQL */ `
       HITLReviewedByEmail
       HITLReviewHistory
       ConfigVersion
+      ConfigRevision
       HITLCompleted
       ProcessingIssueCount
       TraceId
@@ -614,6 +615,7 @@ export const getDocumentVersion = /* GraphQL */ `
       WorkflowStartTime
       WorkflowExecutionArn
       ConfigVersion
+      ConfigRevision
       PageCount
       FileCount
       ManifestUri
@@ -846,6 +848,7 @@ export const getTestRun = /* GraphQL */ `
       completedAt
       context
       configVersion
+      configRevision
       config
     }
   }
@@ -863,6 +866,7 @@ export const getTestRuns = /* GraphQL */ `
       completedAt
       context
       configVersion
+      configRevision
     }
   }
 ` as GeneratedQuery<GetTestRunsQueryVariables, GetTestRunsQuery>;
@@ -1090,6 +1094,7 @@ export const listDocuments = /* GraphQL */ `
         InitialEventTime
         CompletionTime
         ConfigVersion
+        ConfigRevision
         EvaluationStatus
         HITLStatus
         HITLTriggered
@@ -1200,6 +1205,7 @@ export const listDocumentVersions = /* GraphQL */ `
       WorkflowStartTime
       WorkflowExecutionArn
       ConfigVersion
+      ConfigRevision
       PageCount
       FileCount
       ManifestUri
@@ -1507,8 +1513,8 @@ export const removeDocumentsFromTestSet = /* GraphQL */ `
 ` as GeneratedMutation<RemoveDocumentsFromTestSetMutationVariables, RemoveDocumentsFromTestSetMutation>;
 
 export const reprocessDocument = /* GraphQL */ `
-  mutation ReprocessDocument($objectKeys: [String!]!, $version: String) {
-    reprocessDocument(objectKeys: $objectKeys, version: $version)
+  mutation ReprocessDocument($objectKeys: [String!]!, $version: String, $revision: Int) {
+    reprocessDocument(objectKeys: $objectKeys, version: $version, revision: $revision)
   }
 ` as GeneratedMutation<ReprocessDocumentMutationVariables, ReprocessDocumentMutation>;
 
@@ -1705,6 +1711,7 @@ export const startTestRun = /* GraphQL */ `
       filesCount
       createdAt
       configVersion
+      configRevision
     }
   }
 ` as GeneratedMutation<StartTestRunMutationVariables, StartTestRunMutation>;
@@ -1851,8 +1858,22 @@ export const uploadDiscoveryDocument = /* GraphQL */ `
 ` as GeneratedMutation<UploadDiscoveryDocumentMutationVariables, UploadDiscoveryDocumentMutation>;
 
 export const uploadDocument = /* GraphQL */ `
-  mutation UploadDocument($fileName: String!, $contentType: String, $prefix: String, $bucket: String, $version: String) {
-    uploadDocument(fileName: $fileName, contentType: $contentType, prefix: $prefix, bucket: $bucket, version: $version) {
+  mutation UploadDocument(
+    $fileName: String!
+    $contentType: String
+    $prefix: String
+    $bucket: String
+    $version: String
+    $revision: Int
+  ) {
+    uploadDocument(
+      fileName: $fileName
+      contentType: $contentType
+      prefix: $prefix
+      bucket: $bucket
+      version: $version
+      revision: $revision
+    ) {
       presignedUrl
       objectKey
       usePostMethod

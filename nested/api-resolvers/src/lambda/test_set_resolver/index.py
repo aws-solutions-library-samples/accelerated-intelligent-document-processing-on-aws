@@ -807,6 +807,7 @@ def generate_draft_labels(args, event=None):
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     config_version = input_data.get("configVersion")
+    config_revision = input_data.get("configRevision")
     object_keys = input_data.get("objectKeys") or []
 
     if not validate_test_set_name(test_set_id):
@@ -846,6 +847,10 @@ def generate_draft_labels(args, event=None):
     }
     if config_version:
         run_input["configVersion"] = config_version
+        # Drafting under a pinned revision matters for the same reason scoring
+        # does: a later save must not change what the labels were drafted with.
+        if config_revision is not None:
+            run_input["configRevision"] = config_revision
     if object_keys:
         run_input["objectKeys"] = object_keys
 
@@ -877,6 +882,7 @@ def generate_draft_labels(args, event=None):
         "jobId": test_run_id,
         "status": "RUNNING",
         "configVersion": config_version,
+        "configRevision": config_revision,
         "total": len(object_keys) or file_count,
         "labeled": 0,
         "objectKeys": object_keys,

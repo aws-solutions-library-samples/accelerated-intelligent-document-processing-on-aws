@@ -198,7 +198,8 @@ def handler(event, context):
         
         # Load configuration - use document's version if specified, otherwise use active version
         config_version = getattr(actual_document, 'config_version', None)
-        config = get_config(as_model=True, version=config_version)
+        config_revision = getattr(actual_document, 'config_revision', None)
+        config = get_config(as_model=True, version=config_version, revision=config_revision)
         
         if config_version:
             logger.info(f"Using configuration version {config_version} for document {actual_document.id}")

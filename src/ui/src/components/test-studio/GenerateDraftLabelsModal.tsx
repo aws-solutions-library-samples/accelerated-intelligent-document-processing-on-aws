@@ -23,6 +23,7 @@ import {
   Spinner,
   Table,
 } from '@cloudscape-design/components';
+import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
@@ -43,11 +44,13 @@ interface Props {
   testSetId: string;
   documents: TestSetDocumentItem[];
   onDismiss: () => void;
-  onSubmit: (configVersion: string | undefined, objectKeys: string[] | undefined) => void;
+  onSubmit: (configVersion: string | undefined, objectKeys: string[] | undefined, configRevision?: number) => void;
   submitting?: boolean;
 }
 
 const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, onSubmit, submitting }: Props): React.JSX.Element => {
+  // null = the profile's current configuration.
+  const [configRevision, setConfigRevision] = useState<number | null>(null);
   const [configVersion, setConfigVersion] = useState<SelectProps.Option>({
     label: 'Active configuration',
     value: ACTIVE_CONFIG,
@@ -121,7 +124,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
               variant="primary"
               loading={submitting}
               disabled={targetCount === 0}
-              onClick={() => onSubmit(selectedConfigVersion, effectiveKeys)}
+              onClick={() => onSubmit(selectedConfigVersion, effectiveKeys, configRevision ?? undefined)}
             >
               {targetCount === 0 ? 'Nothing to label' : `Label ${targetCount} document(s)`}
             </Button>
@@ -156,6 +159,13 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
             filteringType="auto"
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedConfigVersion}
+          value={configRevision}
+          onChange={setConfigRevision}
+          description="Defaults to the profile’s current configuration. Labels record which revision drafted them, so a later save cannot change what they were drafted with."
+        />
 
         <FormField label="Documents to label">
           <SpaceBetween size="s">

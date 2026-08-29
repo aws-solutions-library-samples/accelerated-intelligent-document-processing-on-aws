@@ -100,6 +100,40 @@ def class_fingerprint(config_dict: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+# Configuration that changes what a confidence number MEANS. Two revisions with
+# the same fingerprint produce comparable confidences; a model swap or an
+# assessment change does not, which is why the fingerprint is recorded per
+# revision (see the confidence-curve note in docs/configuration-profiles.md).
+_CONFIDENCE_RELEVANT_PATHS = (
+    ("assessment",),
+    ("extraction", "model"),
+    ("extraction", "temperature"),
+    ("extraction", "top_k"),
+    ("extraction", "top_p"),
+)
+
+
+def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
+    """
+    Stable hash of the configuration that determines confidence semantics.
+
+    A revision that only edits, say, a classification prompt keeps the same
+    fingerprint, so measurements taken under the previous revision remain
+    comparable. A revision that swaps the extraction model does not.
+    """
+    subset: Dict[str, Any] = {}
+    for path in _CONFIDENCE_RELEVANT_PATHS:
+        node: Any = config_dict
+        for key in path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        subset[".".join(path)] = node
+    canonical = json.dumps(subset, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def _coerce_int(value: Any, default: int = 0) -> int:
     """DynamoDB returns numbers as Decimal; normalize to int for callers/JSON."""
     try:
@@ -273,6 +307,7 @@ class ConfigRevisionStore:
             "notes": entry.get("notes"),
             "sizeBytes": _coerce_int(entry.get("sizeBytes")),
             "classFingerprint": entry.get("classFingerprint"),
+            "confidenceFingerprint": entry.get("confidenceFingerprint"),
             "pinned": bool(entry.get("pinned", False)),
         }
 
@@ -409,6 +444,7 @@ class ConfigRevisionStore:
             "notes": (notes or "")[:_MAX_NOTES_LEN] or None,
             "sizeBytes": size,
             "classFingerprint": class_fingerprint(config_dict),
+            "confidenceFingerprint": confidence_fingerprint(config_dict),
             "pinned": False,
         }
         self.append_index(profile, entry)

@@ -1388,6 +1388,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -2208,6 +2215,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -2384,6 +2398,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "TraceId",
         "non_null": false,
         "type": "String"
@@ -2456,6 +2477,13 @@
         "name": "configVersion",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
       },
       {
         "elem_non_null": true,
@@ -2870,6 +2898,13 @@
         "type": "String"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
@@ -3163,6 +3198,13 @@
         "name": "ConfigVersion",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
       },
       {
         "elem_non_null": false,

@@ -1,7 +1,8 @@
 # Proposal: Configuration Profiles and Revisions
 
-**Status:** Phases 0 and 1 implemented (see §10 for where the implementation
-departs from this document); Phases 2 and 3 still proposed.
+**Status:** Phases 0, 1 and 2 implemented (see §10 for where the implementation
+departs from this document). **Phase 3 is closed as unnecessary** — see the reasoning
+and the two signals that would reopen it.
 
 Splits today's single "configuration version" concept into two: a **Configuration
 Profile** (the named, access-controlled entity) and its **Revisions** (immutable
@@ -304,7 +305,7 @@ document versioning (`docs/document-versions.md` Caveats). Existing document
 
 ## 10. What shipped, and where it departs from this proposal
 
-Phases 0 and 1 are implemented. Three deliberate departures:
+Phases 0, 1 and 2 are implemented. Three deliberate departures in Phases 0–1:
 
 1. **Revision metadata is one index item per profile** (`ConfigRevIndex#<profile>`),
    not one pointer item per revision — see §3.1. Listing becomes a single `get_item`
@@ -331,7 +332,7 @@ Also landed alongside, as authorized side fixes:
 
 ## 11. File-by-file change list
 
-### Phase 0 — terminology only (no behavior change)
+### Phase 0 — terminology only (no behavior change) (implemented)
 
 | File | Change |
 |---|---|
@@ -342,7 +343,7 @@ Also landed alongside, as authorized side fixes:
 | `src/ui/src/components/genaiidp-layout/navigation.tsx` | Nav label. |
 | `CHANGELOG.md` | Changed entry noting the rename and that API/DB names are unchanged. |
 
-### Phase 1 — revisions + history UI (self-contained; runtime still uses head)
+### Phase 1 — revisions + history UI (self-contained; runtime still uses head) (implemented)
 
 | File | Change |
 |---|---|
@@ -359,7 +360,7 @@ Also landed alongside, as authorized side fixes:
 | `feature-platform/main-stack-extensions/lambdas/apply_feature_config_preset/index.py` | Cut a revision of one managed profile instead of minting `…-v<semver>` names. |
 | `lib/idp_common_pkg/tests/unit/config/` | Cut/list/restore/prune, `ConfigRev#` never appearing in `list_config_versions()`, scope enforcement on every new operation, prune never deleting published/labeled/pinned. |
 
-### Phase 2 — revision selection and pinning
+### Phase 2 — revision selection and pinning (implemented)
 
 | File | Change |
 |---|---|
@@ -379,10 +380,30 @@ Also landed alongside, as authorized side fixes:
 | `lib/idp_sdk/idp_sdk/operations/config.py`, `idp_cli` | `--config-revision` on `run-inference`, `config-download`, `config-upload`; `config-revisions` list command. |
 | `docs/configuration-profiles.md`, `docs/test-studio.md`, `docs/rbac.md`, `lib/idp_common_pkg/idp_common/config/README.md` | Document selection, pinning, curve keying, permission matrix. |
 
-### Phase 3 — only if still needed
+### Phase 3 — closed, not planned
 
-Profile **families** (group profiles under a use case; scope by family). Steps 0–2
-remove most of the demand; revisit with evidence.
+Profile **families** (group profiles under a use case; scope by family) were
+contingent on Phases 0–2 leaving real demand. They did not, so this is closed
+rather than left pending.
+
+The reasoning: families buy exactly one thing that glob scope entries do not —
+letting an **Author create new profiles** inside a family they are scoped to.
+Everything else families were for (a team owning `lending-personal`,
+`lending-commercial`, `lending-auto` and seeing nothing else) is already covered by
+a single scope entry of `lending-*` (§5.1). Building a whole grouping layer for one
+delegation rule nobody has asked for is speculative structure.
+
+Two observable signals would reopen it:
+
+1. **A customer says their Authors need to spin up new use cases without an admin.**
+   That is the one capability globs cannot express, and open question 4 below is its
+   design decision.
+2. **Profiles start being named to fit a scope glob.** If people rename a profile so
+   it lands inside `lending-*`, that is lineage-as-identity reappearing one level up
+   — the same smell this whole design removed — and grouping becomes the honest fix.
+
+Absent either, glob entries stay the pressure valve. They are a stopgap that ages
+badly (§5.1), so their spread is itself worth watching.
 
 ## 12. Rejected alternatives
 
@@ -417,10 +438,19 @@ remove most of the demand; revisit with evidence.
    nobody will turn.
 3. ~~**Should `Viewer` see revision history?**~~ **Resolved:** yes, read-only, for
    in-scope profiles — consistent with `getConfigVersion`.
+3b. ~~**Confidence-curve keying**~~ **Resolved for now:** curves stay keyed per
+   profile. Fingerprint keying was deliberately not wired, because doing it at only
+   the call site that knows the pinned revision (a scoring run) while review
+   observations kept landing on the profile key would split the two data sources the
+   estimate reads — worse than today. Each revision records a
+   `confidenceFingerprint` so the switch is cheap once all three call sites can
+   supply it.
 4. **Author-created profiles**, ever? Staying Admin-only keeps the privilege boundary
    clean, but a scoped Author still needs an Admin to start a genuinely new use case.
    An alternative is "Author may create a profile *within a family they are scoped
-   to*", which requires Phase 3.
+   to*", which requires the families work closed above. **Open on purpose**: this is
+   the question a customer request would answer, and answering it speculatively is
+   how the grouping layer would get built for nobody.
 
 ## 14. Related
 

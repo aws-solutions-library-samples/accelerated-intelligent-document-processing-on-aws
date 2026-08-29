@@ -226,6 +226,33 @@ runs in `ConfigRevisionStore.prune()` on write.
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 
+### Reading a pinned revision
+
+`get_config(version=…, revision=…)` (→ `ConfigurationManager.get_merged_configuration`)
+loads a specific revision's stored body instead of the profile head. Every pipeline
+Lambda passes `document.config_revision`, which the queue processor pins at queue
+time, so a save made mid-flight cannot change the configuration under an in-flight
+document.
+
+Two deliberate choices:
+
+- **A missing pinned revision raises.** It does *not* fall back to the head: a run
+  that silently used the wrong configuration looks successful, and its numbers then
+  enter a comparison.
+- **No "published revision" branch on the unpinned path.** The head always holds
+  the published revision's content, and reading the head is one `get_item` against
+  an S3 GET, so an unpinned read stays on the head.
+
+`resolve_published_revision(profile)` returns the revision a new document should be
+pinned to, or None when the profile has no history (an older deployment, or one
+untouched since the upgrade) — in which case consumers fall back to the head, which
+is the pre-revision behavior.
+
+`confidence_fingerprint()` hashes only the configuration that determines what a
+confidence number *means* (extraction model/sampling, assessment). It is recorded on
+every revision so confidence curves can eventually be branched per semantics rather
+than per profile; nothing keys off it yet.
+
 ## Rollback-safe DynamoDB serialization
 
 A CloudFormation stack rollback reverts the config custom-resource Lambda to the

@@ -242,6 +242,60 @@ class TestRestore:
 
 @pytest.mark.unit
 @mock_aws
+class TestPinnedResolution:
+    """Reading a pinned revision, which is what makes a run reproducible."""
+
+    def test_a_pinned_revision_is_loaded_instead_of_the_head(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("old"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("new"), version="p")
+
+        assert manager.get_merged_configuration("p").notes == "new"
+        assert manager.get_merged_configuration("p", revision=1).notes == "old"
+
+    def test_an_unavailable_pinned_revision_raises_rather_than_falling_back(
+        self, monkeypatch
+    ):
+        """
+        Silently processing under the wrong configuration is worse than failing:
+        the run would look successful and its numbers would enter a comparison.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=99)
+
+    def test_get_config_passes_the_revision_through(self, monkeypatch):
+        """The pipeline's entry point is get_config(), not the manager."""
+        from idp_common.config import get_config
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("old"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("new"), version="p")
+
+        assert get_config(as_model=True, version="p", revision=1).notes == "old"
+        assert get_config(as_model=True, version="p").notes == "new"
+
+    def test_published_revision_resolution(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("b"), version="p")
+        assert manager.resolve_published_revision("p") == 2
+
+    def test_published_revision_is_none_without_history(self, monkeypatch):
+        """An older deployment: consumers fall back to the profile head."""
+        _make_table()
+        manager = _manager(monkeypatch, with_bucket=False)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        assert manager.resolve_published_revision("p") is None
+
+
+@pytest.mark.unit
+@mock_aws
 class TestRetention:
     def test_cap_prunes_oldest_first(self, monkeypatch):
         _make_table()
@@ -464,6 +518,39 @@ class TestStoreInternals:
         assert (
             ConfigRevisionStore.body_key("p", 7) == "config_revisions/p/000007.json.gz"
         )
+
+    def test_confidence_fingerprint_ignores_irrelevant_edits(self, monkeypatch):
+        """
+        Editing something that does not change what a confidence number means
+        keeps the fingerprint stable, so measurements stay comparable across the
+        revision.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="a"), version="p"
+        )
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="b"), version="p"
+        )
+        revisions = manager.list_revisions("p")
+        assert (
+            revisions[0]["confidenceFingerprint"]
+            == revisions[1]["confidenceFingerprint"]
+        )
+
+    def test_confidence_fingerprint_changes_with_the_extraction_model(self):
+        """A model swap must NOT inherit a curve measured under the old model."""
+        from idp_common.config.revisions import confidence_fingerprint
+
+        base = {"extraction": {"model": "model-a"}, "assessment": {"enabled": True}}
+        swapped = {"extraction": {"model": "model-b"}, "assessment": {"enabled": True}}
+        prompt_edit = {
+            "extraction": {"model": "model-a", "task_prompt": "different"},
+            "assessment": {"enabled": True},
+        }
+        assert confidence_fingerprint(base) != confidence_fingerprint(swapped)
+        assert confidence_fingerprint(base) == confidence_fingerprint(prompt_edit)
 
     def test_class_fingerprint_tracks_document_classes(self, monkeypatch):
         """The BDA resync signal: same classes → same fingerprint."""

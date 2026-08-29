@@ -2280,6 +2280,11 @@ Resources:
       Description: Lambda function to run test sets via GraphQL API
       MemorySize: 256
       Timeout: 300
+      # Needed by _capture_config: a run pinned to a revision records THAT
+      # revision's configuration and marks it exempt from retention pruning, so a
+      # later comparison still has both runs' configurations to show.
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
 
       Environment:
         Variables:
@@ -2290,6 +2295,8 @@ Resources:
             - !Ref EvaluationBaselineBucketName
             - !Ref EvaluationBaselineBucketName
           CONFIG_TABLE: !Ref ConfigurationTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           TRACKING_TABLE: !Ref TrackingTableName
           FILE_COPY_QUEUE_URL: !Ref TestFileCopyQueueUrl
       LoggingConfig:
@@ -2299,6 +2306,11 @@ Resources:
             TableName: !Ref TrackingTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
+        # Read a pinned revision's stored configuration body.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
         - S3CrudPolicy:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
