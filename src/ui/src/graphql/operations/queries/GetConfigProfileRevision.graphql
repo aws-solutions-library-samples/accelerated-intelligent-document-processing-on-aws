@@ -1,0 +1,10 @@
+query GetConfigProfileRevision($profileName: String!, $revision: Int!) {
+  getConfigProfileRevision(profileName: $profileName, revision: $revision) {
+    success
+    config
+    error {
+      type
+      message
+    }
+  }
+}

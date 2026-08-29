@@ -5314,6 +5314,11 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Enables Configuration Profile revision history: a stack deployment
+          # cuts a revision of `default` (and of each managed profile) instead
+          # of overwriting it silently, so an upgrade's config changes are
+          # diffable and can be rolled back.
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref UpdateConfigurationFunctionLogGroup
       Policies:
@@ -5337,6 +5342,15 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:s3:::<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/*"
                 - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
                 - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/*"
+            # Write configuration-profile revision bodies. Scoped to the
+            # revisions prefix: this function has no reason to write anywhere
+            # else in the configuration bucket.
+            - Effect: Allow
+              Action:
+                - "s3:PutObject"
+                - "s3:DeleteObject"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
             # Allow reading user-supplied config file only if CustomConfigPath is specified
             - !If
               - HasCustomConfigPath

@@ -252,6 +252,51 @@ type ConfigurationVersion @aws_cognito_user_pools @aws_iam {
   bdaProjectArn: String
   bdaSyncStatus: String
   bdaLastSyncedAt: String
+  # Configuration Profile revision counters. latestRevision is the highest
+  # revision cut; publishedRevision is the one the profile's current
+  # configuration reflects. Null on a profile saved before revision history.
+  latestRevision: Int
+  publishedRevision: Int
+}
+
+# One immutable snapshot of a Configuration Profile's configuration, cut on every
+# save. Revisions are CONTENT inside a profile, not access-control objects: scope
+# is enforced at the profile, so an Author scoped to a profile may read, restore,
+# and label all of its revisions.
+type ConfigProfileRevision @aws_cognito_user_pools @aws_iam {
+  revision: Int!
+  createdAt: AWSDateTime
+  createdBy: String
+  label: String
+  notes: String
+  sizeBytes: Int
+  classFingerprint: String
+  # Pinned by a test run; exempt from retention pruning so a run's configuration
+  # outlives the retention cap and stays comparable.
+  pinned: Boolean
+  # True for the revision the profile's current configuration reflects.
+  published: Boolean
+}
+
+type ConfigProfileRevisionsResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  revisions: [ConfigProfileRevision]
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  # The full configuration recorded in the revision, as a JSON string.
+  config: AWSJSON
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionMutationResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  message: String
+  # The new revision number, when the operation created one (restore).
+  revision: Int
+  error: ConfigurationError
 }
 
 type ConfigurationVersionsResponse @aws_cognito_user_pools @aws_iam {
@@ -1196,6 +1241,21 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   setActiveVersion(versionName: String!): UpdateConfigurationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Configuration Profile revisions. Restore and label are Admin+Author because
+  # a revision is content inside a profile the Author already owns; deleting a
+  # revision destroys history and stays Admin-only, mirroring
+  # deleteDocumentVersion.
+  restoreConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  labelConfigProfileRevision(
+    profileName: String!
+    revision: Int!
+    label: String
+    notes: String
+  ): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  deleteConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   generateRuleJson(ruleDescription: String!): GenerateRuleJsonResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   syncBdaIdp(direction: String, versionName: String, bdaProjectArn: String, saveArn: Boolean, syncMode: String): SyncBdaIdpResponse
@@ -1520,6 +1580,15 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getConfigVersion(versionName: String!): ConfigurationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
+  # Configuration Profile revision history. Read access mirrors
+  # getConfigVersion; every one of these is additionally scope-checked against
+  # the caller's allowedConfigVersions in the resolver.
+  listConfigProfileRevisions(profileName: String!): ConfigProfileRevisionsResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+  getConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
   getPricing: PricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getModelConfigLimits: ModelConfigLimitsResponse

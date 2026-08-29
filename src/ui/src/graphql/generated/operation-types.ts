@@ -231,6 +231,37 @@ export type ConfigBootstrapJob = {
   testSetId?: Maybe<Scalars['String']['output']>;
 };
 
+export type ConfigProfileRevision = {
+  classFingerprint?: Maybe<Scalars['String']['output']>;
+  createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  label?: Maybe<Scalars['String']['output']>;
+  notes?: Maybe<Scalars['String']['output']>;
+  pinned?: Maybe<Scalars['Boolean']['output']>;
+  published?: Maybe<Scalars['Boolean']['output']>;
+  revision: Scalars['Int']['output'];
+  sizeBytes?: Maybe<Scalars['Int']['output']>;
+};
+
+export type ConfigProfileRevisionMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  revision?: Maybe<Scalars['Int']['output']>;
+  success: Scalars['Boolean']['output'];
+};
+
+export type ConfigProfileRevisionResponse = {
+  config?: Maybe<Scalars['AWSJSON']['output']>;
+  error?: Maybe<ConfigurationError>;
+  success: Scalars['Boolean']['output'];
+};
+
+export type ConfigProfileRevisionsResponse = {
+  error?: Maybe<ConfigurationError>;
+  revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
+  success: Scalars['Boolean']['output'];
+};
+
 export type ConfigSetting = {
   setting: Scalars['String']['output'];
   values: Scalars['AWSJSON']['output'];
@@ -277,7 +308,9 @@ export type ConfigurationVersion = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   description?: Maybe<Scalars['String']['output']>;
   isActive?: Maybe<Scalars['Boolean']['output']>;
+  latestRevision?: Maybe<Scalars['Int']['output']>;
   managed?: Maybe<Scalars['Boolean']['output']>;
+  publishedRevision?: Maybe<Scalars['Int']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   versionName: Scalars['String']['output'];
 };
@@ -743,6 +776,7 @@ export type Mutation = {
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
+  deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   deleteConfigVersion?: Maybe<UpdateConfigurationResponse>;
   deleteDiscoveryJob: Scalars['Boolean']['output'];
   deleteDocument: Scalars['Boolean']['output'];
@@ -753,6 +787,7 @@ export type Mutation = {
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
+  labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   processChanges: ProcessChangesResponse;
@@ -783,6 +818,7 @@ export type Mutation = {
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   reprocessDocument: Scalars['Boolean']['output'];
   resetTestSetLabels?: Maybe<TestSet>;
+  restoreConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
@@ -944,6 +980,12 @@ export type MutationDeleteChatSessionArgs = {
 };
 
 
+export type MutationDeleteConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+};
+
+
 export type MutationDeleteConfigVersionArgs = {
   versionName: Scalars['String']['input'];
 };
@@ -992,6 +1034,14 @@ export type MutationGenerateDraftLabelsArgs = {
 
 export type MutationGenerateRuleJsonArgs = {
   ruleDescription: Scalars['String']['input'];
+};
+
+
+export type MutationLabelConfigProfileRevisionArgs = {
+  label?: InputMaybe<Scalars['String']['input']>;
+  notes?: InputMaybe<Scalars['String']['input']>;
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -1061,6 +1111,12 @@ export type MutationReprocessDocumentArgs = {
 
 export type MutationResetTestSetLabelsArgs = {
   testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationRestoreConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -1371,6 +1427,7 @@ export type Query = {
   getAnnotationQueue?: Maybe<AnnotationQueue>;
   getChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
+  getConfigProfileRevision?: Maybe<ConfigProfileRevisionResponse>;
   getConfigVersion?: Maybe<ConfigurationResponse>;
   getConfigVersions?: Maybe<ConfigurationVersionsResponse>;
   getConfigurationLibraryFile?: Maybe<ConfigurationLibraryFileResponse>;
@@ -1410,6 +1467,7 @@ export type Query = {
    */
   listCatalogFeatures?: Maybe<Array<CatalogFeature>>;
   listChatSessions?: Maybe<ChatSessionConnection>;
+  listConfigProfileRevisions?: Maybe<ConfigProfileRevisionsResponse>;
   listConfigurationLibrary?: Maybe<ConfigurationLibraryResponse>;
   listDiscoveryJobs?: Maybe<DiscoveryJobList>;
   listDocumentVersions?: Maybe<Array<Maybe<DocumentVersion>>>;
@@ -1482,6 +1540,12 @@ export type QueryGetAnnotationQueueArgs = {
 
 export type QueryGetChatMessagesArgs = {
   sessionId: Scalars['ID']['input'];
+};
+
+
+export type QueryGetConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -1601,6 +1665,11 @@ export type QueryListChatSessionsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   surface?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListConfigProfileRevisionsArgs = {
+  profileName: Scalars['String']['input'];
 };
 
 
@@ -2251,6 +2320,14 @@ export type DeleteChatSessionMutationVariables = Exact<{
 
 export type DeleteChatSessionMutation = { deleteChatSession?: boolean | null };
 
+export type DeleteConfigProfileRevisionMutationVariables = Exact<{
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+}>;
+
+
+export type DeleteConfigProfileRevisionMutation = { deleteConfigProfileRevision?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
 export type DeleteConfigVersionMutationVariables = Exact<{
   versionName: Scalars['String']['input'];
 }>;
@@ -2314,6 +2391,16 @@ export type GenerateDraftLabelsMutationVariables = Exact<{
 
 
 export type GenerateDraftLabelsMutation = { generateDraftLabels?: { jobId: string, testSetId: string, status: string, total?: number | null, labeled?: number | null, configVersion?: string | null, error?: string | null, createdAt?: string | null, completedAt?: string | null, skippedAlreadyLabeled?: number | null } | null };
+
+export type LabelConfigProfileRevisionMutationVariables = Exact<{
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+  label?: InputMaybe<Scalars['String']['input']>;
+  notes?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type LabelConfigProfileRevisionMutation = { labelConfigProfileRevision?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type PauseCircuitBreakerMutationVariables = Exact<{
   reason: Scalars['String']['input'];
@@ -2381,6 +2468,14 @@ export type ResetTestSetLabelsMutationVariables = Exact<{
 
 
 export type ResetTestSetLabelsMutation = { resetTestSetLabels?: { id: string, name: string, fileCount?: number | null, status?: string | null, createdAt: string, lastAddResult?: string | null } | null };
+
+export type RestoreConfigProfileRevisionMutationVariables = Exact<{
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+}>;
+
+
+export type RestoreConfigProfileRevisionMutation = { restoreConfigProfileRevision?: { success: boolean, message?: string | null, revision?: number | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type RestoreDefaultModelConfigLimitsMutationVariables = Exact<{ [key: string]: never; }>;
 
@@ -2623,6 +2718,14 @@ export type GetCircuitBreakerStatusQueryVariables = Exact<{ [key: string]: never
 
 export type GetCircuitBreakerStatusQuery = { getCircuitBreakerStatus?: { enabled: boolean, state?: string | null, openedAt?: string | null, lastCheckedAt?: string | null, failureCount?: number | null, recoveryAttempts?: number | null, lastError?: string | null } | null };
 
+export type GetConfigProfileRevisionQueryVariables = Exact<{
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+}>;
+
+
+export type GetConfigProfileRevisionQuery = { getConfigProfileRevision?: { success: boolean, config?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
 export type GetConfigVersionQueryVariables = Exact<{
   versionName: Scalars['String']['input'];
 }>;
@@ -2633,7 +2736,7 @@ export type GetConfigVersionQuery = { getConfigVersion?: { success: boolean, Sch
 export type GetConfigVersionsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type GetConfigVersionsQuery = { getConfigVersions?: { success: boolean, versions?: Array<{ versionName: string, isActive?: boolean | null, createdAt?: string | null, updatedAt?: string | null, description?: string | null, managed?: boolean | null, bdaProjectArn?: string | null, bdaSyncStatus?: string | null, bdaLastSyncedAt?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
+export type GetConfigVersionsQuery = { getConfigVersions?: { success: boolean, versions?: Array<{ versionName: string, isActive?: boolean | null, createdAt?: string | null, updatedAt?: string | null, description?: string | null, managed?: boolean | null, bdaProjectArn?: string | null, bdaSyncStatus?: string | null, bdaLastSyncedAt?: string | null, latestRevision?: number | null, publishedRevision?: number | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type GetConfigurationLibraryFileQueryVariables = Exact<{
   pattern: Scalars['String']['input'];
@@ -2808,6 +2911,13 @@ export type ListChatSessionsQueryVariables = Exact<{
 
 
 export type ListChatSessionsQuery = { listChatSessions?: { nextToken?: string | null, items?: Array<{ sessionId: string, title: string, createdAt: string, updatedAt: string, messageCount: number, lastMessage?: string | null } | null> | null } | null };
+
+export type ListConfigProfileRevisionsQueryVariables = Exact<{
+  profileName: Scalars['String']['input'];
+}>;
+
+
+export type ListConfigProfileRevisionsQuery = { listConfigProfileRevisions?: { success: boolean, revisions?: Array<{ revision: number, createdAt?: string | null, createdBy?: string | null, label?: string | null, notes?: string | null, sizeBytes?: number | null, classFingerprint?: string | null, pinned?: boolean | null, published?: boolean | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListConfigurationLibraryQueryVariables = Exact<{
   pattern: Scalars['String']['input'];

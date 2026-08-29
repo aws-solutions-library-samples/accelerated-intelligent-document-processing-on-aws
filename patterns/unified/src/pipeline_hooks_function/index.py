@@ -277,6 +277,18 @@ def _resolve_active_version(table: Any, pinned: Optional[str]) -> Optional[str]:
     """
     if pinned:
         return pinned
+    # The active-profile pointer resolves this in one get_item; the scan below
+    # stays as the fallback for a stack that has not activated a profile since
+    # the pointer was introduced.
+    try:
+        pointer = table.get_item(
+            Key={"Configuration": "Config#__active"},
+            ProjectionExpression="ActiveVersion",
+        ).get("Item")
+        if pointer and pointer.get("ActiveVersion"):
+            return str(pointer["ActiveVersion"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Active-profile pointer read failed (%s); scanning instead", exc)
     scan_kwargs: Dict[str, Any] = {
         "FilterExpression": "begins_with(Configuration, :p) AND IsActive = :t",
         "ExpressionAttributeValues": {":p": "Config#", ":t": True},

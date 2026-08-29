@@ -928,7 +928,7 @@ The Test Studio supports running tests with specific configuration versions:
 - **Version Comparison**: Compare test runs across different configuration versions
 - **Context Generation**: Test context automatically includes the selected version information
 
-For full details on configuration versioning, see [configuration-versions.md](configuration-versions.md).
+For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Test States
 - **QUEUED**: File copying jobs queued in SQS

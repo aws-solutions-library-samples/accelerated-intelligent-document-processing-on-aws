@@ -150,5 +150,5 @@ The GraphQL/REST API exposes:
 
 - [Post-Processing Lambda Hook](post-processing-lambda-hook.md) — for archiving
   results into a customer-owned system on every completion.
-- [Configuration Versions](configuration-versions.md) — versions of the
-  *configuration*, distinct from versions of a *document*.
+- [Configuration Profiles](configuration-profiles.md) — revisions of a
+  *configuration profile*, distinct from versions of a *document*.
