@@ -24,7 +24,7 @@ import pytest
 
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.service import ExtractionService
-from idp_common.models import Document, Section
+from idp_common.models import Document, Page, Section
 
 
 def _svc(*, agentic: bool = False) -> ExtractionService:
@@ -214,3 +214,37 @@ def test_document_to_dict_carries_instance_count():
     restored = Document.from_dict(payload)
     assert restored.sections[0].instance_count == 2
     assert restored.sections[1].instance_count == 0
+
+
+# --------------------------------------------------------------------------
+# Page.document_boundary persistence
+#
+# The boundary signal drives every llm_determined merge decision but used to be
+# stashed via `setattr(page, "metadata", ...)` on an attribute that is not a
+# dataclass field — so it was absent from Document.to_dict, never survived the
+# Step Functions hop, and never reached DynamoDB. An unexpected section merge
+# could then only be diagnosed from Lambda logs (GitHub #565).
+# --------------------------------------------------------------------------
+
+
+def test_page_document_boundary_round_trips_through_document():
+    doc = Document(input_key="k")
+    doc.pages["1"] = Page(page_id="1", classification="c", document_boundary="start")
+    doc.pages["2"] = Page(page_id="2", classification="c", document_boundary="continue")
+    doc.pages["3"] = Page(page_id="3", classification="c")
+
+    payload = doc.to_dict()
+    assert payload["pages"]["1"]["document_boundary"] == "start"
+    assert payload["pages"]["2"]["document_boundary"] == "continue"
+    # Omitted when the model produced no signal -> payload unchanged for pages
+    # (and documents) written before this field existed.
+    assert "document_boundary" not in payload["pages"]["3"]
+
+    restored = Document.from_dict(payload)
+    assert restored.pages["1"].document_boundary == "start"
+    assert restored.pages["2"].document_boundary == "continue"
+    assert restored.pages["3"].document_boundary is None
+
+
+def test_page_default_document_boundary_is_none():
+    assert Page(page_id="1").document_boundary is None

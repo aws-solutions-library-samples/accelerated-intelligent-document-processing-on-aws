@@ -102,6 +102,10 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "ImageUri": p.get("ImageUri"),
             "TextUri": p.get("TextUri"),
             "OcrPageDataUri": p.get("OcrPageDataUri"),
+            # Boundary signal snapshotted by create_document_run. Like the
+            # section allow-list above, an omitted key here is silently dropped
+            # from every historical view.
+            "Boundary": p.get("Boundary") or None,
         }
         for p in item.get("Pages", []) or []
     ]

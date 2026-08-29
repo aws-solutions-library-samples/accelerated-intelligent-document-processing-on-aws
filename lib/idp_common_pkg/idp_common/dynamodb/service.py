@@ -305,6 +305,12 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
+                # The classifier's "start"/"continue" signal, which is what
+                # sectionSplitting: llm_determined splits on. Persisted so an
+                # unexpected section merge can be audited after the fact instead
+                # of re-derived from Lambda logs. Omitted when absent.
+                if page.document_boundary:
+                    page_data["Boundary"] = page.document_boundary
                 pages_data.append(page_data)
 
             if pages_data:
@@ -556,6 +562,7 @@ class DocumentDynamoDBService:
                     text_confidence_uri=page_data.get("TextConfidenceUri"),
                     ocr_page_data_uri=page_data.get("OcrPageDataUri") or None,
                     classification=page_data.get("Class"),
+                    document_boundary=page_data.get("Boundary") or None,
                 )
 
         # Convert sections
@@ -1263,15 +1270,18 @@ class DocumentDynamoDBService:
                     page_id_int = int(page_id)
                 except ValueError:
                     continue
-                pages_data.append(
-                    {
-                        "Id": page_id_int,
-                        "Class": page.classification or "",
-                        "ImageUri": page.image_uri or "",
-                        "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
-                        "OcrPageDataUri": page.ocr_page_data_uri or "",
-                    }
-                )
+                page_snapshot: Dict[str, Any] = {
+                    "Id": page_id_int,
+                    "Class": page.classification or "",
+                    "ImageUri": page.image_uri or "",
+                    "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
+                    "OcrPageDataUri": page.ocr_page_data_uri or "",
+                }
+                # Snapshot the boundary signal too, so a historical run can be
+                # audited for why its sections were split the way they were.
+                if page.document_boundary:
+                    page_snapshot["Boundary"] = page.document_boundary
+                pages_data.append(page_snapshot)
             if pages_data:
                 item["Pages"] = pages_data
 

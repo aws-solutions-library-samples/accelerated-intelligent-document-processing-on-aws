@@ -74,6 +74,21 @@ class Page:
     tables: List[Dict[str, Any]] = field(default_factory=list)
     forms: Dict[str, str] = field(default_factory=dict)
 
+    document_boundary: Optional[str] = None
+    """The classifier's per-page boundary signal: ``"start"`` (this page begins a
+    new document) or ``"continue"``. ``None`` means no signal was produced — the
+    model omitted it, or the code path never asked for one.
+
+    This is what ``sectionSplitting: llm_determined`` splits on, and it used to
+    be discarded immediately after use. That made an unexpected section merge
+    effectively un-auditable: section spans alone cannot distinguish "the model
+    said continue" from "the model said nothing" from "the code never asked",
+    and diagnosing GitHub #565 required re-deriving it from Lambda logs.
+    Persisting it keeps the decision inspectable after the fact.
+
+    ``None`` is not serialized, so documents written by older code — and page
+    records that never had a boundary — round-trip unchanged."""
+
 
 @dataclass
 class ProcessingIssue:
@@ -511,6 +526,10 @@ class Document:
                 "tables": page.tables,
                 "forms": page.forms,
             }
+            # Omitted when absent so payloads from before this existed — and
+            # pages that genuinely produced no boundary signal — are unchanged.
+            if page.document_boundary:
+                result["pages"][page_id]["document_boundary"] = page.document_boundary
 
         # Convert sections
         result["sections"] = []
@@ -621,6 +640,7 @@ class Document:
                 confidence=page_data.get("confidence", 0.0),
                 tables=page_data.get("tables", []),
                 forms=page_data.get("forms", {}),
+                document_boundary=page_data.get("document_boundary"),
             )
 
         # Convert sections

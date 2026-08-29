@@ -693,6 +693,22 @@ class ClassificationService:
                                 page_result.classification.metadata,
                             )
 
+                            # Persist the boundary signal on a DECLARED field.
+                            # The setattr above stashes the whole metadata dict on
+                            # an attribute that is not a dataclass field, so it is
+                            # absent from Document.to_dict and never survives the
+                            # Step Functions hop or reaches DynamoDB — which is why
+                            # an unexpected section merge could only be diagnosed
+                            # from Lambda logs (GitHub #565). Copy the one value
+                            # that needs to outlive this invocation.
+                            boundary = page_result.classification.metadata.get(
+                                "document_boundary"
+                            )
+                            if boundary:
+                                document.pages[page_id].document_boundary = str(
+                                    boundary
+                                ).lower()
+
                             # Merge metering data
                             page_metering = page_result.classification.metadata.get(
                                 "metering", {}
