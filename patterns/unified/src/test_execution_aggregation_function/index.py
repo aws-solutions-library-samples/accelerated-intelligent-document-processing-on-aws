@@ -509,20 +509,22 @@ def _load_comparison_results(
             # parent doc_key + section_id so run-level aggregation can locate
             # warnings back to a specific document (finding 6 from round-4
             # review — the previous ``idx=N`` fallback labeled the section
-            # index, not the document). The tag is namespaced so it can't
-            # collide with any Stickler-emitted key.
+            # index, not the document). Shallow-copy before adding the tag
+            # so the original dict — which is also passed to Stickler's
+            # accumulator / serialization — is not mutated with our internal
+            # sentinel key (finding from #625 high review — an internal key
+            # riding along into downstream code would surface as an unknown
+            # field in serialization / accumulator state).
             doc_comparisons = []
             for section in section_results:
                 stickler_result = section.get("stickler_comparison_result")
                 if stickler_result:
-                    stickler_result.setdefault(
-                        "_idp_source",
-                        {
-                            "doc_key": doc_key,
-                            "section_id": section.get("section_id"),
-                        },
-                    )
-                    doc_comparisons.append(stickler_result)
+                    tagged = dict(stickler_result)
+                    tagged["_idp_source"] = {
+                        "doc_key": doc_key,
+                        "section_id": section.get("section_id"),
+                    }
+                    doc_comparisons.append(tagged)
 
             # Extract weighted score. Docs whose sections were all no-ops
             # (no extractable schema for the class) emit ``None`` for the
@@ -633,63 +635,25 @@ def _run_level_counts_from_rows(
     comparison_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Compute run-level top-level metrics by classifying every ``field_comparisons``
-    row across every document.
+    row across every document. Thin wrapper around
+    ``_run_level_row_aggregates`` — that helper is the single source of
+    truth so the two views cannot drift (finding from #625 high review —
+    three near-identical implementations of the same aggregation would
+    diverge silently on any future update).
 
-    ``aggregate_from_comparisons(...).metrics`` returns an item-level rollup for
-    list fields (Stickler's ``cm.overall`` semantics), which hides leaf-level
-    failures inside Hungarian-paired items — a document with 80% of its list
-    values wrong ends up reporting 100% precision at the run level (issue #625).
-    ``field_comparisons`` is the only Stickler view that stays honest about
-    every leaf: each row carries a threshold-gated ``match`` decision using the
-    field's own configured comparator + threshold.
-
-    Uses the same shared classifier + row-weighting + anonymous-root filter as
-    the per-doc path in ``stickler_backend/results.py`` via
-    ``idp_common.evaluation.contract`` (findings 1 + 2 from #625 adversarial
-    review — row unit-mix and per-doc/run-level filter mismatch).
+    ``aggregate_from_comparisons(...).metrics`` returns an item-level rollup
+    for list fields (Stickler's ``cm.overall`` semantics), which hides
+    leaf-level failures inside Hungarian-paired items — a document with 80%
+    of its list values wrong reports 100% precision at the run level (issue
+    #625). ``field_comparisons`` is the only Stickler view that stays
+    honest about every leaf.
 
     Returns a dict with the same keys the caller reads from
     ``process_eval.metrics``: ``tp``, ``fa``, ``fd``, ``fp``, ``tn``, ``fn``,
     ``cm_precision``, ``cm_recall``, ``cm_f1``, ``cm_accuracy``.
     """
-    from idp_common.evaluation.contract import (
-        aggregate_row_counts,
-        iter_countable_rows,
-        safe_div,
-    )
-
-    # Filter per-doc so the anonymous-root warning (when it fires) names
-    # WHICH document. ``_idp_source`` is tagged by ``load_document_results``
-    # with doc_key + section_id — a run-wide flat merge would lose that
-    # locator (finding 6 from round-4 review — the previous ``idx=N``
-    # labeled the SECTION offset, not the source document).
-    countable: List[Dict[str, Any]] = []
-    for scr in comparison_results:
-        if not scr:
-            continue
-        src = scr.get("_idp_source") or {}
-        doc_key = src.get("doc_key") or "unknown"
-        section_id = src.get("section_id") or "unknown"
-        countable.extend(
-            iter_countable_rows(
-                scr.get("field_comparisons") or [],
-                context=f"run-level aggregation doc={doc_key} section={section_id}",
-            )
-        )
-    counts = aggregate_row_counts(countable)
-    tp = counts["tp"]
-    fp = counts["fp"]
-    fn = counts["fn"]
-    tn = counts["tn"]
-    total = tp + fp + fn + tn
-
-    return {
-        **counts,
-        "cm_precision": safe_div(tp, tp + fp),
-        "cm_recall": safe_div(tp, tp + fn),
-        "cm_f1": safe_div(2 * tp, 2 * tp + fp + fn),
-        "cm_accuracy": safe_div(tp + tn, total),
-    }
+    top, _ = _run_level_row_aggregates(comparison_results)
+    return top
 
 
 # Regex shared with ``_IndexCollapsingConfidenceAccumulator._INDEX_RE`` below
@@ -713,7 +677,10 @@ def _collapse_indices(path: str) -> str:
 def _run_level_field_metrics_from_rows(
     comparison_results: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-    """Per-field breakdown derived from rows, bucketed by index-collapsed path.
+    """Per-field breakdown derived from rows, bucketed by index-collapsed
+    path. Thin wrapper around ``_run_level_row_aggregates`` — that helper
+    is the single source of truth for both top-level and per-field views
+    so they cannot drift.
 
     ``process_eval.field_metrics`` (Stickler's ``cm.fields.X.overall``) uses
     the same item-level rollup that hides leaves inside kept items — so on
@@ -726,93 +693,8 @@ def _run_level_field_metrics_from_rows(
     2 fn to Items.name + Items.amount (matching top-level's leaf-normalized
     counts), not a single fn to Items.
     """
-    from idp_common.evaluation.contract import (
-        _row_weight,
-        classify_field_comparison,
-        iter_countable_rows,
-        leaf_paths,
-        safe_div,
-    )
-
-    field_counts: Dict[str, Dict[str, int]] = {}
-
-    def _add(field: str, bucket: str, weight: int = 1) -> None:
-        entry = field_counts.setdefault(
-            field, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
-        )
-        entry[bucket] += weight
-
-    for scr in comparison_results:
-        if not scr:
-            continue
-        # Doc identity is threaded via ``_idp_source`` tagged by
-        # ``load_document_results`` — see the run-level counts helper for
-        # the rationale (finding 6 from round-4 review).
-        src = scr.get("_idp_source") or {}
-        doc_key = src.get("doc_key") or "unknown"
-        section_id = src.get("section_id") or "unknown"
-        rows = iter_countable_rows(
-            scr.get("field_comparisons") or [],
-            context=f"run-level field_metrics doc={doc_key} section={section_id}",
-        )
-        for fc in rows:
-            bucket = classify_field_comparison(fc)
-            path = (
-                fc.get("expected_key")
-                or fc.get("actual_key")
-                or fc.get("field_path")
-                or ""
-            )
-            collapsed = _collapse_indices(path)
-            if not collapsed:
-                continue
-
-            # Determine if this is an item-level row (Stickler emits one row
-            # per unmatched item, with the whole item as a structured value).
-            exp = fc.get("expected_value")
-            act = fc.get("actual_value")
-            value = exp if exp is not None else act
-            # Use the SHARED ``leaf_paths`` helper so per-field bucketing
-            # counts the same slots ``_count_leaves`` counts for top-level row
-            # weighting (finding 1 from #625 adversarial review — divergence
-            # on Optional None fields and nested lists broke
-            # sum(per-field) == top-level).
-            leaves = leaf_paths(value) if value is not None else []
-            if leaves:
-                # Spread across each leaf field so a dropped 2-leaf item
-                # contributes 1 fn to each of its 2 leaf fields.
-                for leaf in leaves:
-                    _add(f"{collapsed}.{leaf}", bucket)
-            else:
-                # No dotted leaf paths — scalar leaf row, list-of-scalars
-                # (e.g. ``["a", "b", "c"]``), or empty container. Use the
-                # SAME weight ``aggregate_row_counts`` uses at top level so
-                # per-field sum equals top-level (a list-of-scalars would
-                # otherwise count as N at top level but 1 per-field —
-                # finding from #625 round-3 code review).
-                _add(collapsed, bucket, _row_weight(fc))
-
-    # Synthesize parent buckets — sum descendants' counts into every prefix
-    # level so Test Studio's hierarchical table can still expand from
-    # ``Items`` → ``Items.name`` / ``Items.amount`` etc. (finding 3 from
-    # #625 adversarial review: v2 dropped the parent aggregate row and
-    # broke the UI's expand/collapse on list-heavy configs).
-    _synthesize_parent_buckets(field_counts)
-
-    # Derived metrics per field
-    out: Dict[str, Dict[str, Any]] = {}
-    for fname, c in field_counts.items():
-        fp = c["fa"] + c["fd"]
-        total = c["tp"] + fp + c["fn"] + c["tn"]
-        out[fname] = {
-            **c,
-            "fp": fp,
-            "cm_precision": safe_div(c["tp"], c["tp"] + fp),
-            "cm_recall": safe_div(c["tp"], c["tp"] + c["fn"]),
-            "cm_f1": safe_div(2 * c["tp"], 2 * c["tp"] + fp + c["fn"]),
-            "cm_accuracy": safe_div(c["tp"] + c["tn"], total),
-        }
-    return out
+    _, per_field = _run_level_row_aggregates(comparison_results)
+    return per_field
 
 
 def _run_level_row_aggregates(
@@ -841,14 +723,18 @@ def _run_level_row_aggregates(
     """
     from idp_common.evaluation.contract import (
         _row_weight,
-        aggregate_row_counts,
         classify_field_comparison,
         iter_countable_rows,
         leaf_paths,
         safe_div,
     )
 
-    all_countable: List[Dict[str, Any]] = []
+    # Top-level (section-normalized) counts are accumulated inline in the
+    # same row loop as per-field counts, using the classification we already
+    # computed for the per-field bucketing (finding from #625 high review:
+    # a previous variant walked rows twice — once to collect them, once
+    # inside ``aggregate_row_counts`` — re-classifying every row).
+    top_counts = {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
     field_counts: Dict[str, Dict[str, int]] = {}
 
     def _add(field: str, bucket: str, weight: int = 1) -> None:
@@ -867,10 +753,12 @@ def _run_level_row_aggregates(
             scr.get("field_comparisons") or [],
             context=f"run-level aggregation doc={doc_key} section={section_id}",
         )
-        all_countable.extend(rows)
 
         for fc in rows:
             bucket = classify_field_comparison(fc)
+            weight = _row_weight(fc)
+            top_counts[bucket] += weight
+
             path = (
                 fc.get("expected_key")
                 or fc.get("actual_key")
@@ -889,9 +777,9 @@ def _run_level_row_aggregates(
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
             else:
-                _add(collapsed, bucket, _row_weight(fc))
+                _add(collapsed, bucket, weight)
 
-    counts = aggregate_row_counts(all_countable)
+    counts = {**top_counts, "fp": top_counts["fa"] + top_counts["fd"]}
     tp = counts["tp"]
     fp = counts["fp"]
     fn = counts["fn"]
@@ -1390,8 +1278,14 @@ def _empty_metrics() -> Dict[str, Any]:
             "precision": None,
             "recall": None,
             "f1_score": None,
-            "false_alarm_rate": None,
-            "false_discovery_rate": None,
+            # ``false_alarm_rate`` and ``false_discovery_rate`` are floats in
+            # the normal path (0.0 on zero-denominator, matching ``safe_div``);
+            # emit 0.0 here too so the field shape is consistent across the
+            # error and normal paths (finding from #625 high review — a
+            # ``None`` vs ``0.0`` split on the same field breaks downstream
+            # code that reads ``far == 0.0``).
+            "false_alarm_rate": 0.0,
+            "false_discovery_rate": 0.0,
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},

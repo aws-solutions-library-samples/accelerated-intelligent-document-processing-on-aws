@@ -375,9 +375,8 @@ def transform_stickler_result(
     # false discoveries never reach the section counts. Only the raw
     # ``field_comparisons`` rows honor every failure mode.
     cm = stickler_result.get("confusion_matrix") or {}
-    field_comparisons: List[Dict[str, Any]] = (
-        stickler_result.get("field_comparisons") or []
-    )
+    # ``field_comparisons`` was already bound above for the attachment map;
+    # reuse that binding instead of re-reading from ``stickler_result``.
 
     # Filter to rows attributable to a parent attribute — both per-doc and
     # run-level aggregators use the same shared filter so their counts agree

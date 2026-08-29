@@ -261,11 +261,18 @@ def iter_countable_rows(
     affected rows.
     """
     kept: List[Dict[str, Any]] = []
-    warned_this_call = False
+    # Rate-limit decision for this call: True once we've decided about the
+    # first anonymous-root row in this batch (whether we logged or the LRU
+    # said we already warned). Every subsequent anonymous-root row shares
+    # the same ``context`` — one call, one context — so re-checking the LRU
+    # for each row would spin the lock without changing the decision. The
+    # log message reports "first example path=..." so an operator inspecting
+    # the warning knows it represents the whole batch's anomaly.
+    decision_made_this_call = False
     for fc in rows:
         root = row_root_attribute(fc)
         if not root:
-            if not warned_this_call:
+            if not decision_made_this_call:
                 ctx = context or "unknown"
                 # Thread-safe check-then-record with LRU eviction. The
                 # check and mutation are one critical section — separately
@@ -298,7 +305,7 @@ def iter_countable_rows(
                         or fc.get("field_path"),
                         ctx,
                     )
-                warned_this_call = True
+                decision_made_this_call = True
             continue
         kept.append(fc)
     return kept
