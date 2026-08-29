@@ -19,6 +19,7 @@ mismatched blobs (or migrate) instead of silently doubling counters.
 
 import logging
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, Iterable, List
 
 logger = logging.getLogger(__name__)
@@ -216,22 +217,26 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     return path[: min(cuts)] if cuts else path
 
 
-# Process-wide dedupe set for the anonymous-root warning. A test-run
+# Process-wide LRU cache for the anonymous-root warning. A test-run
 # aggregation calls ``iter_countable_rows`` per document (per section on the
 # per-doc path, plus twice more on the run-level path), so a Stickler shape
 # change that emits anonymous-root rows would fire the same warning
 # O(rows × sections) times without this — CloudWatch flood matching the
 # version-drift warning we explicitly rate-limited.
 #
-# Bounded to avoid unbounded growth in a warm Lambda that processes many
-# runs (a distinct ``context`` per doc means the set grows linearly with
-# lifetime runs otherwise). Guarded by a lock — the aggregation Lambda's
-# ``ThreadPoolExecutor`` calls ``iter_countable_rows`` from up to 20
-# workers concurrently, and while CPython's GIL makes ``add`` and ``in``
-# individually atomic, the *check-then-add* used here is two ops with a
-# race window that could log a duplicate warning.
+# LRU rather than a plain set with a hard cap so a warm Lambda that
+# processes many test runs keeps working: the container evicts the
+# oldest contexts to make room for new ones, meaning a fresh Stickler
+# shape change is still logged even after the container has already
+# seen 256 distinct contexts (finding from #625 xhigh review — the
+# previous set-with-cap silenced every subsequent context for the
+# container's remaining lifetime once the cap was reached). Guarded by
+# a lock — the aggregation Lambda's ``ThreadPoolExecutor`` calls
+# ``iter_countable_rows`` from up to 20 workers concurrently, and while
+# CPython's GIL makes individual dict ops atomic, the check-then-move-
+# then-add sequence used here is three ops with a race window.
 _SEEN_ANONYMOUS_ROOT_MAX = 256
-_seen_anonymous_root_contexts: set = set()
+_seen_anonymous_root_contexts: "OrderedDict[str, None]" = OrderedDict()
 _seen_anonymous_root_lock = threading.Lock()
 
 
@@ -262,25 +267,25 @@ def iter_countable_rows(
         if not root:
             if not warned_this_call:
                 ctx = context or "unknown"
-                # Thread-safe check-then-add with a bound. The check and add
-                # are one critical section — separately they'd race under
-                # the aggregation Lambda's 20-worker executor. The bound
-                # caps memory growth in a warm Lambda that serves many
-                # runs; once the cap is reached we STOP logging further
-                # new contexts (rather than logging every one, which would
-                # flood CloudWatch in a long-lived warm Lambda that sees
-                # 256+ distinct doc/section contexts). Reaching the cap
-                # means "this warning is now silent for the rest of the
-                # container's life" — acceptable because 256 fired warnings
-                # already surface the shape change well before that point.
+                # Thread-safe check-then-record with LRU eviction. The
+                # check and mutation are one critical section — separately
+                # they'd race under the aggregation Lambda's 20-worker
+                # executor. When the cache is full we evict the oldest
+                # context to admit the new one, so a warm Lambda that has
+                # seen 256 contexts still logs a fresh Stickler shape
+                # change (rather than going silent for the rest of its
+                # lifetime).
                 should_log = False
                 with _seen_anonymous_root_lock:
-                    if (
-                        ctx not in _seen_anonymous_root_contexts
-                        and len(_seen_anonymous_root_contexts)
-                        < _SEEN_ANONYMOUS_ROOT_MAX
-                    ):
-                        _seen_anonymous_root_contexts.add(ctx)
+                    if ctx in _seen_anonymous_root_contexts:
+                        _seen_anonymous_root_contexts.move_to_end(ctx)
+                    else:
+                        if (
+                            len(_seen_anonymous_root_contexts)
+                            >= _SEEN_ANONYMOUS_ROOT_MAX
+                        ):
+                            _seen_anonymous_root_contexts.popitem(last=False)
+                        _seen_anonymous_root_contexts[ctx] = None
                         should_log = True
                 if should_log:
                     logger.warning(

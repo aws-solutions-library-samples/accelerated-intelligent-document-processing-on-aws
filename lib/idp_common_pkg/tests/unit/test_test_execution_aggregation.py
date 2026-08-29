@@ -1472,6 +1472,244 @@ class TestRunLevelCountsFromRows:
 
 
 @pytest.mark.unit
+class TestRunLevelRowAggregates:
+    """Direct coverage for ``_run_level_row_aggregates`` — the fused single-
+    pass helper actually invoked by ``_transform_stickler_metrics``. The
+    individual ``_run_level_counts_from_rows`` and
+    ``_run_level_field_metrics_from_rows`` helpers are exercised elsewhere
+    but production only reaches the fused variant, so its own behavior
+    needs to be pinned (finding 5 from #625 xhigh review — the helper was
+    dark to the test suite before this class was added).
+    """
+
+    def test_returns_matching_top_metrics_and_field_breakdown(self, mock_env):
+        """Fused helper must return the SAME top-level and per-field
+        numbers the individual helpers do on the same input, or the
+        production dashboard's top-level and per-field views drift
+        (issue #625 root cause at a different layer).
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "doc-a", "section_id": "s0"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "Alice",
+                        "actual_value": "Alice",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": False,
+                        "expected_value": "10",
+                        "actual_value": "99",
+                    },
+                    {
+                        "field_path": "customer_id",
+                        "match": True,
+                        "expected_value": "C1",
+                        "actual_value": "C1",
+                    },
+                ],
+            }
+        ]
+
+        top, per_field = index._run_level_row_aggregates(docs)
+
+        assert top == index._run_level_counts_from_rows(docs)
+        assert per_field == index._run_level_field_metrics_from_rows(docs)
+
+    def test_top_level_reflects_leaf_failures_inside_kept_list_items(self, mock_env):
+        """CASE 5 through the fused helper: an Items[0] Hungarian-paired
+        with one right leaf and one wrong leaf reports precision 0.5,
+        matching row-level semantics."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "Alice",
+                        "actual_value": "Alice",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": False,
+                        "expected_value": "10",
+                        "actual_value": "99",
+                    },
+                ],
+            }
+        ]
+        top, _ = index._run_level_row_aggregates(docs)
+        assert top["tp"] == 1
+        assert top["fd"] == 1
+        assert top["cm_precision"] == pytest.approx(0.5)
+
+    def test_field_metrics_bucket_by_collapsed_path(self, mock_env):
+        """Per-field breakdown collapses list indices — ``Items[3].name``
+        and ``Items[7].name`` land in one bucket keyed ``Items.name`` so
+        the run-level table shows one row per attribute, not per index."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[3].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[7].name",
+                        "match": True,
+                        "expected_value": "B",
+                        "actual_value": "B",
+                    },
+                ],
+            }
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert "Items.name" in per_field
+        assert per_field["Items.name"]["tp"] == 2
+
+    def test_synthesizes_parent_bucket_for_structured_children(self, mock_env):
+        """A list of structured items emits ``Items.name`` and
+        ``Items.amount`` leaf buckets and synthesizes ``Items`` as the
+        sum, so the UI's expand/collapse tree still has a row at the
+        parent level."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": "1",
+                        "actual_value": "1",
+                    },
+                ],
+            }
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert per_field["Items"]["tp"] == 2
+
+    def test_scalar_collision_preserves_scalar_bucket(self, mock_env):
+        """Cross-schema name collision (scalar ``Items`` in one schema
+        vs structured ``Items[].name`` in another) — synthesis skips
+        the parent row so schema A's scalar counts survive uncorrupted
+        by schema B's structured descendants. Convention documented in
+        ``_synthesize_parent_buckets`` and flagged with a warning."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                ],
+            },
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert per_field["Items"]["fd"] == 1
+        assert per_field["Items"]["tp"] == 0
+        assert per_field["Items.name"]["tp"] == 1
+
+    def test_empty_input_returns_zero_metrics(self, mock_env):
+        """Empty comparison_results returns 0 counts and 0.0 derived
+        metrics — no crash on a run with no documents (rare but must
+        not throw)."""
+        index = import_test_module()
+        top, per_field = index._run_level_row_aggregates([])
+        assert top["tp"] == top["fp"] == top["fn"] == 0
+        assert top["cm_precision"] == 0.0
+        assert per_field == {}
+
+    def test_three_level_collision_preserves_scalar_and_synthesizes_intermediates(
+        self, mock_env
+    ):
+        """Deeper-tree cross-schema collision behavior (finding from #625
+        xhigh review — reviewer flagged as "inconsistent by tree level").
+
+        Setup: schema A has scalar ``Items``; schema B has
+        ``Items[i].line.qty`` (three levels). After row-collection,
+        buckets are ``Items`` (scalar) and ``Items.line.qty`` (leaf).
+
+        Documented convention: at every parent-prefix level walked from
+        the leaf, if a bucket ALREADY exists at that path in the
+        original snapshot, preserve it (skip synthesis). Otherwise
+        synthesize.
+
+        Expected result for this input:
+          * ``Items``          — scalar bucket preserved uncorrupted
+          * ``Items.line``     — synthesized (not in original) from
+                                 ``Items.line.qty``'s counts
+          * ``Items.line.qty`` — leaf, unchanged
+
+        Consequence: expanding ``Items`` in the UI shows scalar counts
+        that don't sum to ``Items.line`` — the collision is documented
+        and warning-logged so operators can disambiguate by renaming
+        the attribute.
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].line.qty",
+                        "match": True,
+                        "expected_value": "5",
+                        "actual_value": "5",
+                    },
+                ],
+            },
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert per_field["Items"]["fd"] == 1
+        assert per_field["Items"]["tp"] == 0
+        assert per_field["Items.line"]["tp"] == 1
+        assert per_field["Items.line.qty"]["tp"] == 1
+
+
+@pytest.mark.unit
 class TestVersionDriftWarning:
     """Version-stamp gate: on rolling deploy or after a Stickler shape change,
     a v1.0 payload read by v2.0 code (or vice-versa) fires a soft-gate warning

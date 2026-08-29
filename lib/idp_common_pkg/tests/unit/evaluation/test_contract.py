@@ -1,0 +1,104 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""Unit tests for ``idp_common.evaluation.contract`` helpers that are
+shared across the per-doc evaluation service and the run-level
+aggregation Lambda.
+"""
+
+import logging
+
+import pytest
+
+from idp_common.evaluation import contract
+
+
+@pytest.mark.unit
+class TestAnonymousRootDedup:
+    """The anonymous-root warning inside ``iter_countable_rows`` uses a
+    process-wide LRU dedupe so:
+      1. Repeated occurrences of the same (unattributable) context in one
+         run log once, not O(rows).
+      2. A warm Lambda that accumulates >``_SEEN_ANONYMOUS_ROOT_MAX``
+         distinct contexts across many test runs still logs a fresh
+         Stickler shape change — the LRU evicts the oldest context to
+         admit the new one, rather than going silent for the container's
+         remaining lifetime (finding from #625 xhigh review).
+    """
+
+    def setup_method(self):
+        contract._seen_anonymous_root_contexts.clear()
+
+    def teardown_method(self):
+        contract._seen_anonymous_root_contexts.clear()
+
+    def test_same_context_logs_once(self, caplog):
+        # A row with no root attribute (bare-bracket path) — Stickler
+        # never actually emits this shape, so the branch fires only on
+        # future shape drift.
+        row = {"field_path": "[3]"}
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows([row], context="ctx-1")
+            contract.iter_countable_rows([row], context="ctx-1")
+            contract.iter_countable_rows([row], context="ctx-1")
+        assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 1
+
+    def test_different_contexts_each_log_once(self, caplog):
+        row = {"field_path": "[3]"}
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows([row], context="ctx-A")
+            contract.iter_countable_rows([row], context="ctx-B")
+            contract.iter_countable_rows([row], context="ctx-A")
+        assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 2
+
+    def test_lru_eviction_admits_new_context_past_cap(self, monkeypatch, caplog):
+        # Cap the LRU tightly so we can test eviction without generating
+        # 256 records in the test log.
+        monkeypatch.setattr(contract, "_SEEN_ANONYMOUS_ROOT_MAX", 2)
+        row = {"field_path": "[3]"}
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows([row], context="ctx-A")  # cache: [A]
+            contract.iter_countable_rows([row], context="ctx-B")  # cache: [A, B]
+            contract.iter_countable_rows([row], context="ctx-C")  # evicts A: [B, C]
+            # A was evicted, so this should log again — the whole point
+            # of the LRU rewrite (finding from #625 xhigh review).
+            contract.iter_countable_rows([row], context="ctx-A")  # evicts B: [C, A]
+        assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 4
+
+    def test_recent_context_survives_eviction(self, monkeypatch, caplog):
+        # A context re-seen before the cap fills is moved to the "recent"
+        # end and survives eviction of a colder one.
+        monkeypatch.setattr(contract, "_SEEN_ANONYMOUS_ROOT_MAX", 2)
+        row = {"field_path": "[3]"}
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows([row], context="ctx-A")  # [A]
+            contract.iter_countable_rows([row], context="ctx-B")  # [A, B]
+            contract.iter_countable_rows([row], context="ctx-A")  # touches A → [B, A]
+            contract.iter_countable_rows([row], context="ctx-C")  # evicts B → [A, C]
+            contract.iter_countable_rows([row], context="ctx-A")  # A still cached
+        anonymous_warns = [
+            r for r in caplog.records if "anonymous root" in r.getMessage()
+        ]
+        # A logged once (first call), B once, C once — the second and
+        # third A calls stayed silent because A was still in the cache.
+        assert len(anonymous_warns) == 3
+
+
+@pytest.mark.unit
+class TestSafeDiv:
+    """``safe_div`` is imported by both the per-doc and run-level paths;
+    its zero-denominator convention (return 0.0, not None) is what keeps
+    per-doc and run-level dashboards from rendering the same field as
+    ``0.000`` on one and ``N/A`` on the other."""
+
+    def test_positive_denominator_returns_ratio(self):
+        assert contract.safe_div(3, 4) == 0.75
+
+    def test_zero_denominator_returns_zero(self):
+        assert contract.safe_div(0, 0) == 0.0
+        assert contract.safe_div(5, 0) == 0.0
+
+    def test_negative_denominator_treated_as_zero(self):
+        # Not a real scenario (all callers pass counts), but defensive:
+        # only strictly-positive denominators divide.
+        assert contract.safe_div(1, -1) == 0.0
