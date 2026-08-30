@@ -3834,17 +3834,35 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         no_inputs = not validation["valid"] and error_message == "No input files found"
 
         if partial_pairing:
-            # Refresh fileCount and signature only; leave status / labelState /
-            # error alone. Recovery direction (FAILED → COMPLETED when the
-            # pairing is fully restored) is handled by the else-branch below,
-            # which is entered whenever validation["valid"] is True.
+            # Refresh fileCount and signature; leave status / labelState alone.
+            # Recovery direction (FAILED → COMPLETED when the pairing is fully
+            # restored) is handled by the else-branch below.
             new_status = existing_row.get("status")
-            new_error = existing_row.get("error")
             new_label_state = existing_label_state
+            # Error message must reflect the CURRENT partial-pairing state, not
+            # the one recorded at first-discovery time. Example: a row that
+            # started FAILED with "Missing baseline files for: a.pdf, b.pdf,
+            # c.pdf", then the user added baselines for a.pdf and b.pdf. The
+            # validator now reports "Missing baseline files for: c.pdf". If we
+            # kept the old error, the UI would show all three names still.
+            # Only meaningful when the row is FAILED; a COMPLETED row shouldn't
+            # carry an error field.
+            if new_status == "FAILED":
+                new_error = validation.get("error")
+            else:
+                new_error = existing_row.get("error")
         elif no_inputs:
             new_status = "FAILED"
             new_error = error_message
-            new_label_state = "unlabeled"
+            # Preserve the current labelState. Overwriting to 'unlabeled' would
+            # silently destroy a 'draft' signal: a user who accidentally deletes
+            # inputs and then restores them would see the recovery else-branch
+            # promote 'unlabeled' → 'labeled' on the next reconcile, blessing
+            # unreviewed machine drafts as ground truth. The draft-preservation
+            # guard in the else-branch keys on existing_label_state — if that
+            # was 'draft' before the input deletion, it must stay 'draft'
+            # through the transient FAILED state so recovery preserves it.
+            new_label_state = existing_label_state
         else:
             # validation["valid"] is True — fully paired OR unlabeled-with-no-
             # baselines (allow_unlabeled=True path). Both are healthy states.
@@ -3904,14 +3922,29 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
 
         # Build one UpdateItem with SET for changed fields and (optionally)
         # REMOVE for the error attribute when the set is clean again. The
-        # ConditionExpression rejects the write if the row is no longer in a
-        # reconcilable status — that closes the race with TestSetFileCopier /
-        # TestSetZipExtractor writing UPDATING in the window between our
-        # ``get_test_sets`` read and this write.
-        expr_names = {"#st": "status"}
+        # ConditionExpression has two clauses:
+        #  1. Status must still be in {COMPLETED, FAILED} — this closes the
+        #     race with TestSetFileCopier / TestSetZipExtractor / the synthetic
+        #     generator writing a non-terminal status in the window between our
+        #     read and this write.
+        #  2. contentSignature must still match what we read (or still be
+        #     missing if it was missing) — this closes the race between two
+        #     concurrent reconciles: A and B both read sig X, B computes a
+        #     fresh sig Y and writes, A finishes its listing later with a
+        #     stale view and would otherwise clobber Y with a stale sig. With
+        #     the signature match, A's write is rejected and A returns None;
+        #     A's memo divergence check will trip on the next poll and re-scan.
+        expr_names = {"#st": "status", "#sig": "contentSignature"}
+        old_sig = existing_row.get("contentSignature")
         expr_values = {
             ":completed": "COMPLETED",
             ":failed": "FAILED",
+            # Empty string is a sentinel that no real signature can take
+            # (the format is ``count:count:iso|src=...``, always non-empty).
+            # When old_sig is missing the OR branch attribute_not_exists wins;
+            # when old_sig has a value, that branch matches; when someone else
+            # moved the row, both fail and the condition rejects.
+            ":old_sig": old_sig if old_sig else "",
         }
         set_parts = []
         for i, (field, value) in enumerate(changed.items()):
@@ -3928,17 +3961,21 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             expr_names["#err"] = "error"
             update_expression += " REMOVE #err"
 
+        condition_expression = (
+            "#st IN (:completed, :failed) "
+            "AND (attribute_not_exists(#sig) OR #sig = :old_sig)"
+        )
+
         # Use boto3 directly here (rather than db_client.update_item) because
         # DynamoDBClient.update_item does not expose ConditionExpression, and
-        # the race guard against a mid-window UPDATING transition is the whole
-        # reason for this write's condition.
+        # the race guards are the whole reason for this write's condition.
         try:
             _get_tracking_table().update_item(
                 Key={"PK": f"testset#{prefix}", "SK": "metadata"},
                 UpdateExpression=update_expression,
                 ExpressionAttributeNames=expr_names,
                 ExpressionAttributeValues=expr_values,
-                ConditionExpression="#st IN (:completed, :failed)",
+                ConditionExpression=condition_expression,
             )
         except ClientError as e:
             if (
@@ -3946,9 +3983,11 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
                 == "ConditionalCheckFailedException"
             ):
                 logger.info(
-                    f"Skipping reconcile for {prefix}: row moved to a "
-                    "non-terminal status between our read and write "
-                    "(likely a copier/extractor took over)."
+                    f"Skipping reconcile for {prefix}: row was moved by "
+                    "another writer between our read and this write "
+                    "(status changed to non-terminal, OR another reconcile "
+                    "wrote a fresher contentSignature). Our memo-divergence "
+                    "check will pick up the newer state on the next poll."
                 )
                 return None
             raise

@@ -220,7 +220,15 @@ def _update_test_set_status(test_set_id, status, error=None, file_count=None):
         if file_count is not None:
             update_expression += ', fileCount = :count'
             expression_values[':count'] = file_count
-        
+
+        # REMOVE contentSignature so the resolver's warm-container memo
+        # (in `_reconcile_test_set_tracking_entry`) doesn't skip the next
+        # reconcile via TTL match: our write invalidated whatever signature
+        # was there. Fires on both COMPLETED (with file_count) AND FAILED
+        # (without) — a failed extract may have left partial S3 state, so
+        # the reconcile needs to re-scan even though fileCount didn't move.
+        update_expression += ' REMOVE contentSignature'
+
         table.update_item(
             Key={'PK': f'testset#{test_set_id}', 'SK': 'metadata'},
             UpdateExpression=update_expression,

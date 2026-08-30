@@ -4607,12 +4607,12 @@ class TestTestSetResolver:
             )
         assert result is None
         # We DID attempt the write with the condition — the guard is the DDB
-        # condition, not the in-process pre-check.
-        assert update_mock.call_count == 1
-        assert (
-            update_mock.call_args.kwargs["ConditionExpression"]
-            == "#st IN (:completed, :failed)"
-        )
+        # condition, not the in-process pre-check. Condition has two clauses:
+        # (a) status must be COMPLETED/FAILED (catches copier/extractor race)
+        # (b) contentSignature must match (catches concurrent-reconcile race)
+        condition = update_mock.call_args.kwargs["ConditionExpression"]
+        assert "#st IN (:completed, :failed)" in condition
+        assert "attribute_not_exists(#sig) OR #sig = :old_sig" in condition
 
     def test_reconcile_signature_folds_in_source_marker(self):
         """Signature must invalidate when '.source' appears after registration.
@@ -4952,6 +4952,172 @@ class TestTestSetResolver:
         assert "ts1" not in test_set_index._RECONCILE_MEMO, (
             "delete_test_sets left a stale memo entry that could shadow "
             "a same-id set created later"
+        )
+
+    def test_no_inputs_preserves_draft_labelstate(self, labeling_env):
+        """Deleting all inputs from a draft-labelled set must not destroy the
+        'draft' signal.
+
+        Regression pin for a silent draft→labeled promotion: without this
+        guard, sequence (a) delete all inputs → no_inputs branch overwrites
+        labelState=unlabeled; (b) restore inputs → else-branch sees
+        labelState='unlabeled' (not 'draft') and promotes to 'labeled'.
+        Unreviewed machine drafts become "verified" ground truth silently.
+        _reconcile_label_state can't undo it because it skips rows with a
+        labelJobId set.
+        """
+        table, s3 = labeling_env
+
+        # Fully-paired draft set: 2 inputs + 2 draft-machine baselines.
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps({"labelSource": "draft-machine"}).encode(),
+            )
+        _seed_test_set(
+            table,
+            "ts1",
+            status="COMPLETED",
+            fileCount=2,
+            labelState="draft",
+            labelJobId="job1",
+            labelJobStatus="COMPLETED",
+            source="uploaded",
+            contentSignature="stale",
+        )
+
+        # Step 1: delete all inputs via S3.
+        s3.delete_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf")
+        s3.delete_object(Bucket="test-set-bucket", Key="ts1/input/b.pdf")
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "FAILED"
+        assert row["labelState"] == "draft", (
+            "no_inputs branch destroyed the draft signal — a subsequent "
+            "recovery would silently bless machine drafts as ground truth"
+        )
+
+        # Step 2: user restores the inputs. Recovery should preserve 'draft'.
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        # Force a fresh reconcile by clearing the memo.
+        test_set_index._RECONCILE_MEMO.clear()
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+        assert row["labelState"] == "draft", (
+            "recovery from no-inputs promoted 'draft' to 'labeled' silently"
+        )
+
+    def test_concurrent_writes_reject_stale_signature(self, labeling_env):
+        """ConditionExpression must protect against a stale reconcile
+        clobbering a fresher one.
+
+        Simulates two concurrent Lambda containers: A reads row with sig X.
+        Before A writes, B has already written a fresh sig Y (concurrent
+        reconcile after new files landed). A's write with old_sig=X must be
+        rejected by the DDB ConditionExpression.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            fileCount=1,
+            labelState="labeled",
+            source="uploaded",
+            contentSignature="fresher-sig-written-by-B",
+        )
+
+        # Container A's read happened before B wrote. A's existing_row has the
+        # OLD signature; DDB now has "fresher-sig-written-by-B".
+        existing_row_stale = dict(
+            table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        )
+        existing_row_stale["contentSignature"] = "old-sig-A-read"
+
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row_stale
+        )
+        # A's write should be rejected by the ConditionExpression
+        # (attribute_not_exists OR sig == old-sig-A-read; neither holds
+        # because DDB has fresher-sig-written-by-B). Reconcile returns None.
+        assert result is None
+        # DDB still has B's fresh signature untouched.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["contentSignature"] == "fresher-sig-written-by-B", (
+            "concurrent write from A clobbered B's fresher signature"
+        )
+
+    def test_partial_pairing_refreshes_stale_error_string(self, labeling_env):
+        """A row that started FAILED at discovery with a stale error string
+        must have that error refreshed to the current validator output as
+        the pairing gets partially fixed.
+
+        Concrete regression: new folder discovery hard-fails with "Missing
+        baseline files for: a.pdf, b.pdf, c.pdf". User adds baselines for
+        a.pdf and b.pdf, still missing c.pdf. Previously, my softening
+        branch kept the old error string that named all three; now it
+        refreshes to reflect the current partial-pairing state.
+        """
+        table, s3 = labeling_env
+
+        # Simulate the after-partial-fix state: 3 inputs, 2 baselines.
+        for name in ("a.pdf", "b.pdf", "c.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=b"{}",
+            )
+        # Row was FAILED at discovery with all three missing; stale error.
+        _seed_test_set(
+            table,
+            "ts1",
+            fileCount=3,
+            status="FAILED",
+            labelState="unlabeled",
+            source="uploaded",
+            error="Missing baseline files for: a.pdf, b.pdf, c.pdf",
+            contentSignature="stale",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        # Status stays FAILED (softening on partial pairing preserves it).
+        assert row["status"] == "FAILED"
+        # Error must reflect CURRENT state — only c.pdf is missing now.
+        assert "c.pdf" in row["error"]
+        assert "a.pdf" not in row["error"], (
+            f"error still names a.pdf which has a baseline now: {row['error']!r}"
+        )
+        assert "b.pdf" not in row["error"], (
+            f"error still names b.pdf which has a baseline now: {row['error']!r}"
         )
 
 
@@ -5477,3 +5643,62 @@ class TestStatusUpdatedAtIsWritten:
             encoding="utf-8",
         ).read()
         assert "statusUpdatedAt = :now" in source
+
+    def test_the_copier_invalidates_content_signature(self):
+        """Copier's terminal writes must REMOVE contentSignature so the
+        resolver's warm-container memo doesn't skip the next reconcile on
+        a stale signature — a direct-S3 add landing right after the copier
+        completes would otherwise be invisible for up to the memo TTL.
+        """
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../src/lambda/test_set_file_copier/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        assert "REMOVE lastAddResult, contentSignature" in source, (
+            "copier no longer REMOVEs contentSignature — warm-container memo "
+            "can shadow a direct-S3 add landing right after the copier completes"
+        )
+
+    def test_the_extractor_invalidates_content_signature(self):
+        """Extractor's writes must REMOVE contentSignature on both the
+        COMPLETED and FAILED paths. A failed extract may have left partial
+        S3 state; the reconcile still needs to re-scan.
+        """
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../src/lambda/test_set_zip_extractor/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        assert "REMOVE contentSignature" in source
+        # Guard against a future edit re-guarding it inside `if file_count`.
+        # The REMOVE must fire regardless of file_count so FAILED paths (no
+        # file_count) also invalidate the signature.
+        # Find the REMOVE line and confirm it's not nested under the
+        # file_count conditional.
+        lines = source.splitlines()
+        for i, line in enumerate(lines):
+            if "REMOVE contentSignature" in line:
+                # Two lines above should NOT be `if file_count`; the pattern
+                # in the fixed code puts REMOVE at the same indentation as
+                # the outer try body, not inside the `if file_count` block.
+                indent = len(line) - len(line.lstrip())
+                # Walk back to find the enclosing 'if' — must be the outer try,
+                # not `if file_count is not None`.
+                for j in range(i - 1, -1, -1):
+                    stripped = lines[j].lstrip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    line_indent = len(lines[j]) - len(stripped)
+                    if line_indent < indent and stripped.startswith("if "):
+                        assert "file_count" not in stripped, (
+                            "REMOVE contentSignature is nested under "
+                            "`if file_count is not None` — the FAILED path "
+                            "won't invalidate the signature"
+                        )
+                        break
+                break
