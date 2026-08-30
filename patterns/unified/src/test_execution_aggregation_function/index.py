@@ -903,53 +903,34 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
     """For every dotted leaf path in ``field_counts``, add parent-prefix
     buckets summing all descendants.
 
-    ``Items.name`` and ``Items.amount`` → emit ``Items`` with the sum of
-    both, so Test Studio's hierarchical table can still expand from the
-    parent row.
+    ``Items.name`` and ``Items.amount`` → ``Items`` bucket holds the sum
+    of both, so Test Studio's hierarchical table can expand from the
+    parent row and the parent's counts equal the sum of its children.
 
-    Cross-schema name collision (Finding 7 from #625 round-4 review):
+    Cross-schema name collision (issue #625 review):
     In a test run that mixes two schemas where the SAME parent name is
-    a *scalar* in schema A and a *structured list* in schema B, the two
-    interpretations disagree on what the parent row should mean. This
-    function's convention is to PRESERVE the pre-existing leaf bucket
-    (schema A's scalar counts) rather than mix it with the sum of
-    schema B's structured descendants. Rationale:
+    a *scalar* in schema A and a *structured list* in schema B, we
+    ACCUMULATE structured descendants INTO the pre-existing scalar
+    bucket. Reason: preserving only the scalar counts recreates the
+    exact parent-vs-drilldown contradiction issue #625 exists to fix —
+    the parent bucket would show ✓ (scalar's clean counts) while
+    expanding its drilldown revealed red children from the structured
+    schema. Always-accumulating means:
 
-    * The scalar counts are already a full confusion-matrix cell —
-      overwriting them would drop schema A's contribution silently.
-    * A "sum of both" bucket has no coherent semantic — it would mix
-      one-cell-per-doc scalars with per-leaf-per-item spread counts.
-    * The tree still expands correctly for schema B: the leaves are
-      present, they just don't aggregate into the parent row on
-      docs where schema A also fired.
-
-    Consequence for operators: on a run with such a collision, the
-    parent row reflects only the scalar schema's docs. The children's
-    counts still show under ``Items.name`` / ``Items.amount``. A
-    warning is logged so this case is visible in CloudWatch and can be
-    disambiguated (e.g. by renaming the attribute in one schema).
-
-    Deeper levels of the same walk still synthesize (finding from
-    #625 review-effort code review — the ``continue`` skips only the
-    exact collision level). Given a leaf ``Items.line.qty`` and a
-    pre-existing scalar bucket at ``Items``:
-
-    * The walk hits ``Items`` (collision → skip synthesis at that level).
-    * The walk continues to ``Items.line`` — not in the original set —
-      and DOES synthesize an intermediate bucket there.
-
-    This is intentional: the intermediate bucket lets the UI still
-    expand the *structured* subtree, while the top-level parent stays
-    the scalar's cell. See
-    ``test_three_level_collision_preserves_scalar_and_synthesizes_intermediates``.
+    * The parent bucket's counts equal the sum of every row that ended
+      up under it, regardless of which schema emitted the row.
+    * A drilldown that reveals a red child necessarily reflects in the
+      parent's counts too — no green ✓ hiding red children.
+    * On a collision, a WARN log is still emitted so operators can
+      disambiguate the attribute name (via ``_seen_collision_names``).
 
     Mutates ``field_counts`` in place; no return value.
     """
-    # Snapshot the ORIGINAL leaf buckets (before any synthesis) so:
-    # 1. We don't count synthesized parents as descendants of grandparents
-    #    (would double-count in a 3-level tree).
-    # 2. We can distinguish "pre-existing leaf bucket at parent path"
-    #    (preserve) from "synthesized this pass" (accumulate into).
+    # Snapshot the ORIGINAL leaf buckets (before any synthesis) so we
+    # don't count synthesized parents as descendants of grandparents
+    # (would double-count in a 3-level tree). Also captures which paths
+    # were pre-existing so we can WARN on cross-schema collisions
+    # without changing counting behavior.
     original_paths = set(field_counts.keys())
     collisions: List[str] = []
     for path, counts in list(field_counts.items()):
@@ -957,12 +938,14 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
         for i in range(1, len(parts)):
             parent = ".".join(parts[:i])
             if parent in original_paths:
-                # A leaf bucket already carries counts under this exact path
-                # — a scalar attribute from a different schema whose name
-                # happens to prefix this leaf. Preserve the scalar; see
-                # docstring for the collision convention.
+                # A leaf bucket already carries counts under this exact
+                # path — a scalar attribute from a different schema whose
+                # name happens to prefix this leaf. Note the collision so
+                # operators can rename to disambiguate, but STILL
+                # accumulate descendants into it: preserving-only
+                # recreates the parent-vs-drilldown contradiction #625
+                # was opened to eliminate.
                 collisions.append(parent)
-                continue
             entry = field_counts.setdefault(
                 parent, {"tp": 0, "fa": 0, "fd": 0, "tn": 0, "fn": 0}
             )
@@ -988,11 +971,13 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
                 should_log = True
         if should_log:
             logger.warning(
-                "Parent-bucket synthesis skipped for %d attribute name(s) "
-                "whose path is a scalar in one schema and a structured list "
-                "in another in this run: %s. The parent row shows only the "
-                "scalar schema's counts. Rename the attribute in one schema "
-                "to disambiguate.",
+                "Parent-bucket name collision: %d attribute name(s) appear "
+                "as a scalar in one schema and a structured list in another "
+                "in this run: %s. The parent bucket now accumulates counts "
+                "from BOTH interpretations so the parent row equals the sum "
+                "of its children (no parent-vs-drilldown contradiction). "
+                "Rename the attribute in one schema to disambiguate if the "
+                "mixed counts are undesirable.",
                 len(unique),
                 list(unique[:10]),
             )

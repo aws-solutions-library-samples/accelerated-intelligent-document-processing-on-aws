@@ -1606,12 +1606,14 @@ class TestRunLevelRowAggregates:
         _, per_field = index._run_level_row_aggregates(docs)
         assert per_field["Items"]["tp"] == 2
 
-    def test_scalar_collision_preserves_scalar_bucket(self, mock_env):
+    def test_scalar_collision_accumulates_into_parent_bucket(self, mock_env):
         """Cross-schema name collision (scalar ``Items`` in one schema
-        vs structured ``Items[].name`` in another) — synthesis skips
-        the parent row so schema A's scalar counts survive uncorrupted
-        by schema B's structured descendants. Convention documented in
-        ``_synthesize_parent_buckets`` and flagged with a warning."""
+        vs structured ``Items[].name`` in another): parent ``Items``
+        bucket now ACCUMULATES both the scalar's fd AND the structured
+        descendants' counts — the parent = sum of all rows that ended
+        up under it, regardless of schema. Previous preserve-scalar
+        behavior recreated the exact parent-vs-drilldown contradiction
+        #625 exists to fix (parent ✓ while drilldown showed red)."""
         index = import_test_module()
         docs = [
             {
@@ -1638,9 +1640,68 @@ class TestRunLevelRowAggregates:
             },
         ]
         _, per_field = index._run_level_row_aggregates(docs)
+        # Parent Items = scalar's fd (1) + structured Items.name's tp (1).
         assert per_field["Items"]["fd"] == 1
-        assert per_field["Items"]["tp"] == 0
+        assert per_field["Items"]["tp"] == 1
         assert per_field["Items.name"]["tp"] == 1
+
+    def test_collision_warning_reflects_accumulate_behavior(self, mock_env, caplog):
+        """Regression pin: the collision-detected WARN log must
+        describe ACCUMULATE semantics (parent = sum of both schemas'
+        counts), not the earlier PRESERVE semantics ("shows only the
+        scalar schema's counts"). A stale message would mislead
+        operators inspecting CloudWatch."""
+        import logging as _logging
+
+        index = import_test_module()
+        # Reset the module-level dedup so this test's WARN fires
+        # regardless of prior tests in the same session.
+        index._seen_collision_names.clear()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    }
+                ],
+            },
+        ]
+        # The Lambda module is loaded via sys.path shim so its
+        # ``__name__`` is ``"index"``; use that (or drop the kwarg)
+        # rather than the dotted path.
+        with caplog.at_level(_logging.WARNING, logger="index"):
+            index._run_level_row_aggregates(docs)
+        collision_warns = [
+            r for r in caplog.records if "name collision" in r.getMessage().lower()
+        ]
+        assert collision_warns, "expected the collision WARN to fire"
+        msg = collision_warns[0].getMessage()
+        # New behavior: the parent accumulates from BOTH schemas.
+        assert "accumulates counts" in msg or "sum of its children" in msg, (
+            f"WARN message must describe the new accumulate behavior; got: {msg}"
+        )
+        # Old (misleading) claims must NOT appear.
+        assert "skipped" not in msg.lower(), (
+            f"WARN message still claims synthesis was skipped: {msg}"
+        )
+        assert "shows only the scalar" not in msg, (
+            f"WARN message still claims parent shows only scalar counts: {msg}"
+        )
 
     def test_empty_input_returns_zero_metrics(self, mock_env):
         """Empty comparison_results returns 0 counts and 0.0 derived
@@ -1711,6 +1772,46 @@ class TestRunLevelRowAggregates:
         # And graded_packet_metrics folded in.
         assert "graded_packet_metrics" in result
 
+    def test_top_equals_sum_of_per_field_on_mixed_shape_row(self, mock_env):
+        """Structural invariant: on a row whose value shape mixes
+        BARE SCALARS, EMPTY CONTAINERS, and POPULATED CONTAINERS, the
+        top-level counts equal the sum of leaf per-field bucket counts.
+        This is the trickiest case for ``_row_leaves`` +
+        ``_scalar_positional_count`` interaction — the invariant would
+        break if one enumeration path counted a slot the other missed
+        (finding from #625 — the class of bug this whole branch
+        exists to eliminate)."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        # Mixed: 1 bare scalar, 1 empty container,
+                        # 1 populated container (contributes dotted path).
+                        "expected_value": ["a", {}, {"x": 1}],
+                        "actual_value": None,
+                    }
+                ],
+            }
+        ]
+        top, per_field = index._run_level_row_aggregates(docs)
+        # Structural invariant: top-level == sum of ROOT-LEVEL per-field
+        # buckets (those with no ``.`` in the key). Synthesized parent
+        # buckets aggregate ALL descendants including any filtered
+        # ``__positional__`` sub-buckets, so this is the correct
+        # equality to assert (summing terminal-leaf dotted buckets
+        # would MISS the positional contribution the API response
+        # deliberately hides).
+        for bucket in ("tp", "fa", "fd", "tn", "fn"):
+            root_sum = sum(v[bucket] for k, v in per_field.items() if "." not in k)
+            assert top[bucket] == root_sum, (
+                f"top[{bucket}]={top[bucket]} but root-level sum={root_sum} "
+                f"(per_field keys: {sorted(per_field.keys())})"
+            )
+
     def test_top_and_per_field_match_on_different_leaf_counts_per_side(self, mock_env):
         """Top-level and per-field counts must AGREE when expected and
         actual have DIFFERENT leaf counts.
@@ -1748,31 +1849,21 @@ class TestRunLevelRowAggregates:
         assert top["fa"] == leaf_fa
         assert top["fa"] == 3
 
-    def test_three_level_collision_preserves_scalar_and_synthesizes_intermediates(
-        self, mock_env
-    ):
-        """Deeper-tree cross-schema collision behavior (finding from #625
-        xhigh review — reviewer flagged as "inconsistent by tree level").
+    def test_three_level_collision_accumulates_into_all_ancestors(self, mock_env):
+        """Deeper-tree cross-schema collision now ACCUMULATES rather than
+        preserving the scalar in isolation. Setup: schema A has scalar
+        ``Items``; schema B has ``Items[i].line.qty``. Buckets are
+        ``Items`` (scalar) and ``Items.line.qty`` (leaf).
 
-        Setup: schema A has scalar ``Items``; schema B has
-        ``Items[i].line.qty`` (three levels). After row-collection,
-        buckets are ``Items`` (scalar) and ``Items.line.qty`` (leaf).
+        Expected result: each ancestor bucket = sum of everything
+        beneath it (including any pre-existing scalar bucket at that
+        level). Parent-vs-drilldown contradictions are impossible by
+        construction: a red row in the drilldown always reflects in
+        every ancestor's counts.
 
-        Documented convention: at every parent-prefix level walked from
-        the leaf, if a bucket ALREADY exists at that path in the
-        original snapshot, preserve it (skip synthesis). Otherwise
-        synthesize.
-
-        Expected result for this input:
-          * ``Items``          — scalar bucket preserved uncorrupted
-          * ``Items.line``     — synthesized (not in original) from
-                                 ``Items.line.qty``'s counts
-          * ``Items.line.qty`` — leaf, unchanged
-
-        Consequence: expanding ``Items`` in the UI shows scalar counts
-        that don't sum to ``Items.line`` — the collision is documented
-        and warning-logged so operators can disambiguate by renaming
-        the attribute.
+        * ``Items``          — scalar fd (1) + qty tp (1) = {fd:1, tp:1}
+        * ``Items.line``     — synthesized from qty = {tp:1}
+        * ``Items.line.qty`` — leaf = {tp:1}
         """
         index = import_test_module()
         docs = [
@@ -1801,7 +1892,7 @@ class TestRunLevelRowAggregates:
         ]
         _, per_field = index._run_level_row_aggregates(docs)
         assert per_field["Items"]["fd"] == 1
-        assert per_field["Items"]["tp"] == 0
+        assert per_field["Items"]["tp"] == 1  # scalar's fd + qty's tp folded in
         assert per_field["Items.line"]["tp"] == 1
         assert per_field["Items.line.qty"]["tp"] == 1
 

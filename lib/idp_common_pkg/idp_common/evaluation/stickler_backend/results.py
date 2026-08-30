@@ -3,12 +3,15 @@
 
 """Stickler raw ``compare_with`` dict → IDP dataclasses.
 
-Encodes R3: verdicts / counts / derived metrics come straight from Stickler's
-``confusion_matrix`` (per-field ``fields[name].overall`` cells + section
-``aggregate``). No re-scoring, no private threshold table. IDP dataclasses
-receive whatever Stickler said — the two paths that used to disagree (per-doc
-IDP re-derivation vs. run-level Stickler counts on the aggregation Lambda)
-are now the same numbers by construction.
+Verdicts / counts / derived metrics come from Stickler's ROW-LEVEL
+``field_comparisons`` (issue #625): per-attribute ``matched`` is the AND of
+its rows' ``match`` fields via ``_is_match_true``, and section counts come
+from ``aggregate_row_counts`` over the same rows. The pre-#625 design read
+``cm.fields[name].overall`` and ``cm.aggregate``, both of which are
+item-level after Hungarian pairing and hid leaf failures inside kept items
+— parent verdict and drilldown could disagree on the same row. Using the
+raw rows guarantees parent, section counts, and drilldown agree by
+construction. No re-scoring, no private threshold table.
 
 Kept module-boundary-clean: this module knows about Stickler's result shape
 and IDP's dataclasses, but not about ``EvaluationService`` state or
@@ -290,13 +293,16 @@ def transform_stickler_result(
 ) -> SectionEvaluationResult:
     """Convert Stickler's ``compare_with`` dict into a ``SectionEvaluationResult``.
 
-    Verdicts / counts / derived metrics come straight from Stickler's
-    ``confusion_matrix`` (R3): the per-field ``fields[name].overall`` cell for
-    ``matched``, and the section-level ``aggregate`` for counts / precision /
-    recall / F1 / accuracy. IDP no longer re-derives these from
-    score-threshold rules — those diverged from Stickler's built-in
-    ``NullHelper`` + ``ThresholdHelper`` decisions and produced two different
-    numbers per document (per-doc vs. run-level).
+    Verdicts / counts / derived metrics come from Stickler's row-level
+    ``field_comparisons`` (issue #625): per-attribute ``matched`` is the
+    AND of its rows' ``match`` fields via the shared ``_is_match_true``
+    predicate, and section-level counts / precision / recall / F1 /
+    accuracy are derived from ``aggregate_row_counts`` over the same
+    rows. The pre-#625 design read ``cm.fields[name].overall`` and
+    ``cm.aggregate``, both item-level rollups that hid leaf failures
+    inside Hungarian-matched items — parent verdict could show ✓ while
+    the drilldown showed red children. Row-level derivation guarantees
+    parent, section counts, and drilldown agree by construction.
 
     Args:
         section: Section metadata (id, classification).

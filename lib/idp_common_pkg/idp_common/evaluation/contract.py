@@ -377,16 +377,13 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
         for p in shadowed:
             del union[p]
     result = list(union.elements())
-    # Mixed dotted-vs-scalar: if one side has positional scalars (list-like
-    # of bare scalars that contribute NO dotted leaf paths but are real
-    # comparison slots) and the other side has dotted leaves, add sentinel
-    # entries so both sides' slots are counted. Sentinel path "" lets the
-    # aggregation caller fold them into the collapsed root bucket without
-    # attributing them to a spurious attribute name.
-    #
-    # Only fires for list-like containers of bare scalars — an empty dict
-    # or dict-with-nested-values reaches its slots through dotted paths,
-    # not positional counting, so we don't double-count them here.
+    # Mixed dotted-vs-positional: if one side has positional slots
+    # (list-like of BARE SCALARS or EMPTY CONTAINERS — both contribute
+    # no dotted leaf paths but are real comparison slots) and the
+    # other side has dotted leaves, add sentinel entries so both
+    # sides' slots are counted. Non-empty containers/models are NOT
+    # counted here — they reach the confusion matrix via their own
+    # dotted ``leaf_paths`` above (avoiding double-count).
     positional = max(
         _scalar_positional_count(exp),
         _scalar_positional_count(act),
@@ -410,18 +407,35 @@ POSITIONAL_LEAF_NAME = "__positional__"
 
 
 def _scalar_positional_count(v: Any) -> int:
-    """Count of BARE-SCALAR elements in a list-like value.
+    """Count of positional slots in a list-like value that contribute
+    NO dotted leaf paths.
 
-    Returns 0 for anything that isn't a list/tuple/set/frozenset, and for
-    list-likes whose elements are themselves containers or models (those
-    reach the confusion matrix via their own dotted leaf paths). Used
-    only for mixed dotted-vs-scalar row weighting — see ``_row_leaves``.
+    Returns 0 for anything that isn't a list/tuple/set/frozenset. For
+    list-likes, counts elements that either:
+
+    * Are bare scalars (``None`` / str / int / float / bool) — they
+      have no dotted paths, so are only visible to the confusion
+      matrix as positional slots.
+    * Are EMPTY containers (``{}`` / ``[]`` / ``()`` / ``set()`` /
+      ``frozenset()``) — same story: they're a "slot" for the
+      confusion matrix but have no attribute name to attribute to.
+      Without this branch, ``[{}]*3`` had weight 0 via
+      ``_row_leaves`` (empty dicts don't emit at prefix="") but
+      ``_row_weight`` would try the ``_count_leaves`` fallback that
+      counted them 3× — a documented asymmetry the reviewer flagged
+      as softening the recall hit on empty-dict list items.
+
+    Elements that are NON-EMPTY containers or models are NOT counted
+    here — they reach the confusion matrix via their own dotted
+    ``leaf_paths`` in ``_row_leaves``.
     """
     if not isinstance(v, (list, tuple, set, frozenset)):
         return 0
     count = 0
     for elem in v:
         if elem is None or isinstance(elem, (str, int, float, bool)):
+            count += 1
+        elif isinstance(elem, (list, dict, tuple, set, frozenset)) and len(elem) == 0:
             count += 1
     return count
 
@@ -520,7 +534,12 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     docstring didn't explain what "cannot attribute" meant to a reader
     who wasn't in the review discussion).
     """
-    path = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
+    # Coerce to str — a Stickler variant emitting a non-string ``expected_key``
+    # (e.g. a list index or ``None``) would otherwise crash the whole doc's
+    # evaluation on the ``.find()`` call. Every sibling helper is defensive
+    # against unexpected shapes; this one should be too.
+    raw = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
+    path = raw if isinstance(raw, str) else str(raw)
     idx_bracket = path.find("[")
     idx_dot = path.find(".")
     cuts = [i for i in (idx_bracket, idx_dot) if i >= 0]

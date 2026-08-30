@@ -138,6 +138,71 @@ class TestAnonymousRootDedup:
 
 
 @pytest.mark.unit
+class TestScalarPositionalCount:
+    """``_scalar_positional_count`` counts positional slots in list-like
+    values that contribute no dotted leaf paths — bare scalars AND
+    empty containers (finding #7 from #625 review: empty-dict list
+    items were previously invisible to the row weight even when
+    ``_count_leaves`` counted them 1×).
+    """
+
+    def test_bare_scalars_counted(self):
+        assert contract._scalar_positional_count(["a", "b", "c"]) == 3
+        assert contract._scalar_positional_count([1, 2.0, None, True]) == 4
+
+    def test_empty_containers_counted(self):
+        # Empty dict / list / tuple / set / frozenset in a list all
+        # count as positional slots (no dotted path but a real slot).
+        assert contract._scalar_positional_count([{}, [], (), set(), frozenset()]) == 5
+
+    def test_mixed_scalar_and_empty_containers(self):
+        assert contract._scalar_positional_count(["a", {}, 1, []]) == 4
+
+    def test_populated_containers_not_counted(self):
+        # Populated containers are visible via ``leaf_paths``; don't
+        # double-count them here.
+        assert contract._scalar_positional_count([{"a": 1}, [1, 2]]) == 0
+
+    def test_non_list_returns_zero(self):
+        assert contract._scalar_positional_count("string") == 0
+        assert contract._scalar_positional_count({"a": 1}) == 0
+        assert contract._scalar_positional_count(42) == 0
+        assert contract._scalar_positional_count(None) == 0
+
+
+@pytest.mark.unit
+class TestRowRootAttributeDefensive:
+    """``row_root_attribute`` must not crash on a non-string
+    ``expected_key`` / ``actual_key`` / ``field_path`` — the whole
+    doc's evaluation would otherwise fail on ``.find()``.
+    """
+
+    def test_none_path_returns_empty(self):
+        assert contract.row_root_attribute({}) == ""
+
+    def test_int_field_path_coerced_to_str(self):
+        # A Stickler variant emitting int for ``field_path`` shouldn't
+        # crash — coerced via str() so ``.find()`` works.
+        assert contract.row_root_attribute({"field_path": 42}) == "42"
+
+    def test_none_expected_key_falls_through_to_field_path(self):
+        assert (
+            contract.row_root_attribute(
+                {"expected_key": None, "field_path": "Items[0].name"}
+            )
+            == "Items"
+        )
+
+    def test_list_shaped_expected_key_stringifies_to_anonymous_root(self):
+        """A list-shaped ``expected_key`` stringifies to ``"['Items', 3]"``
+        which starts with ``[`` — anonymous-root, returns ``""`` so
+        ``iter_countable_rows`` drops it (rather than crashing OR
+        misinterpreting it as an attribute name). Guards against a
+        future 'fix' that stringifies lists into attribute-like paths."""
+        assert contract.row_root_attribute({"expected_key": ["Items", 3]}) == ""
+
+
+@pytest.mark.unit
 class TestClassifyMatchTruthiness:
     """Regression pin (#625 close-4-blockers): ``classify_field_comparison``
     and the per-attribute verdict in ``stickler_backend/results.py`` must
@@ -174,6 +239,22 @@ class TestClassifyMatchTruthiness:
         fc = {"match": None, "expected_value": "x", "actual_value": "y"}
         assert contract.classify_field_comparison(fc) == "fd"
 
+    def test_float_1_5_is_not_matched(self):
+        """Narrow allowlist: only numeric ``1`` / ``1.0`` count as
+        matched — arbitrary truthy floats like ``1.5`` must NOT slip
+        through as a match signal."""
+        fc = {"match": 1.5, "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_string_1_digit_is_not_matched(self):
+        """Narrow allowlist: only the string ``"true"`` (case-insensitive)
+        counts as matched — a string ``"1"`` or ``"0"`` must NOT be
+        accepted as a boolean-like."""
+        fc_one = {"match": "1", "expected_value": "x", "actual_value": "y"}
+        fc_zero = {"match": "0", "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc_one) == "fd"
+        assert contract.classify_field_comparison(fc_zero) == "fd"
+
     def test_bool_false_is_not_matched(self):
         fc = {"match": False, "expected_value": "x", "actual_value": "y"}
         assert contract.classify_field_comparison(fc) == "fd"
@@ -193,6 +274,41 @@ class TestClassifyMatchTruthiness:
     def test_empty_string_is_not_matched(self):
         fc = {"match": "", "expected_value": "x", "actual_value": "y"}
         assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_models_html_drilldown_agrees_with_classify(self):
+        """Regression pin (blocker #1): the HTML drilldown in
+        ``DocumentEvaluationResult._format_nested_comparisons`` must
+        paint rows GREEN iff the row would classify as matched. Raw
+        ``bool(fc.get("match"))`` used to paint ``"false"`` (string)
+        GREEN while ``classify_field_comparison`` counted it as
+        failure — the exact parent-vs-drilldown contradiction #625
+        exists to eliminate."""
+        from idp_common.evaluation.models import DocumentEvaluationResult
+
+        # Build a minimal comparison_details row with match="false"
+        # string. If the drilldown agrees with classify, the row is
+        # painted RED. If the old raw-bool code runs, it's GREEN.
+        nested = [
+            {
+                "expected_key": "name",
+                "actual_key": "name",
+                "expected_value": "Alice",
+                "actual_value": "Alice",
+                "match": "false",  # STRING, not bool
+                "score": 0.0,
+                "reason": "",
+            }
+        ]
+        # Call the private formatter directly.
+        doc = DocumentEvaluationResult(document_id="d", section_results=[])
+        html = doc._format_nested_comparisons(nested)
+        # RED background = ``#f8d7da``; GREEN = ``#d4edda``.
+        assert "#f8d7da" in html, (
+            "match='false' (string) must paint RED (agree with "
+            "classify's 'fd' verdict). Raw bool() would incorrectly "
+            "paint it GREEN."
+        )
+        assert "#d4edda" not in html, "match='false' (string) must NOT paint GREEN"
 
     def test_numpy_bool_true_is_matched(self):
         """Regression pin: ``numpy.bool_(True)`` must classify as matched.

@@ -194,12 +194,23 @@ class DocumentEvaluationResult:
             "</tr></thead><tbody>"
         )
 
+        # Lazy-import ``_is_match_true`` to avoid a hard import cycle with
+        # ``contract.py`` at module load; this method is only called at
+        # HTML-report time so the runtime import cost is negligible.
+        from idp_common.evaluation.contract import _is_match_true
+
         for fc in field_comparisons:
             expected_key = fc.get("expected_key", "N/A")
             actual_key = fc.get("actual_key", "N/A")
             expected_val = str(fc.get("expected_value", ""))[:100]
             actual_val = str(fc.get("actual_value", ""))[:100]
-            match = fc.get("match", False)
+            # Use the SHARED predicate so the drilldown's green/red painting
+            # agrees with section counts and per-attribute verdict on the
+            # same row. Raw ``bool(fc.get("match", False))`` would paint the
+            # string ``"false"`` or a numeric score like ``0.5`` GREEN
+            # while the row was counted as a failure — the exact parent-
+            # vs-drilldown contradiction #625 exists to eliminate.
+            match = _is_match_true(fc.get("match"))
             score = fc.get("score", 0.0)
             weight = fc.get("weight")
             # Per-field comparison method (annotated in service.py); fall back to
