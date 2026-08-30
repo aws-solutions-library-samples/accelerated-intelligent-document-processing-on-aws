@@ -324,10 +324,16 @@ def transform_stickler_result(
 
     # Group field comparisons by top-level field name for attachment to
     # attributes: field_comparisons is a flat list, group by root field.
+    # Uses the SHARED ``row_root_attribute`` helper (also consumed by
+    # ``iter_countable_rows`` below and by the aggregation Lambda) so
+    # the two groupings can't drift on rows whose root comes from
+    # ``actual_key`` or ``field_path`` rather than ``expected_key``
+    # (finding from #625 high review — the previous local
+    # ``expected_key.split(...)`` was a second, less-forgiving copy of
+    # the same logic).
     field_comparison_map: Dict[str, List[Dict[str, Any]]] = {}
     for fc in field_comparisons:
-        expected_key = fc.get("expected_key", "")
-        root_field = expected_key.split("[")[0].split(".")[0] if expected_key else ""
+        root_field = row_root_attribute(fc)
         if root_field:
             field_comparison_map.setdefault(root_field, []).append(fc)
 
@@ -543,7 +549,10 @@ def transform_stickler_result(
     agg_fn = counts["fn"]
     total = agg_tp + agg_fp + agg_fn + agg_tn
 
-    metrics: Dict[str, float] = {
+    # ``Dict[str, Any]`` because later code adds ``_stickler_counts`` (nested
+    # dict), ``evaluation_failed`` (bool), and ``failure_type`` (str). An
+    # earlier ``Dict[str, float]`` annotation lied about the actual shape.
+    metrics: Dict[str, Any] = {
         "precision": safe_div(agg_tp, agg_tp + agg_fp),
         "recall": safe_div(agg_tp, agg_tp + agg_fn),
         "f1_score": safe_div(2 * agg_tp, 2 * agg_tp + agg_fp + agg_fn),

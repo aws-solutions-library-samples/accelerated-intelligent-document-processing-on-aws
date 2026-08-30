@@ -19,7 +19,7 @@ mismatched blobs (or migrate) instead of silently doubling counters.
 
 import logging
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from typing import Any, Dict, Iterable, List
 
 logger = logging.getLogger(__name__)
@@ -132,38 +132,66 @@ def _count_leaves(value: Any) -> int:
 def _row_weight(fc: Dict[str, Any]) -> int:
     """Number of leaf comparisons a row represents.
 
-    Stickler emits one row per LEAF for Hungarian-paired items and one row per
-    ITEM for rejected/missing/extra items. For a row whose non-None side is
-    structured (dict / list / model), the weight is the size of the UNION of
-    expected and actual leaf paths — both sides' leaves count so that
-    ``sum(per-field counts) == top-level counts`` holds when the two sides
-    have disjoint or unequal leaf sets (finding from #625 high review — a
-    "max of the two sides" rule made total counts agree only when the sides'
-    leaves overlapped, and left disjoint-side leaves invisible to per-field).
-    For a scalar leaf row where neither side has enumerable leaves, the
-    weight is 1 (one confusion-matrix event).
+    Weight equals ``len(_row_leaves(fc))`` when the row has dotted leaf
+    paths (dict/list-of-dicts value shapes); both ``_row_weight`` and the
+    per-field spread consume ``_row_leaves`` so
+    ``sum(per-field counts) == top-level counts`` is a structural invariant.
+
+    For a list of BARE SCALARS (``["a", "b", "c"]``) ``_row_leaves`` returns
+    empty because the elements have no dotted paths — the per-field spread
+    falls through to a single ``_add(collapsed, bucket, weight)`` and the
+    weight must equal the positional element count so a truncated 5-item
+    scalar list still weighs 5 leaf-normalized units. ``_count_leaves``
+    (prefix="_") counts positional slots for that fallback.
+    """
+    leaves = _row_leaves(fc)
+    if leaves:
+        return len(leaves)
+    # Fallback: neither side has dotted leaf paths. Preserve positional
+    # element counting for bare-scalar lists via ``_count_leaves``. When
+    # neither side is structured (both scalar or None), the max is 0 and
+    # we return 1 for the single confusion-matrix event.
+    exp = fc.get("expected_value")
+    act = fc.get("actual_value")
+    exp_count = _count_leaves(exp) if _is_structured(exp) else 0
+    act_count = _count_leaves(act) if _is_structured(act) else 0
+    scalar_max = max(exp_count, act_count)
+    return scalar_max if scalar_max > 0 else 1
+
+
+def _row_leaves(fc: Dict[str, Any]) -> List[str]:
+    """Ordered list of leaf paths a row spreads over.
+
+    Bag-semantic union of expected and actual leaf paths — repeated paths
+    from list-of-items (where every item shares the same key shape)
+    contribute one entry per item, so a 5-item list of ``{"name": ..}``
+    dicts weighs 5, not 1. Cross-side overlap counts once (element-wise
+    max of a Counter per path).
+
+    Returns [] when neither side has enumerable leaf paths — the caller
+    (``_row_weight``) applies the min-1 fallback, and the aggregation
+    spread falls back to a single ``_add(collapsed, bucket, weight)``.
+
+    Consolidated helper so top-level counts (via ``_row_weight``) and
+    per-field spread in the aggregation Lambda enumerate the SAME slots
+    — divergence between the two enumerations reintroduces the class of
+    inconsistency issue #625 was originally fixing (finding from #625
+    high review — a set-based union collapsed list-of-items duplicate
+    paths and undercounted the row).
     """
     exp = fc.get("expected_value")
     act = fc.get("actual_value")
-    # Use ``leaf_paths`` (no prefix) so list-of-scalars enumerates as
-    # positional elements matching the per-field spread logic. Fall back
-    # to ``_count_leaves`` (which uses the "_" prefix to force min-1 on
-    # bare scalars) so a list-of-strings still weighs by element count
-    # (a truncated 5-item list is fn=5 leaf-normalized, not fn=1).
     exp_paths = leaf_paths(exp) if _is_structured(exp) else []
     act_paths = leaf_paths(act) if _is_structured(act) else []
-    exp_union: set = set(exp_paths)
-    act_union: set = set(act_paths)
-    union = exp_union | act_union
-    if union:
-        return len(union)
-    # Neither side has dotted leaf paths — list-of-scalars, empty container,
-    # or bare scalar. Use ``_count_leaves`` (prefix="_") which counts
-    # positional list elements and applies min-1 for scalars.
-    exp_scalar_leaves = _count_leaves(exp) if _is_structured(exp) else 0
-    act_scalar_leaves = _count_leaves(act) if _is_structured(act) else 0
-    scalar_max = max(exp_scalar_leaves, act_scalar_leaves)
-    return scalar_max if scalar_max > 0 else 1
+    if not exp_paths and not act_paths:
+        return []
+    exp_bag: Counter = Counter(exp_paths)
+    act_bag: Counter = Counter(act_paths)
+    # Elementwise max: a path present on both sides with counts (3, 2)
+    # contributes 3 (Hungarian pairing means 2 leaves match and 1 is
+    # extra — max captures the total slots the row covers).
+    union: Counter = exp_bag | act_bag
+    return list(union.elements())
 
 
 def _is_structured(value: Any) -> bool:
@@ -171,8 +199,14 @@ def _is_structured(value: Any) -> bool:
     can meaningfully enumerate slots inside. Bare scalars (str, int, bool,
     None) all count as one slot at their prefix and are handled by the
     ``return 1`` branch of ``_row_weight``.
+
+    Includes frozenset so the "structured" check agrees with
+    ``_is_empty_value``'s frozenset-aware emptiness check — a divergence
+    would split classifier semantics from row-weighting on that shape
+    (finding from #625 high review — the docstring of ``_is_empty_value``
+    already claimed frozenset was in the container set).
     """
-    if isinstance(value, (dict, list, tuple, set)):
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
         return True
     if value is None or isinstance(value, (str, int, float, bool)):
         return False

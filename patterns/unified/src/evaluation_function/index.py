@@ -183,10 +183,19 @@ def handler(event, context):
             # ``{"Error": "States.Timeout", "Cause": "..."}`` or a
             # string / other shape on non-standard invocations; the
             # dict form is the one AWS retries as a timeout.
+            # Lambda's own timeout surfaces via ``Sandbox.Timedout`` (the
+            # runtime terminates the invocation and Step Functions
+            # propagates that code); Step Functions' state-level timeout
+            # uses ``States.Timeout``. Both are retried as timeouts in
+            # the state machine and both should map to TIMED_OUT here.
+            # ``Lambda.Timeout`` is NOT an emitted Step Functions code —
+            # a genuine Lambda function timeout surfaces as
+            # ``Sandbox.Timedout`` or ``Lambda.Unknown``, not
+            # ``Lambda.Timeout`` — so it was dead code (finding from
+            # #625 high review).
             TIMEOUT_ERROR_CODES = {
                 'Sandbox.Timedout',
                 'States.Timeout',
-                'Lambda.Timeout',
             }
             raw_error = event.get('error')
             error_code = (
@@ -207,11 +216,41 @@ def handler(event, context):
             # Never let the failure-recorder itself break the workflow — the whole
             # point of this branch is that the document survives.
             logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
-            # Return the wrapped ``{'document': ...}`` shape the success path
-            # returns, so the downstream ``$.document`` reference in the
-            # state machine still resolves. Returning the raw doc dict here
-            # would break PostprocessingHook.
-            return {'document': event.get('document') or {}}
+            # If we managed to load ``actual_document`` before the failure,
+            # prefer its clean serialization — the raw ``event.get('document')``
+            # can carry state-level keys the state machine's Catch merged in
+            # (``EvaluationError``, and — because the ASL passes
+            # ``document.$: $`` — a nested ``document`` key holding the
+            # actual doc). Downstream ``$.document.<field>`` would otherwise
+            # see the merged shape (finding from #625 high review).
+            if actual_document is not None:
+                try:
+                    return {
+                        'document': actual_document.serialize_document(
+                            working_bucket, 'evaluation'
+                        )
+                    }
+                except Exception:
+                    pass
+            raw = event.get('document') or {}
+            # The ASL parameter ``document.$: $`` on RecordEvaluationFailure
+            # passes the WHOLE state (including sibling keys like
+            # ``EvaluationError``). Unwrap a nested ``document`` if present,
+            # and drop known state-level keys.
+            if isinstance(raw, dict) and isinstance(raw.get('document'), dict):
+                raw = raw['document']
+            if isinstance(raw, dict):
+                raw = {
+                    k: v for k, v in raw.items()
+                    if k not in (
+                        'EvaluationError',
+                        'record_failure_only',
+                        'failure_reason',
+                        'error',
+                        'execution_arn',
+                    )
+                }
+            return {'document': raw}
 
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")

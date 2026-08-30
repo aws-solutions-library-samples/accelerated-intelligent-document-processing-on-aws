@@ -744,19 +744,20 @@ def _run_level_row_aggregates(
     the caller's downstream code is unaffected.
 
     The two individual helpers ``_run_level_counts_from_rows`` and
-    ``_run_level_field_metrics_from_rows`` are retained (as independent
-    implementations) so external unit tests that hit them directly still
-    work; only the production ``_transform_stickler_metrics`` call site
-    reaches this fused helper. Kept independent rather than refactored
-    into wrappers to preserve the tightly-scoped surface each test
-    already exercises — a fused implementation returning both metrics
-    would change the tests' assertion shape.
+    ``_run_level_field_metrics_from_rows`` are retained as thin wrappers
+    (each returns one half of this helper's tuple) so external unit tests
+    that hit them directly still work; only the production
+    ``_transform_stickler_metrics`` call site reaches this fused helper.
+    Wrappers, not duplicates, so future edits touch one implementation and
+    the two views can't drift (finding from #625 high review — an earlier
+    docstring claimed they were independent implementations while the
+    bodies had become one-line delegates).
     """
     from idp_common.evaluation.contract import (
+        _row_leaves,
         _row_weight,
         classify_field_comparison,
         iter_countable_rows,
-        leaf_paths,
         safe_div,
     )
 
@@ -800,31 +801,16 @@ def _run_level_row_aggregates(
             if not collapsed:
                 continue
 
-            # Enumerate leaves from the UNION of both sides' leaf paths
-            # so schema-declared attributes present on exp but absent
-            # on act (or vice versa) are BOTH visible in per-field
-            # metrics — a hallucinated multi-leaf ``actual`` against a
-            # disjoint ``expected`` would otherwise leave one side's
-            # leaves invisible under a "pick the larger side" rule
-            # (finding from #625 high review — an earlier "pick larger
-            # side" fix, itself replacing a "pick exp side" that
-            # undercounted hallucinations, hid disjoint side leaves).
-            exp = fc.get("expected_value")
-            act = fc.get("actual_value")
-            exp_leaves_list = leaf_paths(exp) if exp is not None else []
-            act_leaves_list = leaf_paths(act) if act is not None else []
-            # Order-preserving union: keep exp order first, then any
-            # act-only leaves (deterministic bucket ordering for tests).
-            seen: set = set()
-            leaves = []
-            for leaf in exp_leaves_list:
-                if leaf not in seen:
-                    seen.add(leaf)
-                    leaves.append(leaf)
-            for leaf in act_leaves_list:
-                if leaf not in seen:
-                    seen.add(leaf)
-                    leaves.append(leaf)
+            # Use the SAME leaf enumeration ``_row_weight`` used so the
+            # invariant ``sum(per-field counts) == top-level`` is
+            # structural, not coincidental. Bag-semantic union: for a
+            # list of N items sharing the same key shape, each of the N
+            # positions contributes one spread onto the same collapsed
+            # bucket — matching ``_row_weight``'s count via the shared
+            # ``_row_leaves`` helper (finding from #625 review — a
+            # set-based union collapsed the N-item list into 1 slot,
+            # diverging from ``_row_weight`` on that shape).
+            leaves = _row_leaves(fc)
             if leaves:
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
@@ -1026,17 +1012,26 @@ def _transform_stickler_metrics(
                     "overall"
                 ]["error_capture_at_budget"]
 
-            # Merge ECAB into per-field metrics
-            if "fields" in ecab_metrics:
+            # Merge ECAB into per-field metrics — only initialize the
+            # ``fields`` sub-dict when we actually have per-field ECAB
+            # data to add. Creating an empty ``fields`` dict here would
+            # trip the "no metrics" tail branch and drop the merged
+            # confidence_metrics entirely (finding from #625 high review).
+            ecab_fields = ecab_metrics.get("fields") or {}
+            fields_to_merge = {
+                field_name: field_ecab
+                for field_name, field_ecab in ecab_fields.items()
+                if "error_capture_at_budget" in field_ecab
+            }
+            if fields_to_merge:
                 if "fields" not in confidence_metrics:
                     confidence_metrics["fields"] = {}
-                for field_name, field_ecab in ecab_metrics["fields"].items():
-                    if "error_capture_at_budget" in field_ecab:
-                        if field_name not in confidence_metrics["fields"]:
-                            confidence_metrics["fields"][field_name] = {}
-                        confidence_metrics["fields"][field_name][
-                            "error_capture_at_budget"
-                        ] = field_ecab["error_capture_at_budget"]
+                for field_name, field_ecab in fields_to_merge.items():
+                    if field_name not in confidence_metrics["fields"]:
+                        confidence_metrics["fields"][field_name] = {}
+                    confidence_metrics["fields"][field_name][
+                        "error_capture_at_budget"
+                    ] = field_ecab["error_capture_at_budget"]
 
         if confidence_metrics and confidence_metrics.get("fields"):
             # Extract average confidence for backward compatibility
@@ -1055,6 +1050,18 @@ def _transform_stickler_metrics(
             # Log sample field names to verify structure
             sample_fields = list(confidence_metrics.get("fields", {}).keys())[:5]
             logger.info(f"Sample confidence field patterns: {sample_fields}")
+        elif confidence_metrics and confidence_metrics.get("overall"):
+            # No per-field metrics but there IS an ``overall`` block (e.g.
+            # ECAB overall merged into a fresh dict when Stickler emitted
+            # nothing) — keep the dict so ECAB rows still reach the
+            # output rather than being nullified by the tail branch
+            # (finding from #625 high review — the tail branch below
+            # previously reset confidence_metrics to None on any run with
+            # no fields, dropping ECAB overall in the process).
+            logger.info(
+                "No per-field confidence metrics; preserving overall block "
+                f"(ECAB={confidence_metrics.get('overall', {}).get('error_capture_at_budget')})"
+            )
         else:
             logger.warning("No confidence metrics returned by Stickler bulk aggregator")
             confidence_metrics = None
