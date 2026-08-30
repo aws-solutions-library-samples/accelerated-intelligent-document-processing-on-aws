@@ -125,6 +125,36 @@ class TestRowWeight:
         }
         assert contract._row_weight(fc) == 2
 
+    def test_disjoint_sides_use_union(self):
+        # Both sides structured but their key sets don't overlap → union
+        # is 4 leaves. Earlier "max of the two" rule returned 2 (each
+        # side has 2 leaves) and per-field would spread to only one
+        # side's names, hiding the other side's attributes.
+        fc = {
+            "expected_value": {"a": 1, "b": 2},
+            "actual_value": {"c": 3, "d": 4},
+        }
+        assert contract._row_weight(fc) == 4
+
+    def test_partial_overlap_uses_union(self):
+        # Overlapping key ``a`` counts once in the union.
+        fc = {
+            "expected_value": {"a": 1, "b": 2},
+            "actual_value": {"a": 9, "c": 3},
+        }
+        assert contract._row_weight(fc) == 3
+
+    def test_list_of_scalars_weighed_by_element_count(self):
+        # A truncated list of scalars: exp has 3 elements, act has 0.
+        # Bare-scalar leaves don't produce dotted paths, so the union
+        # is empty — fall through to ``_count_leaves`` (prefix="_")
+        # which counts positional elements. Weight 3 (3 missing leaves).
+        fc = {
+            "expected_value": ["x", "y", "z"],
+            "actual_value": [],
+        }
+        assert contract._row_weight(fc) == 3
+
 
 @pytest.mark.unit
 class TestSafeDiv:

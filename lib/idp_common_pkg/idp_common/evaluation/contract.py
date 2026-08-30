@@ -30,13 +30,19 @@ def _is_empty_value(v: Any) -> bool:
     ``field_comparisons`` row.
 
     Stickler emits `None` when the value is absent and `""`/`[]`/`{}` when the
-    value is present-but-empty. All four count as "no value" for the purposes
+    value is present-but-empty. All count as "no value" for the purposes
     of tn (correctly-empty) / fa (hallucinated) / fn (missed) classification —
     a correctly-empty list is a `tn`, not a `tp`.
+
+    Includes tuple / set / frozenset so the emptiness check agrees with
+    ``_is_structured`` (which treats those as containers). A divergence
+    would split classifier semantics from ``_row_weight``'s enumeration
+    (finding from #625 high review — a Stickler-emitted empty tuple was
+    "structured" for weighting but "non-empty" for classification).
     """
     if v is None:
         return True
-    if isinstance(v, (str, list, dict)) and len(v) == 0:
+    if isinstance(v, (str, list, dict, tuple, set, frozenset)) and len(v) == 0:
         return True
     return False
 
@@ -128,28 +134,36 @@ def _row_weight(fc: Dict[str, Any]) -> int:
 
     Stickler emits one row per LEAF for Hungarian-paired items and one row per
     ITEM for rejected/missing/extra items. For a row whose non-None side is
-    structured (dict / list / model), we weight by ``max(1, leaf_count)`` so
-    both shapes contribute the same leaf-normalized units to the confusion
-    matrix. For a scalar leaf row, the weight is 1.
-
-    Uses the MAX of expected and actual leaf counts (not just "exp if exp is
-    not None"): a hallucinated multi-leaf actual against an empty-but-present
-    expected (``{}``/``[]``/``""``) has real leaves on the actual side that
-    should contribute to the confusion-matrix weight. Picking exp
-    unconditionally undercounts the hallucination as weight=1
-    (finding from #625 high review — a false-alarm row emitting a 5-key
-    dict on the actual side had weight 1 instead of 5).
+    structured (dict / list / model), the weight is the size of the UNION of
+    expected and actual leaf paths — both sides' leaves count so that
+    ``sum(per-field counts) == top-level counts`` holds when the two sides
+    have disjoint or unequal leaf sets (finding from #625 high review — a
+    "max of the two sides" rule made total counts agree only when the sides'
+    leaves overlapped, and left disjoint-side leaves invisible to per-field).
+    For a scalar leaf row where neither side has enumerable leaves, the
+    weight is 1 (one confusion-matrix event).
     """
     exp = fc.get("expected_value")
     act = fc.get("actual_value")
-    exp_leaves = _count_leaves(exp) if _is_structured(exp) else 0
-    act_leaves = _count_leaves(act) if _is_structured(act) else 0
-    max_leaves = max(exp_leaves, act_leaves)
-    # ``max_leaves == 0`` covers "both sides are scalars/None/empty" — one
-    # confusion-matrix event, weight 1. Otherwise ``max_leaves`` is already
-    # ≥ 1 (a non-empty structured value has at least one slot) so we return
-    # it directly.
-    return max_leaves if max_leaves > 0 else 1
+    # Use ``leaf_paths`` (no prefix) so list-of-scalars enumerates as
+    # positional elements matching the per-field spread logic. Fall back
+    # to ``_count_leaves`` (which uses the "_" prefix to force min-1 on
+    # bare scalars) so a list-of-strings still weighs by element count
+    # (a truncated 5-item list is fn=5 leaf-normalized, not fn=1).
+    exp_paths = leaf_paths(exp) if _is_structured(exp) else []
+    act_paths = leaf_paths(act) if _is_structured(act) else []
+    exp_union: set = set(exp_paths)
+    act_union: set = set(act_paths)
+    union = exp_union | act_union
+    if union:
+        return len(union)
+    # Neither side has dotted leaf paths — list-of-scalars, empty container,
+    # or bare scalar. Use ``_count_leaves`` (prefix="_") which counts
+    # positional list elements and applies min-1 for scalars.
+    exp_scalar_leaves = _count_leaves(exp) if _is_structured(exp) else 0
+    act_scalar_leaves = _count_leaves(act) if _is_structured(act) else 0
+    scalar_max = max(exp_scalar_leaves, act_scalar_leaves)
+    return scalar_max if scalar_max > 0 else 1
 
 
 def _is_structured(value: Any) -> bool:

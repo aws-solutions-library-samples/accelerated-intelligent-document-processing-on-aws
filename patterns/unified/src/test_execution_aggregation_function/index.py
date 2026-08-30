@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +37,16 @@ _GRADED_PACKET_KEYS = (
     "rand_index",
     "avg_ordering_score",
 )
+
+
+# Process-wide LRU dedupe for the parent-bucket-collision warning. The
+# aggregation Lambda runs once per test run; a stable scalar-vs-structured
+# schema collision would otherwise fire the warning on every run in a
+# warm container. LRU (not a hard cap) so a container that sees many
+# DIFFERENT collision sets over its lifetime still logs each fresh one.
+_SEEN_COLLISION_MAX = 128
+_seen_collision_names: "OrderedDict[tuple, None]" = OrderedDict()
+_seen_collision_lock = threading.Lock()
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -266,7 +277,20 @@ def aggregate_test_run_with_stickler(
             ErrorCaptureAtBudgetMetric,
         )
 
-        process_eval = aggregate_from_comparisons(comparison_results)
+        # Stickler consumers should not see our ``_idp_source`` sentinel —
+        # build an untagged view for every Stickler call (finding from
+        # #625 high review — passing the tagged dicts directly to
+        # ``aggregate_from_comparisons`` and the two
+        # ``BulkStructuredModelEvaluator`` instances would surface the
+        # sentinel if any future Stickler version iterates SCR top-level
+        # keys). ``_run_level_row_aggregates`` (our code) reads
+        # ``_idp_source`` from the ORIGINAL tagged list below.
+        untagged_comparisons = [
+            {k: v for k, v in scr.items() if k != "_idp_source"}
+            for scr in comparison_results
+        ]
+
+        process_eval = aggregate_from_comparisons(untagged_comparisons)
 
         logger.info(
             f"Stickler aggregation complete: document_count={process_eval.document_count}, comparison_results={len(comparison_results)}, weighted_scores={len(doc_weighted_scores)}"
@@ -292,7 +316,7 @@ def aggregate_test_run_with_stickler(
                     )
                 ]
             )
-            for comp_result in comparison_results:
+            for comp_result in untagged_comparisons:
                 evaluator.update_from_comparison_result(comp_result)
             confidence_metrics = evaluator.compute().confidence_metrics
             # Stickler's BrierScoreMetric emits under key ``brier_score``; the
@@ -322,7 +346,7 @@ def aggregate_test_run_with_stickler(
                     )
                 ]
             )
-            for comp_result in comparison_results:
+            for comp_result in untagged_comparisons:
                 ecab_evaluator.update_from_comparison_result(comp_result)
             ecab_metrics = ecab_evaluator.compute().confidence_metrics
 
@@ -776,22 +800,31 @@ def _run_level_row_aggregates(
             if not collapsed:
                 continue
 
-            # Enumerate leaves from the SAME side ``_row_weight`` used
-            # (the side with more leaves) so ``sum(per-field) ==
-            # top-level`` when expected and actual have DIFFERENT leaf
-            # counts (finding from #625 review-effort code review — a
-            # hallucinated 5-leaf ``actual`` against a 2-leaf ``expected``
-            # weighed 5 at the top but only spread to 2 per-field buckets
-            # under a "pick exp side" rule).
+            # Enumerate leaves from the UNION of both sides' leaf paths
+            # so schema-declared attributes present on exp but absent
+            # on act (or vice versa) are BOTH visible in per-field
+            # metrics — a hallucinated multi-leaf ``actual`` against a
+            # disjoint ``expected`` would otherwise leave one side's
+            # leaves invisible under a "pick the larger side" rule
+            # (finding from #625 high review — an earlier "pick larger
+            # side" fix, itself replacing a "pick exp side" that
+            # undercounted hallucinations, hid disjoint side leaves).
             exp = fc.get("expected_value")
             act = fc.get("actual_value")
             exp_leaves_list = leaf_paths(exp) if exp is not None else []
             act_leaves_list = leaf_paths(act) if act is not None else []
-            leaves = (
-                act_leaves_list
-                if len(act_leaves_list) > len(exp_leaves_list)
-                else exp_leaves_list
-            )
+            # Order-preserving union: keep exp order first, then any
+            # act-only leaves (deterministic bucket ordering for tests).
+            seen: set = set()
+            leaves = []
+            for leaf in exp_leaves_list:
+                if leaf not in seen:
+                    seen.add(leaf)
+                    leaves.append(leaf)
+            for leaf in act_leaves_list:
+                if leaf not in seen:
+                    seen.add(leaf)
+                    leaves.append(leaf)
             if leaves:
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
@@ -900,17 +933,32 @@ def _synthesize_parent_buckets(field_counts: Dict[str, Dict[str, int]]) -> None:
                 entry[k] += counts[k]
 
     if collisions:
-        # De-dup and cap so a run with N structured children colliding with
-        # the same scalar parent doesn't emit N identical warnings.
-        unique = sorted(set(collisions))
-        logger.warning(
-            "Parent-bucket synthesis skipped for %d attribute name(s) whose "
-            "path is a scalar in one schema and a structured list in another "
-            "in this run: %s. The parent row shows only the scalar schema's "
-            "counts. Rename the attribute in one schema to disambiguate.",
-            len(unique),
-            unique[:10],
-        )
+        # De-dup within a single call, AND across calls in a warm Lambda
+        # container: a persistent scalar-vs-structured schema collision
+        # would otherwise fire this warning on every aggregation
+        # (finding from #625 high review — the aggregator runs once per
+        # test run in production, so a stable collision floods CloudWatch
+        # on every run). The LRU is bounded so a container that sees many
+        # DIFFERENT collision names over its lifetime still gets fresh
+        # warnings after eviction.
+        unique = tuple(sorted(set(collisions)))
+        should_log = False
+        with _seen_collision_lock:
+            if unique not in _seen_collision_names:
+                if len(_seen_collision_names) >= _SEEN_COLLISION_MAX:
+                    _seen_collision_names.popitem(last=False)
+                _seen_collision_names[unique] = None
+                should_log = True
+        if should_log:
+            logger.warning(
+                "Parent-bucket synthesis skipped for %d attribute name(s) "
+                "whose path is a scalar in one schema and a structured list "
+                "in another in this run: %s. The parent row shows only the "
+                "scalar schema's counts. Rename the attribute in one schema "
+                "to disambiguate.",
+                len(unique),
+                list(unique[:10]),
+            )
 
 
 def _transform_stickler_metrics(
@@ -956,9 +1004,17 @@ def _transform_stickler_metrics(
         # replaced ``process_eval.confidence_metrics`` before invoking us.
         # No post-pass enhancement required.
 
-        # Merge ECARB (Error Capture at Review Budget) metrics from separate evaluation
-        # ECARB requires custom confidence_metrics in BulkStructuredModelEvaluator
-        if ecab_metrics and confidence_metrics:
+        # Merge ECARB (Error Capture at Review Budget) metrics from separate evaluation.
+        # ECARB requires custom confidence_metrics in BulkStructuredModelEvaluator.
+        # If ECAB succeeded but ``process_eval.confidence_metrics`` is None
+        # (Stickler produced no aggregate confidence surface for this run),
+        # initialize an empty dict so the ECAB values still land in the
+        # output rather than being silently dropped (finding from #625
+        # high review — a run with ECAB metrics but no other confidence
+        # signal previously lost the ECAB rows entirely).
+        if ecab_metrics and confidence_metrics is None:
+            confidence_metrics = {}
+        if ecab_metrics and confidence_metrics is not None:
             # Merge ECAB into overall metrics
             if (
                 "overall" in ecab_metrics
@@ -1308,17 +1364,18 @@ def _empty_metrics() -> Dict[str, Any]:
         "weighted_overall_scores": {},
         "average_confidence": None,
         "accuracy_breakdown": {
+            # All-None on the error path so dashboards / Athena queries
+            # can distinguish "unmeasurable" (None → renders N/A) from
+            # "measured 0.0" (a real zero result). Aligning FAR/FDR with
+            # the sibling precision/recall/f1 shape here is safer than
+            # forcing 0.0, which reads as "measured false alarm rate is
+            # zero" — false-negative to the caller (finding from #625
+            # high review, undoing my earlier ``0.0`` unification).
             "precision": None,
             "recall": None,
             "f1_score": None,
-            # ``false_alarm_rate`` and ``false_discovery_rate`` are floats in
-            # the normal path (0.0 on zero-denominator, matching ``safe_div``);
-            # emit 0.0 here too so the field shape is consistent across the
-            # error and normal paths (finding from #625 high review — a
-            # ``None`` vs ``0.0`` split on the same field breaks downstream
-            # code that reads ``far == 0.0``).
-            "false_alarm_rate": 0.0,
-            "false_discovery_rate": 0.0,
+            "false_alarm_rate": None,
+            "false_discovery_rate": None,
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},

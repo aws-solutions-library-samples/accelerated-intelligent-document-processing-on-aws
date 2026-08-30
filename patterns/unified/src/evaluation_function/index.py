@@ -173,21 +173,28 @@ def handler(event, context):
         try:
             actual_document = extract_document_from_event(event)
             reason = event.get('failure_reason') or 'Evaluation did not complete'
-            # Match AWS-emitted timeout error codes only, not any substring
-            # containing ``timeout`` — an upstream service returning a
-            # message like "connection timeout to Bedrock" should read as
-            # FAILED, not TIMED_OUT. The state machine's Catch normalizes
-            # its error to a Python dict/str; the specific codes we retry
-            # as timeouts are Lambda's ``Sandbox.Timedout`` and Step
-            # Functions' ``States.Timeout`` / ``Lambda.Timeout``.
-            error_blob = json.dumps(event.get('error', ''))
+            # Match AWS error codes by EXACT parse of Step Functions'
+            # ``{Error, Cause}`` envelope, not by substring on the
+            # JSON-serialized blob — a "connection timeout" mentioned in
+            # a ``Cause`` prose message must NOT re-classify a non-
+            # timeout failure as TIMED_OUT (finding from #625 high
+            # review, replacing the earlier substring check). The state
+            # machine's Catch delivers ``error`` as either the dict
+            # ``{"Error": "States.Timeout", "Cause": "..."}`` or a
+            # string / other shape on non-standard invocations; the
+            # dict form is the one AWS retries as a timeout.
+            TIMEOUT_ERROR_CODES = {
+                'Sandbox.Timedout',
+                'States.Timeout',
+                'Lambda.Timeout',
+            }
+            raw_error = event.get('error')
+            error_code = (
+                raw_error.get('Error') if isinstance(raw_error, dict) else None
+            )
             status = (
                 EvaluationStatus.TIMED_OUT
-                if (
-                    'Sandbox.Timedout' in error_blob
-                    or 'States.Timeout' in error_blob
-                    or 'Lambda.Timeout' in error_blob
-                )
+                if error_code in TIMEOUT_ERROR_CODES
                 else EvaluationStatus.FAILED
             )
             logger.error(
