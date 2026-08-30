@@ -196,6 +196,40 @@ class TestClassifyMatchTruthiness:
         }
         assert contract.classify_field_comparison(fc) == "fd"
 
+    def test_numpy_int64_one_is_matched(self):
+        """Regression pin: ``numpy.int64(1)`` (any numpy integer where
+        the value equals 1) must classify as matched. Docstring pointed
+        at this case but the earlier ``isinstance(value, int)`` branch
+        rejected numpy integers (not subclasses of Python int on numpy
+        2.x)."""
+        np = pytest.importorskip("numpy")
+        fc = {
+            "match": np.int64(1),
+            "expected_value": "x",
+            "actual_value": "x",
+        }
+        assert contract.classify_field_comparison(fc) == "tp"
+
+    def test_numpy_int64_zero_is_not_matched(self):
+        np = pytest.importorskip("numpy")
+        fc = {
+            "match": np.int64(0),
+            "expected_value": "x",
+            "actual_value": "y",
+        }
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_numpy_int64_two_is_not_matched(self):
+        """Only numeric ``1`` counts — arbitrary integers must not
+        opt in to the matched bucket."""
+        np = pytest.importorskip("numpy")
+        fc = {
+            "match": np.int64(2),
+            "expected_value": "x",
+            "actual_value": "y",
+        }
+        assert contract.classify_field_comparison(fc) == "fd"
+
 
 @pytest.mark.unit
 class TestRowWeight:

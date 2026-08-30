@@ -44,14 +44,26 @@ def _is_match_true(value: Any) -> bool:
     # slip through the numeric check.
     if isinstance(value, bool):
         return bool(value)
-    # numpy.bool_ is NOT a subclass of Python's builtin bool (verified
-    # on current numpy). Detect by class name — targeted at numpy
-    # specifically so an arbitrary class named ``bool_`` doesn't
-    # accidentally opt in.
-    if type(value).__name__ == "bool_":
+    # numpy scalar types (``bool_``, ``int64``, ``int32``, ``float64``…)
+    # are NOT subclasses of Python's builtin ``bool``/``int``/``float``
+    # (verified live on current numpy). Detect via class name so a
+    # numpy-emitted ``1`` / ``bool_(True)`` matches without needing to
+    # import numpy at module load time. ``__bool__`` conversion handles
+    # both cases: numpy bool → its boolean, numeric ``1`` → True,
+    # ``0`` → False, other numerics fall through.
+    value_type = type(value)
+    class_name = value_type.__name__
+    # Require the numpy MODULE so an arbitrary user class named
+    # ``IntBox`` doesn't slip through the numeric-name check.
+    is_numpy_scalar = value_type.__module__ == "numpy"
+    if is_numpy_scalar and class_name == "bool_":
         return bool(value)
-    # Numeric 1 (also covers True stored as int, and values that
-    # compare == 1 like ``numpy.int64(1)``).
+    if is_numpy_scalar and class_name.startswith(("int", "uint", "float")):
+        try:
+            if int(value) == 1 and float(value) == 1.0:
+                return True
+        except (TypeError, ValueError):
+            pass
     if isinstance(value, (int, float)) and value == 1:
         return True
     if isinstance(value, str) and value.strip().lower() == "true":

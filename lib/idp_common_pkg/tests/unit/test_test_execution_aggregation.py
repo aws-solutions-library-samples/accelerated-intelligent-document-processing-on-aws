@@ -1675,6 +1675,42 @@ class TestRunLevelRowAggregates:
         assert index._calculate_false_alarm_rate(empty_counts) is None
         assert index._calculate_false_discovery_rate(empty_counts) is None
 
+    def test_stickler_failure_preserves_excluded_doc_keys(self, mock_env):
+        """Regression pin: if Stickler's aggregation raises, the
+        outer-except path must still fold in ``excluded_doc_keys``
+        and ``graded_packet_metrics`` — otherwise the failure path
+        silently loses the doc-list info operators need to
+        investigate (finding from #625 self-review — the failure
+        path was inconsistent with the empty-input path)."""
+        index = import_test_module()
+
+        # Patch _load_comparison_results to return docs + excluded keys,
+        # then patch aggregate_from_comparisons to raise.
+        with (
+            patch.object(index, "_load_comparison_results") as mock_load,
+            patch(
+                "stickler.structured_object_evaluator.bulk_structured_model_evaluator.aggregate_from_comparisons",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_load.return_value = (
+                [{"field_comparisons": [], "_idp_source": {}}],  # one comparison_result
+                {"doc-a.pdf": 0.9},  # doc_weighted_scores
+                {"doc-a.pdf": {"final_score": 0.9}},  # doc_graded_packet_scores
+                ["excluded-b.pdf", "excluded-c.pdf"],  # excluded_doc_keys
+            )
+            result = index.aggregate_test_run_with_stickler("test-run-1", "test-table")
+
+        # Must still surface the excluded docs — the whole point of
+        # this branch's consistency with the empty-input path.
+        assert result.get("excluded_documents") == [
+            "excluded-b.pdf",
+            "excluded-c.pdf",
+        ]
+        assert result.get("excluded_document_count") == 2
+        # And graded_packet_metrics folded in.
+        assert "graded_packet_metrics" in result
+
     def test_top_and_per_field_match_on_different_leaf_counts_per_side(self, mock_env):
         """Top-level and per-field counts must AGREE when expected and
         actual have DIFFERENT leaf counts.

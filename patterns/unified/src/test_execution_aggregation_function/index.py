@@ -393,7 +393,21 @@ def aggregate_test_run_with_stickler(
         logger.error(
             f"Stickler aggregation failed for {test_run_id}: {e}", exc_info=True
         )
-        return _empty_metrics()
+        # Fold in ``excluded_doc_keys`` and ``graded_packet_metrics``
+        # even on the Stickler-aggregation-failure path — the sibling
+        # ``if not comparison_results:`` branch above already does
+        # this, and dropping them here silently loses the doc-key info
+        # operators need to investigate the failure (finding from
+        # #625 self-review — the failure path was inconsistent with
+        # the empty-input path on the same fields).
+        empty = _empty_metrics()
+        if doc_graded_packet_scores:
+            empty["graded_packet_metrics"] = _aggregate_graded_packet_metrics(
+                doc_graded_packet_scores
+            )
+        empty["excluded_documents"] = excluded_doc_keys
+        empty["excluded_document_count"] = len(excluded_doc_keys)
+        return empty
 
 
 def _load_comparison_results(
