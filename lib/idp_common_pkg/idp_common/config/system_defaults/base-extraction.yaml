@@ -33,6 +33,16 @@ extraction:
                                             # pre-load page images (table path is text-driven;
                                             # view_image fetches on demand). Big cost saver on
                                             # multi-page tables. false = always attach images.
+  # Deterministic type/format repair applied BEFORE validation, so validation
+  # only reports what could not be fixed for free. No model call.
+  coercion:
+    # Set false to leave the model's output exactly as returned. On by default
+    # because the alternative is a wrongly-typed value reaching storage — but it
+    # does rewrite extracted values, always recorded under metadata.coercion.
+    enabled: true
+    # 'auto' REFUSES to guess on an ambiguous all-numeric date like 01/02/2024.
+    # Set MDY or DMY only for a corpus whose convention you know.
+    date_order: auto
   # Full JSON-Schema validation of the extraction result (v0.7: moved up from
   # extraction.agentic.validation — simple extraction runs this path too now).
   validation:

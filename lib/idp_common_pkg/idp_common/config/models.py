@@ -398,6 +398,55 @@ class AgenticConfig(BaseModel):
         return v
 
 
+class CoercionConfig(BaseModel):
+    """Deterministic type/format repair of extraction output before validation.
+
+    Fixes the mismatches that actually occur in otherwise well-formed output —
+    ``"$1,234.00"`` in a ``number`` field, ``"03/15/2024"`` under
+    ``format: date`` — without a model call. Every change is recorded in
+    ``metadata.coercion`` and anything ambiguous is refused rather than guessed.
+    See ``idp_common.extraction.coercion``.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Repair type/format mismatches in the extraction result before "
+            "validating it. Free — no model call. On by default because the "
+            "alternative is a wrongly-typed value reaching storage, but it does "
+            "REWRITE extracted values (always recorded under "
+            "metadata.coercion), so set false to disable it entirely and leave "
+            "the model's output exactly as returned."
+        ),
+    )
+    date_order: str = Field(
+        default="auto",
+        description=(
+            "How to read an all-numeric date whose day/month order is ambiguous "
+            "(e.g. '01/02/2024'). 'auto' (default) REFUSES to guess and leaves "
+            "such values untouched; 'MDY' or 'DMY' resolves them for a corpus "
+            "you know the convention for. Never overrides a value that is "
+            "already unambiguous (a 15 cannot be a month whatever this says)."
+        ),
+    )
+
+    @field_validator("date_order", mode="before")
+    @classmethod
+    def validate_date_order(cls, v: Any) -> str:
+        """Normalize/reject date_order early rather than at extraction time."""
+        if v is None or v == "":
+            return "auto"
+        value = str(v).strip()
+        upper = value.upper()
+        if upper in ("MDY", "DMY"):
+            return upper
+        if value.lower() == "auto":
+            return "auto"
+        raise ValueError(
+            f"extraction.coercion.date_order must be 'auto', 'MDY' or 'DMY', got '{v}'"
+        )
+
+
 class MissingFieldHandlingConfig(BaseModel):
     """Controls how extraction treats fields whose source pages are absent.
 
@@ -913,6 +962,14 @@ class ExtractionConfig(BaseModel):
         description=(
             "Field bounding-box (geometry) configuration (v0.6 — replaces "
             "'assessment.geometry_mode')."
+        ),
+    )
+    coercion: CoercionConfig = Field(
+        default_factory=CoercionConfig,
+        description=(
+            "Deterministic type/format repair of the extraction result, applied "
+            "before validation. Free (no model call) and fully recorded; set "
+            "enabled=false to leave the model's output exactly as returned."
         ),
     )
     validation: ValidationConfig = Field(

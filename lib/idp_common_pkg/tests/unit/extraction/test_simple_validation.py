@@ -271,3 +271,94 @@ def test_escalation_coerces_its_own_output_before_revalidating():
         )
     assert fields["due_date"] == "2024-03-15"
     assert meta["resolved_by_escalation"] is True
+
+
+# --------------------------------------------------------------------------
+# Coercion must be disableable
+#
+# Coercion REWRITES extracted document values. On by default because the
+# alternative is a wrongly-typed value reaching storage — but a feature that
+# rewrites data and cannot be turned off is not an acceptable default.
+# --------------------------------------------------------------------------
+
+
+def _svc_coercion(**coercion) -> ExtractionService:
+    cfg = IDPConfig(
+        **{"extraction": {"agentic": {"enabled": False}, "coercion": coercion}}
+    )
+    svc = ExtractionService(config=cfg)
+    svc._class_schema = SCHEMA
+    svc._class_label = "invoice"
+    return svc
+
+
+def test_coercion_on_by_default():
+    svc = _svc_coercion()
+    assert svc.config.extraction.coercion.enabled is True
+    assert svc.config.extraction.coercion.date_order == "auto"
+    fields, meta = svc._coerce_simple_result({"amount": "$1,234.00"})
+    assert fields["amount"] == 1234.0
+
+
+def test_coercion_can_be_turned_off_entirely():
+    svc = _svc_coercion(enabled=False)
+    original = {"amount": "$1,234.00", "due_date": "03/15/2024"}
+    fields, meta = svc._coerce_simple_result(dict(original))
+    assert fields == original, "disabled coercion must not rewrite anything"
+    assert meta is None
+
+
+def test_disabled_coercion_still_lets_validation_report_the_mismatch():
+    """Turning off the repair must not also turn off the reporting."""
+    svc = _svc_coercion(enabled=False)
+    svc._pending_extraction_model = "us.anthropic.claude-sonnet-5"
+    fields, _ = svc._coerce_simple_result(
+        {"invoice_number": "INV-1", "amount": "$1,234.00", "due_date": "2024-03-15"}
+    )
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "coercion": {"enabled": False},
+                "validation": {"enabled": True, "fail_action": "warn"},
+            }
+        }
+    )
+    svc2 = ExtractionService(config=cfg)
+    svc2._class_schema = SCHEMA
+    svc2._class_label = "invoice"
+    _f, meta, _ok = svc2._validate_simple_result(
+        extracted_fields=fields,
+        content=[{"text": "doc"}],
+        system_prompt="sys",
+        model_id="us.anthropic.claude-sonnet-5",
+        metering={},
+        section_info=_section(),
+        parsing_succeeded=True,
+    )
+    assert meta["valid"] is False
+    assert "amount" in meta["initial_failed_fields"]
+
+
+def test_date_order_is_honoured_and_validated():
+    # 'auto' refuses an ambiguous date...
+    auto = _svc_coercion()
+    fields, _ = auto._coerce_simple_result({"due_date": "01/02/2024"})
+    assert fields["due_date"] == "01/02/2024"
+
+    # ...and an explicit convention resolves it.
+    dmy = _svc_coercion(date_order="DMY")
+    fields, _ = dmy._coerce_simple_result({"due_date": "01/02/2024"})
+    assert fields["due_date"] == "2024-02-01"
+
+    mdy = _svc_coercion(date_order="MDY")
+    fields, _ = mdy._coerce_simple_result({"due_date": "01/02/2024"})
+    assert fields["due_date"] == "2024-01-02"
+
+
+def test_bad_date_order_is_rejected_at_config_time():
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    with _pytest.raises(ValidationError, match="date_order"):
+        IDPConfig(**{"extraction": {"coercion": {"date_order": "YMD-ish"}}})

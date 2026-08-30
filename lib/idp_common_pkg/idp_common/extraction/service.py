@@ -2867,8 +2867,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """
         from idp_common.extraction.coercion import coerce_extraction
 
+        ccfg = self.config.extraction.coercion
+        if not ccfg.enabled:
+            # Explicitly disabled: leave the model's output exactly as returned.
+            # Validation still runs (if enabled) and will report the mismatches
+            # coercion would have repaired.
+            return extracted_fields, None
+
         try:
-            report = coerce_extraction(extracted_fields, self._class_schema)
+            report = coerce_extraction(
+                extracted_fields, self._class_schema, date_order=ccfg.date_order
+            )
         except Exception as e:  # noqa: BLE001 - never fail extraction on a repair
             logger.warning("Coercion failed; leaving values as extracted: %s", e)
             return extracted_fields, None

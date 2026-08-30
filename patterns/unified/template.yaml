@@ -1293,6 +1293,24 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
+              coercion:
+                type: object
+                sectionLabel: Value Coercion
+                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction; Advanced already coerces through its generated model."
+                order: 4
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Repair type/format mismatches before validating. On by default, because the alternative is a wrongly-typed value reaching storage. Turn OFF to leave the model's output exactly as returned - validation (if enabled) will then simply report the mismatches instead of fixing them."
+                    order: 0
+                    default: true
+                  date_order:
+                    type: string
+                    description: "How to read an all-numeric date whose day/month order is ambiguous, e.g. '01/02/2024'. 'auto' (default) refuses to guess and leaves such values untouched, so nothing is silently mis-dated. Choose MDY or DMY only for a corpus whose convention you know - it never overrides a value that is already unambiguous (a 15 cannot be a month whatever this is set to)."
+                    enum: ["auto", "MDY", "DMY"]
+                    order: 1
+                    default: "auto"
+                    dependsOn: { field: "enabled", value: true }
               validation:
                 type: object
                 sectionLabel: Schema Validation & Escalation
