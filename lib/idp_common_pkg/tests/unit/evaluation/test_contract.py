@@ -144,6 +144,26 @@ class TestRowWeight:
         }
         assert contract._row_weight(fc) == 3
 
+    def test_empty_container_placeholder_shadowed_by_populated_side(self):
+        # Empty-container leaves (``leaf_paths`` emits the prefix so
+        # ``_count_leaves`` can floor at 1) get shadowed by populated
+        # descendants on the other side. Weight should reflect only the
+        # real terminal leaves — otherwise
+        # ``_synthesize_parent_buckets`` fires its cross-schema collision
+        # warning within a single row's spread (finding B2 from #625
+        # adversarial self-review).
+        fc = {
+            "expected_value": {"items": [], "name": "A"},
+            "actual_value": {"items": [{"x": 1}], "name": "B"},
+        }
+        # Placeholder ``items`` shadowed by ``items.x`` → drop. Leaves:
+        # ``name``, ``items.x`` = weight 2.
+        assert contract._row_weight(fc) == 2
+        leaves = contract._row_leaves(fc)
+        assert "items" not in leaves
+        assert "items.x" in leaves
+        assert "name" in leaves
+
     def test_list_of_scalars_weighed_by_element_count(self):
         # A truncated list of scalars: exp has 3 elements, act has 0.
         # Bare-scalar leaves don't produce dotted paths, so the union

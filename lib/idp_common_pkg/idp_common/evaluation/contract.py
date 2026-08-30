@@ -165,19 +165,27 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
     Bag-semantic union of expected and actual leaf paths — repeated paths
     from list-of-items (where every item shares the same key shape)
     contribute one entry per item, so a 5-item list of ``{"name": ..}``
-    dicts weighs 5, not 1. Cross-side overlap counts once (element-wise
-    max of a Counter per path).
+    dicts weighs 5, not 1. Cross-side overlap counts once (elementwise
+    max of a ``Counter`` per path).
 
     Returns [] when neither side has enumerable leaf paths — the caller
-    (``_row_weight``) applies the min-1 fallback, and the aggregation
+    (``_row_weight``) applies its scalar-list fallback, and the aggregation
     spread falls back to a single ``_add(collapsed, bucket, weight)``.
 
+    ``leaf_paths`` emits an empty container's PREFIX as a placeholder leaf
+    (so ``_count_leaves`` can floor an all-empty value at one slot). When
+    a row's OTHER side populates a strict descendant of that prefix, the
+    placeholder is shadowed and would otherwise cause
+    ``_synthesize_parent_buckets`` to fire its cross-schema collision
+    warning spuriously (finding from #625 high review — a row like
+    ``exp={"items": [], "name": "A"}``, ``act={"items": [{"x": 1}], "name":
+    "B"}`` would produce leaves ``{items, name, items.x}`` and treat
+    ``items`` as a scalar-vs-structured collision). Drop the shadowed
+    placeholder so the row spreads only to real terminal leaves.
+
     Consolidated helper so top-level counts (via ``_row_weight``) and
-    per-field spread in the aggregation Lambda enumerate the SAME slots
-    — divergence between the two enumerations reintroduces the class of
-    inconsistency issue #625 was originally fixing (finding from #625
-    high review — a set-based union collapsed list-of-items duplicate
-    paths and undercounted the row).
+    per-field spread enumerate the SAME slots — divergence reintroduces
+    the class of inconsistency #625 was originally fixing.
     """
     exp = fc.get("expected_value")
     act = fc.get("actual_value")
@@ -187,10 +195,23 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
         return []
     exp_bag: Counter = Counter(exp_paths)
     act_bag: Counter = Counter(act_paths)
-    # Elementwise max: a path present on both sides with counts (3, 2)
-    # contributes 3 (Hungarian pairing means 2 leaves match and 1 is
-    # extra — max captures the total slots the row covers).
     union: Counter = exp_bag | act_bag
+    # Filter out placeholder paths shadowed by a strict descendant in the
+    # same row. ``a.b`` is a placeholder if ``a.b.c`` (or deeper) also
+    # exists — the empty-container branch emitted ``a.b`` as a slot but
+    # the populated side turned it into a subtree we're already spreading
+    # into. O(N^2) but N is small per row.
+    all_paths = list(union.keys())
+    shadowed: set = set()
+    for candidate in all_paths:
+        prefix_check = candidate + "."
+        for other in all_paths:
+            if other != candidate and other.startswith(prefix_check):
+                shadowed.add(candidate)
+                break
+    if shadowed:
+        for p in shadowed:
+            del union[p]
     return list(union.elements())
 
 
