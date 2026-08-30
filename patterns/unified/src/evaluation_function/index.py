@@ -185,17 +185,18 @@ def handler(event, context):
             # dict form is the one AWS retries as a timeout.
             # Lambda's own timeout surfaces via ``Sandbox.Timedout`` (the
             # runtime terminates the invocation and Step Functions
-            # propagates that code); Step Functions' state-level timeout
-            # uses ``States.Timeout``. Both are retried as timeouts in
-            # the state machine and both should map to TIMED_OUT here.
-            # ``Lambda.Timeout`` is NOT an emitted Step Functions code —
-            # a genuine Lambda function timeout surfaces as
-            # ``Sandbox.Timedout`` or ``Lambda.Unknown``, not
-            # ``Lambda.Timeout`` — so it was dead code (finding from
-            # #625 high review).
+            # propagates that code); some Lambda timeouts surface as
+            # ``Lambda.Unknown`` (the invocation didn't return a
+            # response in time and SFN can't classify the failure);
+            # Step Functions' state-level timeout uses
+            # ``States.Timeout``. All three are retried as timeouts in
+            # the state machine and all should map to TIMED_OUT here
+            # (finding from #625 review — the earlier set omitted
+            # ``Lambda.Unknown`` and misclassified those as FAILED).
             TIMEOUT_ERROR_CODES = {
                 'Sandbox.Timedout',
                 'States.Timeout',
+                'Lambda.Unknown',
             }
             raw_error = event.get('error')
             error_code = (

@@ -1679,19 +1679,18 @@ class EvaluationService:
 
         # Check if evaluation failed for this section
         if section_result.metrics.get("evaluation_failed", False):
-            # For failed evaluations, count each expected LEAF as a
-            # false negative — matching the leaf-normalized counting
-            # the rest of the pipeline uses. Counting top-level keys
-            # here (as an earlier version did) under-counted fn by
-            # orders of magnitude on any section with a list-of-items
-            # or nested-object field, so a failed list-heavy section
-            # would report near-zero recall impact while a comparable
-            # healthy section reported the true leaf-normalized fn.
+            # For failed evaluations, count each expected top-level KEY as
+            # a false negative. Kept at top-level (not leaf-normalized)
+            # because Athena / parquet historical baselines were built
+            # against the top-level count — switching to a leaf-normalized
+            # count would silently shift historical trends 10-30× on
+            # list-heavy schemas without operators knowing what changed.
+            # A failed section under-counts fn relative to a healthy
+            # section on the same schema; that's a KNOWN LIMITATION,
+            # documented, and preferable to a silent baseline break.
             if expected_results:
-                from idp_common.evaluation.contract import _count_leaves
-
-                num_expected_leaves = _count_leaves(expected_results)
-                metrics["fn"] = num_expected_leaves if num_expected_leaves > 0 else 1
+                num_expected_fields = len(expected_results)
+                metrics["fn"] = num_expected_fields if num_expected_fields > 0 else 1
             else:
                 # If no expected data, still count as at least 1 failure
                 metrics["fn"] = 1
@@ -1892,7 +1891,19 @@ class EvaluationService:
             # first doc's warning would silence every subsequent doc's —
             # finding 1 from round-4 review). Prefer input_key over id when
             # present (more human-locatable in CloudWatch).
-            doc_ctx = actual_document.input_key or actual_document.id or ""
+            # Use ``id(actual_document)`` as the ultimate fallback rather
+            # than empty string — multi-doc runs where every document has
+            # missing/empty ``input_key`` and ``id`` would otherwise share
+            # ``doc_ctx=""`` and silence every subsequent doc's anonymous-
+            # root warning (the exact per-doc collision the round-4 fix
+            # was supposed to close). ``id()`` is unique per doc instance
+            # within a Python process, giving distinct contexts even in
+            # the pathological missing-metadata case.
+            doc_ctx = (
+                actual_document.input_key
+                or actual_document.id
+                or f"anonymous:{id(actual_document)}"
+            )
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor

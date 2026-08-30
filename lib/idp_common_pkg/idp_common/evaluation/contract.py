@@ -275,8 +275,18 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
         act_paths, act_placeholders = leaf_paths_tagged(act)
     else:
         act_paths, act_placeholders = [], set()
-    if not exp_paths and not act_paths:
-        return []
+    # NOTE: don't early-return here when both are empty — pure-scalar-list
+    # rows (``exp=["a", "b"]`` vs ``act=[]``) have no dotted paths but DO
+    # have positional slots. If we returned [], per-field spread falls
+    # through to ``_add(collapsed, bucket, weight)`` which lands the row's
+    # weight in the collapsed root bucket. Mixed dotted+positional rows
+    # land POSITIONAL slots under ``<collapsed>.__positional__`` via the
+    # sentinel code below. That splits the SAME conceptual positional
+    # attribution across two per-field buckets across a run — pure-list
+    # rows in ``<collapsed>``, mixed-shape rows in
+    # ``<collapsed>.__positional__``. Consistent handling: always route
+    # positional slots through the sentinel path (finding from #625
+    # review — bucket split across shape combinations).
     exp_bag: Counter = Counter(exp_paths)
     act_bag: Counter = Counter(act_paths)
     union: Counter = exp_bag | act_bag
@@ -507,37 +517,49 @@ def iter_countable_rows(
         root = row_root_attribute(fc)
         if not root:
             if not decision_made_this_call:
+                # Dedup key is the SHAPE SIGNATURE of the anomaly, not
+                # the caller-supplied context. Previous key ``context``
+                # (per-doc + per-section on both call sites) meant a
+                # run-wide Stickler shape drift emitted one warning per
+                # (doc, section) pair — CloudWatch flood scaling with
+                # the run size, defeating the stated dedup design
+                # (finding from #625 review). The shape signature is
+                # the leading punctuation of the anomalous path
+                # (``[`` for bare-bracket rows, ``.`` for leading-dot
+                # rows), which captures the DISTINCT Stickler emission
+                # shape without depending on WHICH document surfaced
+                # it. The caller's ``context`` still appears in the log
+                # message so operators can locate a specific occurrence.
+                anomalous_path = (
+                    fc.get("expected_key")
+                    or fc.get("actual_key")
+                    or fc.get("field_path")
+                    or ""
+                )
+                shape_sig = anomalous_path[:1] if anomalous_path else "empty"
                 ctx = context or "unknown"
-                # Thread-safe check-then-record with LRU eviction. The
-                # check and mutation are one critical section — separately
-                # they'd race under the aggregation Lambda's 20-worker
-                # executor. When the cache is full we evict the oldest
-                # context to admit the new one, so a warm Lambda that has
-                # seen 256 contexts still logs a fresh Stickler shape
-                # change (rather than going silent for the rest of its
-                # lifetime).
                 should_log = False
                 with _seen_anonymous_root_lock:
-                    if ctx in _seen_anonymous_root_contexts:
-                        _seen_anonymous_root_contexts.move_to_end(ctx)
+                    if shape_sig in _seen_anonymous_root_contexts:
+                        _seen_anonymous_root_contexts.move_to_end(shape_sig)
                     else:
                         if (
                             len(_seen_anonymous_root_contexts)
                             >= _SEEN_ANONYMOUS_ROOT_MAX
                         ):
                             _seen_anonymous_root_contexts.popitem(last=False)
-                        _seen_anonymous_root_contexts[ctx] = None
+                        _seen_anonymous_root_contexts[shape_sig] = None
                         should_log = True
                 if should_log:
                     logger.warning(
                         "Skipping field_comparisons row(s) with anonymous "
-                        "root (first example path=%r, context=%r) — cannot "
-                        "attribute to a parent attribute. Further "
-                        "occurrences with this context are not logged.",
-                        fc.get("expected_key")
-                        or fc.get("actual_key")
-                        or fc.get("field_path"),
+                        "root (first example path=%r, context=%r, "
+                        "shape=%r) — cannot attribute to a parent "
+                        "attribute. Further occurrences of the same shape "
+                        "signature are not logged.",
+                        anomalous_path,
                         ctx,
+                        shape_sig,
                     )
                 decision_made_this_call = True
             continue

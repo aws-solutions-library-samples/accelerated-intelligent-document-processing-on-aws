@@ -338,15 +338,26 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         logger.debug(f"Document class: {doc_class}")
         logger.debug(f"Attribute description: {desc}")
 
-        # Render display strings for the LLM prompt. Use a sentinel that
-        # CANNOT be confused with a legitimate string value of "None" —
-        # if a document's ground truth or extraction ever emits the
-        # literal string "None", the judge would otherwise see the same
-        # ``EXPECTED_VALUE: None`` regardless of whether the underlying
-        # value is null or the string "None" (finding from code review).
-        _NULL_SENTINEL = "<null>"
-        expected_str = str(expected) if expected is not None else _NULL_SENTINEL
-        actual_str = str(actual) if actual is not None else _NULL_SENTINEL
+        # Two renderings per side:
+        # * ``expected_str`` / ``actual_str`` — bare ``str(v)`` for the
+        #   trivial-equal short-circuit below (case/whitespace-normalized
+        #   equality, works on plain strings without JSON quoting/spacing
+        #   getting in the way).
+        # * ``expected_display`` / ``actual_display`` — JSON-encoded for
+        #   the LLM prompt so ``None`` renders as bare ``null`` and a
+        #   legitimate string ``"None"`` renders quoted, giving the
+        #   judge a distinct rendering for each. Any single string
+        #   sentinel would collide with the same-named string value
+        #   (finding from #625 review — ``<null>`` sentinel could
+        #   itself be a legitimate ground-truth string).
+        # The None-check above short-circuits before ANY comparison
+        # touches these strings, so the None/"None" ambiguity that
+        # ``_trivially_equal`` could otherwise fall for isn't reachable
+        # — the split renderings are for prompt clarity only.
+        expected_str = str(expected) if expected is not None else "None"
+        actual_str = str(actual) if actual is not None else "None"
+        expected_display = json.dumps(expected)
+        actual_display = json.dumps(actual)
 
         logger.debug(f"Expected value: {expected_str}")
         logger.debug(f"Actual value: {actual_str}")
@@ -391,8 +402,8 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
             "DOCUMENT_CLASS": doc_class,
             "ATTRIBUTE_NAME": name,
             "ATTRIBUTE_DESCRIPTION": desc,
-            "EXPECTED_VALUE": expected_str,
-            "ACTUAL_VALUE": actual_str,
+            "EXPECTED_VALUE": expected_display,
+            "ACTUAL_VALUE": actual_display,
         }
 
         try:

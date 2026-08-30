@@ -810,7 +810,17 @@ def _run_level_row_aggregates(
 
         for fc in rows:
             bucket = classify_field_comparison(fc)
-            weight = _row_weight(fc)
+            # Compute ``_row_leaves`` ONCE per row and derive weight from
+            # its length — the previous code called ``_row_weight(fc)``
+            # (which internally calls ``_row_leaves``) and then called
+            # ``_row_leaves`` AGAIN for the per-field spread, doubling
+            # the recursive leaf walk (model_dump / vars) per row per
+            # section.
+            leaves = _row_leaves(fc)
+            if leaves:
+                weight = len(leaves)
+            else:
+                weight = _row_weight(fc)
             top_counts[bucket] += weight
 
             path = (
@@ -823,16 +833,6 @@ def _run_level_row_aggregates(
             if not collapsed:
                 continue
 
-            # Use the SAME leaf enumeration ``_row_weight`` used so the
-            # invariant ``sum(per-field counts) == top-level`` is
-            # structural, not coincidental. Bag-semantic union: for a
-            # list of N items sharing the same key shape, each of the N
-            # positions contributes one spread onto the same collapsed
-            # bucket — matching ``_row_weight``'s count via the shared
-            # ``_row_leaves`` helper (finding from #625 review — a
-            # set-based union collapsed the N-item list into 1 slot,
-            # diverging from ``_row_weight`` on that shape).
-            leaves = _row_leaves(fc)
             if leaves:
                 for leaf in leaves:
                     _add(f"{collapsed}.{leaf}", bucket)
@@ -854,6 +854,21 @@ def _run_level_row_aggregates(
     }
 
     _synthesize_parent_buckets(field_counts)
+
+    # Drop the synthetic ``__positional__`` sub-bucket from the per-field
+    # response before it reaches the API — it's an internal accounting
+    # slot (positional attribution for mixed dotted+positional rows)
+    # with no schema counterpart, and would render as a phantom child
+    # in Test Studio's per-field table. Counts are already rolled up
+    # into the parent bucket by ``_synthesize_parent_buckets``.
+    from idp_common.evaluation.contract import POSITIONAL_LEAF_NAME as _POS
+
+    _pos_suffix = f".{_POS}"
+    field_counts = {
+        k: v
+        for k, v in field_counts.items()
+        if not k.endswith(_pos_suffix) and k != _POS
+    }
 
     field_metrics: Dict[str, Dict[str, Any]] = {}
     for fname, c in field_counts.items():
@@ -1194,37 +1209,37 @@ def _aggregate_graded_packet_metrics(
     }
 
 
-def _calculate_false_alarm_rate(metrics: Dict[str, Any]) -> float:
+def _calculate_false_alarm_rate(metrics: Dict[str, Any]) -> Optional[float]:
     """Calculate false alarm rate (FA / (FA + TN)).
 
     Uses Stickler's ``fa`` (false alarm — predicted when the value should be
     absent) rather than the combined ``fp``. Stickler's invariant is
     ``fp == fa + fd``, so the combined count double-counts false *discoveries*
     (predicted-but-wrong) as false *alarms* and inflates this rate whenever
-    both error classes are present. Zero denominator returns 0.0 to match the
-    per-doc formula in ``stickler_backend.results`` — both paths must return
-    the same shape or per-doc and run-level dashboards will render the same
-    field as ``0.000`` on one and ``N/A`` on the other (finding from #625
-    round-3 code review).
+    both error classes are present. Zero denominator returns ``None`` (not
+    ``0.0``) so external Athena / BI queries can distinguish "unmeasurable"
+    (no fa+tn signal in the run) from "measured 0.0" via ``IS NULL``
+    (finding from #625 review — flipping to ``0.0`` broke that SQL
+    predicate; the earlier "match per-doc's ``safe_div``" argument
+    doesn't apply because per-doc is a different query surface).
     """
     fa = metrics.get("fa", 0)
     tn = metrics.get("tn", 0)
-    return fa / (fa + tn) if (fa + tn) > 0 else 0.0
+    return fa / (fa + tn) if (fa + tn) > 0 else None
 
 
-def _calculate_false_discovery_rate(metrics: Dict[str, Any]) -> float:
+def _calculate_false_discovery_rate(metrics: Dict[str, Any]) -> Optional[float]:
     """Calculate false discovery rate (FD / (FD + TP)).
 
     Uses Stickler's ``fd`` (false discovery — predicted a wrong value) rather
     than the combined ``fp``, for the same reason as
     ``_calculate_false_alarm_rate``: ``fp == fa + fd``, so the combined count
-    would fold false alarms into this rate. Zero denominator returns 0.0 to
-    match the per-doc formula (see ``_calculate_false_alarm_rate`` for why
-    shape drift matters).
+    would fold false alarms into this rate. Zero denominator returns
+    ``None`` for the same reason (see ``_calculate_false_alarm_rate``).
     """
     fd = metrics.get("fd", 0)
     tp = metrics.get("tp", 0)
-    return fd / (fd + tp) if (fd + tp) > 0 else 0.0
+    return fd / (fd + tp) if (fd + tp) > 0 else None
 
 
 class _IndexCollapsingConfidenceAccumulator:
@@ -1393,20 +1408,18 @@ def _empty_metrics() -> Dict[str, Any]:
         "weighted_overall_scores": {},
         "average_confidence": None,
         "accuracy_breakdown": {
-            # All 0.0 on the error path to match the shape produced by
-            # ``_calculate_false_alarm_rate`` / safe_div on the normal
-            # path — a downstream ``x == 0.0`` check must not read the
-            # same field as different types on different code paths
-            # (finding from #625 high review — I flipped these to None
-            # last round; reviewer immediately re-flagged the drift the
-            # other direction). Consumers that need to distinguish
-            # "unmeasurable" from "measured 0.0" should key off
-            # ``document_count == 0`` on the same envelope.
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1_score": 0.0,
-            "false_alarm_rate": 0.0,
-            "false_discovery_rate": 0.0,
+            # All ``None`` on the error path so external Athena / BI
+            # queries can use ``IS NULL`` to distinguish "unmeasurable"
+            # (the aggregation errored, no signal to compute anything)
+            # from "measured zero" (a real run whose counts happened to
+            # give a zero-denominator ratio). Aligns with the normal
+            # path's ``_calculate_false_alarm_rate`` returning ``None``
+            # on zero-denominator.
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "false_alarm_rate": None,
+            "false_discovery_rate": None,
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},

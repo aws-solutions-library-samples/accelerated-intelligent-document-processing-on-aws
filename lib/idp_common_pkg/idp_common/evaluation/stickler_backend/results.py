@@ -251,10 +251,26 @@ def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
     that shape and is NOT a Stickler shape change to warn about) from
     "row list is empty but counts say otherwise" (a shape drift we DO
     want to log).
+
+    Defensive against non-numeric values under the count keys — a
+    Stickler shape drift that put a string / None / dict at one of the
+    ``tp/fa/fd/tn/fn`` slots should be a WARN (from the caller), not a
+    ValueError-crash in the helper that was supposed to detect it.
     """
     if not node:
         return False
-    return any(int(node.get(k, 0) or 0) > 0 for k in ("tp", "fa", "fd", "tn", "fn"))
+    for k in ("tp", "fa", "fd", "tn", "fn"):
+        raw = node.get(k, 0)
+        if raw is None:
+            continue
+        try:
+            if int(raw) > 0:
+                return True
+        except (TypeError, ValueError):
+            # Non-numeric under a count key — treat as "some content"
+            # so the caller's shape-drift warning still fires.
+            return True
+    return False
 
 
 def transform_stickler_result(
@@ -434,7 +450,12 @@ def transform_stickler_result(
         # rollup this module was rewritten to stop trusting (issue #625).
         my_rows = rows_by_attr.get(field_name) or []
         if my_rows:
-            matched = all(fc.get("match") is True for fc in my_rows)
+            # Truthy check (not ``is True``) so a Stickler variant that
+            # emits ``1`` / ``numpy.bool_`` / ``"true"`` for a matched
+            # row is tolerated. Missing / None ``match`` still reads as
+            # not-matched — fail-closed on absent evidence, but don't
+            # flip an otherwise-matched row False on a type change.
+            matched = all(bool(fc.get("match", False)) for fc in my_rows)
         else:
             # No rows — nothing in ``field_comparisons`` for this attribute.
             # Section counts are unaffected (no rows contributed), so any

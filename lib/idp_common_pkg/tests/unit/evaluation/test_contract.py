@@ -41,44 +41,80 @@ class TestAnonymousRootDedup:
             contract.iter_countable_rows([row], context="ctx-1")
         assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 1
 
-    def test_different_contexts_each_log_once(self, caplog):
+    def test_different_contexts_same_shape_log_once(self, caplog):
+        """Dedup key is the SHAPE SIGNATURE (leading punctuation), not the
+        caller-supplied context — two docs with the same anomalous
+        shape share one warning, not one per doc/section. Prevents the
+        CloudWatch flood a run-wide shape drift would cause under
+        per-(doc, section) context dedup (finding from #625 review)."""
         row = {"field_path": "[3]"}
         with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
             contract.iter_countable_rows([row], context="ctx-A")
             contract.iter_countable_rows([row], context="ctx-B")
             contract.iter_countable_rows([row], context="ctx-A")
+        assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 1
+
+    def test_different_shapes_each_log_once(self, caplog):
+        """Different anomalous-shape signatures (leading ``[`` vs leading
+        ``.``) log independently — each distinct shape drift is a
+        distinct signal worth surfacing once."""
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows(
+                [{"field_path": "[3]"}], context="ctx"
+            )  # shape "["
+            contract.iter_countable_rows(
+                [{"field_path": ".city"}], context="ctx"
+            )  # shape "."
+            contract.iter_countable_rows(
+                [{"field_path": "[7]"}], context="ctx"
+            )  # shape "[" again
         assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 2
 
-    def test_lru_eviction_admits_new_context_past_cap(self, monkeypatch, caplog):
+    def test_lru_eviction_admits_new_shape_past_cap(self, monkeypatch, caplog):
         # Cap the LRU tightly so we can test eviction without generating
-        # 256 records in the test log.
+        # 256 records in the test log. Three distinct anonymous-root
+        # shape signatures exist: leading ``[`` (bare-bracket rows),
+        # leading ``.`` (leading-dot rows), and ``empty`` (empty path).
         monkeypatch.setattr(contract, "_SEEN_ANONYMOUS_ROOT_MAX", 2)
-        row = {"field_path": "[3]"}
         with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
-            contract.iter_countable_rows([row], context="ctx-A")  # cache: [A]
-            contract.iter_countable_rows([row], context="ctx-B")  # cache: [A, B]
-            contract.iter_countable_rows([row], context="ctx-C")  # evicts A: [B, C]
-            # A was evicted, so this should log again — the whole point
-            # of the LRU rewrite (finding from #625 xhigh review).
-            contract.iter_countable_rows([row], context="ctx-A")  # evicts B: [C, A]
+            contract.iter_countable_rows(
+                [{"field_path": "[3]"}], context="c"
+            )  # shape "["
+            contract.iter_countable_rows(
+                [{"field_path": ".x"}], context="c"
+            )  # shape "."
+            contract.iter_countable_rows(
+                [{"field_path": ""}], context="c"
+            )  # shape "empty" (evicts "[")
+            # Shape "[" was evicted, so this should log again.
+            contract.iter_countable_rows(
+                [{"field_path": "[9]"}], context="c"
+            )  # shape "[" (evicts ".")
         assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 4
 
-    def test_recent_context_survives_eviction(self, monkeypatch, caplog):
-        # A context re-seen before the cap fills is moved to the "recent"
+    def test_recent_shape_survives_eviction(self, monkeypatch, caplog):
+        # A shape re-seen before the cap fills is moved to the "recent"
         # end and survives eviction of a colder one.
         monkeypatch.setattr(contract, "_SEEN_ANONYMOUS_ROOT_MAX", 2)
-        row = {"field_path": "[3]"}
         with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
-            contract.iter_countable_rows([row], context="ctx-A")  # [A]
-            contract.iter_countable_rows([row], context="ctx-B")  # [A, B]
-            contract.iter_countable_rows([row], context="ctx-A")  # touches A → [B, A]
-            contract.iter_countable_rows([row], context="ctx-C")  # evicts B → [A, C]
-            contract.iter_countable_rows([row], context="ctx-A")  # A still cached
+            contract.iter_countable_rows([{"field_path": "[3]"}], context="c")  # ["["]
+            contract.iter_countable_rows(
+                [{"field_path": ".x"}], context="c"
+            )  # ["[", "."]
+            contract.iter_countable_rows(
+                [{"field_path": "[7]"}], context="c"
+            )  # touches "[" → [".", "["]
+            contract.iter_countable_rows(
+                [{"field_path": ""}], context="c"
+            )  # evicts "." → ["[", "empty"]
+            contract.iter_countable_rows(
+                [{"field_path": "[9]"}], context="c"
+            )  # "[" still cached
         anonymous_warns = [
             r for r in caplog.records if "anonymous root" in r.getMessage()
         ]
-        # A logged once (first call), B once, C once — the second and
-        # third A calls stayed silent because A was still in the cache.
+        # "[" logged once (first call), "." once, "empty" once — the
+        # subsequent "[" calls stayed silent because "[" was still cached.
         assert len(anonymous_warns) == 3
 
 
