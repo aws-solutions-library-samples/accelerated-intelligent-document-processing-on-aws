@@ -48,6 +48,22 @@ def _trivially_equal(a: str, b: str) -> bool:
     return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
 
 
+def _cache_key(value1: Any, value2: Any) -> Tuple[str, str]:
+    """Build a stable cache key for a (value1, value2) pair.
+
+    Uses ``json.dumps(sort_keys=True, default=str)`` so semantically-
+    identical dicts hash to the same key regardless of insertion order
+    (dict repr reflects insertion order in Py3.7+, which would cause
+    cache misses precisely where Hungarian matching for structured
+    lists needs hits). Non-JSON-serializable values fall through
+    ``default=str`` to their string form; the pair still keys stably.
+    """
+    return (
+        json.dumps(value1, sort_keys=True, default=str),
+        json.dumps(value2, sort_keys=True, default=str),
+    )
+
+
 # Check if Stickler is available
 try:
     from stickler.structured_object_evaluator.models.comparator_registry import (
@@ -190,7 +206,14 @@ class LLMComparator(BaseComparator):
             Similarity score between 0.0 and 1.0
         """
         try:
-            cache_key = (repr(value1), repr(value2))
+            # Cache key uses JSON with ``sort_keys=True`` (not ``repr``)
+            # so semantically-identical dicts from different JSON parses
+            # hash to the SAME key — dict repr reflects insertion order
+            # in Py3.7+, and Hungarian matching for structured lists
+            # (the raison d'être of this cache) cross-compares dicts
+            # whose key order may differ between the two sides. Fall
+            # back to ``repr`` for non-JSON-serializable values.
+            cache_key = _cache_key(value1, value2)
             with self._verdict_cache_lock:
                 if cache_key in self._verdict_cache:
                     self._verdict_cache.move_to_end(cache_key)
@@ -212,15 +235,32 @@ class LLMComparator(BaseComparator):
                 f"LLM comparison: matched={matched}, score={score:.3f}, reason='{reason}'"
             )
 
-            with self._verdict_cache_lock:
-                # Recheck after acquiring the lock: another thread may have
-                # scored the same pair while we were waiting on Bedrock.
-                if cache_key in self._verdict_cache:
-                    self._verdict_cache.move_to_end(cache_key)
-                else:
-                    if len(self._verdict_cache) >= _VERDICT_CACHE_MAX:
-                        self._verdict_cache.popitem(last=False)
-                    self._verdict_cache[cache_key] = score
+            # Only cache successful verdicts — ``compare_llm`` returns
+            # ``(False, 0.0, err_msg)`` on Bedrock throttle / 5xx / JSON
+            # parse errors, and caching that permanently would freeze the
+            # value pair at 0.0 for the warm container's lifetime after a
+            # single transient failure. The reason strings for those
+            # error paths all start with a known prefix; skip caching
+            # when we see one.
+            _ERROR_REASON_PREFIXES = (
+                "Error in LLM comparison",
+                "Failed to parse LLM response",
+                "LLM comparison timed out",
+            )
+            is_transient_error = any(
+                reason.startswith(p) for p in _ERROR_REASON_PREFIXES
+            )
+            if not is_transient_error:
+                with self._verdict_cache_lock:
+                    # Recheck after acquiring the lock: another thread may
+                    # have scored the same pair while we were waiting on
+                    # Bedrock.
+                    if cache_key in self._verdict_cache:
+                        self._verdict_cache.move_to_end(cache_key)
+                    else:
+                        if len(self._verdict_cache) >= _VERDICT_CACHE_MAX:
+                            self._verdict_cache.popitem(last=False)
+                        self._verdict_cache[cache_key] = score
             return score
 
         except Exception as e:

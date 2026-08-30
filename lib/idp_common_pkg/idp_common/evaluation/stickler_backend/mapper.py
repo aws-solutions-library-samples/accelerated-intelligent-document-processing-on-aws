@@ -43,6 +43,23 @@ from idp_common.config.schema_constants import (
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a schema value to a boolean, treating YAML-quoted ``"false"``
+    / ``"no"`` / ``"off"`` (case-insensitive) as False.
+
+    Raw Python ``bool()`` returns True for any non-empty string, so a
+    YAML config with ``x-aws-idp-evaluation-llm-in-list: "false"``
+    would evaluate truthy under ``bool()`` and bypass truthiness
+    guards. This helper honors the strings the way YAML would if
+    the field were unquoted.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "false", "no", "off", "0", "n"}
+    return bool(value)
+
+
 class SticklerConfigMapper:
     """
     Maps IDP evaluation configuration to Stickler configuration.
@@ -671,10 +688,17 @@ class SticklerConfigMapper:
             # (string -> Levenshtein, number -> Numeric, boolean -> Exact), which
             # is what a matching cost function should be anyway, unless the author
             # explicitly opts in for a small list.
+            # ``_coerce_bool`` handles YAML-quoted ``"false"`` / ``"no"``
+            # / ``"off"`` (all truthy under raw Python ``bool()``, so
+            # ``not schema.get(...)`` would let a config with
+            # ``x-aws-idp-evaluation-llm-in-list: "false"`` bypass this
+            # guard, triggering ~N² Bedrock calls and a Lambda timeout).
             if (
                 method == EVALUATION_METHOD_LLM
                 and in_list_items
-                and not schema.get(X_AWS_IDP_EVALUATION_LLM_IN_LIST, False)
+                and not _coerce_bool(
+                    schema.get(X_AWS_IDP_EVALUATION_LLM_IN_LIST, False)
+                )
             ):
                 logger.warning(
                     f"Field '{field_path}': LLM evaluation method inside a "
@@ -746,8 +770,17 @@ class SticklerConfigMapper:
                         # syntax (finding from code review — a top-level
                         # list attribute previously sent ``ATTRIBUTE_NAME
                         # = "Items[]"`` to the judge).
+                        #
+                        # Fall back to ``document_class`` (then ``"root"``)
+                        # when field_path is empty — a top-level scalar
+                        # attribute scored via LLM would otherwise send
+                        # ``ATTRIBUTE_NAME = ""`` and lose the context-
+                        # threading fix this block enforces (finding
+                        # from #625 review).
                         raw_name = field_path.split(".")[-1] or field_path
                         clean_name = re.sub(r"\[[^\]]*\]", "", raw_name) or raw_name
+                        if not clean_name:
+                            clean_name = document_class or "root"
                         ctx.setdefault("attribute_name", clean_name)
                         ctx.setdefault(
                             "attribute_description", schema.get("description") or ""

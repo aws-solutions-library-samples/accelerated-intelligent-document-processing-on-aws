@@ -119,6 +119,48 @@ class TestAnonymousRootDedup:
 
 
 @pytest.mark.unit
+class TestClassifyMatchTruthiness:
+    """Regression pin (#625 close-4-blockers): ``classify_field_comparison``
+    and the per-attribute verdict in ``stickler_backend/results.py`` must
+    use the SAME truthiness predicate for the ``match`` field. Asymmetric
+    checks (``is True`` vs ``bool(...)``) let section-level confusion-
+    matrix counts and per-attribute verdict disagree on the SAME row —
+    the exact parent-vs-section drift #625 exists to eliminate.
+    """
+
+    def test_bool_true_is_tp(self):
+        fc = {"match": True, "expected_value": "x", "actual_value": "x"}
+        assert contract.classify_field_comparison(fc) == "tp"
+
+    def test_int_1_is_tp(self):
+        """A Stickler variant emitting ``1`` for a matched row lands in
+        the same bucket as ``True``."""
+        fc = {"match": 1, "expected_value": "x", "actual_value": "x"}
+        assert contract.classify_field_comparison(fc) == "tp"
+
+    def test_string_true_is_tp(self):
+        """String ``"true"`` (from a JSON parser that keeps booleans as
+        strings) reads as matched under the truthy check."""
+        fc = {"match": "true", "expected_value": "x", "actual_value": "x"}
+        assert contract.classify_field_comparison(fc) == "tp"
+
+    def test_missing_match_is_not_matched(self):
+        """Fail-closed on absent evidence — no ``match`` field means we
+        don't know, so treat as not-matched. Row with expected and
+        actual differing lands as ``fd``."""
+        fc = {"expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_none_match_is_not_matched(self):
+        fc = {"match": None, "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_bool_false_is_not_matched(self):
+        fc = {"match": False, "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+
+@pytest.mark.unit
 class TestRowWeight:
     """``_row_weight`` picks the max of expected/actual leaf counts, not just
     the expected side, so a hallucinated multi-leaf actual against an empty

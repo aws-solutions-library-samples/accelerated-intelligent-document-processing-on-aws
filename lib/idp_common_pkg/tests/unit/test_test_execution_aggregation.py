@@ -1652,6 +1652,29 @@ class TestRunLevelRowAggregates:
         assert top["cm_precision"] == 0.0
         assert per_field == {}
 
+    def test_zero_denom_top_level_metrics_all_none(self, mock_env):
+        """Regression pin (#625 close-4-blockers): ``overall_accuracy``,
+        ``precision``, ``recall``, ``f1_score``, ``false_alarm_rate``,
+        ``false_discovery_rate`` all return ``None`` on zero-denominator
+        so Athena IS NULL predicates read them uniformly. Earlier
+        versions mixed 0.0 (some fields) and None (others)."""
+        index = import_test_module()
+        # All-zero metrics dict — every derived rate has zero denom.
+        empty_counts = {
+            "tp": 0,
+            "fa": 0,
+            "fd": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+        }
+        assert index._optional_accuracy(empty_counts) is None
+        assert index._optional_precision(empty_counts) is None
+        assert index._optional_recall(empty_counts) is None
+        assert index._optional_f1(empty_counts) is None
+        assert index._calculate_false_alarm_rate(empty_counts) is None
+        assert index._calculate_false_discovery_rate(empty_counts) is None
+
     def test_top_and_per_field_match_on_different_leaf_counts_per_side(self, mock_env):
         """Top-level and per-field counts must AGREE when expected and
         actual have DIFFERENT leaf counts.

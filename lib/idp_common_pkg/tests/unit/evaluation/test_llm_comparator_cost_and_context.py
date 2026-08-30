@@ -20,6 +20,7 @@ The call-count assertions are the load-bearing part: they fail loudly if the
 quadratic path is ever reintroduced.
 """
 
+import copy
 import json
 from typing import Any, Dict, List
 from unittest.mock import patch
@@ -137,6 +138,49 @@ def test_llm_method_inside_list_can_be_opted_back_in():
     assert (
         items["properties"]["Desc"]["x-aws-stickler-comparator"] == "IDPLLMComparator"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("false_value", ["false", "FALSE", "no", "off", "0", False])
+def test_yaml_quoted_false_bypass_guarded(false_value):
+    """Regression pin (#625 close-4-blockers): a YAML config with the
+    opt-in flag set to the STRING ``"false"`` (or ``"no"``/``"off"``)
+    must not bypass the LLM-in-list guard. Raw ``bool()`` returns True
+    for any non-empty string; the guard now uses ``_coerce_bool``."""
+    schema = _schema()
+    desc = schema["properties"]["LineItems"]["items"]["properties"]["Desc"]
+    desc["x-aws-idp-evaluation-allow-llm-in-list"] = false_value
+    items = _build(schema)["schema"]["properties"]["LineItems"]["items"]
+    # Guard fired → LLM comparator NOT applied → downgrade happened.
+    assert "x-aws-stickler-comparator" not in items["properties"]["Desc"], (
+        f"YAML value {false_value!r} bypassed the LLM-in-list guard"
+    )
+
+
+@pytest.mark.unit
+def test_top_level_scalar_llm_attribute_gets_context_name():
+    """Regression pin: a top-level scalar attribute (empty field_path)
+    scored via LLM must NOT send ``ATTRIBUTE_NAME = ""`` to the judge.
+    Falls back to document_class then "root" so the judge always has
+    a nameable subject."""
+    from idp_common.evaluation.stickler_backend.mapper import SticklerConfigMapper
+
+    schema = {
+        "type": "object",
+        "x-aws-idp-evaluation-method": "LLM",  # method on the top-level object itself
+        "description": "The whole document",
+    }
+    # Direct translate at field_path="", document_class="Invoice"
+    translated = SticklerConfigMapper._translate_extensions_in_schema(
+        copy.deepcopy(schema),
+        field_path="",
+        llm_config={"model": "test"},
+        in_list_items=False,
+        document_class="Invoice",
+    )
+    ctx = translated.get("x-aws-stickler-comparator-config", {})
+    # Falls back to document_class when field_path is empty.
+    assert ctx.get("attribute_name") == "Invoice"
 
 
 @pytest.mark.unit
@@ -329,3 +373,63 @@ def test_repeated_pairs_are_memoized_within_a_comparator():
         second = comparator.compare("WNBW", "Buying Time, LLC")
     assert first == second
     invoke.assert_called_once()
+
+
+@pytest.mark.unit
+def test_non_json_serializable_matching_pair_does_not_crash():
+    """Regression pin (#625 close-4-blockers): compare_llm must NOT
+    call ``json.dumps`` on the raw values BEFORE the None / trivial-
+    equal short-circuits. A non-JSON-serializable value (Decimal,
+    datetime, set, Pydantic BaseModel) would otherwise raise
+    TypeError, the outer except would swallow it, and a MATCHING
+    pair (both same Decimal) would score as False, 0.0."""
+    from decimal import Decimal
+
+    # No mock — this should short-circuit as trivially equal before
+    # any Bedrock call or json.dumps happens.
+    matched, score, reason = compare_llm(
+        expected=Decimal("1.5"),
+        actual=Decimal("1.5"),
+        llm_config={"model": "test-model"},
+    )
+    assert matched is True
+    assert score == 1.0
+
+
+@pytest.mark.unit
+def test_cache_dict_key_order_insensitive():
+    """Regression pin: cache key must not depend on dict insertion
+    order — Hungarian matching cross-compares dicts from different
+    JSON parses whose key order may differ, and the cache must hit."""
+    # Use non-matching dicts on both sides so trivial-equal doesn't
+    # short-circuit; the actual Bedrock call is what we're pinning.
+    with patch("idp_common.bedrock.invoke_model", return_value=_bedrock_ok()) as invoke:
+        comparator = LLMComparator(model="test-model")
+        comparator.compare({"a": 1, "b": 2}, {"a": 9, "b": 9})
+        # Same values, different insertion order on BOTH sides → should
+        # hit cache and NOT re-invoke Bedrock.
+        comparator.compare({"b": 2, "a": 1}, {"b": 9, "a": 9})
+    invoke.assert_called_once()
+
+
+@pytest.mark.unit
+def test_transient_error_is_not_cached_permanently():
+    """Regression pin: a transient Bedrock failure returns
+    ``(False, 0.0, "Error ...")``; caching that permanently would
+    poison the value pair for the warm container's lifetime."""
+    from idp_common.evaluation.stickler_backend import comparators
+
+    comparator = LLMComparator(model="test-model")
+    # First call: patch compare_llm to return the error tuple shape.
+    with patch.object(
+        comparators,
+        "compare_llm",
+        return_value=(False, 0.0, "Error in LLM comparison: throttled"),
+    ):
+        first = comparator.compare("A", "B")
+    assert first == 0.0
+    # Second call: same key, real success. Cache MUST NOT have kept
+    # the error tuple, so the successful score wins.
+    with patch.object(comparators, "compare_llm", return_value=(True, 1.0, "match")):
+        second = comparator.compare("A", "B")
+    assert second == 1.0

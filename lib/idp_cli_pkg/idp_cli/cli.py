@@ -5928,14 +5928,23 @@ def test_result(
 
         if test_result.accuracy_breakdown:
             breakdown = test_result.accuracy_breakdown
+
+            # ``.get(k, 0)`` doesn't help when the key IS present with
+            # value ``None`` — the new Optional[float] contract on
+            # accuracy_breakdown puts None at present keys on any
+            # zero-denominator or error path, and ``.2%`` on None
+            # raises TypeError.
+            def _fmt_pct(v):
+                return f"{v:.2%}" if isinstance(v, (int, float)) else "N/A"
+
             console.print(
-                f"[bold cyan]Precision:[/bold cyan] {breakdown.get('precision', 0):.2%}"
+                f"[bold cyan]Precision:[/bold cyan] {_fmt_pct(breakdown.get('precision'))}"
             )
             console.print(
-                f"[bold cyan]Recall:[/bold cyan] {breakdown.get('recall', 0):.2%}"
+                f"[bold cyan]Recall:[/bold cyan] {_fmt_pct(breakdown.get('recall'))}"
             )
             console.print(
-                f"[bold cyan]F1 Score:[/bold cyan] {breakdown.get('f1_score', 0):.2%}"
+                f"[bold cyan]F1 Score:[/bold cyan] {_fmt_pct(breakdown.get('f1_score'))}"
             )
 
         if test_result.total_cost:
