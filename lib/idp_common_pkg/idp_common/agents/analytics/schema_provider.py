@@ -716,15 +716,33 @@ def get_database_overview(config: Optional[IDPConfig] = None) -> str:
 
         overview = """# Database Overview - Available Tables
 
-### Usage metering and cost
+### Usage metering and cost (data plane — per-document API spend)
 Table name: `metering`
-**Purpose**: Usage metrics, costs, and consumption data  
-**Use for**: Document volume, processing costs, token usage, model performance
-**Key columns**: `document_id`, `context`, `service_api`, `estimated_cost`, `date`
+**Purpose**: Per-doc row-level usage — one row per (document, context, service_api, unit)
+**Use for**: Individual doc drilldown, doc-grain joins, current-hour queries before hourly rollup fires
+**Key columns**: `document_id`, `context`, `service_api`, `estimated_cost`, `date`, `hour`
+
+Table name: `metering_hourly` / `metering_daily`
+**Purpose**: Pre-aggregated per-hour / per-day cost, one row per (hour|day, config_version, service_api, unit).
+**Use for**: Any wide time-range cost query (>2h) — scans 100× fewer rows than raw metering. Columns: `sum_value`, `sum_cost`.
+
+Table name: `metering_docs_hourly` / `metering_docs_daily`
+**Purpose**: Doc-grain volume and pages per hour/day, one row per (hour|day, config_version).
+**Use for**: "How many docs processed?", "How many pages?" Columns: `n_docs`, `sum_pages`.
+
+### Operational cost (Lambda compute, control-plane vs data-plane)
+Table name: `control_plane_hourly`
+**Purpose**: Per-hour compute + service cost for CONTROL-PLANE Lambdas (rollup Lambda, resolvers, agents).
+**Key columns**: `function_name`, `component`, `bedrock_model`, `duration_ms_sum`, `athena_bytes_sum`, `bedrock_tokens_in/out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`. Partition: `date`, `hour`.
+
+Table name: `data_plane_lambda_hourly`
+**Purpose**: Per-hour Lambda compute cost for DATA-PLANE pipeline Lambdas (OCR, Classification, Extraction, Assessment, Summarization, Evaluation, etc. — anything tagged `idp:plane=data`). Bedrock/Textract API cost for these Lambdas is already in `metering_hourly` (per-doc). This table adds ONLY Lambda compute (Duration × arch-price + invocations × request-price) so total-compute queries work across both planes.
+**Key columns**: `function_name`, `component`, `invocations`, `duration_ms_sum`, `est_lambda_cost`. Partition: `date`, `hour`.
+**Total-compute query**: SUM(est_lambda_cost) across `control_plane_hourly` + `data_plane_lambda_hourly` gives full Lambda spend.
 
 ### Accuracy evaluations
 Table name: `document_evaluations` - Overall document accuracy scores
-Table name: `section_evaluations` - Section-level accuracy by document type  
+Table name: `section_evaluations` - Section-level accuracy by document type
 Table name: `attribute_evaluations` - Detailed attribute-level comparisons
 **Use for**: Accuracy analysis, precision/recall metrics
 

@@ -539,11 +539,12 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
     # The embedded YYYYMMDD is still parsed out for partition pruning.
-    # Round-7 review fix: bounded-but-generous lower edge (run_date-1)
-    # and unbounded upper edge — catches HITL / long-tail completions
-    # that land arbitrarily far after the run's start date. The
-    # test_run_id LIKE prefix is the actual scoping predicate.
-    assert "date >= '2026-08-12'" in captured[0]
+    # Round-24 review fix: bounded-both-ends date filter — lower edge
+    # is run_date-1 (defends the 23:59-queue-to-00:01-complete edge),
+    # upper edge is today (natural cap; docs can't complete in the
+    # future). The bare `date >= X` unbounded upper edge scanned
+    # 3-4 days of raw metering and hit HIVE_S3_THROTTLING under load.
+    assert "date BETWEEN '2026-08-12' AND '" in captured[0]
 
 
 @pytest.mark.unit

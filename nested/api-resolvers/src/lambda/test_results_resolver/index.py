@@ -1400,8 +1400,15 @@ def _execute_athena_query(query, database):
 
         query_execution_id = response["QueryExecutionId"]
 
-        # Wait for query to complete
-        max_attempts = 30
+        # Wait for query to complete.
+        # Round-24 review fix: bumped from 30 → 90 attempts (60s → 180s).
+        # The cost query scans raw ``metering`` filtered by a doc-id
+        # LIKE prefix; even with round-24's date-range cap, S3
+        # throttling on wide scans can push completion past 60s and my
+        # round-23 stop_query_execution then killed valid queries,
+        # returning empty cost data in the UI. 180s covers observed
+        # p95 completion times comfortably.
+        max_attempts = 90
         final_result = None
         for attempt in range(max_attempts):
             result = athena.get_query_execution(QueryExecutionId=query_execution_id)
@@ -1626,19 +1633,27 @@ def _get_cost_data_from_athena(test_run_id):
     date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
         # -1 day defends the reverse edge case (a doc queued 23:59 UTC
         # on run_date-1 completed at 00:01 — its metering row's `date`
-        # may be run_date-1). No upper bound so a 3-month HITL tail is
-        # still included.
+        # may be run_date-1). Round-24 review fix: bound the UPPER edge
+        # to today (UTC) so we don't scan future partitions that can't
+        # contain data. The round-7 "unbounded upper for HITL" was
+        # correct in principle but 4+ days of raw metering scan
+        # (~50K parquet files at scale) hits HIVE_S3_THROTTLING and
+        # the resolver's 60s poll timeout, returning empty cost. The
+        # natural cap (today) is still generous — captures HITL tails
+        # up to whenever the query fires — while bounding the scan.
         lower_edge = (run_date - timedelta(days=1)).strftime("%Y-%m-%d")
-        date_filter = f"AND date >= '{lower_edge}'"
+        upper_edge = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_filter = f"AND date BETWEEN '{lower_edge}' AND '{upper_edge}'"
         logger.info(
-            f"Using date filter for cost query: date >= '{lower_edge}' "
-            f"(unbounded upper edge to catch HITL / long-tail completions; "
+            f"Using date filter for cost query: date BETWEEN '{lower_edge}' "
+            f"AND '{upper_edge}' (upper edge capped at today to prevent "
+            f"HIVE_S3_THROTTLING on wide raw-metering scans; "
             f"test_run_id LIKE is the actual scoping predicate)"
         )
 
