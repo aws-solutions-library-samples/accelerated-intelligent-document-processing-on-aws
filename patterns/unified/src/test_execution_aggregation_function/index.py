@@ -1113,9 +1113,17 @@ def _transform_stickler_metrics(
         "average_confidence": average_confidence,  # Now computed from Stickler if available
         "confidence_metrics": confidence_metrics,  # NEW: Full calibration metrics (v0.4.0+)
         "accuracy_breakdown": {
-            "precision": metrics.get("cm_precision"),
-            "recall": metrics.get("cm_recall"),
-            "f1_score": metrics.get("cm_f1"),
+            # All five fields use the same Optional[float] shape: None on
+            # zero-denominator ("unmeasurable"), a float otherwise. Mixed
+            # 0.0-vs-None across the block would let Athena IS NULL see
+            # FAR/FDR as null but precision/recall/f1 as zero on the same
+            # empty run (finding C1 from #625 broad-scope self-review).
+            # ``metrics`` comes from ``_run_level_row_aggregates`` which
+            # uses ``safe_div`` (0.0 on zero-denom); convert to None here
+            # when the counts were genuinely zero.
+            "precision": _optional_precision(metrics),
+            "recall": _optional_recall(metrics),
+            "f1_score": _optional_f1(metrics),
             "false_alarm_rate": _calculate_false_alarm_rate(metrics),
             "false_discovery_rate": _calculate_false_discovery_rate(metrics),
         },
@@ -1207,6 +1215,36 @@ def _aggregate_graded_packet_metrics(
         "per_document": doc_graded_packet_scores,
         "document_count": len(doc_graded_packet_scores),
     }
+
+
+def _optional_precision(metrics: Dict[str, Any]) -> Optional[float]:
+    """Precision (``tp / (tp + fa + fd)``) or ``None`` on zero-denominator.
+
+    Matches the FAR/FDR Optional[float] shape so the accuracy_breakdown
+    block has a uniform "unmeasurable → None, measured → float" contract
+    for external Athena / BI ``IS NULL`` predicates.
+    """
+    tp = metrics.get("tp", 0)
+    fp = metrics.get("fa", 0) + metrics.get("fd", 0)
+    denom = tp + fp
+    return tp / denom if denom > 0 else None
+
+
+def _optional_recall(metrics: Dict[str, Any]) -> Optional[float]:
+    """Recall (``tp / (tp + fn)``) or ``None`` on zero-denominator."""
+    tp = metrics.get("tp", 0)
+    fn = metrics.get("fn", 0)
+    denom = tp + fn
+    return tp / denom if denom > 0 else None
+
+
+def _optional_f1(metrics: Dict[str, Any]) -> Optional[float]:
+    """F1 (``2·tp / (2·tp + fp + fn)``) or ``None`` on zero-denominator."""
+    tp = metrics.get("tp", 0)
+    fp = metrics.get("fa", 0) + metrics.get("fd", 0)
+    fn = metrics.get("fn", 0)
+    denom = 2 * tp + fp + fn
+    return 2 * tp / denom if denom > 0 else None
 
 
 def _calculate_false_alarm_rate(metrics: Dict[str, Any]) -> Optional[float]:
