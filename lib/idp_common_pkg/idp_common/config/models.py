@@ -2893,9 +2893,16 @@ class IDPConfig(BaseModel):
         logger = logging.getLogger(__name__)
 
         if isinstance(data, dict):
-            # Migrate v0.5 config shape → v0.6 (assessment.* → extraction.confidence
-            # / extraction.geometry / top-level hitl). Idempotent: a no-op once the
-            # config is already stamped config_format_version == CONFIG_FORMAT_VERSION.
+            # Apply the whole migration chain (v0.5 → v0.6 → v0.7): assessment.*
+            # → extraction.confidence / extraction.geometry / top-level hitl, then
+            # extraction.agentic.validation → extraction.validation. Idempotent:
+            # a no-op once the config is already stamped with
+            # CONFIG_FORMAT_VERSION and carries no legacy-shaped keys.
+            #
+            # This is why every path that builds an IDPConfig is covered without
+            # its own migrate call — including config paths added later, e.g.
+            # ConfigurationManager._load_revision_config loading a stored revision
+            # written before the upgrade.
             from .migrations import migrate_config
 
             data = migrate_config(data)
