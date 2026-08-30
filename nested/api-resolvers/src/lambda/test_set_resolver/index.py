@@ -2226,10 +2226,16 @@ def clear_draft_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
+    # contentSignature is dropped so the next warm-container reconcile within
+    # the TTL window doesn't skip on a stale signature — we just deleted
+    # baselines from S3, so the memoized signature is no longer valid.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
+        update_expression=(
+            "REMOVE lastAddResult, labelJobId, labelJobStatus, contentSignature"
+        ),
     )
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(
         f"Cleared {len(to_delete)} draft label section(s) from {test_set_id}; "
@@ -2293,13 +2299,18 @@ def reset_test_set_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
+    # contentSignature is dropped so the next warm-container reconcile within
+    # the TTL window doesn't skip on a stale signature — every baseline just
+    # went away, so the memoized signature no longer describes S3.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=(
-            "SET labelState = :u REMOVE lastAddResult, labelJobId, labelJobStatus"
+            "SET labelState = :u "
+            "REMOVE lastAddResult, labelJobId, labelJobStatus, contentSignature"
         ),
         expression_attribute_values={":u": "unlabeled"},
     )
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(f"Reset {test_set_id}: deleted {len(keys)} baseline object(s)")
     return {
@@ -2532,8 +2543,13 @@ def delete_test_sets(args):
         except Exception as e:
             logger.error(f"Failed to delete files for test set {test_set_id}: {str(e)}")
 
-        # Delete tracking table record
+        # Delete tracking table record + drop the warm-container memo entry.
+        # An id could later be reused (test-set names are user-chosen), and a
+        # stale memo entry from a deleted namesake would occupy memory and
+        # produce spurious signature comparisons on the new set (the DDB
+        # signature-divergence check catches it, but popping is cleaner).
         db_client.delete_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(f"Deleted {len(test_set_ids)} test sets")
     return True

@@ -4834,6 +4834,126 @@ class TestTestSetResolver:
             f"missing {sorted(expected - after_second)}"
         )
 
+    # -- Signature/memo invalidation on delete/reset paths ----------------
+    #
+    # Adversarial: `remove_documents_from_test_set` was the only path
+    # invalidating `contentSignature` on the row and popping the warm-
+    # container memo. `clear_draft_labels`, `reset_test_set_labels`, and
+    # `delete_test_sets` all mutate S3 baselines or delete the row entirely
+    # but were leaving the memo stale. Within the 30 s TTL window that
+    # could let the next reconcile skip a folder whose S3 state had just
+    # changed.
+
+    def test_clear_draft_labels_invalidates_signature_and_memo(self, labeling_env):
+        """After clear_draft_labels the next reconcile must re-scan.
+
+        Seeds a memoized signature that matches the DDB row, verifies
+        clear_draft_labels invalidates both, and confirms `_within_reconcile_ttl`
+        returns False after the operation — proving reconcile would re-scan
+        instead of skipping.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"labelSource": "draft-machine"}).encode(),
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            fileCount=1,
+            labelState="draft",
+            contentSignature="prior-sig",
+            labelJobId="job1",
+            labelJobStatus="COMPLETED",
+        )
+        # Simulate a warm container that just reconciled this prefix.
+        test_set_index._RECONCILE_MEMO["ts1"] = ("prior-sig", time.monotonic())
+        assert test_set_index._within_reconcile_ttl("ts1", "prior-sig") is True
+
+        test_set_index.clear_draft_labels({"testSetId": "ts1"})
+
+        # DDB row: contentSignature must be REMOVEd.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "contentSignature" not in row, (
+            "clear_draft_labels left stale contentSignature on the row"
+        )
+        # Memo entry must be popped.
+        assert "ts1" not in test_set_index._RECONCILE_MEMO, (
+            "clear_draft_labels left a stale memo entry that could skip "
+            "the next reconcile within the TTL window"
+        )
+        # Reconcile would NOT skip on the next call.
+        assert (
+            test_set_index._within_reconcile_ttl("ts1", row.get("contentSignature"))
+            is False
+        )
+
+    def test_reset_test_set_labels_invalidates_signature_and_memo(self, labeling_env):
+        """After reset_test_set_labels the next reconcile must re-scan.
+
+        Every baseline just went away; the memoized signature no longer
+        describes S3. Same invariant as clear_draft_labels.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        _seed_test_set(
+            table,
+            "ts1",
+            fileCount=1,
+            labelState="labeled",
+            contentSignature="prior-sig",
+        )
+        test_set_index._RECONCILE_MEMO["ts1"] = ("prior-sig", time.monotonic())
+
+        # Admin identity — reset is admin-only.
+        with patch.object(
+            test_set_index,
+            "handler",
+            wraps=test_set_index.handler,
+        ):
+            test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "contentSignature" not in row, (
+            "reset_test_set_labels left stale contentSignature"
+        )
+        assert "ts1" not in test_set_index._RECONCILE_MEMO, (
+            "reset_test_set_labels left a stale memo entry"
+        )
+        assert row["labelState"] == "unlabeled"
+
+    def test_delete_test_sets_pops_warm_container_memo(self, labeling_env):
+        """After delete_test_sets the id must not carry a stale memo entry
+        that could shadow a namesake reused later.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        _seed_test_set(table, "ts1", fileCount=1)
+        test_set_index._RECONCILE_MEMO["ts1"] = ("prior-sig", time.monotonic())
+
+        test_set_index.delete_test_sets({"testSetIds": ["ts1"]})
+
+        # Row is gone.
+        assert (
+            table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"}).get("Item")
+            is None
+        )
+        # Memo entry popped — the container doesn't leak entries for deleted ids.
+        assert "ts1" not in test_set_index._RECONCILE_MEMO, (
+            "delete_test_sets left a stale memo entry that could shadow "
+            "a same-id set created later"
+        )
+
 
 @pytest.mark.unit
 class TestLabelStateReconciliation:
