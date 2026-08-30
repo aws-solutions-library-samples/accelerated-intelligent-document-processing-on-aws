@@ -76,7 +76,10 @@ const VISIBLE_CONTENT_OPTIONS = [
 
 const DEFAULT_PREFERENCES = {
   pageSize: 10,
-  visibleContent: ['versionName', 'type', 'description', 'createdAt', 'updatedAt', 'history'],
+  // Created is available in the preferences gear but off by default: two
+  // timestamps cost a whole column for information the Updated column already
+  // answers, and the extra column is what squeezed the others into wrapping.
+  visibleContent: ['versionName', 'type', 'description', 'updatedAt', 'history'],
   wrapLines: false,
 };
 
@@ -135,7 +138,6 @@ const ConfigurationVersionsTable = ({
         </Box>
       ),
       sortingField: 'versionName',
-      width: '25%',
     },
     {
       id: 'type',
@@ -163,27 +165,26 @@ const ConfigurationVersionsTable = ({
         const bType = isVersionManaged(b) ? 'managed' : 'custom';
         return aType.localeCompare(bType);
       },
-      width: 160,
+      width: 150,
     },
     {
       id: 'description',
       header: 'Description',
       cell: (item: ConfigVersion) => item.description || '-',
-      width: '25%',
     },
     {
       id: 'createdAt',
       header: 'Created',
       cell: (item: ConfigVersion) => (item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'),
       sortingField: 'createdAt',
-      width: '20%',
+      width: 180,
     },
     {
       id: 'updatedAt',
       header: 'Updated',
       cell: (item: ConfigVersion) => (item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '-'),
       sortingField: 'updatedAt',
-      width: '20%',
+      width: 180,
     },
     {
       id: 'history',
@@ -198,7 +199,7 @@ const ConfigurationVersionsTable = ({
           {item.latestRevision ? `${item.latestRevision} revision${item.latestRevision === 1 ? '' : 's'}` : 'History'}
         </Button>
       ),
-      width: 140,
+      width: 130,
     },
   ];
 
@@ -260,6 +261,9 @@ const ConfigurationVersionsTable = ({
         loadingText="Loading profiles..."
         resizableColumns
         stripedRows
+        // The profile table sits ABOVE the configuration editor, so its vertical
+        // footprint is what pushes the thing you came to edit off-screen.
+        contentDensity="compact"
         selectionType="multi"
         selectedItems={selectedItems}
         onSelectionChange={({ detail }) => {

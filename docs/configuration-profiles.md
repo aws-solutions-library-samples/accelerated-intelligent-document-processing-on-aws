@@ -262,9 +262,13 @@ The **View/Edit Configuration** page includes a Configuration Profiles table tha
 | **Profile Name** | Unique identifier (e.g., `default`, `Production`, `lending`) — click to open in editor |
 | **Type** | Badges showing **Managed** (blue) or **Custom** (grey), plus **Active** (green) if applicable. Sortable. |
 | **Description** | Optional description (max 200 characters) |
-| **Created** | Timestamp when the profile was first created |
 | **Updated** | Timestamp of the last modification |
 | **History** | Number of retained revisions — click to open the revision history |
+
+**Created** is available in the preferences gear but hidden by default: two
+timestamps cost a column for something **Updated** already answers, and the table
+sits above the configuration editor, so every column it does not need is vertical
+space taken from the thing you came to edit.
 
 The table includes a **type filter** (All / Managed / Custom) and a **preferences gear** to configure page size and visible columns.
 
