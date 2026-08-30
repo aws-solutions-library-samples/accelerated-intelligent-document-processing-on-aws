@@ -184,6 +184,113 @@ def test_top_level_scalar_llm_attribute_gets_context_name():
 
 
 @pytest.mark.unit
+def test_bracketed_field_path_falls_back_to_document_class():
+    """Regression pin: a bare-bracket ``field_path`` like ``"[3]"`` (the
+    strip produces empty) must fall through to ``document_class``, not
+    keep the original bracketed name."""
+    from idp_common.evaluation.stickler_backend.mapper import SticklerConfigMapper
+
+    schema = {
+        "type": "string",
+        "x-aws-idp-evaluation-method": "LLM",
+        "description": "top-level positional",
+    }
+    translated = SticklerConfigMapper._translate_extensions_in_schema(
+        copy.deepcopy(schema),
+        field_path="[3]",  # bracket-only path
+        llm_config={"model": "test"},
+        in_list_items=False,
+        document_class="Invoice",
+    )
+    ctx = translated.get("x-aws-stickler-comparator-config", {})
+    assert ctx.get("attribute_name") == "Invoice"
+
+
+@pytest.mark.unit
+def test_whitespace_document_class_falls_back_to_root():
+    """Regression pin: a whitespace-only ``document_class`` must NOT
+    pass through as truthy — the LLM judge would otherwise see
+    ``ATTRIBUTE_NAME = "   "``. Falls back to ``"root"``."""
+    from idp_common.evaluation.stickler_backend.mapper import SticklerConfigMapper
+
+    schema = {
+        "type": "string",
+        "x-aws-idp-evaluation-method": "LLM",
+        "description": "top-level positional",
+    }
+    translated = SticklerConfigMapper._translate_extensions_in_schema(
+        copy.deepcopy(schema),
+        field_path="[3]",
+        llm_config={"model": "test"},
+        in_list_items=False,
+        document_class="   ",  # whitespace-only
+    )
+    ctx = translated.get("x-aws-stickler-comparator-config", {})
+    assert ctx.get("attribute_name") == "root"
+
+
+@pytest.mark.unit
+def test_hungarian_on_structured_array_does_not_warn(caplog):
+    """Regression pin: HUNGARIAN is the default/correct list-matching
+    algorithm — it must NOT trigger the array-method warning meant
+    for LLM/etc."""
+    import logging as _logging
+
+    from idp_common.evaluation.stickler_backend.mapper import SticklerConfigMapper
+
+    schema = {
+        "type": "array",
+        "x-aws-idp-evaluation-method": "HUNGARIAN",
+        "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        },
+    }
+    with caplog.at_level(
+        _logging.WARNING,
+        logger="idp_common.evaluation.stickler_backend.mapper",
+    ):
+        SticklerConfigMapper._translate_extensions_in_schema(
+            copy.deepcopy(schema),
+            field_path="Items",
+            llm_config={"model": "test"},
+            in_list_items=False,
+            document_class="Invoice",
+        )
+    warns = [r for r in caplog.records if "on a structured array" in r.getMessage()]
+    assert warns == [], (
+        f"HUNGARIAN on a structured array should not trigger the "
+        f"array-method warning; got: {[r.getMessage() for r in warns]}"
+    )
+
+
+@pytest.mark.unit
+def test_array_method_key_stripped_after_processing():
+    """Regression pin: after the array-method branch runs, the
+    ``x-aws-idp-evaluation-method`` key must be stripped from the
+    schema (it's inert for structured arrays and lingering metadata
+    could be re-interpreted by downstream code)."""
+    from idp_common.evaluation.stickler_backend.mapper import SticklerConfigMapper
+
+    schema = {
+        "type": "array",
+        "x-aws-idp-evaluation-method": "HUNGARIAN",
+        "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        },
+    }
+    translated = SticklerConfigMapper._translate_extensions_in_schema(
+        copy.deepcopy(schema),
+        field_path="Items",
+        llm_config={"model": "test"},
+        in_list_items=False,
+        document_class="Invoice",
+    )
+    assert "x-aws-idp-evaluation-method" not in translated
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("n_rows", [3, 10, 54])
 def test_list_comparison_llm_calls_do_not_grow_with_row_count(n_rows):
     """The regression that wedged a stack: calls were N^2 + 2N.

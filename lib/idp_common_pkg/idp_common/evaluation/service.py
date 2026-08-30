@@ -1895,14 +1895,16 @@ class EvaluationService:
             # than empty string — multi-doc runs where every document has
             # missing/empty ``input_key`` and ``id`` would otherwise share
             # ``doc_ctx=""`` and silence every subsequent doc's anonymous-
-            # root warning (the exact per-doc collision the round-4 fix
-            # was supposed to close). ``id()`` is unique per doc instance
-            # within a Python process, giving distinct contexts even in
-            # the pathological missing-metadata case.
+            # root warning. Use a ``uuid4()`` so the context is unique
+            # for the LIFE of the run even if a warm Lambda GC's an
+            # earlier doc and reuses its memory address (which ``id()``
+            # would collide on — finding from #625 review).
+            import uuid as _uuid
+
             doc_ctx = (
                 actual_document.input_key
                 or actual_document.id
-                or f"anonymous:{id(actual_document)}"
+                or f"anonymous:{_uuid.uuid4()}"
             )
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:

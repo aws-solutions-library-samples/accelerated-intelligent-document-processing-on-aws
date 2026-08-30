@@ -92,6 +92,25 @@ class TestAnonymousRootDedup:
             )  # shape "[" (evicts ".")
         assert sum(1 for r in caplog.records if "anonymous root" in r.getMessage()) == 4
 
+    def test_two_shapes_in_same_call_each_log_once(self, caplog):
+        """Regression pin: a SINGLE call to ``iter_countable_rows`` with
+        rows of two distinct shapes (leading ``[`` AND leading ``.``)
+        must log BOTH shapes, not just the first. The earlier
+        ``decision_made_this_call`` bool silently dropped the second."""
+        rows = [
+            {"field_path": "[3]"},  # shape "["
+            {"field_path": ".city"},  # shape "."
+            {"field_path": "[7]"},  # shape "[" (already logged this call)
+        ]
+        with caplog.at_level(logging.WARNING, logger="idp_common.evaluation.contract"):
+            contract.iter_countable_rows(rows, context="ctx")
+        # Two distinct shapes → two warnings. Third row (also shape "[")
+        # is silent because we already logged that shape this call.
+        anonymous_warns = [
+            r for r in caplog.records if "anonymous root" in r.getMessage()
+        ]
+        assert len(anonymous_warns) == 2
+
     def test_recent_shape_survives_eviction(self, monkeypatch, caplog):
         # A shape re-seen before the cap fills is moved to the "recent"
         # end and survives eviction of a colder one.
@@ -358,6 +377,14 @@ class TestIsEmptyValue:
     def test_empty_containers_are_empty(self):
         for v in ("", [], {}, (), set(), frozenset()):
             assert contract._is_empty_value(v) is True, f"empty {type(v)}"
+
+    def test_whitespace_only_strings_are_empty(self):
+        """Regression pin: Stickler's ``NullHelper`` strips whitespace
+        before deciding null-ness. Row-derived counts must agree with
+        ``cm.aggregate``, so ``"   "`` / ``"\\n"`` / ``"\\t"`` all
+        classify as empty here."""
+        for v in ("   ", "\n", "\t\t", "  \t \n  "):
+            assert contract._is_empty_value(v) is True, f"whitespace {v!r}"
 
     def test_non_empty_containers_not_empty(self):
         for v in ("a", [1], {"a": 1}, (1,), {1}, frozenset({1})):

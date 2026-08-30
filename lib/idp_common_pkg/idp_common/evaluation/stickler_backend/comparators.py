@@ -26,6 +26,8 @@ import threading
 from collections import OrderedDict
 from typing import Any, Optional, Tuple
 
+from idp_common.evaluation.contract import _is_match_true
+
 logger = logging.getLogger(__name__)
 
 
@@ -258,8 +260,14 @@ class LLMComparator(BaseComparator):
             # actual ``error_msg = ...`` sites in ``compare_llm`` below
             # (lines 472/558/596/602). Update ``_TRANSIENT_ERROR_PREFIXES``
             # if a new error path is added.
+            # Guard against a Stickler variant emitting ``reason=None``
+            # from ``compare_llm`` — plain ``reason.startswith(...)``
+            # would crash and the outer except would return 0.0
+            # without caching, so every retry re-invokes Bedrock
+            # and re-crashes. Coerce to str first.
+            reason_str = reason if isinstance(reason, str) else ""
             is_transient_error = any(
-                reason.startswith(p) for p in _TRANSIENT_ERROR_PREFIXES
+                reason_str.startswith(p) for p in _TRANSIENT_ERROR_PREFIXES
             )
             if not is_transient_error:
                 with self._verdict_cache_lock:
@@ -531,7 +539,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                         logger.info(
                             f"LLM evaluation for {name} (from code block): match={match_value}, score={score_value}, reason={reason}"
                         )
-                        return bool(match_value), float(score_value), reason
+                        return _is_match_true(match_value), float(score_value), reason
                 except json.JSONDecodeError:
                     # This code block wasn't valid JSON, try next one
                     continue
@@ -550,7 +558,11 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                             logger.info(
                                 f"LLM evaluation for {name}: match={match_value}, score={score_value}, reason={reason}"
                             )
-                            return bool(match_value), float(score_value), reason
+                            return (
+                                _is_match_true(match_value),
+                                float(score_value),
+                                reason,
+                            )
                     except json.JSONDecodeError:
                         # This particular block wasn't valid JSON, try next one
                         continue
@@ -564,7 +576,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
             logger.info(
                 f"LLM evaluation for {name}: match={match_value}, score={score_value}, reason={reason}"
             )
-            return bool(match_value), float(score_value), reason
+            return _is_match_true(match_value), float(score_value), reason
         except json.JSONDecodeError as e:
             error_msg = f"Error parsing LLM response as JSON: {str(e)}"
             logger.error(error_msg)
@@ -593,7 +605,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                     logger.info(
                         f"LLM evaluation for {name} (extracted from text): match={match_value}, score={score_value}"
                     )
-                    return bool(match_value), float(score_value), reason
+                    return _is_match_true(match_value), float(score_value), reason
             except Exception as extract_error:
                 logger.error(
                     f"Failed to extract values from malformed response: {str(extract_error)}"

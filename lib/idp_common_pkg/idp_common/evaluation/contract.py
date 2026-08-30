@@ -80,6 +80,11 @@ def _is_empty_value(v: Any) -> bool:
     of tn (correctly-empty) / fa (hallucinated) / fn (missed) classification —
     a correctly-empty list is a `tn`, not a `tp`.
 
+    Whitespace-only strings (``"   "``, ``"\\n"``, ``"\\t\\t"``) also count
+    as empty — Stickler's ``NullHelper`` strips them before deciding
+    null-ness, so the classifier here must too or the row-derived
+    counts drift from ``cm.aggregate``.
+
     Coverage mirrors ``_is_structured``: every shape that ``_is_structured``
     admits as a "container" must have an emptiness check here, or the
     classifier and row-weighting diverge on that shape (finding B4 from
@@ -90,7 +95,10 @@ def _is_empty_value(v: Any) -> bool:
     """
     if v is None:
         return True
-    if isinstance(v, (str, list, dict, tuple, set, frozenset)) and len(v) == 0:
+    # Whitespace-only strings match Stickler's ``NullHelper`` behavior.
+    if isinstance(v, str) and not v.strip():
+        return True
+    if isinstance(v, (list, dict, tuple, set, frozenset)) and len(v) == 0:
         return True
     if not isinstance(v, (str, int, float, bool)):
         # Pydantic model → check its serialized shape.
@@ -567,31 +575,42 @@ def iter_countable_rows(
     # for each row would spin the lock without changing the decision. The
     # log message reports "first example path=..." so an operator inspecting
     # the warning knows it represents the whole batch's anomaly.
-    decision_made_this_call = False
+    # Track shape signatures we've already logged in THIS call, not just
+    # a single "did we decide" boolean. A batch may contain rows of
+    # multiple distinct anomalous shapes (e.g. some ``[3]`` bare-bracket
+    # AND some ``.city`` leading-dot rows); each distinct shape should
+    # log once per call (with the process-wide LRU still preventing
+    # cross-call flood). The prior ``decision_made_this_call`` bool
+    # silently dropped every shape after the first (finding from #625
+    # review — defeated the per-shape dedup design).
+    logged_shapes_this_call: set = set()
     for fc in rows:
         root = row_root_attribute(fc)
         if not root:
-            if not decision_made_this_call:
-                # Dedup key is the SHAPE SIGNATURE of the anomaly, not
-                # the caller-supplied context. Previous key ``context``
-                # (per-doc + per-section on both call sites) meant a
-                # run-wide Stickler shape drift emitted one warning per
-                # (doc, section) pair — CloudWatch flood scaling with
-                # the run size, defeating the stated dedup design
-                # (finding from #625 review). The shape signature is
-                # the leading punctuation of the anomalous path
-                # (``[`` for bare-bracket rows, ``.`` for leading-dot
-                # rows), which captures the DISTINCT Stickler emission
-                # shape without depending on WHICH document surfaced
-                # it. The caller's ``context`` still appears in the log
-                # message so operators can locate a specific occurrence.
-                anomalous_path = (
-                    fc.get("expected_key")
-                    or fc.get("actual_key")
-                    or fc.get("field_path")
-                    or ""
-                )
-                shape_sig = anomalous_path[:1] if anomalous_path else "empty"
+            # Dedup key is the SHAPE SIGNATURE of the anomaly, not
+            # the caller-supplied context. Previous key ``context``
+            # (per-doc + per-section on both call sites) meant a
+            # run-wide Stickler shape drift emitted one warning per
+            # (doc, section) pair — CloudWatch flood scaling with
+            # the run size, defeating the stated dedup design
+            # (finding from #625 review). The shape signature is
+            # the leading punctuation of the anomalous path
+            # (``[`` for bare-bracket rows, ``.`` for leading-dot
+            # rows), which captures the DISTINCT Stickler emission
+            # shape without depending on WHICH document surfaced
+            # it. The caller's ``context`` still appears in the log
+            # message so operators can locate a specific occurrence.
+            anomalous_path = (
+                fc.get("expected_key")
+                or fc.get("actual_key")
+                or fc.get("field_path")
+                or ""
+            )
+            shape_sig = anomalous_path[:1] if anomalous_path else "empty"
+            # Per-call dedup by shape_sig — a batch containing rows of
+            # multiple distinct shapes each logs at most once.
+            if shape_sig not in logged_shapes_this_call:
+                logged_shapes_this_call.add(shape_sig)
                 ctx = context or "unknown"
                 should_log = False
                 with _seen_anonymous_root_lock:
@@ -616,7 +635,6 @@ def iter_countable_rows(
                         ctx,
                         shape_sig,
                     )
-                decision_made_this_call = True
             continue
         kept.append(fc)
     return kept

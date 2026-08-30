@@ -660,14 +660,26 @@ class SticklerConfigMapper:
         # than dropping the author's intent without a word — a config carrying
         # `x-aws-idp-evaluation-method: LLM` on a list looks like it configured
         # something and did not.
+        #
+        # HUNGARIAN is the default/correct list-matching algorithm — no
+        # warning when that's what the author asked for (finding from
+        # #625 review). Also strip the key after warning so it doesn't
+        # linger as dead metadata that downstream code could re-interpret
+        # (finding from #625 review).
         if is_structured_array and X_AWS_IDP_EVALUATION_METHOD in schema:
-            logger.warning(
-                f"Field '{field_path}': evaluation method "
-                f"'{schema[X_AWS_IDP_EVALUATION_METHOD]}' on a structured array is "
-                f"ignored — structured lists are scored through their item fields' "
-                f"comparators (row matching is Hungarian). Set the method on the "
-                f"item fields instead."
-            )
+            list_method = schema[X_AWS_IDP_EVALUATION_METHOD]
+            if list_method != EVALUATION_METHOD_HUNGARIAN:
+                logger.warning(
+                    f"Field '{field_path}': evaluation method "
+                    f"'{list_method}' on a structured array is "
+                    f"ignored — structured lists are scored through their item fields' "
+                    f"comparators (row matching is Hungarian). Set the method on the "
+                    f"item fields instead."
+                )
+            # Strip the key regardless — it's inert for structured arrays,
+            # keeping it lingering as dead metadata invites a downstream
+            # consumer to reinterpret it later.
+            del schema[X_AWS_IDP_EVALUATION_METHOD]
 
         # Translate evaluation method to comparator
         # BUT skip for structured arrays - they use item field comparators
@@ -778,9 +790,16 @@ class SticklerConfigMapper:
                         # threading fix this block enforces (finding
                         # from #625 review).
                         raw_name = field_path.split(".")[-1] or field_path
-                        clean_name = re.sub(r"\[[^\]]*\]", "", raw_name) or raw_name
-                        if not clean_name:
-                            clean_name = document_class or "root"
+                        # Fallback chain: bracket-stripped → document_class
+                        # → "root". Each candidate is ``.strip()``-checked
+                        # so a whitespace-only value doesn't leak through
+                        # as truthy — the LLM judge would otherwise see
+                        # ``ATTRIBUTE_NAME = "   "`` (finding from #625
+                        # self-review — same trap as the bracketed-raw
+                        # case this block already avoided).
+                        stripped = re.sub(r"\[[^\]]*\]", "", raw_name).strip()
+                        doc_class_str = (document_class or "").strip()
+                        clean_name = stripped or doc_class_str or "root"
                         ctx.setdefault("attribute_name", clean_name)
                         ctx.setdefault(
                             "attribute_description", schema.get("description") or ""
