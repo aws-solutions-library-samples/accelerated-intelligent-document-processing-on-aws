@@ -594,6 +594,45 @@ def test_schema_mismatch_reason_detects_absent_and_scalar_fields():
     assert _schema_field_mismatch_reason("anything", None) is None
 
 
+def test_schema_mismatch_reason_names_the_dereferenced_type():
+    """A ``$ref`` property must be reported by its REAL declared type.
+
+    ``{"$ref": "#/$defs/Foo"}`` carries no ``type`` of its own, so the reason
+    used to say "declared as 'scalar'" for what is actually an object group —
+    sending whoever reads the skip reason hunting for a ``type: string`` that
+    does not exist (GitHub issue #678). The skip DECISION is unchanged: a
+    ``$defs`` group resolves to ``object``, still not ``array``.
+    """
+    ref_schema = {
+        "type": "object",
+        "properties": {
+            "signatures": {"$ref": "#/$defs/Signatures"},
+            "txns": {"$ref": "#/$defs/TxnList"},
+        },
+        "$defs": {
+            "Signatures": {
+                "type": "object",
+                "properties": {"sig1": {"type": "boolean"}},
+            },
+            "TxnList": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+    reason = _schema_field_mismatch_reason("signatures", ref_schema)
+    assert reason is not None
+    assert "declared as 'object'" in reason
+    assert "scalar" not in reason
+
+    # A $ref that DOES resolve to an array is validly list-typed → no skip.
+    assert _schema_field_mismatch_reason("txns", ref_schema) is None
+
+    # A dangling $ref still degrades to the un-dereferenced reading.
+    dangling = {"type": "object", "properties": {"x": {"$ref": "#/$defs/Gone"}}}
+    dangling_reason = _schema_field_mismatch_reason("x", dangling)
+    assert dangling_reason is not None
+    assert "declared as 'scalar'" in dangling_reason
+
+
 def test_schema_mismatch_skips_escalation_and_flags_root_cause():
     """A list extracted for a scalar-typed schema attribute must NOT trigger
     escalation (a stronger model can't fix a schema mismatch); the run records

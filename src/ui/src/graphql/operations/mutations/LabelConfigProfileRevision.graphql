@@ -1,0 +1,20 @@
+mutation LabelConfigProfileRevision(
+  $profileName: String!
+  $revision: Int!
+  $label: String
+  $notes: String
+) {
+  labelConfigProfileRevision(
+    profileName: $profileName
+    revision: $revision
+    label: $label
+    notes: $notes
+  ) {
+    success
+    message
+    error {
+      type
+      message
+    }
+  }
+}

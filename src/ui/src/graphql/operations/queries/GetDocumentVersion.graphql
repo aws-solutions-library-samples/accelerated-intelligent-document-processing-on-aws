@@ -7,6 +7,7 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
     WorkflowStartTime
     WorkflowExecutionArn
     ConfigVersion
+    ConfigRevision
     PageCount
     FileCount
     ManifestUri

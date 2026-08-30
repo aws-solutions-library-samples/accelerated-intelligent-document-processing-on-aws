@@ -51,7 +51,9 @@ def _load(event):
         event.get("document", {}), working_bucket, logger
     )
     config = get_config(
-        as_model=True, version=getattr(full_document, "config_version", None)
+        as_model=True,
+        version=getattr(full_document, "config_version", None),
+        revision=getattr(full_document, "config_revision", None),
     )
     return working_bucket, full_document, config
 

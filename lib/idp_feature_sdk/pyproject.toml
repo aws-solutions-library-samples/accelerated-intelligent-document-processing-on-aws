@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idp-feature-sdk"
-version = "0.6.4"
+version = "0.6.6"
 description = "IDP Accelerator — Feature Platform SDK: publish installable features to Marketplace-style buckets."
 readme = "README.md"
 authors = [{ name = "AWS GenAIIC" }]

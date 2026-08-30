@@ -48,7 +48,7 @@ The stack automatically deploys **managed configuration versions** for each pre-
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
 - **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
 
-For comprehensive documentation, see [configuration-versions.md](configuration-versions.md).
+For comprehensive documentation, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Configuration Management Features
 
@@ -699,6 +699,11 @@ ocr:
   # For BDA backend (optional): use a specific standard-output SYNC project
   # instead of the per-stack <stackname>_OCR_StdOutput project the stack
   # provisions (delivered via the BDA_OCR_PROJECT_ARN env var).
+  #
+  # NOTE: backend "bda" is COMMERCIAL-PARTITION ONLY. GovCloud and China offer
+  # Bedrock Data Automation but reject the SYNC document-modality project this
+  # backend needs, so the stack does not create it there and the ARN is empty.
+  # See docs/govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend.
   bda_project_arn: null
 
   # For Bedrock backend:

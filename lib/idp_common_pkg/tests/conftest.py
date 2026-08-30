@@ -43,7 +43,7 @@ sys.modules["bedrock_agentcore.tools.code_interpreter_client"] = MagicMock()
 def aws_credentials():
     """Set up AWS credentials and region for testing."""
     os.environ["AWS_ACCESS_KEY_ID"] = "testing"
-    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"  # nosec B105 - dummy moto credential
+    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"  # nosec B105 - dummy moto credential  # pragma: allowlist secret
     os.environ["AWS_SECURITY_TOKEN"] = "testing"  # nosec B105 - dummy moto credential
     os.environ["AWS_SESSION_TOKEN"] = "testing"  # nosec B105 - dummy moto credential
     os.environ["AWS_DEFAULT_REGION"] = "us-east-1"

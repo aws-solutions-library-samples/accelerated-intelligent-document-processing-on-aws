@@ -193,18 +193,59 @@ def main():
         default="bank_statement",
         help="document class whose base config to build onto",
     )
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="AXIS=VALUE",
+        help=(
+            "Override a default_cell axis for every cell in this suite "
+            "(repeatable), e.g. --set extraction_model=sonnet5. Cells that name "
+            "the axis explicitly still win. Use this for a SINGLE-release study "
+            "that should reflect the product default; the committed default_cell "
+            "holds extraction_model at the cross-version control (sonnet46) so "
+            "the release A/B runs on a model every compared release can invoke."
+        ),
+    )
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     matrix = yaml.safe_load(open(CFG_MATRIX))
     axes = matrix["axes"]
-    default_cell = matrix["default_cell"]
+    default_cell = dict(matrix["default_cell"])
+    for ov in args.overrides:
+        if "=" not in ov:
+            ap.error(f"--set expects AXIS=VALUE, got {ov!r}")
+        axis, value = ov.split("=", 1)
+        if axis not in default_cell:
+            ap.error(
+                f"--set: unknown axis {axis!r} "
+                f"(known: {', '.join(sorted(default_cell))})"
+            )
+        if axis in axes and value not in axes[axis]:
+            ap.error(
+                f"--set {axis}: unknown value {value!r} "
+                f"(known: {', '.join(sorted(axes[axis]))})"
+            )
+        default_cell[axis] = value
+        print(f"  [override] default_cell.{axis} = {value}")
     base_path = BASE_CONFIG[args.klass]
     cells = cells_for_suite(matrix, args.suite)
     written = []
     for cell in cells:
         cfg, resolved = build_cell(base_path, axes, default_cell, cell)
         name = f"{cell['id']}__{args.klass}"
-        path = os.path.join(OUT, name + ".yaml")
+        # The FILE is namespaced by suite; the config VERSION name is not.
+        #
+        # Suites share cell names (`core_cells` is used by corefast, core,
+        # coresynth, …), so an un-namespaced filename made two suites fight over
+        # one file: building suite B overwrote suite A's configs while leaving
+        # A's index untouched, so A's index advertised one set of axes and the
+        # file on disk held another. That silently produced a benchmark
+        # comparison across two DIFFERENT extraction models — see the
+        # integrity check in run_matrix.py, which now refuses to launch on any
+        # such mismatch.
+        path = os.path.join(OUT, f"{name}__{args.suite}.yaml")
         yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
         written.append(
             {

@@ -1,0 +1,10 @@
+mutation DeleteConfigProfileRevision($profileName: String!, $revision: Int!) {
+  deleteConfigProfileRevision(profileName: $profileName, revision: $revision) {
+    success
+    message
+    error {
+      type
+      message
+    }
+  }
+}

@@ -57,15 +57,26 @@ Parameters:
     Type: String
     # Public AWS Lambda Web Adapter layer (x86_64). The account 753240598075 is
     # the LWA publisher; the layer name/version are region-stable. Leave blank
-    # to default to the LWA layer in this stack's region/partition (constructed
-    # as arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...). Override
-    # this parameter for GovCloud (GovCloud publishes LWA under a different
-    # account; see the LWA releases) or to pin a specific version.
+    # to default to the LWA layer in this stack's region (constructed as
+    # arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...), or set it to
+    # pin a specific version / point at a layer you published yourself.
+    #
+    # NOTE (GovCloud/China): LWA is published ONLY in the commercial partition.
+    # AWS account IDs do not exist across partitions, so ${AWS::Partition}
+    # substitution alone cannot make that ARN resolve — a GovCloud deploy fails
+    # with a 403 on lambda:GetLayerVersion that reads like a missing
+    # resource-based policy but is really a partition mismatch no identity policy
+    # can fix. The --govcloud transform therefore REMOVES
+    # ChatStreamProcessorFunction (and this parameter) outright and the UI falls
+    # back to its polling chat transport; see docs/govcloud-deployment.md. Set
+    # this parameter only if you have published an LWA layer into the target
+    # partition yourself.
     Default: ""
     Description: >-
       ARN of the AWS Lambda Web Adapter layer used by the chat streaming Function
-      URL. Leave blank to use the region-default LWA x86_64 layer; override for
-      GovCloud or to pin a version.
+      URL. Leave blank to use the region-default LWA x86_64 layer, or set it to
+      pin a version / use a layer you published yourself. LWA is published only
+      in the commercial AWS partition.
 
   # Authorization params
   AdminEmail:
@@ -1649,7 +1660,7 @@ Resources:
     Properties:
       ClientName: !Sub ${AWS::StackName}-api-client
       UserPoolId: !Ref ApiUserPool
-      GenerateSecret: true
+      GenerateSecret: true  # pragma: allowlist secret - Cognito generates the client secret; none stored here
       AllowedOAuthFlows:
         - client_credentials
       AllowedOAuthFlowsUserPoolClient: true
@@ -2367,7 +2378,7 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:bedrock-agentcore:*:aws:code-interpreter/*"
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Ref ExternalMCPAgentsSecret
             - Effect: Allow
@@ -5303,6 +5314,11 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Enables Configuration Profile revision history: a stack deployment
+          # cuts a revision of `default` (and of each managed profile) instead
+          # of overwriting it silently, so an upgrade's config changes are
+          # diffable and can be rolled back.
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref UpdateConfigurationFunctionLogGroup
       Policies:
@@ -5326,6 +5342,15 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:s3:::<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/*"
                 - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
                 - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/*"
+            # Write configuration-profile revision bodies. Scoped to the
+            # revisions prefix: this function has no reason to write anywhere
+            # else in the configuration bucket.
+            - Effect: Allow
+              Action:
+                - "s3:PutObject"
+                - "s3:DeleteObject"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
             # Allow reading user-supplied config file only if CustomConfigPath is specified
             - !If
               - HasCustomConfigPath
@@ -5718,6 +5743,7 @@ Resources:
           CIRCUIT_BREAKER_ENABLED: !If [CircuitBreakerEnabledCondition, "true", "false"]
           DOCUMENT_QUEUE_URL: !Ref DocumentQueue
           RECOVERY_TIMEOUT_SECONDS: !Ref CircuitBreakerRecoveryTimeoutSeconds
+          METRIC_NAMESPACE: !Ref AWS::StackName
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
@@ -5743,6 +5769,25 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # Concurrency-counter reconciliation: compare the counter against the
+        # executions that are really RUNNING, so a leaked counter cannot stop the
+        # stack admitting documents forever. Scoped to this stack's own state
+        # machine; ListExecutions is read-only.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:ListExecutions
+              Resource: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+        # PutMetricData takes no resource-level permissions (AWS-wide), so it is
+        # constrained by namespace condition instead.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace: !Ref AWS::StackName
       Events:
         SQSEvent:
           Type: SQS
@@ -6320,6 +6365,54 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # A leaked workflow-concurrency counter is otherwise INVISIBLE: the queue stops
+  # draining and every other metric looks idle rather than broken, so the first
+  # signal is a human noticing that nothing has processed for hours. The queue
+  # processor publishes the drift (counter minus executions actually RUNNING)
+  # whenever it finds itself at the limit; a sustained positive drift means slots
+  # are held by workflows that already ended.
+  # The workflow tracker owns the concurrency-counter DECREMENT, so an event it
+  # cannot process is not just a lost status update — it is a workflow slot that
+  # was never released. The counter drifts up and, at MaxConcurrentWorkflows, the
+  # stack stops admitting documents. The reconciler recovers from that and
+  # ConcurrencyCounterDriftAlarm reports it, but both are downstream of the cause;
+  # this alarm fires on the cause, on the first message, before anything stalls.
+  WorkflowTrackerDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} workflow-completion event lands in the Workflow Tracker dead-letter queue. Each one is a workflow-concurrency slot that was not released and a document whose completion status was not recorded."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WorkflowTrackerDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  ConcurrencyCounterDriftAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow-concurrency counter holds slots for workflows that have already ended (drift > 0 for 15 minutes). Documents stop starting once the counter reaches MaxConcurrentWorkflows."
+      MetricName: ConcurrencyCounterDrift
+      Namespace: !Ref AWS::StackName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # The metric is only published when the processor is at the limit, so
+      # "no data" means "not blocked" — which is healthy, not unknown.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ##########################################################################
   # Circuit Breaker Resources
   ##########################################################################
@@ -6859,6 +6952,46 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Save Reporting Data Tracker Lambda Errors",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "ConcurrencyCounterActive",
+                      {
+                        "stat": "Maximum",
+                        "label": "Counter (claimed slots)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterDrift",
+                      {
+                        "stat": "Maximum",
+                        "label": "Drift (slots held by workflows that already ended)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; drift is sampled only when an increment is refused)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "annotations": {
+                    "horizontal": [
+                      {
+                        "value": ${MaxConcurrentWorkflows},
+                        "label": "MaxConcurrentWorkflows (${MaxConcurrentWorkflows}) — queue stops draining here",
+                        "color": "#ff0000"
+                      }
+                    ]
+                  }
                 }
               }
             ]
@@ -7405,7 +7538,7 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:bedrock-agentcore:*:aws:code-interpreter/*"
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Ref ExternalMCPAgentsSecret
             - Effect: Allow
@@ -7678,7 +7811,7 @@ Resources:
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Ref ExternalMCPAgentsSecret
             - Effect: Allow
@@ -8233,7 +8366,7 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:bedrock-agentcore:*:aws:code-interpreter/*"
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Ref ExternalMCPAgentsSecret
             - Effect: Allow
@@ -8299,7 +8432,7 @@ Resources:
     Properties:
       ClientName: "external-app-client"
       UserPoolId: !Ref UserPool
-      GenerateSecret: true
+      GenerateSecret: true  # pragma: allowlist secret - Cognito generates the client secret; none stored here
       ExplicitAuthFlows:
         - ALLOW_ADMIN_USER_PASSWORD_AUTH
         - ALLOW_USER_PASSWORD_AUTH
@@ -8362,7 +8495,7 @@ Resources:
     Properties:
       ClientName: "mcp-connector-client"
       UserPoolId: !Ref UserPool
-      GenerateSecret: true
+      GenerateSecret: true  # pragma: allowlist secret - Cognito generates the client secret; none stored here
       AllowedOAuthFlows:
         - client_credentials
       AllowedOAuthFlowsUserPoolClient: true
@@ -8743,7 +8876,7 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource: !Ref ExternalIdPOIDCClientSecretArn
       InlineCode: |
         import cfnresponse
@@ -10331,7 +10464,18 @@ Resources:
             #     discarded), so we use the region-agnostic *.on.aws — the *.
             #     prefix matches any subdomain depth. Without this the browser
             #     blocks the streamed fetch ("Failed to fetch").
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://cognito-idp.*.amazonaws.com https://cognito-identity.*.amazonaws.com https://*.appsync-api.*.amazonaws.com https://*.execute-api.*.amazonaws.com https://*.on.aws https://*.s3.*.amazonaws.com https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com wss://*.appsync-realtime-api.*.amazonaws.com wss://*.execute-api.*.amazonaws.com ws://localhost:*;"
+            #   - The same leftmost-wildcard rule previously invalidated SEVEN
+            #     other sources in this very list — cognito-idp.*, cognito-
+            #     identity.*, *.appsync-api.*, *.execute-api.*, *.s3.*,
+            #     wss://*.appsync-realtime-api.*, wss://*.execute-api.* — each
+            #     silently discarded by the browser with "contains an invalid
+            #     source … It will be ignored", 7 console errors on every page
+            #     load. They were also redundant: *.amazonaws.com and
+            #     wss://*.amazonaws.com already cover every one of those hosts at
+            #     any subdomain depth, which is why the app worked throughout.
+            #     Removed rather than corrected, so the policy says what it does.
+            #     Do not re-add a host with a wildcard anywhere but the front.
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true

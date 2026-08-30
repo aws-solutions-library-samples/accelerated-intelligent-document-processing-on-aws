@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.docs_service import create_document_service
+from idp_common.config_scope import scope_allows
 from idp_common.document_versions import runs_prefix
 
 # Import IDP Common modules
@@ -155,6 +156,7 @@ def handler(event, context):
         args = event.get("arguments", {})
         object_keys = args.get("objectKeys", [])
         version = args.get("version")  # Optional version parameter
+        revision = args.get("revision")  # Optional revision of that version
 
         if not object_keys:
             logger.error("objectKeys is required but not provided")
@@ -184,7 +186,7 @@ def handler(event, context):
         if version:
             if not caller["is_admin"]:
                 allowed_versions = _get_user_allowed_config_versions(caller["email"])
-                if allowed_versions and version not in allowed_versions:
+                if not scope_allows(allowed_versions, version):
                     logger.warning(
                         "Rejecting reprocessDocument: caller %s is scoped to %s "
                         "but requested version=%r",
@@ -207,7 +209,7 @@ def handler(event, context):
         success_count = 0
         for object_key in object_keys:
             try:
-                reprocess_document(object_key, version)
+                reprocess_document(object_key, version, revision)
                 success_count += 1
             except Exception as e:
                 logger.error(
@@ -225,7 +227,7 @@ def handler(event, context):
         raise e
 
 
-def reprocess_document(object_key, version=None):
+def reprocess_document(object_key, version=None, revision=None):
     """
     Reprocess a document by creating a fresh Document object and queueing it.
     This exactly mirrors the queue_sender pattern for consistency and avoids
@@ -233,11 +235,14 @@ def reprocess_document(object_key, version=None):
 
     Args:
         object_key: S3 object key of the document to reprocess
-        version: Optional configuration version to use for reprocessing
+        version: Optional Configuration Profile to use for reprocessing
+        revision: Optional revision of that profile. Omit to reprocess under the
+            profile's current configuration.
     """
     logger.info(
         f"Reprocessing document: {object_key}"
         + (f" with version: {version}" if version else "")
+        + (f" r{revision}" if revision is not None else "")
     )
 
     # Verify file exists in S3
@@ -266,6 +271,7 @@ def reprocess_document(object_key, version=None):
         pages={},
         sections=[],
         config_version=version,  # Set the configuration version if provided
+        config_revision=revision,
     )
 
     logger.info(f"Created fresh document object for reprocessing: {object_key}")

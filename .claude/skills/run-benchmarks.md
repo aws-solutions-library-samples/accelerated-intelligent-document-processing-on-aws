@@ -39,12 +39,12 @@ python3 benchmarks/harness/make_configs.py --suite <suite> --class bank_statemen
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite <suite> --estimate
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite <suite> --max-inflight 6
 
-# 4. score + roll up (writes results/<release>/summary.{json,csv} + meta.json)
-AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<release>
+# 4. score + roll up (writes results/<release>/<suite>/summary.{json,csv} + meta.json)
+AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<release>/<suite>
 
 # 5. regression-check vs baseline + emit figures
-python3 benchmarks/harness/aggregate.py --compare benchmarks/results/<release>/summary.json --baseline benchmarks/results/baseline.json
-python3 benchmarks/harness/aggregate.py --figures benchmarks/results/<release>/summary.json
+python3 benchmarks/harness/aggregate.py --compare benchmarks/results/<release>/<suite>/summary.json --baseline benchmarks/results/baseline.json
+python3 benchmarks/harness/aggregate.py --figures benchmarks/results/<release>/<suite>/summary.json
 
 # 6. update the published papers under docs/benchmarking/ (see "Output docs" below)
 ```
@@ -84,15 +84,19 @@ Procedure (drive it yourself — several steps need judgment):
 2. **Generate the `corefast` grid** (`gen_corpus.py`; `make_configs.py --suite corefast`).
    Use `corefast` (≤100-row docs) for the A/B — advanced-mode granular assessment on
    ≥400-row docs times out the 900s Lambda on older releases (retries ~2h then fails).
+   `corefast` runs **`repeats: 3`** (90 runs/side): at one sample a non-deterministic
+   agentic outcome is indistinguishable from a regression. The v0.6.5 verification
+   reported a new FAILURE and a −0.143 accuracy drop from a `repeats: 1` grid and
+   **neither reproduced** — do not lower this to save time.
 3. **Run on PREV with `--native-upload`** (`run_matrix.py --suite corefast --native-upload`).
    Native-upload is REQUIRED: idp-cli's config-upload force-migrates v0.5→v0.6 and drops
    the top-level `assessment` block older stacks need.
-4. **Score** → `benchmarks/results/v<PREV>/`; **promote to baseline.json**.
+4. **Score** → `benchmarks/results/v<PREV>/corefast/`; **promote to baseline.json**.
 5. **Upgrade the SAME stack in place**: `idp-cli deploy --stack-name <S> --from-code .
    --clean-build --region us-west-2 --wait`. Verify `UPDATE_COMPLETE` + Description shows
    `v<NEW>`.
 6. **Re-run `corefast` on the upgraded stack** (`--native-upload`, identical config files).
-7. **Score** → `benchmarks/results/v<NEW>/`; **compare** (`aggregate.py --compare` new vs
+7. **Score** → `benchmarks/results/v<NEW>/corefast/`; **compare** (`aggregate.py --compare` new vs
    PREV) + `--figures`; copy cited charts to `images/benchmark-v<NEW>-*.png`.
 8. **Write `docs/benchmarking/releases/v<NEW>.md`** (use the previous release file as the
    template) and **append a row** to `docs/benchmarking/releases/README.md`.
@@ -133,10 +137,17 @@ harness — verify they still hold when the schema evolves:
 After a release run you trust, copy its summary to the baseline so future runs
 compare against it:
 ```bash
-cp benchmarks/results/<release>/summary.json benchmarks/results/baseline.json
+cp benchmarks/results/<release>/corefast/summary.json benchmarks/results/baseline.json
 ```
 Commit `benchmarks/results/<release>/` + the updated `baseline.json` + paper so the
 per-release history is maintained in the repo.
+
+**Retention: one complete set per release** — see
+`benchmarks/results/RETENTION.md`. Scored files always go in a `<suite>/` subdirectory of
+the release dir, never loose in it. Do NOT add a sibling directory for a re-run or a
+variant (`v0.6.5-fixed2-…`, `v0.6.6-advverify-post668`): either replace the set in place if
+the first attempt was invalid, or write the finding into the `docs/benchmarking/` page and
+let the data go (git history is the archive — cite the commit, not a path).
 
 ## Regression thresholds (in aggregate.py --compare)
 accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 → flagged

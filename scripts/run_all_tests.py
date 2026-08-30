@@ -50,6 +50,12 @@ PRUNE_DIR_MARKERS = (
     "/idp_common/agents/testing/",
 )
 
+# Generated files that are never source tests. `make srt-scan` nbconverts every
+# notebook to "<nb>-converted.py" (gitignored); notebooks named test_*.ipynb
+# therefore leave behind test_*-converted.py artifacts that would otherwise make
+# notebooks/ look like an unregistered test root.
+PRUNE_FILE_SUFFIXES = ("-converted.py",)
+
 # --- Registry 1: roots RUN in the fast (non-integration) gate -----------------
 # Each entry is a path relative to the repo root. They are run as independent
 # `pytest -m "not integration" <root>` invocations. Verified green headless.
@@ -80,12 +86,29 @@ RUN_ROOTS = [
     "feature-platform/sample-health-insurance-review/feature-api/tests",
     "feature-platform/sample-health-insurance-review/hook/tests",
     "feature-platform/sample-health-insurance-review/ui-deployer/tests",
+    # Structural assertions on patterns/unified/statemachine/workflow.asl.json —
+    # invariants that live in the state machine (retry policies, failure routing)
+    # where no Python test can see them. Pure JSON parsing, no AWS clients.
+    "patterns/unified/tests",
+    # Benchmark harness analysis/orchestration code. It decides what a release
+    # report *claims* and which config a run actually executes, so a bug here
+    # becomes a wrong published number rather than a visible failure — which is
+    # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
+    "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # Configuration Profile revision operations: group gate + profile-level scope.
+    "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",
+    # Guards the vendored config_scope copies against drifting from the canonical
+    # idp_common module — a scope matcher that differs per call site is a
+    # privilege-escalation bug.
+    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
+    # Configuration-revision pinning on a test run.
+    "nested/api-resolvers/src/lambda/test_runner",
     "nested/api-resolvers/src/lambda/test_set_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
@@ -99,6 +122,7 @@ RUN_ROOTS = [
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
     "src/lambda/external_idp_group_mapping",
+    "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
@@ -112,6 +136,13 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
+    # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
+    # subdir for the same reason as scripts/sdlc/tests above.
+    "scripts/security/tests",
+    # Repo-script gates (the Python arn:aws: partition checker). Same reason as
+    # the two above: the parent `scripts` root stays quarantined, so a new test
+    # dir under it is invisible to this gate unless registered here.
+    "scripts/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------
@@ -148,6 +179,8 @@ def discover_test_roots() -> set[str]:
     for path in REPO_ROOT.rglob("test_*.py"):
         posix = "/" + path.as_posix().replace(REPO_ROOT.as_posix() + "/", "")
         if any(marker in posix for marker in PRUNE_DIR_MARKERS):
+            continue
+        if path.name.endswith(PRUNE_FILE_SUFFIXES):
             continue
         rel_dir = path.parent.relative_to(REPO_ROOT).as_posix()
         roots.add(rel_dir)

@@ -52,6 +52,7 @@ class BatchOperation:
         number_of_files: Optional[int] = None,
         config_path: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         context: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
@@ -70,7 +71,9 @@ class BatchOperation:
             recursive: Recursively scan directories
             number_of_files: Limit number of files to process
             config_path: Path to custom configuration file
-            config_version: Configuration version to use for processing
+            config_version: Configuration Profile to use for processing
+            config_revision: Optional revision of that profile. Omit to process
+                under the profile's current configuration.
             context: Context for test set processing
             **kwargs: Additional parameters
 
@@ -127,6 +130,11 @@ class BatchOperation:
                 )
                 if "config_version" in manifest_sig.parameters and config_version:
                     manifest_kwargs["config_version"] = config_version
+                if (
+                    "config_revision" in manifest_sig.parameters
+                    and config_revision is not None
+                ):
+                    manifest_kwargs["config_revision"] = config_revision
                 result = processor.process_batch(**manifest_kwargs)
             elif directory:
                 import inspect
@@ -142,6 +150,11 @@ class BatchOperation:
                 )
                 if "config_version" in dir_sig.parameters and config_version:
                     dir_kwargs["config_version"] = config_version
+                if (
+                    "config_revision" in dir_sig.parameters
+                    and config_revision is not None
+                ):
+                    dir_kwargs["config_revision"] = config_revision
                 result = processor.process_batch_from_directory(**dir_kwargs)
             else:
                 import inspect
@@ -156,6 +169,8 @@ class BatchOperation:
                 sig = inspect.signature(processor.process_batch_from_s3_uri)
                 if "config_version" in sig.parameters and config_version:
                     s3_kwargs["config_version"] = config_version
+                if "config_revision" in sig.parameters and config_revision is not None:
+                    s3_kwargs["config_revision"] = config_revision
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(
@@ -189,6 +204,7 @@ class BatchOperation:
         number_of_files: Optional[int] = None,
         config_path: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         context: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
@@ -214,6 +230,7 @@ class BatchOperation:
             number_of_files=number_of_files,
             config_path=config_path,
             config_version=config_version,
+            config_revision=config_revision,
             context=context,
             **kwargs,
         )

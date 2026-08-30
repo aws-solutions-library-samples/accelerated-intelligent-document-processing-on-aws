@@ -494,11 +494,11 @@
     "fix": "Create a unique IAM execution role for this Lambda function instead of sharing role GetAtt:StartIngestionJobFunctionRole with . Lambda functions should have a 1:1 relationship with IAM execution roles.",
     "priority": "HIGH",
     "check_id": "LAMBDA-012",
-    "status": "resolved",
+    "status": "suppressed",
     "isCustomResource": false,
     "firstDetectedAt": "2026-04-27T18:09:25.920Z",
     "assessmentCount": 17,
-    "resolvedAt": "2026-07-07T20:59:36.073Z"
+    "suppressionReason": "Accepted (scanner false positive): StartIngestionJobFunctionRole is referenced exactly once in this template (StartIngestionJobFunction, Role: !GetAtt \"StartIngestionJobFunctionRole.Arn\") and by nothing else - grep confirms a single consumer, and every Lambda in nested/bedrockkb/template.yaml has its own distinct role (S3VectorManagerRole, OpenSearchLambdaExecutionRole, StartIngestionJobFunctionRole). The check's own generated fix text names no second function (\"...sharing role GetAtt:StartIngestionJobFunctionRole with .\" - blank), i.e. the scanner found no actual sharer. The 1:1 function-to-role relationship the check asks for already holds. Disposition changed resolved -> suppressed because 'resolved' is not sticky: SRT re-detects the finding on every scan and reopens it."
   },
   {
     "source": "security-matrix",
@@ -889,11 +889,10 @@
     "check_id": "package_managers.npm.npm-missing-minimum-release-age.npm-missing-minimum-release-age",
     "priority": "HIGH",
     "references": "https://github.blog/changelog/2026-02-18-npm-bulk-trusted-publishing-config-and-script-security-now-generally-available/ | https://github.com/npm/cli/pull/8965",
-    "status": "resolved",
+    "status": "suppressed",
     "firstDetectedAt": "2026-07-07T01:25:57.555Z",
     "assessmentCount": 4,
-    "suppressionReason": "Accepted: UI dependencies are pinned via package-lock.json and installed with npm ci; minimum-release-age is a repo-wide supply-chain policy decision tracked separately.",
-    "resolvedAt": "2026-07-08T23:11:40.738Z"
+    "suppressionReason": "Accepted \u2014 the mitigation is in the tree but not yet effective. src/ui/.npmrc DOES set min-release-age=7 (added in the SRT/ASH remediation), so the rule's ask is satisfied in-tree. It is inert in CI for now: the key requires npm >= 11.10, while .gitlab-ci.yml pins npm@11.1.0 and src/ui/package.json engines still allow npm >= 10, so today it only emits an 'Unknown user config' warning. It costs nothing meanwhile (npm ci installs from the committed lockfile and resolves nothing from the registry) and starts protecting the `npm install` path as soon as the build npm reaches 11.10. Kept as 'suppressed' rather than 'resolved' because 'resolved' is not sticky: semgrep keys on (path, line, issue) and this rule's message text changes, so each rule-text update would re-open the finding \u2014 and run.py now blocks 'reopened' as well as 'open', which would fail CI on an unrelated rule edit."
   },
   {
     "source": "Bandit",

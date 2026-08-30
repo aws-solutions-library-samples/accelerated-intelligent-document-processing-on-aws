@@ -340,7 +340,7 @@ def _send_response(
         }
     ).encode("utf-8")
     req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310  # nosec B310 - CloudFormation-supplied custom-resource callback URL (https), not user input
         resp.read()
 
 

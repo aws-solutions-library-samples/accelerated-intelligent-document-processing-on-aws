@@ -38,6 +38,7 @@ class EvaluationStatus(Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     NO_BASELINE = "NO_BASELINE"
+    TIMED_OUT = "TIMED_OUT"
 
 def update_document_evaluation_status(document: Document, status: EvaluationStatus) -> Document:
     """
@@ -159,15 +160,46 @@ def handler(event, context):
     start_time = time.time()
     working_bucket = os.environ.get('WORKING_BUCKET')
     
+    # Failure-recording mode. The state machine routes EvaluationStep's Catch here
+    # so a document that could not be evaluated keeps its (expensive, already
+    # written) OCR / classification / extraction / assessment / summarization
+    # output instead of being discarded, while still recording an honest
+    # evaluation status. Without this a Lambda timeout left EvaluationStatus at
+    # RUNNING forever and failed the whole execution.
+    #
+    # This branch does the minimum: load the document, stamp the status, return.
+    # It must not do anything that could fail for the same reason evaluation did.
+    if event.get('record_failure_only'):
+        try:
+            actual_document = extract_document_from_event(event)
+            reason = event.get('failure_reason') or 'Evaluation did not complete'
+            status = (
+                EvaluationStatus.TIMED_OUT
+                if 'Timedout' in json.dumps(event.get('error', ''))
+                else EvaluationStatus.FAILED
+            )
+            logger.error(
+                f"Recording evaluation failure for {actual_document.input_key}: "
+                f"status={status.value} reason={reason}"
+            )
+            update_document_evaluation_status(actual_document, status)
+            return {'document': actual_document.serialize_document(working_bucket, 'evaluation')}
+        except Exception as e:
+            # Never let the failure-recorder itself break the workflow — the whole
+            # point of this branch is that the document survives.
+            logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
+            return event.get('document') or {}
+
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")
-        
+
         # Extract document from event
         actual_document = extract_document_from_event(event)
         
         # Load configuration - use document's version if specified, otherwise use active version
         config_version = getattr(actual_document, 'config_version', None)
-        config = get_config(as_model=True, version=config_version)
+        config_revision = getattr(actual_document, 'config_revision', None)
+        config = get_config(as_model=True, version=config_version, revision=config_revision)
         
         if config_version:
             logger.info(f"Using configuration version {config_version} for document {actual_document.id}")

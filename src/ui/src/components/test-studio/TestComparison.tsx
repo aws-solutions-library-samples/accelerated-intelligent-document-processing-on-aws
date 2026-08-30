@@ -298,7 +298,11 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
       [
         'Config Version',
         ...Object.values(completeTestRuns).map((run) =>
-          formatConfigVersionText(run.configVersion as string | undefined, versions as unknown as UtilsConfigVersion[]),
+          formatConfigVersionText(
+            run.configVersion as string | undefined,
+            versions as unknown as UtilsConfigVersion[],
+            run.configRevision as number | undefined,
+          ),
         ),
       ],
       ['Files Processed', ...Object.values(completeTestRuns).map((run) => run.filesCount || 'N/A')],
@@ -804,7 +808,11 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
           {
             testSetName: testRun.testSetName,
             context: testRun.context,
-            configVersion: formatConfigVersionText(testRun.configVersion as string | undefined, versions),
+            configVersion: formatConfigVersionText(
+              testRun.configVersion as string | undefined,
+              versions,
+              testRun.configRevision as number | undefined,
+            ),
             filesCount: testRun.filesCount,
             completedFiles: testRun.completedFiles,
             failedFiles: testRun.failedFiles,
@@ -1053,7 +1061,12 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                   ...Object.fromEntries(
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
-                      formatConfigVersionLink(testRun.configVersion as string | undefined, versions as unknown as UtilsConfigVersion[]),
+                      formatConfigVersionLink(
+                        testRun.configVersion as string | undefined,
+                        versions as unknown as UtilsConfigVersion[],
+                        undefined,
+                        testRun.configRevision as number | undefined,
+                      ),
                     ]),
                   ),
                 },

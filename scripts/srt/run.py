@@ -85,13 +85,23 @@ def main():
         try:
             with open(issues_json_path, encoding="utf-8") as f:
                 issues = json.load(f)
-            # Filter only HIGH priority issues with status == 'Open'
-            # Medium/Low issues don't block CI
+            # Filter only HIGH priority issues that are not dispositioned.
+            # Medium/Low issues don't block CI.
+            #
+            # 'reopened' counts as blocking: SRT assigns it when a finding it
+            # previously recorded as resolved/suppressed is detected again, and
+            # its own status line reports "Open: N / Reopened: M ... N+M issues
+            # need attention". Gating on 'Open' alone let a re-detected HIGH
+            # through silently (observed on 0.6.5: LAMBDA-012 in
+            # nested/bedrockkb/template.yaml and the semgrep npm
+            # minimum-release-age finding in src/ui/.npmrc, both carrying a
+            # non-sticky "resolved" disposition). Only 'suppressed'/'resolved'
+            # are accepted dispositions.
             high_open_issues = [
                 issue
                 for issue in issues
                 if (issue.get("priority") or "").upper() == "HIGH"
-                and issue.get("status") == "Open"
+                and (issue.get("status") or "").lower() in ("open", "reopened")
             ]
         except (json.JSONDecodeError, UnicodeDecodeError, IOError) as e:
             print(f"⚠️  Warning: Could not parse issues.json: {e}")

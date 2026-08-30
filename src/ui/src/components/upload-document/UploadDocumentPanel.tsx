@@ -25,6 +25,7 @@ import { generateClient } from '../../api/client-shim';
 import { uploadDocument } from '../../graphql/generated';
 
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import useSampleDocuments, { type SampleDocument } from '../../hooks/use-sample-documents';
 import useConfigurationLibrary from '../../hooks/use-configuration-library';
 
@@ -60,6 +61,8 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   const [error, setError] = useState<string | null>(null);
   const [prefix, setPrefix] = useState('');
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
+  // null = the profile's current configuration.
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
 
   // Sample-browser state
   const [samples, setSamples] = useState<SampleDocument[]>([]);
@@ -206,6 +209,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
               prefix: prefix || '', // Use the user-provided prefix or empty string
               bucket: (settings as Record<string, unknown>).InputBucket as string, // Explicitly pass the input bucket
               version: selectedVersion?.value, // Pass selected version (optional)
+              revision: selectedRevision ?? undefined, // Pin a revision (optional)
             },
           });
 
@@ -358,6 +362,13 @@ const UploadDocumentPanel = (): React.JSX.Element => {
             loadingText="Loading versions..."
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedVersion?.value}
+          value={selectedRevision}
+          onChange={setSelectedRevision}
+          disabled={isUploading}
+        />
 
         {!isSampleMode && (
           <FormField

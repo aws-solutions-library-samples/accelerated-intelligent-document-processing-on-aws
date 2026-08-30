@@ -12,7 +12,6 @@ import io
 import json
 import logging
 import os
-import pickle
 
 import boto3
 import numpy as np
@@ -42,7 +41,7 @@ def handler(event, context):
         numClusters: int
         clusterIds: list[int]
         clusterSizes: dict
-        clusterDataS3Key: str - S3 key with full cluster data (pickle)
+        clusterDataS3Key: str - S3 key with full cluster data (JSON)
     """
     job_id = event["jobId"]
     embeddings_key = event["embeddingsS3Key"]
@@ -68,23 +67,14 @@ def handler(event, context):
     )
     cluster_result = clustering_service.cluster(embeddings)
 
-    # Save full cluster data to S3 (needed by analyze step)
-    cluster_data_key = f"multi-doc-discovery/{job_id}/cluster_data.pkl"
-    cluster_data = {
-        "cluster_labels": cluster_result.cluster_labels,
-        "num_clusters": cluster_result.num_clusters,
-        "cluster_sizes": cluster_result.cluster_sizes,
-        "centroids": {k: v.tolist() for k, v in cluster_result.centroids.items()},
-        "embeddings_shape": embeddings.shape,
-    }
-
-    buf = io.BytesIO()
-    pickle.dump(cluster_data, buf)
-    buf.seek(0)
+    # Save full cluster data to S3 (needed by analyze step). JSON, not pickle —
+    # see ClusterResult.to_artifact() for why.
+    cluster_data_key = f"multi-doc-discovery/{job_id}/cluster_data.json"
     s3_client.put_object(
         Bucket=DISCOVERY_BUCKET,
         Key=cluster_data_key,
-        Body=buf.getvalue(),
+        Body=json.dumps(cluster_result.to_artifact()).encode("utf-8"),
+        ContentType="application/json",
     )
 
     logger.info(

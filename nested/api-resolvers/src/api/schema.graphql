@@ -108,6 +108,8 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   ConfidenceAlertCount: Int
   ProcessingIssueCount: Int
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
   # Number of retained processing runs (versions) for this document. Maintained
   # as a counter on the doc item; intentionally NOT part of the TypeDateIndex
@@ -126,6 +128,8 @@ type DocumentVersion @aws_cognito_user_pools @aws_iam {
   WorkflowStartTime: AWSDateTime
   WorkflowExecutionArn: String
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   PageCount: Int
   FileCount: Int
   ManifestUri: String
@@ -252,6 +256,51 @@ type ConfigurationVersion @aws_cognito_user_pools @aws_iam {
   bdaProjectArn: String
   bdaSyncStatus: String
   bdaLastSyncedAt: String
+  # Configuration Profile revision counters. latestRevision is the highest
+  # revision cut; publishedRevision is the one the profile's current
+  # configuration reflects. Null on a profile saved before revision history.
+  latestRevision: Int
+  publishedRevision: Int
+}
+
+# One immutable snapshot of a Configuration Profile's configuration, cut on every
+# save. Revisions are CONTENT inside a profile, not access-control objects: scope
+# is enforced at the profile, so an Author scoped to a profile may read, restore,
+# and label all of its revisions.
+type ConfigProfileRevision @aws_cognito_user_pools @aws_iam {
+  revision: Int!
+  createdAt: AWSDateTime
+  createdBy: String
+  label: String
+  notes: String
+  sizeBytes: Int
+  classFingerprint: String
+  # Pinned by a test run; exempt from retention pruning so a run's configuration
+  # outlives the retention cap and stays comparable.
+  pinned: Boolean
+  # True for the revision the profile's current configuration reflects.
+  published: Boolean
+}
+
+type ConfigProfileRevisionsResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  revisions: [ConfigProfileRevision]
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  # The full configuration recorded in the revision, as a JSON string.
+  config: AWSJSON
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionMutationResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  message: String
+  # The new revision number, when the operation created one (restore).
+  revision: Int
+  error: ConfigurationError
 }
 
 type ConfigurationVersionsResponse @aws_cognito_user_pools @aws_iam {
@@ -389,6 +438,8 @@ input CreateDocumentInput {
   QueuedTime: AWSDateTime
   ExpiresAfter: AWSTimestamp
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
 }
 
@@ -440,6 +491,8 @@ input UpdateDocumentInput {
   HITLReviewHistory: AWSJSON
   ConfidenceAlertCount: Int
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
 }
 
@@ -679,6 +732,10 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   completedAt: AWSDateTime
   context: String
   configVersion: String
+  # The configuration profile revision this run scored against, alongside the
+  # test-set version above: a metric delta between two runs is attributable to
+  # the configuration only when both are known.
+  configRevision: Int
   testSetVersion: Int
   config: AWSJSON
 }
@@ -969,6 +1026,8 @@ input GenerateDraftLabelsInput {
   testSetId: String!
   # Defaults to the deployment's active config when omitted.
   configVersion: String
+  # Optional revision of configVersion.
+  configRevision: Int
   # Optional subset; omit to label every document in the set. Only these
   # documents are processed, and each must exist in the test set.
   objectKeys: [String!]
@@ -1024,6 +1083,10 @@ input TestRunInput {
   context: String
   numberOfFiles: Int
   configVersion: String
+  # Revision of configVersion to score against. Omit for its current
+  # configuration. Pinning is what makes two runs of the same profile
+  # comparable: it records WHICH configuration produced each result.
+  configRevision: Int
   # Optional explicit document list. Unlike numberOfFiles (the first N files of
   # the set) this names exactly which documents to process, which is what
   # labeling or re-labeling a subset needs.
@@ -1200,6 +1263,21 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   setActiveVersion(versionName: String!): UpdateConfigurationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Configuration Profile revisions. Restore and label are Admin+Author because
+  # a revision is content inside a profile the Author already owns; deleting a
+  # revision destroys history and stays Admin-only, mirroring
+  # deleteDocumentVersion.
+  restoreConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  labelConfigProfileRevision(
+    profileName: String!
+    revision: Int!
+    label: String
+    notes: String
+  ): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  deleteConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   generateRuleJson(ruleDescription: String!): GenerateRuleJsonResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   syncBdaIdp(direction: String, versionName: String, bdaProjectArn: String, saveArn: Boolean, syncMode: String): SyncBdaIdpResponse
@@ -1210,6 +1288,9 @@ type Mutation {
     prefix: String
     bucket: String
     version: String
+    # Optional revision of `version` to pin the upload to. Omit for the profile's
+    # current configuration.
+    revision: Int
   ): PresignedUrlResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Server-side copy of a bundled sample document (by id, from the
@@ -1258,7 +1339,7 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   copyToBaseline(objectKey: String!): CopyToBaselineResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  reprocessDocument(objectKeys: [String!]!, version: String): Boolean!
+  reprocessDocument(objectKeys: [String!]!, version: String, revision: Int): Boolean!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   abortWorkflow(objectKeys: [String!]!): AbortWorkflowResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
@@ -1524,6 +1605,15 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getConfigVersion(versionName: String!): ConfigurationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
+  # Configuration Profile revision history. Read access mirrors
+  # getConfigVersion; every one of these is additionally scope-checked against
+  # the caller's allowedConfigVersions in the resolver.
+  listConfigProfileRevisions(profileName: String!): ConfigProfileRevisionsResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+  getConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
   getPricing: PricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getModelConfigLimits: ModelConfigLimitsResponse

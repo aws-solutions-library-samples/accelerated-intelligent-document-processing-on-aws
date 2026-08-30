@@ -109,7 +109,7 @@ from .models import (
     TemplateTransformResult,
 )
 
-__version__ = "0.6.4"
+__version__ = "0.6.6"
 
 __all__ = [
     # Client

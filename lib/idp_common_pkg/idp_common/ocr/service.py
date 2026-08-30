@@ -2009,8 +2009,12 @@ class OcrService:
                     "BDA OCR backend selected but no project ARN is available. "
                     "Set ocr.bda_project_arn in config or the BDA_OCR_PROJECT_ARN "
                     "environment variable (provisioned by the stack's BDA OCR "
-                    "project custom resource). In regions without Bedrock Data "
-                    "Automation, use the Textract OCR backend instead."
+                    "project custom resource). Use the Textract OCR backend "
+                    "instead where this project cannot be provisioned: regions "
+                    "without Bedrock Data Automation, and the GovCloud/China "
+                    "partitions — which do offer BDA, but reject the SYNC "
+                    "document-modality project this backend requires, so the "
+                    "stack deliberately does not create it there."
                 )
             if not self._bda_profile_arn:
                 identity = boto3.client(

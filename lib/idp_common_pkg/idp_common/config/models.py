@@ -3001,6 +3001,10 @@ class ConfigurationRecord(BaseModel):
             "BdaSyncStatus",
             "BdaLastSyncedAt",
             "Managed",
+            # Revision counters live on the profile head item and are maintained
+            # by ConfigRevisionStore, not by this model.
+            "LatestRevision",
+            "PublishedRevision",
             "_config_format",
             "_config_storage",
         }

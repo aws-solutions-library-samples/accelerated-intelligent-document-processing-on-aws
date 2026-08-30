@@ -249,6 +249,18 @@ Conditions:
   IsPrivateApi: !Equals [!Ref UsePrivateApi, "true"]
   IsMLflowEnabled: !Equals [!Ref EnableMLflow, "true"]
   HasArtifactsBucketKmsKey: !Not [!Equals [!Ref ArtifactsBucketKmsKeyArn, ""]]
+  # The stack-scoped BDA-as-OCR project is a Bedrock Data Automation *SYNC*
+  # project carrying a `document` block in its standardOutputConfiguration.
+  # That shape is only accepted in the commercial partition: GovCloud rejects it
+  # with `ValidationException: Sync project does not support video/audio/document
+  # modality in Standard Output Configuration` (BDA itself exists in
+  # us-gov-west-1 — it is this one project shape that is unsupported), and BDA
+  # is absent from aws-cn entirely. Creating it there fails the nested stack and
+  # rolls back the whole deployment even when `ocr.backend` is `textract`, so
+  # skip the project outside `aws` and let BDA_OCR_PROJECT_ARN be empty — the
+  # `bda` OCR backend then errors clearly if it is actually selected, which is
+  # the graceful degradation the OCR service already implements.
+  ShouldCreateBDAOCRProject: !Equals [!Ref "AWS::Partition", "aws"]
 
 Resources:
 
@@ -3875,6 +3887,9 @@ Resources:
           DB_NAME: !Ref BDAMetadataTable
           WORKING_BUCKET: !Ref WorkingBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref BDAProcessResultsFunctionLogGroup
       Policies:
@@ -3889,6 +3904,10 @@ Resources:
             TableName: !Ref BDAMetadataTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -4077,10 +4096,14 @@ Resources:
   # delete. Replaces the former account-global auto-created project so multiple
   # stacks in one account no longer interfere. Degrades gracefully (empty ARN)
   # in regions/partitions without Bedrock Data Automation.
+  #
+  # Gated on ShouldCreateBDAOCRProject (commercial partition only) — see that
+  # condition for why GovCloud/China cannot create this project shape at all.
   ##########################################################################
 
   BDAOCRProjectFunction:
     Type: AWS::Serverless::Function
+    Condition: ShouldCreateBDAOCRProject
     Metadata:
       cfn_nag:
         rules_to_suppress:
@@ -4159,6 +4182,7 @@ Resources:
 
   BDAOCRProjectFunctionLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: ShouldCreateBDAOCRProject
     Properties:
       KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
       LogGroupName: !Sub "/${AWS::StackName}/lambda/BDAOCRProjectFunction"
@@ -4166,6 +4190,7 @@ Resources:
 
   BDAOCRProject:
     Type: Custom::BDAOCRProject
+    Condition: ShouldCreateBDAOCRProject
     Properties:
       ServiceToken: !GetAtt BDAOCRProjectFunction.Arn
       StackName: !Ref StackName
@@ -4229,13 +4254,18 @@ Resources:
           METRIC_NAMESPACE: !Ref StackName
           MAX_WORKERS: 20
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTable
           DOCUMENT_TRACKING_MODE: dynamodb
           WORKING_BUCKET: !Ref WorkingBucket
-          # ARN of the stack-scoped BDA OCR project (empty in regions without
-          # Bedrock Data Automation; the 'bda' backend then errors clearly).
-          BDA_OCR_PROJECT_ARN: !GetAtt BDAOCRProject.ProjectArn
+          # ARN of the stack-scoped BDA OCR project (empty in partitions/regions
+          # without Bedrock Data Automation — see ShouldCreateBDAOCRProject; the
+          # 'bda' backend then errors clearly).
+          BDA_OCR_PROJECT_ARN:
+            !If [ShouldCreateBDAOCRProject, !GetAtt BDAOCRProject.ProjectArn, ""]
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_EXTERNAL_ID:
@@ -4255,6 +4285,10 @@ Resources:
             BucketName: !Ref InputBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -4747,6 +4781,10 @@ Resources:
             BucketName: !Ref ConfigurationBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5009,6 +5047,9 @@ Resources:
           WORKING_BUCKET: !Ref WorkingBucket
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
       LoggingConfig:
         LogGroup: !Ref ProcessResultsFunctionLogGroup
       Policies:
@@ -5024,6 +5065,10 @@ Resources:
             TableName: !Ref TrackingTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - Statement:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
@@ -5092,6 +5137,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5121,6 +5169,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5372,6 +5424,9 @@ Resources:
           BASELINE_BUCKET: !Ref BaselineBucket
           SAVE_REPORTING_FUNCTION_NAME: !Ref SaveReportingFunctionName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           WORKING_BUCKET: !Ref WorkingBucket
           DOCUMENT_TRACKING_MODE: dynamodb
           TRACKING_TABLE: !Ref TrackingTable
@@ -5390,6 +5445,10 @@ Resources:
             TableName: !Ref TrackingTable
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - S3ReadPolicy:
             BucketName: !Ref BaselineBucket
         - S3CrudPolicy:
@@ -5552,6 +5611,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTable
           DOCUMENT_TRACKING_MODE: dynamodb
@@ -5574,6 +5636,10 @@ Resources:
             BucketName: !Ref ReportingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5654,6 +5720,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5683,6 +5752,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:
@@ -5791,6 +5864,9 @@ Resources:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document or
+          # test run is pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrailConfig,
@@ -5822,6 +5898,10 @@ Resources:
             BucketName: !Ref WorkingBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
         - Statement:

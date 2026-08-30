@@ -31,7 +31,8 @@ separate — they answer different questions and are regenerated on different ca
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
 compares each `develop` prerelease to the previous **published** release, and the
 [index](./releases/) table links them all. Raw data lives (unpublished) under
-`benchmarks/results/<release>/`.
+`benchmarks/results/<release>/<suite>/` — **one complete set per release**, per
+[`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).
 
 ## What it measures (seven dimensions)
 
@@ -89,36 +90,76 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
    `Config#default`), launches each (cell × doc) via the stack test runner, and polls the
    tracking table to completion. `--estimate` prints projected doc-count/cost/time first.
 4. **Score & aggregate** — `aggregate.py` scores every run on the seven dimensions, rolls
-   them into `results/<release>/summary.{json,csv}` with a `meta.json` (commit, stack,
-   pricing hash, date), diffs against `results/baseline.json` to flag regressions, and
-   emits figures.
+   them into `results/<release>/<suite>/summary.{json,csv}` with a `meta.json` (commit,
+   stack, pricing hash, date), diffs against `results/baseline.json` to flag regressions,
+   and emits figures.
 
 ## Suites (cost-tiered)
 
 | Suite | Scope | Use |
 |-------|-------|-----|
 | `smoke` | 2 cells × 2 tiny docs | Per-PR gate (minutes) |
-| `corefast` | 10 decision cells × 3 docs (≤100 rows) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see note) |
-| `core` | 10 decision cells × ~7 synthetic docs | Standard single-release run |
+| `corefast` | 10 decision cells × 3 docs (≤100 rows) × **3 repeats** (90 runs/side) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see notes) |
+| `coresynth` | 10 decision cells × 7 synthetic docs (**70 runs**) | **Standard single-release run** — the cross-config grid the Configuration Guidance paper reports |
+| `core` | `coresynth` + the two 20-document reference corpora (**470 runs**) | Adds real-world labeled accuracy; ~7× the cost of `coresynth`, so opt in deliberately |
 | `scaling` | simple vs advanced across the size series | The completeness-cliff study |
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
+| `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
+| `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
+
+> **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
+> a **cross-version control** so the release A/B runs on a model every compared release can
+> invoke. A single-release study should instead use the product default —
+> `make_configs.py --set extraction_model=sonnet5`. Mixing the two is how a
+> model-dependent behaviour can look like a code change.
 
 > **Why `corefast` for release comparisons.** Advanced (agentic) mode + granular
 > assessment on ≥400-row list documents can exceed the 900 s assessment-Lambda timeout
 > on older releases (e.g. v0.5.16), which then retry for hours before failing. A grid
 > that must complete on **both** the old and new release therefore uses the ≤100-row
-> `corefast` docs. Larger-doc behavior is covered by the single-release `core`/`scaling`
+> `corefast` docs. Larger-doc behavior is covered by the single-release `coresynth`/`scaling`
 > suites against the current release only.
+
+> **Why `corefast` runs 3 repeats.** Accuracy is stable at `repeats: 1`, which is why the
+> broad grids stay there — but the release gate answers a different question: not "how
+> accurate is this config" but "**did the release change anything**". At one sample a
+> non-deterministic agentic outcome is indistinguishable from a regression, and that is not
+> hypothetical: the v0.6.5 fix verification reported a new FAILURE and a −0.143 accuracy drop
+> from a `repeats: 1` grid, and **neither reproduced**. Three samples let `--compare` reason
+> about failure *rates* and mean-vs-spread instead of a single draw. The spend is bounded
+> because `corefast` is deliberately the cheap ≤100-row subset. Do **not** raise
+> `core`/`coresynth`/`full` to match — they include the 400/800-row documents.
 
 ## Regression thresholds
 
-`aggregate.py --compare` flags, per matched (cell, doc): accuracy −0.02, cost +15%, any
-new failure, calibration-separation −0.03. Improvements ≥ +0.02 accuracy are also reported.
+`aggregate.py --compare` compares per **(cell, doc)**, aggregating across repeats:
+
+- **Failures** — compared as *rates*. `1/3 → 1/3` is the same behaviour, not a new failure;
+  `0/3 → 3/3` is a regression. A partial increase (`1/3 → 2/3`) is reported but tagged
+  *confirm before believing*, because both sides fail sometimes.
+- **Accuracy / completeness** — mean-vs-mean, and the delta must exceed the run-to-run
+  spread observed within that (cell, doc) on either side. Thresholds: accuracy ±0.02,
+  calibration-separation −0.03.
+- **Cost** — mean-vs-mean, +15%, likewise against the observed spread. Agentic cost varies
+  ~4× run-to-run, so a single sample cannot resolve a cost difference at all.
+- Anything that clears the threshold but not the spread prints as `~ … INCONCLUSIVE, add
+  repeats` and is **excluded from both verdict lists** rather than counted as a finding.
+- Failed runs are excluded from quality means, so a failure already reported as a failure
+  cannot also manufacture an accuracy regression.
+
+With `repeats: 1` this is identical to the old per-run comparison (mean = the single value,
+spread = 0). A second, **variance-aware** pass then re-judges cost and quality at the *cell*
+level across documents.
+
+> The n=1 limitation this replaces bit at v0.6.5 — see
+> [releases/v0.6.5.md §3.1](./releases/v0.6.5.md) for what it cost.
 
 ## Reproducibility & honesty rules
 
-- Each results directory records the exact commit, stack, model IDs, pricing hash, and date.
+- Each results directory records the exact commit, the deployed stack version (read from the
+  stack's CloudFormation `Description`, **not** the local git HEAD — those differ whenever a
+  run targets a published template), stack name, model IDs, pricing hash, and date.
 - Failures are reported explicitly; accuracy is never averaged over only the docs that
   completed without saying so (advanced/large runs are survivorship-sensitive).
 - Any cell capped or skipped for cost is logged in `meta.json`, never silently dropped.
@@ -145,8 +186,15 @@ This single target (see the repo `Makefile` and the `run-benchmarks` skill):
 4. Promotes the PREV summary to `benchmarks/results/baseline.json`.
 
 Commit the new `docs/benchmarking/releases/v<VERSION>.md`, its figures under `images/`,
-the `benchmarks/results/{vPREV,vVERSION}/` data dirs, and the updated `baseline.json`
-and `releases/README.md`. That is the durable, per-release audit trail.
+the `benchmarks/results/{vPREV,vVERSION}/corefast/` data dirs, and the updated
+`baseline.json` and `releases/README.md`. That is the durable, per-release audit trail.
+
+> **Retention.** `benchmarks/results/` keeps **one complete set per release** and nothing
+> else: the `corefast` A/B grid behind each audit-trail entry. One-off suite slices
+> (`config-*`, `intconf`, `advverify`, post-fix re-runs) are pruned once their finding is
+> written into the prose here — the published page is the durable record, and the data stays
+> recoverable from git history. Rules and recovery commands:
+> [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).
 
 > The step-by-step mechanics (and the cross-version config-compatibility handling the
 > harness performs) are documented in the `run-benchmarks` skill and

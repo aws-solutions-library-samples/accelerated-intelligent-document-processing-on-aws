@@ -111,7 +111,7 @@ def _post(url: str, body: str, session: Optional[object], region: str):
         url, data=body.encode(), headers=dict(request.headers), method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:  # nosec B310 - SigV4-signed POST to the deployed service URL under test
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()

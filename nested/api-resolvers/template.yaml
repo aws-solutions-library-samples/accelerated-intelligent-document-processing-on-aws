@@ -716,6 +716,16 @@ Resources:
         - S3ReadPolicy:
             BucketName: !Ref ConfigurationBucketName
         - Statement:
+            # Write/prune configuration-profile revision bodies. Scoped to the
+            # revisions prefix: the resolver has no reason to write anywhere
+            # else in the configuration bucket.
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+        - Statement:
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -1626,7 +1636,7 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${StackName}/external-mcp-agents/credentials-??????"
             - Effect: Allow
@@ -1760,6 +1770,11 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           KB_ACCOUNT_ID: !Ref AWS::AccountId
           KB_REGION: !Ref AWS::Region
+          # The resolver builds the Bedrock inference-profile MODEL_ARN itself.
+          # Pass the partition so that ARN resolves outside the commercial
+          # partition (it previously hardcoded arn:aws:, which can never resolve
+          # in GovCloud/China — AWS account ids do not span partitions).
+          AWS_PARTITION: !Ref AWS::Partition
           MODEL_ID: !Ref KnowledgeBaseModelId
           SETTINGS_PARAMETER: !Ref SettingsParameterName
           GUARDRAIL_ID_AND_VERSION:
@@ -2265,6 +2280,11 @@ Resources:
       Description: Lambda function to run test sets via GraphQL API
       MemorySize: 256
       Timeout: 300
+      # Needed by _capture_config: a run pinned to a revision records THAT
+      # revision's configuration and marks it exempt from retention pruning, so a
+      # later comparison still has both runs' configurations to show.
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
 
       Environment:
         Variables:
@@ -2275,6 +2295,8 @@ Resources:
             - !Ref EvaluationBaselineBucketName
             - !Ref EvaluationBaselineBucketName
           CONFIG_TABLE: !Ref ConfigurationTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           TRACKING_TABLE: !Ref TrackingTableName
           FILE_COPY_QUEUE_URL: !Ref TestFileCopyQueueUrl
       LoggingConfig:
@@ -2284,6 +2306,11 @@ Resources:
             TableName: !Ref TrackingTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
+        # Read a pinned revision's stored configuration body.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
         - S3CrudPolicy:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:

@@ -1,0 +1,11 @@
+mutation RestoreConfigProfileRevision($profileName: String!, $revision: Int!) {
+  restoreConfigProfileRevision(profileName: $profileName, revision: $revision) {
+    success
+    message
+    revision
+    error {
+      type
+      message
+    }
+  }
+}

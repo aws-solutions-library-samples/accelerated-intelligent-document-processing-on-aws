@@ -5,7 +5,7 @@ import { Table, Pagination, TextFilter, Box, SpaceBetween } from '@cloudscape-de
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../../api/auth-session';
 import { useNavigate } from 'react-router-dom';
 
 interface DateRange {
@@ -16,6 +16,7 @@ interface DateRange {
 import useDocumentsContext from '../../contexts/documents';
 import { Document } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
+import useAppContext from '../../contexts/app';
 import useUserRole from '../../hooks/use-user-role';
 
 import mapDocumentsAttributes from '../common/map-document-attributes';
@@ -26,6 +27,9 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
+import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
+import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
+import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
 
 import type { MappedDocument } from './documents-table-config';
@@ -48,6 +52,12 @@ import '@cloudscape-design/global-styles/index.css';
 
 const logger = new ConsoleLogger('DocumentList');
 
+/**
+ * Documents hydrated per round before a bulk export. Matches the exporter's own
+ * fetch concurrency so a large selection cannot fan out unbounded.
+ */
+const HYDRATION_CHUNK_SIZE = 5;
+
 const DocumentList = (): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
   const [documentList, setDocumentList] = useState<MappedDocument[]>([]);
@@ -59,15 +69,29 @@ const DocumentList = (): React.JSX.Element => {
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
   const [currentUsername, setCurrentUsername] = useState('');
-  const { settings: _settings } = useSettingsContext();
+  const { settings } = useSettingsContext();
+  const { currentCredentials } = useAppContext();
   const { isAdmin, isReviewerOnly, canWrite, canReview } = useUserRole();
   const navigate = useNavigate();
+
+  // Bulk artifact download (ZIP) for the selected documents
+  const [downloadScope, setDownloadScope] = useState<ExportScope | null>(null);
+  const [pendingDownloadScope, setPendingDownloadScope] = useState<ExportScope | null>(null);
+  const [includePageImages, setIncludePageImages] = useState(false);
+  const [includeSourceDocument, setIncludeSourceDocument] = useState(false);
+  const [isDownloadInProgress, setIsDownloadInProgress] = useState(false);
+  const [isDownloadFinished, setIsDownloadFinished] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<ExportProgress | null>(null);
+  const [downloadErrors, setDownloadErrors] = useState<ExportErrorEntry[]>([]);
+  const [downloadDocumentCount, setDownloadDocumentCount] = useState(0);
+  const [isDownloadCancelling, setIsDownloadCancelling] = useState(false);
+  const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
 
   // Get current username on mount
   useEffect(() => {
     const getUsername = async () => {
       try {
-        const session = await fetchAuthSession();
+        const session = await fetchSharedAuthSession();
         setCurrentUsername((session?.tokens?.idToken?.payload?.['cognito:username'] as string) || '');
       } catch (e) {
         logger.error('Error getting username', e);
@@ -196,13 +220,13 @@ const DocumentList = (): React.JSX.Element => {
     }
   };
 
-  const handleReprocessConfirm = async (version?: string) => {
+  const handleReprocessConfirm = async (version?: string, revision?: number) => {
     const objectKeys = (collectionProps.selectedItems as MappedDocument[]).map((item) => item.objectKey);
-    logger.debug('Reprocessing documents', objectKeys, 'with version', version);
+    logger.debug('Reprocessing documents', objectKeys, 'with version', version, 'r', revision);
 
     setIsReprocessLoading(true);
     try {
-      const result = await reprocessDocuments(objectKeys, version);
+      const result = await reprocessDocuments(objectKeys, version, revision);
       logger.debug('Reprocess result', result);
 
       // Close the modal
@@ -313,6 +337,136 @@ const DocumentList = (): React.JSX.Element => {
     actions.setSelectedItems([]);
   };
 
+  /**
+   * Bulk artifact export for the selected rows. List rows carry no Sections/Pages
+   * (those only come from the getDocument detail query), so the selection is
+   * hydrated first and then handed to the shared exporter.
+   */
+  const startBulkDownload = async (scope: ExportScope) => {
+    const selected = (collectionProps.selectedItems ?? []) as MappedDocument[];
+    if (selected.length === 0) return;
+
+    const controller = new AbortController();
+    setDownloadScope(scope);
+    setDownloadErrors([]);
+    setIsDownloadCancelling(false);
+    setDownloadProgress({
+      completed: 0,
+      total: 1,
+      currentFile: `Loading details for ${selected.length} document${selected.length === 1 ? '' : 's'}…`,
+      errors: [],
+      documentsTotal: selected.length,
+      documentsCompleted: 0,
+    });
+    setIsDownloadFinished(false);
+    setIsDownloadInProgress(true);
+    setDownloadAbortController(controller);
+
+    try {
+      const objectKeys = selected.map((item) => item.objectKey);
+
+      // Hydration fans out one getDocument per row. It is chunked rather than
+      // fired all at once so a 100-row selection does not become 100 simultaneous
+      // API calls — the throttled failures would be invisible, since
+      // getDocumentDetailsFromIds drops rejected fetches silently.
+      const detailByKey = new Map<string, MappedDocument>();
+      let hydrated = 0;
+      for (let i = 0; i < objectKeys.length; i += HYDRATION_CHUNK_SIZE) {
+        if (controller.signal.aborted) {
+          throw new DOMException('Bulk export aborted', 'AbortError');
+        }
+        const chunk = objectKeys.slice(i, i + HYDRATION_CHUNK_SIZE);
+        try {
+          const details = await getDocumentDetailsFromIds(chunk);
+          const mapped = mapDocumentsAttributes(details as unknown as { ObjectKey: string }[]) as MappedDocument[];
+          mapped.forEach((doc) => detailByKey.set(doc.objectKey, doc));
+        } catch (e) {
+          // Recorded as a preflight error below via the missing-key check.
+          logger.warn('Detail fetch failed for chunk', chunk, e);
+        }
+        hydrated += chunk.length;
+        setDownloadProgress({
+          completed: hydrated,
+          total: objectKeys.length,
+          currentFile: 'Loading document details…',
+          errors: [],
+          documentsTotal: objectKeys.length,
+          phase: 'preparing',
+        });
+      }
+
+      // A row whose details never arrived can only contribute its attributes, so
+      // it must be reported — otherwise the archive silently omits that
+      // document's predictions while reporting a clean export.
+      const preflightErrors: ExportErrorEntry[] = selected
+        .filter((row) => !detailByKey.has(row.objectKey))
+        .map((row) => ({
+          path: '(document details)',
+          document: row.objectKey,
+          message: 'Could not fetch document details — only document attributes were exported for this document',
+        }));
+      if (preflightErrors.length > 0) {
+        logger.warn(
+          'Hydration failed for documents',
+          preflightErrors.map((e) => e.document),
+        );
+        setDownloadErrors(preflightErrors);
+      }
+
+      // Keep the table's ordering, falling back to the list row so a document
+      // with a failed detail fetch still appears in the archive.
+      const docs = selected.map((row) => detailByKey.get(row.objectKey) ?? row);
+
+      const result = await exportDocuments(docs as unknown as Parameters<typeof exportDocuments>[0], settings, {
+        scope,
+        includePageImages: scope === 'all' ? includePageImages : false,
+        includeSourceDocument: scope === 'all' ? includeSourceDocument : false,
+        credentials: currentCredentials as Record<string, unknown>,
+        signal: controller.signal,
+        preflightErrors,
+        onProgress: (p) => {
+          setDownloadProgress(p);
+          setDownloadErrors(p.errors);
+        },
+      });
+      triggerBrowserDownload(result);
+      setDownloadErrors(result.errors);
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') {
+        logger.info('Bulk document export cancelled by user');
+      } else {
+        logger.error('Bulk document export failed:', err);
+        alert(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+      }
+    } finally {
+      setIsDownloadInProgress(false);
+      setIsDownloadFinished(true);
+      setIsDownloadCancelling(false);
+      setDownloadAbortController(null);
+    }
+  };
+
+  // Every bulk scope confirms first: the modal states how many documents are
+  // included, warns on large selections, and offers the heavy-asset toggles.
+  const handleDownloadSelected = (scope: ExportScope) => {
+    const selectedCount = (collectionProps.selectedItems ?? []).length;
+    if (selectedCount === 0) return;
+    setDownloadDocumentCount(selectedCount);
+    setPendingDownloadScope(scope);
+  };
+
+  const handleConfirmDownload = () => {
+    const scope = pendingDownloadScope;
+    setPendingDownloadScope(null);
+    if (scope) void startBulkDownload(scope);
+  };
+
+  const handleCloseDownloadProgress = () => {
+    setIsDownloadFinished(false);
+    setDownloadProgress(null);
+    setDownloadScope(null);
+  };
+
   return (
     <>
       <Table
@@ -339,6 +493,8 @@ const DocumentList = (): React.JSX.Element => {
               }));
               exportToExcel(exportData, 'Document-List');
             }}
+            onDownloadSelected={handleDownloadSelected}
+            isDownloadInProgress={isDownloadInProgress}
             onReprocess={canWrite ? () => setIsReprocessModalVisible(true) : null}
             onDelete={canWrite ? () => setIsDeleteModalVisible(true) : null}
             onAbort={canWrite ? () => setIsAbortModalVisible(true) : null}
@@ -391,6 +547,31 @@ const DocumentList = (): React.JSX.Element => {
         onConfirm={handleAbortConfirm}
         selectedItems={collectionProps.selectedItems}
         isLoading={isAbortLoading}
+      />
+
+      <DownloadOptionsModal
+        visible={pendingDownloadScope !== null}
+        scope={pendingDownloadScope ?? 'all'}
+        documentCount={downloadDocumentCount}
+        includePageImages={includePageImages}
+        includeSourceDocument={includeSourceDocument}
+        onIncludePageImagesChange={setIncludePageImages}
+        onIncludeSourceDocumentChange={setIncludeSourceDocument}
+        onConfirm={handleConfirmDownload}
+        onDismiss={() => setPendingDownloadScope(null)}
+      />
+
+      <DownloadProgressModal
+        visible={(isDownloadInProgress || isDownloadFinished) && downloadScope !== null}
+        progress={downloadProgress}
+        errors={downloadErrors}
+        isFinished={isDownloadFinished}
+        isCancelling={isDownloadCancelling}
+        onCancel={() => {
+          setIsDownloadCancelling(true);
+          downloadAbortController?.abort();
+        }}
+        onClose={handleCloseDownloadProgress}
       />
 
       <DateRangeModal

@@ -240,4 +240,4 @@ def _update_test_set_status(test_set_id, status, error=None, file_count=None):
                    (f" with {file_count} files" if file_count else ""))
         
     except Exception as e:
-        logger.error(f"Failed to update test set status for {test_set_id}: {e}")
+        logger.error(f"Failed to update test set status for {test_set_id}: {e}")  # nosec B608 - log message f-string, not a SQL query

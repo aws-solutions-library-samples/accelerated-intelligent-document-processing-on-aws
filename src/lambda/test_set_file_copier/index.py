@@ -362,4 +362,4 @@ def _update_test_set_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to update test set status for {test_set_id}: {e}")
+        logger.error(f"Failed to update test set status for {test_set_id}: {e}")  # nosec B608 - log message f-string, not a SQL query
