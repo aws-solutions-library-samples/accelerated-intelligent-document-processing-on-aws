@@ -539,12 +539,13 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
     # The embedded YYYYMMDD is still parsed out for partition pruning.
-    # Round-24 review fix: bounded-both-ends date filter — lower edge
-    # is run_date-1 (defends the 23:59-queue-to-00:01-complete edge),
-    # upper edge is today (natural cap; docs can't complete in the
-    # future). The bare `date >= X` unbounded upper edge scanned
-    # 3-4 days of raw metering and hit HIVE_S3_THROTTLING under load.
-    assert "date BETWEEN '2026-08-12' AND '" in captured[0]
+    # Round-25 revert: pre-Phase-1 bounded 2-day window
+    # ``date IN (run_date, run_date+1)``. The round-7 unbounded upper
+    # edge broke Test Studio's cost section at scale (S3 throttling +
+    # poll timeout), and even the round-24 date-BETWEEN-today window
+    # still scanned days of raw metering for any older run. HITL
+    # long-tail completions past run_date+1 are Phase-2 work.
+    assert "date IN ('2026-08-13', '2026-08-14')" in captured[0]
 
 
 @pytest.mark.unit

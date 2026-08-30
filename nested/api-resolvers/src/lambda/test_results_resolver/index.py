@@ -1400,15 +1400,13 @@ def _execute_athena_query(query, database):
 
         query_execution_id = response["QueryExecutionId"]
 
-        # Wait for query to complete.
-        # Round-24 review fix: bumped from 30 → 90 attempts (60s → 180s).
-        # The cost query scans raw ``metering`` filtered by a doc-id
-        # LIKE prefix; even with round-24's date-range cap, S3
-        # throttling on wide scans can push completion past 60s and my
-        # round-23 stop_query_execution then killed valid queries,
-        # returning empty cost data in the UI. 180s covers observed
-        # p95 completion times comfortably.
-        max_attempts = 90
+        # Wait for query to complete. Round-25: with the 2-day bounded
+        # date window on the cost query (see _get_cost_data_from_athena),
+        # queries complete in seconds. 60s poll timeout is generous.
+        # (Round-24 briefly widened this to 180s to compensate for the
+        # round-7 unbounded date filter; the date-filter revert makes
+        # that unnecessary.)
+        max_attempts = 30
         final_result = None
         for attempt in range(max_attempts):
             result = athena.get_query_execution(QueryExecutionId=query_execution_id)
@@ -1612,49 +1610,38 @@ def _get_cost_data_from_athena(test_run_id):
     like_prefix = _sql_like_prefix(test_run_id, "test_run_id")
     _validate_sql_input(database, "database")
 
-    # Date filter: partition-prune metering to a window around run_date.
+    # Date filter: partition-prune metering to a TIGHT window around
+    # run_date. Round-25 revert: go back to the pre-Phase-1 bounded
+    # 2-day window (run_date, run_date+1). The round-7 review fix
+    # opened this up to an unbounded upper edge to catch HITL
+    # long-tail completions, but at scale that scanned 3-4 days of
+    # raw ``metering`` parquet, hit ``HIVE_S3_THROTTLING``, and
+    # timed out the resolver's poll loop — leaving Test Studio's
+    # "Estimated cost" section empty for every run.
     #
-    # As of Phase 1 (Reporting SQL layer), `metering.date` means
-    # COMPLETION time (write time), not queue time. A doc that pauses
-    # in HITL review, gets queued during a backup, crosses a weekend,
-    # or is retried much later can complete arbitrarily far after the
-    # run started. The previous 2-day window silently under-counted
-    # any such run.
-    #
-    # Round-7 review fix: use a BOUNDED-BUT-GENEROUS lower edge
-    # (run_date-1) and an UNBOUNDED upper edge (>= run_date-1). The
-    # test_run_id LIKE prefix is unique per run, so scanning all
-    # partitions from run_date-1 forward returns exactly the run's
-    # rows with no false positives — the LIKE is the scoping
-    # predicate, not the date window. `date >= X` prunes partitions
-    # older than the run's start (which cannot contain its metering
-    # rows) without capping the completion-tail. Athena partition
-    # projection uses this range for pruning.
+    # As of Phase 1, ``metering.date`` is COMPLETION time. A doc
+    # queued at 23:59 UTC on run_date and completed at 00:01 UTC
+    # lands in run_date+1's partition — that's what the second date
+    # covers. Docs delayed >24h by HITL will NOT appear in this
+    # bounded window; that's a Phase-2 refinement (either a wider
+    # on-demand "refresh cost" affordance, or migrating this query
+    # to hit ``metering_hourly`` once that table gains a
+    # per-doc-id-prefix filterable column).
     date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
-        # -1 day defends the reverse edge case (a doc queued 23:59 UTC
-        # on run_date-1 completed at 00:01 — its metering row's `date`
-        # may be run_date-1). Round-24 review fix: bound the UPPER edge
-        # to today (UTC) so we don't scan future partitions that can't
-        # contain data. The round-7 "unbounded upper for HITL" was
-        # correct in principle but 4+ days of raw metering scan
-        # (~50K parquet files at scale) hits HIVE_S3_THROTTLING and
-        # the resolver's 60s poll timeout, returning empty cost. The
-        # natural cap (today) is still generous — captures HITL tails
-        # up to whenever the query fires — while bounding the scan.
-        lower_edge = (run_date - timedelta(days=1)).strftime("%Y-%m-%d")
-        upper_edge = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        date_filter = f"AND date BETWEEN '{lower_edge}' AND '{upper_edge}'"
+        run_date_str = run_date.strftime("%Y-%m-%d")
+        next_date_str = (run_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        date_filter = f"AND date IN ('{run_date_str}', '{next_date_str}')"
         logger.info(
-            f"Using date filter for cost query: date BETWEEN '{lower_edge}' "
-            f"AND '{upper_edge}' (upper edge capped at today to prevent "
-            f"HIVE_S3_THROTTLING on wide raw-metering scans; "
-            f"test_run_id LIKE is the actual scoping predicate)"
+            f"Using date filter for cost query: date IN "
+            f"('{run_date_str}', '{next_date_str}') — bounded 2-day "
+            f"window prevents raw-metering S3 throttling; HITL "
+            f"long-tail completions are a Phase-2 refinement"
         )
 
     query = f"""
