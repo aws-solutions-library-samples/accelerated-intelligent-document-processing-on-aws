@@ -360,9 +360,11 @@ def _put_drift_sample(
     except ClientError as e:
         # ConditionalCheckFailedException here is EXPECTED (idempotent
         # no-op path — another writer already recorded the sample or
-        # the sample doesn't exist to clear). Only warn on other codes,
-        # and re-raise persistent access issues so reconciliation
-        # doesn't silently get stuck in "first sample" mode.
+        # the sample doesn't exist to clear). On any other code we
+        # warn and emit ``ConcurrencyDriftSampleWriteFailed`` — a
+        # persistent write failure surfaces as an alarmable metric
+        # (never as a raised exception, because drift-sample recording
+        # is telemetry and must not affect message processing).
         code = e.response.get("Error", {}).get("Code")
         if code == "ConditionalCheckFailedException":
             logger.debug(f"drift-sample write no-op (condition guard): {e}")
@@ -468,7 +470,11 @@ def check_circuit_breaker() -> tuple[bool, str]:
 
         return True, state
 
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # BotoCoreError (connect/timeout/endpoint) bypasses ClientError.
+        # Matches the round-16 hardening applied to sibling helpers
+        # (_count_running_executions, _put_drift_sample) — a transient
+        # DynamoDB blip must fail-open (return True) rather than raise.
         logger.error(f"Error checking circuit breaker: {e}")
         return True, "ERROR"
 

@@ -5271,6 +5271,12 @@ Resources:
       # disappearing forever behind the per-partition idempotency skip.
       EventInvokeConfig:
         MaximumRetryAttempts: 2
+        # Cap async retry age at 1h so a throttled invocation
+        # (ReservedConcurrentExecutions: 1 + a still-running previous
+        # invoke) doesn't silently retry against Lambda's 6h default
+        # MaximumEventAge — that would push a data-hole DLQ signal
+        # hours past when the operator needs to see it.
+        MaximumEventAgeInSeconds: 3600
         DestinationConfig:
           OnFailure:
             Type: SQS

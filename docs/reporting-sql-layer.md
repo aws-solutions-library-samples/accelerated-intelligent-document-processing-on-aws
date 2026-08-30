@@ -17,7 +17,7 @@ consumers (idp-monitor, in-tree analytics agents, and any future
 dashboard/report) answer "additive-over-wide-range" cost and volume
 questions in KB-scale scans instead of GB-scale.
 
-Five new Athena/Glue tables and one scheduled rollup Lambda; no
+Six new Athena/Glue tables and one scheduled rollup Lambda; no
 other infrastructure. This doc is the reference for the shape of the
 tables, the partitioning contract, and the tagging model that drives
 control-plane cost attribution.
@@ -262,8 +262,36 @@ Every hour, for the sealed hour N-1:
 | `finetuning` | Fine-tuning job management | Admin action |
 | `user-mgmt` | Cognito user CRUD + directory sync | Admin action |
 | `api-dispatch` | Main HTTP API dispatcher + document status lookup | Every UI page load |
+| `agent-core` | AgentCore MCP handler + gateway manager | Agent runtime invocation |
+| `blueprint-optimization` | LLM-driven blueprint (schema) optimizer | Admin action |
+| `circuit-breaker` | Bedrock throttle backpressure manager | Throttle event |
+| `version-check` | Version-check resolver | Every UI page load |
+| `multi-doc-discovery` | Multi-doc discovery orchestration | Admin batch tool |
 | `rollup-lambda` | The rollup Lambda itself | EventBridge cron |
 | `other-control` | Fallback for Lambdas that don't match a category | — |
+
+**Data-plane component labels** — round-24 UI polish. Data-plane rows
+in `data_plane_lambda_hourly` are labeled with the pipeline stage
+they belong to (the mapping matches on the stage name embedded in
+the CFN-generated Lambda ID):
+
+| Category | Stage / Lambda |
+|---|---|
+| `ocr` | Textract OCR stage |
+| `classification` | Document classifier |
+| `extraction` | Field extraction (traditional or agentic) |
+| `assessment` | Extraction confidence assessment |
+| `summarization` | Document summarizer |
+| `evaluation` | Per-doc evaluation against baseline |
+| `rule-validation` | Rule-based validation + policy classification |
+| `process-results` | Post-processing / results aggregation |
+| `shard-runtime` | Shard runtime (agentic extraction fan-out) |
+| `save-reporting` | `SaveReportingDataFunctionV2` |
+| `workflow-tracker` | Step-Functions workflow state tracker |
+| `queue-processor` | Doc-arrival queue processor |
+| `queue-sender` | S3-event → SQS forwarder |
+| `pipeline-hooks` | Pipeline-hooks dispatcher |
+| `bda` | Bedrock Data Automation invocation, completion, project-setup |
 
 The mapping is heuristic (substring match on function name) in
 `_component_for_function()`. Anything unmatched lands under
@@ -383,10 +411,14 @@ business logic keeps working. `FunctionName` is auto-populated from
 `AWS_LAMBDA_FUNCTION_NAME` — callers pass only `component` (and
 `bedrock_model` for Bedrock metrics).
 
-**Phase 1 emitter coverage.** As of the initial Phase 1 landing, the
-only in-repo caller of the helper is the analytics agent's Athena tool
+**Phase 1 emitter coverage.** The helper is currently called from
+three in-repo emitters, all publishing `AthenaBytesScanned`: the
+analytics agent's Athena tool
 (`lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py`),
-which emits `AthenaBytesScanned`. **`BedrockInputTokens` /
+the test-results resolver
+(`nested/api-resolvers/src/lambda/test_results_resolver/index.py`),
+and the rollup Lambda's own self-cost accounting
+(`src/lambda/data_mart_rollup/index.py`). **`BedrockInputTokens` /
 `BedrockOutputTokens` are not yet emitted by any in-repo Lambda** —
 the rollup Lambda reads them if present, but until the agent-chat /
 monitor-agent / test-runner Lambdas start emitting, the corresponding

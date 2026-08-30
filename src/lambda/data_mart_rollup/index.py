@@ -2035,6 +2035,12 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"testresults|testexecutionaggregation|mlflow"), "test-results"),
     (re.compile(r"testrunner|filecopy|filecopier"), "test-runner"),
     (re.compile(r"testset"), "test-set-mgmt"),
+    # AgentCore — MCP-based agent runtime and its gateway manager.
+    # Placed BEFORE the analytics/chat agent rules so ``agentcore`` wins
+    # for AgentCoreMCPHandler / AgentCoreGatewayManager Lambdas (they
+    # would otherwise fall through to ``other-control`` because they
+    # don't match ``analyticsagent`` / ``agentchat`` / ``agentprocessor``).
+    (re.compile(r"agentcore"), "agent-core"),
     # Analytics agents (SQL-driven) and doc-chat processors — matched
     # before broader user/agent patterns.
     (
@@ -2042,6 +2048,10 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
         "analytics-agent",
     ),
     (re.compile(r"chatwithdocument|chatstream"), "doc-chat"),
+    # Blueprint (schema) optimization — an LLM-driven admin tool that
+    # tunes discovery blueprints. Sibling of policy-discovery, kept
+    # separate so its cost is visible when a user runs an optimize pass.
+    (re.compile(r"blueprintoptimization"), "blueprint-optimization"),
     # Policy discovery (more specific than 'config').
     # Multi-doc discovery — an admin batch tool.
     (re.compile(r"multidocdiscovery"), "multi-doc-discovery"),
@@ -2057,6 +2067,14 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     # Config CRUD — narrower than 'config' alone, requires 'resolver' suffix.
     (re.compile(r"config.*resolver"), "config-mgmt"),
     (re.compile(r"capacity"), "capacity-planner"),
+    # Circuit breaker manages backpressure to Bedrock — invoked per
+    # throttle event, kept in its own bucket so throttle-driven spend
+    # is visible separately from steady capacity planning.
+    (re.compile(r"circuitbreaker"), "circuit-breaker"),
+    # Version-check resolver is hit on every UI page load — high-
+    # frequency, worth its own bucket rather than being lumped into
+    # ``other-control``.
+    (re.compile(r"versioncheck"), "version-check"),
     (re.compile(r"finetuning"), "finetuning"),
     # Cognito / user-directory management.
     (re.compile(r"usermanagement|usersync"), "user-mgmt"),
@@ -2191,6 +2209,43 @@ def _partition_already_written(
         raise
 
 
+def _query_wrote_manifest(query_id: str) -> bool:
+    """Positive-only success signal for an Athena INSERT INTO query.
+
+    Called from ``_run_athena``'s cached-failure probe branch when
+    ``get_query_execution`` has been throttled for all three probe
+    attempts. Athena writes ``<query_id>-manifest.txt`` to the
+    workgroup's ``OutputLocation`` ONLY on successful INSERT INTO /
+    CTAS runs — presence of that key is a definitive success signal
+    even when the control-plane API is unavailable.
+
+    Returns True only on POSITIVE confirmation via ``HeadObject``.
+    Any error, 404, missing/malformed ``OutputLocation`` returns
+    False so the caller defaults to the safer restart branch — this
+    helper MUST NEVER fail-open (i.e. never claim success without
+    positive evidence), because a false-positive here would suppress
+    the restart of a genuinely-cached-failure query and permanently
+    lose that partition's data.
+    """
+    if not QUERY_OUTPUT_LOCATION or not QUERY_OUTPUT_LOCATION.startswith("s3://"):
+        return False
+    try:
+        bucket_and_prefix = QUERY_OUTPUT_LOCATION[len("s3://") :]
+        parts = bucket_and_prefix.split("/", 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ""
+        if prefix and not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+        key = f"{prefix}{query_id}-manifest.txt"
+        s3_client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception as e:  # nosec — best-effort positive signal only
+        logger.info(
+            f"S3 manifest probe for {query_id} did not confirm success: {e}"
+        )
+        return False
+
+
 def _run_athena(
     sql: str,
     emit_self_cost: bool = True,
@@ -2272,14 +2327,30 @@ def _run_athena(
                 if probe_attempt < 2:
                     time.sleep(1 + probe_attempt)  # 1s, 2s
                 else:
-                    # Probe genuinely can't determine state — default to
-                    # RESTART. Trusting the returned QID could put us
-                    # right back in the cached-failure retry loop.
-                    logger.warning(
-                        f"Probe for {query_id} exhausted; defaulting to "
-                        f"cached-failure restart branch to avoid loop."
-                    )
-                    initial_state = "FAILED"  # trigger the restart
+                    # Probe genuinely can't determine state. Before
+                    # defaulting to the restart branch (which double-
+                    # writes if the original query actually succeeded),
+                    # look for a positive success signal in S3: Athena
+                    # writes ``<query_id>-manifest.txt`` under the
+                    # workgroup OutputLocation ONLY on successful
+                    # INSERT INTO. If that key exists, the original
+                    # already committed — skip restart and let round-
+                    # 23's ``cached_success`` path suppress the
+                    # AthenaBytesScanned re-emit.
+                    if _query_wrote_manifest(query_id):
+                        logger.info(
+                            f"Probe for {query_id} exhausted, but S3 "
+                            f"manifest confirms SUCCEEDED — skipping "
+                            f"restart to avoid double-write."
+                        )
+                        initial_state = "SUCCEEDED"
+                    else:
+                        logger.warning(
+                            f"Probe for {query_id} exhausted AND S3 "
+                            f"manifest absent — defaulting to cached-"
+                            f"failure restart branch (fail-safe)."
+                        )
+                        initial_state = "FAILED"  # trigger the restart
 
         # Round-23 review fix (#2374): track whether the RETURNED query
         # is a cached SUCCEEDED result — in that case ``_wait_for_athena``

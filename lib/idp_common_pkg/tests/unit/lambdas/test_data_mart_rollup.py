@@ -945,6 +945,40 @@ class TestComponentMapping:
             == "analytics-agent"
         )
 
+    def test_agentcore_lambdas_get_their_own_bucket(self, rollup):
+        """AgentCore (MCP-based agent runtime) must NOT fall through to
+        ``other-control``. Rule is placed before the analytics-agent
+        rule so ``AgentCoreMCPHandler`` / ``AgentCoreGatewayManager``
+        match ``agentcore`` and not the broader agent patterns (which
+        they wouldn't match anyway, but the ordering guards against a
+        future rule change)."""
+        assert (
+            rollup._component_for_function("AgentCoreMCPHandlerFunction")
+            == "agent-core"
+        )
+        assert (
+            rollup._component_for_function("AgentCoreGatewayManagerFunction")
+            == "agent-core"
+        )
+
+    def test_blueprint_optimization(self, rollup):
+        assert (
+            rollup._component_for_function("BlueprintOptimizationFunction")
+            == "blueprint-optimization"
+        )
+
+    def test_circuit_breaker(self, rollup):
+        assert (
+            rollup._component_for_function("CircuitBreakerManagerFunction")
+            == "circuit-breaker"
+        )
+
+    def test_version_check(self, rollup):
+        assert (
+            rollup._component_for_function("VersionCheckResolverFunction")
+            == "version-check"
+        )
+
     def test_config_mgmt(self, rollup):
         assert rollup._component_for_function("ConfigResolverFunction") == "config-mgmt"
 
@@ -1608,6 +1642,119 @@ class TestCachedFailureRestart:
                 idempotency_key="idp-rollup-test-daily-2026-08-27" + "-pad" * 3,
             )
         # We MUST have restarted (2 start_query_execution calls).
+        assert athena.start_query_execution.call_count == 2
+        assert qid == "fresh-qid"
+
+    def test_probe_exhausted_with_s3_manifest_skips_restart(self, rollup):
+        """Design-safe patch for reviewer finding #7 (data_mart_rollup:
+        probe-exhaustion + cached-success double-write). When
+        ``get_query_execution`` is throttled for all 3 probe attempts,
+        the previous default-to-FAILED behavior would restart a query
+        that may have already succeeded → permanent 2× rows in the
+        partition. The design-safe fix uses an independent success
+        signal — Athena writes ``<query_id>-manifest.txt`` to the
+        OutputLocation ONLY on INSERT INTO success. If manifest exists,
+        we skip the restart (and round-23's cached_success suppresses
+        the AthenaBytesScanned re-emit).
+        """
+        from botocore.exceptions import ClientError
+
+        athena = MagicMock()
+        athena.start_query_execution.return_value = {"QueryExecutionId": "orig-qid"}
+        athena.get_query_execution.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "GetQueryExecution"
+        )
+        s3 = MagicMock()
+        s3.head_object.return_value = {"ContentLength": 42}  # manifest present
+        with (
+            patch.object(rollup, "athena_client", athena),
+            patch.object(rollup, "s3_client", s3),
+            patch.object(rollup, "QUERY_OUTPUT_LOCATION", "s3://b/prefix/"),
+            patch.object(rollup, "_wait_for_athena") as wait_mock,
+            patch.object(rollup, "time"),
+        ):
+            qid = rollup._run_athena(
+                "SELECT 1",
+                idempotency_key="idp-rollup-test-daily-2026-08-30" + "-pad" * 3,
+            )
+        # Only one start_query_execution — restart branch NOT taken.
+        assert athena.start_query_execution.call_count == 1
+        assert qid == "orig-qid"
+        # Manifest lookup happened at the expected key.
+        s3.head_object.assert_called_once_with(
+            Bucket="b", Key="prefix/orig-qid-manifest.txt"
+        )
+        # cached_success → _wait_for_athena called with emit_self_cost=False
+        # so AthenaBytesScanned does NOT double-emit.
+        wait_mock.assert_called_once()
+        assert wait_mock.call_args.kwargs.get("emit_self_cost") is False
+
+    def test_probe_exhausted_without_s3_manifest_still_restarts(self, rollup):
+        """The manifest probe MUST fail-safe: if the key is not present
+        (query failed, or is still running, or never wrote a manifest),
+        we default to the pre-existing restart branch — same behavior
+        as before this fix. This guards against the manifest-missing
+        case regressing the round-19/20 cached-failure escape."""
+        from botocore.exceptions import ClientError
+
+        athena = MagicMock()
+        athena.start_query_execution.side_effect = [
+            {"QueryExecutionId": "cached-failed-qid"},
+            {"QueryExecutionId": "fresh-qid"},
+        ]
+        athena.get_query_execution.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "GetQueryExecution"
+        )
+        s3 = MagicMock()
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404"}}, "HeadObject"
+        )
+        with (
+            patch.object(rollup, "athena_client", athena),
+            patch.object(rollup, "s3_client", s3),
+            patch.object(rollup, "QUERY_OUTPUT_LOCATION", "s3://b/prefix/"),
+            patch.object(rollup, "_wait_for_athena"),
+            patch.object(rollup, "time"),
+        ):
+            qid = rollup._run_athena(
+                "SELECT 1",
+                idempotency_key="idp-rollup-test-daily-2026-08-30" + "-pad" * 3,
+            )
+        # Restart DID fire (2 start_query_execution calls).
+        assert athena.start_query_execution.call_count == 2
+        assert qid == "fresh-qid"
+
+    def test_probe_exhausted_with_s3_error_defaults_to_restart(self, rollup):
+        """Any error from ``s3_client.head_object`` (throttle, timeout,
+        AccessDenied, transient network) must be treated as "no positive
+        confirmation" — the manifest probe fails-safe to the restart
+        branch. NEVER fail-open, because a spurious "SUCCEEDED" would
+        suppress the restart of a genuinely-cached-failure query and
+        lose that partition's data permanently."""
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        athena = MagicMock()
+        athena.start_query_execution.side_effect = [
+            {"QueryExecutionId": "cached-failed-qid"},
+            {"QueryExecutionId": "fresh-qid"},
+        ]
+        athena.get_query_execution.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException"}}, "GetQueryExecution"
+        )
+        s3 = MagicMock()
+        s3.head_object.side_effect = BotoCoreError()
+        with (
+            patch.object(rollup, "athena_client", athena),
+            patch.object(rollup, "s3_client", s3),
+            patch.object(rollup, "QUERY_OUTPUT_LOCATION", "s3://b/prefix/"),
+            patch.object(rollup, "_wait_for_athena"),
+            patch.object(rollup, "time"),
+        ):
+            qid = rollup._run_athena(
+                "SELECT 1",
+                idempotency_key="idp-rollup-test-daily-2026-08-30" + "-pad" * 3,
+            )
+        # Fail-safe: restart fires despite the S3 error.
         assert athena.start_query_execution.call_count == 2
         assert qid == "fresh-qid"
 
