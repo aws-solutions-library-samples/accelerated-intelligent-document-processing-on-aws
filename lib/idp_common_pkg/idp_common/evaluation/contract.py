@@ -56,7 +56,10 @@ def _is_match_true(value: Any) -> bool:
     # Require the numpy MODULE so an arbitrary user class named
     # ``IntBox`` doesn't slip through the numeric-name check.
     is_numpy_scalar = value_type.__module__ == "numpy"
-    if is_numpy_scalar and class_name == "bool_":
+    # numpy renamed ``np.bool_.__name__`` from ``"bool_"`` to ``"bool"``
+    # between 1.x and 2.x. Accept both so this check works across the
+    # relaxed ``numpy>=1.26,<3`` pin in the evaluation extra.
+    if is_numpy_scalar and class_name in ("bool_", "bool"):
         return bool(value)
     if is_numpy_scalar and class_name.startswith(("int", "uint", "float")):
         try:
