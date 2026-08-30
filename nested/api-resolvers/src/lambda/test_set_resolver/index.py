@@ -2143,6 +2143,27 @@ def remove_documents_from_test_set(args):
     validation = _validate_test_set_files(
         s3_client, test_set_bucket, test_set_id, allow_unlabeled=True
     )
+    if validation.get("validation_failed"):
+        # Transient S3 error inside the validator — its `input_count=0`
+        # placeholder is NOT a real observation. Writing it to fileCount
+        # would overwrite the correct count with 0. Bail on the counter
+        # update and let the reconcile fix the row on the next
+        # getTestSets when S3 recovers. fileCount stays at
+        # (pre-delete-count - len(deletions)) via S3 side effect on the
+        # next successful validation.
+        logger.warning(
+            f"Skipping fileCount update for {test_set_id}: validator failed "
+            f"transiently ({validation.get('error')}). Reconcile will pick "
+            "up the correct count on the next getTestSets."
+        )
+        return {
+            "id": test_set_id,
+            "name": meta.get("name"),
+            "fileCount": _as_int(meta.get("fileCount")) or 0,
+            "status": meta.get("status"),
+            "createdAt": meta.get("createdAt"),
+            "lastAddResult": f"Removed {removed} document(s)",
+        }
     new_count = validation.get("input_count", 0)
     # Two REMOVEs in one UpdateItem:
     #  - lastAddResult is the ASYNCHRONOUS add flow's completion notice; this
@@ -2758,6 +2779,21 @@ def get_test_sets():
                         s3_client, test_set_bucket, prefix, allow_unlabeled=True
                     )
 
+                    # A transient S3 failure in the validator returns a sentinel
+                    # (input_count=0, valid=False, labeled=False) that would look
+                    # exactly like a broken empty folder. Registering the row
+                    # with that would write a FAILED entry with poisoned state
+                    # and leave the UI showing a fake failure. Skip this
+                    # prefix on this pass; the next getTestSets will retry
+                    # once S3 recovers.
+                    if validation_result.get("validation_failed"):
+                        logger.warning(
+                            f"Skipping first-discovery registration for {prefix}: "
+                            f"validator failed transiently "
+                            f"({validation_result.get('error')})."
+                        )
+                        continue
+
                     # Source: synthetic generator drops a '.source' marker; otherwise a user upload
                     source = _get_test_set_source(s3_client, test_set_bucket, prefix)
 
@@ -3315,6 +3351,19 @@ def _reconcile_label_state(items):
             logger.warning(f"Could not probe labels for {test_set_id}: {e}")
             continue
 
+        # A transient S3 failure inside the validator surfaces as a sentinel
+        # dict (validation_failed=True) whose ``labeled=False`` value would
+        # otherwise persistently demote a labelled row to 'unlabeled' AND
+        # cache that demotion via `_remember_label_probe`, making it sticky
+        # until the fileCount changes. Skip this row on this pass; the next
+        # getTestSets after S3 recovers will re-probe.
+        if validation.get("validation_failed"):
+            logger.warning(
+                f"Skipping labelState reconciliation for {test_set_id}: "
+                f"validator failed transiently ({validation.get('error')})."
+            )
+            continue
+
         if validation.get("labeled"):
             state = (
                 "draft" if _probed_labels_are_drafts(bucket, test_set_id) else "labeled"
@@ -3558,6 +3607,19 @@ def _get_test_set_source(s3_client, bucket, prefix):
         # missing objects as NoSuchKey; treat both as definitively absent.
         if code in ("404", "NoSuchKey", "NotFound"):
             return "uploaded"
+        if code in ("AccessDenied", "403", "Forbidden"):
+            # Persistent IAM misconfiguration — not transient. Reconcile will
+            # bail for this prefix (None return) until the IAM policy is
+            # fixed, but log at ERROR so operators actually see the problem
+            # instead of watching reconcile silently stop working. Returning
+            # a fabricated 'uploaded' would silently rebrand every stack-
+            # managed dataset on this stack; None is safer.
+            logger.error(
+                f"HeadObject for {prefix}/.source denied ({code}) — IAM policy "
+                "on the resolver's role is missing s3:GetObject on the test-set "
+                "bucket. Reconcile will bail for this prefix until fixed."
+            )
+            return None
         logger.warning(
             f"HeadObject for {prefix}/.source failed transiently ({code}); "
             "returning None (source unchanged)."
@@ -3633,12 +3695,13 @@ def _create_test_set_tracking_entry(
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
 
 
-# Only rows in one of these terminal states are reconciled in place. UPDATING /
-# QUEUED / GENERATING mean a copier/extractor/generator is actively mutating the
-# folder; overwriting fileCount or status underneath them would race the
-# eager-write paths. Row-level protection here; ``ConditionExpression`` on the
-# UpdateItem closes the race window between the read and the write.
-_RECONCILE_STATUSES = {"COMPLETED", "FAILED"}
+# Rows in one of these non-terminal states are being actively mutated by a
+# copier/extractor/generator — reconcile MUST NOT touch them. Row-level
+# protection here; ``ConditionExpression`` on the UpdateItem closes the race
+# window between the read and the write. Gate 1 uses ``IN_FLUX_TEST_SET_STATUSES``
+# (defined above), keyed as an explicit skip-list rather than an allow-list so
+# legacy rows without a persisted ``status`` field remain reconcilable rather
+# than permanently invisible.
 
 # Minimum wait between full reconcile passes for the same prefix. Without this,
 # the UI's 3 s fast poll (armed whenever any row on the page is non-terminal,
@@ -3737,7 +3800,9 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
     try:
         # Gate 1 — row-status. Copiers/extractors write fileCount+status
         # eagerly under UPDATING/QUEUED; reconciling on top would race them.
-        if existing_row.get("status") not in _RECONCILE_STATUSES:
+        # Skip-list (not allow-list) so legacy rows without a ``status`` are
+        # reconcilable rather than permanently invisible.
+        if existing_row.get("status") in IN_FLUX_TEST_SET_STATUSES:
             return None
 
         # Gate 2 — labeling-job-status. The draft-labeling harvester leaves
@@ -3842,7 +3907,7 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         if partial_pairing:
             # Refresh fileCount and signature; leave status / labelState alone.
             # Recovery direction (FAILED → COMPLETED when the pairing is fully
-            # restored) is handled by the else-branch below.
+            # restored) is handled by the valid-branch below.
             new_status = existing_row.get("status")
             new_label_state = existing_label_state
             # Error message must reflect the CURRENT partial-pairing state, not
@@ -3862,16 +3927,16 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             new_error = error_message
             # Preserve the current labelState. Overwriting to 'unlabeled' would
             # silently destroy a 'draft' signal: a user who accidentally deletes
-            # inputs and then restores them would see the recovery else-branch
+            # inputs and then restores them would see the recovery valid-branch
             # promote 'unlabeled' → 'labeled' on the next reconcile, blessing
             # unreviewed machine drafts as ground truth. The draft-preservation
-            # guard in the else-branch keys on existing_label_state — if that
+            # guard in the valid-branch keys on existing_label_state — if that
             # was 'draft' before the input deletion, it must stay 'draft'
             # through the transient FAILED state so recovery preserves it.
             new_label_state = existing_label_state
-        else:
-            # validation["valid"] is True — fully paired OR unlabeled-with-no-
-            # baselines (allow_unlabeled=True path). Both are healthy states.
+        elif validation["valid"]:
+            # Fully paired OR unlabeled-with-no-baselines (allow_unlabeled=True
+            # path). Both are healthy states.
             new_status = "COMPLETED"
             new_error = None
             # labelState transitions: 'unlabeled', 'draft' (machine labels
@@ -3888,6 +3953,18 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
                     new_label_state = "labeled"
             else:
                 new_label_state = "unlabeled"
+        else:
+            # Fallback: validator reported valid=False but the error class
+            # was neither Missing/Extra baseline nor "No input files found".
+            # Present-day validator only emits those three, so this branch is
+            # unreachable today — it exists so a future validator error class
+            # doesn't silently mark a broken set as COMPLETED (as the previous
+            # unconditional else did). Hard-fail with the current error string
+            # and preserve labelState so a subsequent classification recovery
+            # keeps whatever lifecycle state the row was in.
+            new_status = "FAILED"
+            new_error = error_message or "Validation failed (unknown error class)"
+            new_label_state = existing_label_state
 
         # Determine which fields actually changed so we don't issue a DDB write
         # (or a DDB stream event) for a no-op.
@@ -3967,8 +4044,11 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             expr_names["#err"] = "error"
             update_expression += " REMOVE #err"
 
+        # Write is allowed when the row is not being actively mutated
+        # (terminal status OR no status attribute at all — legacy rows) AND
+        # the signature we read is still current (or missing).
         condition_expression = (
-            "#st IN (:completed, :failed) "
+            "(attribute_not_exists(#st) OR #st IN (:completed, :failed)) "
             "AND (attribute_not_exists(#sig) OR #sig = :old_sig)"
         )
 
@@ -4016,7 +4096,10 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
     except Exception as e:
         # Reconcile is best-effort; a transient S3/DDB failure must not break
         # the whole getTestSets response. The next call will retry.
-        logger.error(f"Error reconciling test set {prefix}: {str(e)}")
+        # ``logger.exception`` captures the traceback so a programmer bug
+        # (KeyError, AttributeError, TypeError) is visible in CloudWatch
+        # instead of being indistinguishable from a fast-path skip.
+        logger.exception(f"Error reconciling test set {prefix}: {str(e)}")
         return None
 
 

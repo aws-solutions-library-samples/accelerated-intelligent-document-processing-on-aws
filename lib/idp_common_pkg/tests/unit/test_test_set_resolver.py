@@ -5120,6 +5120,225 @@ class TestTestSetResolver:
             f"error still names b.pdf which has a baseline now: {row['error']!r}"
         )
 
+    # -- validation_failed sentinel — extended to all validator call sites --
+    #
+    # `_validate_test_set_files` returns a sentinel dict (validation_failed=
+    # True, input_count=0, valid=False, labeled=False) on transient S3
+    # errors. My reconcile checks it and bails. Three sibling call sites
+    # (create-path, remove_documents_from_test_set, _reconcile_label_state)
+    # were previously ignoring the sentinel, using the placeholder values
+    # as real observations and writing poisoned state.
+
+    def test_remove_documents_bails_on_transient_validator_failure(self):
+        """Transient S3 error in the validator after a remove must not
+        overwrite the row's fileCount with 0.
+        """
+        s3_mock = Mock()
+        s3_mock.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+        # Pretend the meta row has fileCount=5.
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value={
+                    "PK": "testset#ts1",
+                    "SK": "metadata",
+                    "id": "ts1",
+                    "name": "ts1",
+                    "fileCount": 5,
+                    "status": "COMPLETED",
+                },
+            ),
+            patch.object(test_set_index, "s3_client", s3_mock),
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": False,
+                    "validation_failed": True,
+                    "error": "Validation error: Throttled",
+                    "input_count": 0,
+                    "labeled": False,
+                    "signature": "",
+                },
+            ),
+            patch("boto3.resource") as boto3_resource,
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "test-set-bucket"}),
+        ):
+            update_mock = boto3_resource.return_value.Table.return_value.update_item
+            result = test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": []}
+            )
+        # No fileCount overwrite — update_item on the DDB row didn't happen.
+        assert update_mock.call_count == 0
+        # Response reports the row's LAST-KNOWN fileCount, not 0.
+        assert result["fileCount"] == 5
+
+    def test_first_discovery_skips_prefix_on_transient_validator_failure(
+        self, labeling_env
+    ):
+        """A transient S3 error during first-discovery must not register a
+        FAILED row with poisoned state (input_count=0). The prefix is
+        skipped on this pass; the next getTestSets retries.
+        """
+        table, s3 = labeling_env
+
+        # A folder in S3 but no DDB row — first-discovery path.
+        s3.put_object(Bucket="test-set-bucket", Key="ts-new/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts-new/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+
+        with patch.object(
+            test_set_index,
+            "_validate_test_set_files",
+            return_value={
+                "valid": False,
+                "validation_failed": True,
+                "error": "Validation error: Throttled",
+                "input_count": 0,
+                "labeled": False,
+                "signature": "",
+            },
+        ):
+            test_set_index.get_test_sets()
+
+        # No row registered on this pass.
+        row = table.get_item(Key={"PK": "testset#ts-new", "SK": "metadata"}).get("Item")
+        assert row is None, (
+            "first-discovery registered a poisoned FAILED row on a "
+            "transient validator failure"
+        )
+
+    def test_reconcile_runs_on_legacy_row_without_status(self, labeling_env):
+        """Legacy rows written before ``status`` was persisted must still be
+        reconcilable. Previously Gate 1's allowlist rejected any row where
+        ``status`` was missing → the row was permanently invisible.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+        # Deliberately no `status` — simulate a legacy row.
+        _seed_test_set(
+            table,
+            "ts1",
+            fileCount=1,
+            labelState="labeled",
+            source="uploaded",
+            contentSignature="stale",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        assert "status" not in existing_row  # precondition
+        result = test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        assert result is not None, (
+            "legacy row without status was permanently invisible to reconcile"
+        )
+        # Row now has status COMPLETED.
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+
+    def test_reconcile_hard_fails_unknown_validator_error(self):
+        """A validator error class that isn't Missing/Extra baseline or "No
+        input files found" must NOT be silently marked COMPLETED. This is
+        the fallback branch that catches future validator error classes.
+        """
+        s3 = Mock()
+        with (
+            patch.object(
+                test_set_index,
+                "_validate_test_set_files",
+                return_value={
+                    "valid": False,
+                    # Deliberately NOT partial_pairing and NOT no_inputs.
+                    "error": "Some future error class we don't handle yet",
+                    "input_count": 5,
+                    "labeled": False,
+                    "signature": "5:5:2026-01-01T00:00:00+00:00",
+                },
+            ),
+            patch.object(
+                test_set_index, "_get_test_set_source", return_value="uploaded"
+            ),
+            patch("boto3.resource"),
+            patch.dict(os.environ, {"TRACKING_TABLE": "test-table"}),
+        ):
+            existing = {
+                "PK": "testset#ts1",
+                "SK": "metadata",
+                "status": "COMPLETED",
+                "fileCount": 5,
+                "labelState": "labeled",
+                "source": "uploaded",
+                "contentSignature": "stale",
+            }
+            result = test_set_index._reconcile_test_set_tracking_entry(
+                s3, "bucket", "ts1", existing
+            )
+        assert result is not None
+        # Must be FAILED, not silently COMPLETED.
+        assert result["status"] == "FAILED", (
+            "unknown validator error class silently marked as COMPLETED"
+        )
+        assert "future error class" in result["error"]
+
+    def test_get_test_set_source_logs_access_denied_at_error_level(self, caplog):
+        """AccessDenied on `.source` is persistent — must be logged at ERROR
+        so operators see the IAM misconfiguration, not silently at WARNING
+        alongside transient throttling.
+        """
+        import logging as _logging
+
+        from botocore.exceptions import ClientError
+
+        s3 = Mock()
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "..."}}, "HeadObject"
+        )
+        with caplog.at_level(_logging.ERROR):
+            result = test_set_index._get_test_set_source(s3, "bucket", "ts1")
+        assert result is None  # unchanged safety behavior
+        assert any(
+            "denied" in rec.message.lower() and rec.levelno == _logging.ERROR
+            for rec in caplog.records
+        ), "AccessDenied on .source was not logged at ERROR"
+
+    def test_extractor_guards_against_unbound_test_set_id(self):
+        """Extractor's except clause must NOT NameError on a malformed record
+        where test_set_id was never bound, AND must not carry a previous
+        record's test_set_id into a later record's failure.
+        """
+        source = open(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../src/lambda/test_set_zip_extractor/index.py",
+            ),
+            encoding="utf-8",
+        ).read()
+        # The fix is to bind test_set_id = None at the top of each record's
+        # try, then guard the except's status write with `if test_set_id is
+        # not None`. Both must be present.
+        assert "test_set_id = None" in source, (
+            "extractor doesn't reset test_set_id per record — a bad record "
+            "following a healthy one can carry the previous test_set_id "
+            "into the FAILED status write"
+        )
+        assert "if test_set_id is not None" in source, (
+            "extractor's except clause doesn't guard the status write — "
+            "a pre-parse failure would NameError"
+        )
+
 
 @pytest.mark.unit
 class TestLabelStateReconciliation:
