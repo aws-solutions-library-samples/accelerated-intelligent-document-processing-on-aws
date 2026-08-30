@@ -539,7 +539,11 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
     # The embedded YYYYMMDD is still parsed out for partition pruning.
-    assert "date IN ('2026-08-13', '2026-08-14')" in captured[0]
+    # Round-7 review fix: bounded-but-generous lower edge (run_date-1)
+    # and unbounded upper edge — catches HITL / long-tail completions
+    # that land arbitrarily far after the run's start date. The
+    # test_run_id LIKE prefix is the actual scoping predicate.
+    assert "date >= '2026-08-12'" in captured[0]
 
 
 @pytest.mark.unit

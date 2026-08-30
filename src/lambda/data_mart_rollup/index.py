@@ -2065,6 +2065,34 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
         re.compile(r"lookupfunction|apihandler|httpapidispatcher"),
         "api-dispatch",
     ),
+    # Data-plane pipeline stages — round-24 UI polish. These Lambdas
+    # carry ``idp:plane=data`` so they only ever land in
+    # ``data_plane_lambda_hourly`` (never in ``control_plane_hourly``).
+    # Without these rules, every data-plane row's component fell
+    # through to "other-control" — cost math was correct but the label
+    # was misleading. CFN names for these look like
+    # ``PATTERNSTACK-2UBGW8A18HIT-OCRFunction-xxxx`` etc. Match on the
+    # bare stage name embedded in the middle of the CFN-generated ID.
+    (re.compile(r"ocrfunction"), "ocr"),
+    (re.compile(r"classificationfunction"), "classification"),
+    (re.compile(r"extractionfunction"), "extraction"),
+    (re.compile(r"assessmentfunction"), "assessment"),
+    (re.compile(r"summarizationfunction"), "summarization"),
+    (re.compile(r"evaluationfunction"), "evaluation"),
+    (re.compile(r"rulevalidation"), "rule-validation"),
+    (re.compile(r"processresultsfunction"), "process-results"),
+    (re.compile(r"shardruntimefunction"), "shard-runtime"),
+    (re.compile(r"savereportingdata"), "save-reporting"),
+    (re.compile(r"workflowtracker"), "workflow-tracker"),
+    (re.compile(r"queueprocessor"), "queue-processor"),
+    (re.compile(r"queuesender"), "queue-sender"),
+    (re.compile(r"pipelinehooks"), "pipeline-hooks"),
+    # Round-24 fix: careful with ``bda`` — a bare substring match would
+    # false-positive on ``lambda`` (contains ``bda`` at chars 3-5).
+    # Require the BDA marker to appear at a word boundary / after a
+    # non-alphanum character so ``LamBda`` doesn't match but
+    # ``BDAOCRProjectFunction`` and ``bda_invoke`` do.
+    (re.compile(r"(^|[^a-z])bda"), "bda"),
 ]
 
 

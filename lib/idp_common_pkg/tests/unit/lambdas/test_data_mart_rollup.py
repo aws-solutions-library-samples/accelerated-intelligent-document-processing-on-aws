@@ -956,6 +956,48 @@ class TestComponentMapping:
     def test_unknown_falls_back_to_other_control(self, rollup):
         assert rollup._component_for_function("SomeNewFeatureLambda") == "other-control"
 
+    # Round-24 UI polish: data-plane Lambdas got component labels so
+    # data_plane_lambda_hourly rows aren't all "other-control". The
+    # CFN-generated names look like ``PATTERNSTACK-2UBGW8-OCRFunction-xxxx``,
+    # so the rules match on the embedded stage name.
+    def test_data_plane_ocr_labeled_correctly(self, rollup):
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UBGW8A18HIT-OCRFunction-Gy5XmlBGm6Pw"
+            )
+            == "ocr"
+        )
+
+    def test_data_plane_extraction_labeled_correctly(self, rollup):
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UBGW8-ExtractionFunction-HT9q3aE71EHQ"
+            )
+            == "extraction"
+        )
+
+    def test_data_plane_workflow_tracker_labeled_correctly(self, rollup):
+        assert (
+            rollup._component_for_function("idp-dev-qs1-WorkflowTracker-jZQqRb0JT5pj")
+            == "workflow-tracker"
+        )
+
+    def test_data_plane_bda_labeled_correctly(self, rollup):
+        """Word-boundary check: ``BDAOCRProjectFunction`` labels as
+        ``bda`` but a bare ``Lambda`` (which contains substring ``bda``)
+        must NOT match, else every unlabeled function would be misclassified.
+        """
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-BDAOCRProjectFunction-oMD38Jhsv6C0"
+            )
+            == "bda"
+        )
+        # Regression pin for the failed round-24 attempt where a bare
+        # ``bda`` substring matched ``lambda`` and everything unlabeled
+        # got labeled as "bda".
+        assert rollup._component_for_function("SomeNewFeatureLambda") != "bda"
+
 
 @pytest.mark.unit
 class TestControlPlaneRowBuilding:
