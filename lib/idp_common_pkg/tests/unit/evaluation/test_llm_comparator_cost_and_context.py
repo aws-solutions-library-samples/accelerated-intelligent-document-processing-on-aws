@@ -413,23 +413,51 @@ def test_cache_dict_key_order_insensitive():
 
 
 @pytest.mark.unit
-def test_transient_error_is_not_cached_permanently():
-    """Regression pin: a transient Bedrock failure returns
-    ``(False, 0.0, "Error ...")``; caching that permanently would
-    poison the value pair for the warm container's lifetime."""
+@pytest.mark.parametrize(
+    "error_reason",
+    [
+        # The four ACTUAL error_msg formats compare_llm produces (see
+        # lines ~472/558/596/602 of comparators.py). An earlier version
+        # of this test used a synthetic prefix that matched the code's
+        # list but NOT the actual production error strings, so the
+        # test passed while production still poisoned the cache.
+        "Task prompt formatting error: missing placeholder",
+        "Error parsing LLM response as JSON: unexpected token",
+        "Unexpected error processing LLM response: KeyError",
+        "Error in LLM evaluation for MyField: throttled",
+    ],
+)
+def test_transient_error_is_not_cached_permanently(error_reason):
+    """Regression pin: EACH of compare_llm's four error-path reason
+    strings must be recognized as transient and skipped from caching.
+    Caching a transient failure would poison the (value1, value2)
+    pair for the warm container's lifetime."""
     from idp_common.evaluation.stickler_backend import comparators
 
     comparator = LLMComparator(model="test-model")
-    # First call: patch compare_llm to return the error tuple shape.
     with patch.object(
-        comparators,
-        "compare_llm",
-        return_value=(False, 0.0, "Error in LLM comparison: throttled"),
+        comparators, "compare_llm", return_value=(False, 0.0, error_reason)
     ):
         first = comparator.compare("A", "B")
     assert first == 0.0
-    # Second call: same key, real success. Cache MUST NOT have kept
-    # the error tuple, so the successful score wins.
+    # Same key, real success. Cache MUST NOT hold the error tuple.
     with patch.object(comparators, "compare_llm", return_value=(True, 1.0, "match")):
         second = comparator.compare("A", "B")
-    assert second == 1.0
+    assert second == 1.0, (
+        f"transient error with reason={error_reason!r} was cached "
+        f"permanently — subsequent successful call returned the stale "
+        f"0.0 instead of the fresh 1.0 score"
+    )
+
+
+@pytest.mark.unit
+def test_cache_key_direct_equality_across_dict_order():
+    """Regression pin: ``_cache_key`` produces the same string for
+    two dicts with same values in different insertion order — the
+    end-to-end cache-hit test alone doesn't rule out an accidental
+    change to the key function itself."""
+    from idp_common.evaluation.stickler_backend.comparators import _cache_key
+
+    k1 = _cache_key({"a": 1, "b": 2}, {"c": 3, "d": 4})
+    k2 = _cache_key({"b": 2, "a": 1}, {"d": 4, "c": 3})
+    assert k1 == k2

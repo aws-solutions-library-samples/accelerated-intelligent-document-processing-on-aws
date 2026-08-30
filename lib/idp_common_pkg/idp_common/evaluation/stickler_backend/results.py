@@ -23,6 +23,7 @@ import typing
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from idp_common.evaluation.contract import (
+    _is_match_true,
     aggregate_row_counts,
     iter_countable_rows,
     row_root_attribute,
@@ -450,12 +451,14 @@ def transform_stickler_result(
         # rollup this module was rewritten to stop trusting (issue #625).
         my_rows = rows_by_attr.get(field_name) or []
         if my_rows:
-            # Truthy check (not ``is True``) so a Stickler variant that
-            # emits ``1`` / ``numpy.bool_`` / ``"true"`` for a matched
-            # row is tolerated. Missing / None ``match`` still reads as
-            # not-matched — fail-closed on absent evidence, but don't
-            # flip an otherwise-matched row False on a type change.
-            matched = all(bool(fc.get("match", False)) for fc in my_rows)
+            # Narrow allowlist via the SHARED ``_is_match_true`` helper
+            # so this predicate agrees with ``classify_field_comparison``
+            # on the SAME row (section counts and per-attribute verdict
+            # must not disagree — that's the parent-vs-section drift
+            # #625 exists to eliminate). Accepts True / 1 / "true";
+            # rejects everything else including the truthy-but-semantic-
+            # False string ``"false"`` that raw ``bool()`` would flip.
+            matched = all(_is_match_true(fc.get("match")) for fc in my_rows)
         else:
             # No rows — nothing in ``field_comparisons`` for this attribute.
             # Section counts are unaffected (no rows contributed), so any

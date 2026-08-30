@@ -159,6 +159,43 @@ class TestClassifyMatchTruthiness:
         fc = {"match": False, "expected_value": "x", "actual_value": "y"}
         assert contract.classify_field_comparison(fc) == "fd"
 
+    def test_string_false_is_not_matched(self):
+        """Regression pin: raw ``bool("false")`` is True — the narrow
+        allowlist must reject the literal string ``"false"`` so a
+        Stickler variant emitting it for a rejected row is classified
+        correctly."""
+        fc = {"match": "false", "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_string_False_capitalized_is_not_matched(self):
+        fc = {"match": "False", "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_empty_string_is_not_matched(self):
+        fc = {"match": "", "expected_value": "x", "actual_value": "y"}
+        assert contract.classify_field_comparison(fc) == "fd"
+
+    def test_numpy_bool_true_is_matched(self):
+        """Regression pin: ``numpy.bool_(True)`` must classify as matched.
+        Previous version used ``is True`` identity check which failed for
+        the numpy subclass, dropping numpy-emitted matches to False."""
+        np = pytest.importorskip("numpy")
+        fc = {
+            "match": np.bool_(True),
+            "expected_value": "x",
+            "actual_value": "x",
+        }
+        assert contract.classify_field_comparison(fc) == "tp"
+
+    def test_numpy_bool_false_is_not_matched(self):
+        np = pytest.importorskip("numpy")
+        fc = {
+            "match": np.bool_(False),
+            "expected_value": "x",
+            "actual_value": "y",
+        }
+        assert contract.classify_field_comparison(fc) == "fd"
+
 
 @pytest.mark.unit
 class TestRowWeight:

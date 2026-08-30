@@ -37,6 +37,21 @@ logger = logging.getLogger(__name__)
 _VERDICT_CACHE_MAX = 10_000
 
 
+# Prefixes matching every error-path ``reason`` string ``compare_llm``
+# emits (see the ``error_msg = ...`` assignments at approximately lines
+# 472 / 558 / 596 / 602 below). ``LLMComparator.compare`` skips caching
+# any verdict whose reason starts with one of these — a transient
+# Bedrock throttle / 5xx / JSON-parse error must not poison the (v1, v2)
+# pair for the warm container's lifetime. Update this tuple if a new
+# ``error_msg`` shape is added in compare_llm.
+_TRANSIENT_ERROR_PREFIXES = (
+    "Task prompt formatting error",
+    "Error parsing LLM response as JSON",
+    "Unexpected error processing LLM response",
+    "Error in LLM evaluation for ",
+)
+
+
 def _trivially_equal(a: str, b: str) -> bool:
     """True when two rendered values differ only by case or whitespace.
 
@@ -239,16 +254,12 @@ class LLMComparator(BaseComparator):
             # ``(False, 0.0, err_msg)`` on Bedrock throttle / 5xx / JSON
             # parse errors, and caching that permanently would freeze the
             # value pair at 0.0 for the warm container's lifetime after a
-            # single transient failure. The reason strings for those
-            # error paths all start with a known prefix; skip caching
-            # when we see one.
-            _ERROR_REASON_PREFIXES = (
-                "Error in LLM comparison",
-                "Failed to parse LLM response",
-                "LLM comparison timed out",
-            )
+            # single transient failure. Prefixes taken from the four
+            # actual ``error_msg = ...`` sites in ``compare_llm`` below
+            # (lines 472/558/596/602). Update ``_TRANSIENT_ERROR_PREFIXES``
+            # if a new error path is added.
             is_transient_error = any(
-                reason.startswith(p) for p in _ERROR_REASON_PREFIXES
+                reason.startswith(p) for p in _TRANSIENT_ERROR_PREFIXES
             )
             if not is_transient_error:
                 with self._verdict_cache_lock:

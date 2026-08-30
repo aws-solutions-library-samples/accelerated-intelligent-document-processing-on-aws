@@ -25,6 +25,40 @@ from typing import Any, Dict, Iterable, List
 logger = logging.getLogger(__name__)
 
 
+def _is_match_true(value: Any) -> bool:
+    """Narrow allowlist for a ``field_comparisons`` row's ``match`` field.
+
+    Accepts ``True``, numeric ``1`` / ``1.0``, and the case-insensitive
+    string ``"true"``. Rejects everything else. Deliberately narrow to
+    avoid the raw-``bool()`` false-positive on the string ``"false"``
+    (any non-empty string is truthy under ``bool()``); a Stickler
+    variant emitting the string ``"false"`` for a rejected row would
+    otherwise flip to matched=True.
+
+    Shared by ``classify_field_comparison`` here AND the per-attribute
+    verdict in ``stickler_backend/results.py`` so section-level counts
+    and the parent verdict agree on the SAME row.
+    """
+    # Python bool. Guarded BEFORE the int/float branch because ``bool``
+    # is a subclass of int in Python (``True == 1``) and would otherwise
+    # slip through the numeric check.
+    if isinstance(value, bool):
+        return bool(value)
+    # numpy.bool_ is NOT a subclass of Python's builtin bool (verified
+    # on current numpy). Detect by class name — targeted at numpy
+    # specifically so an arbitrary class named ``bool_`` doesn't
+    # accidentally opt in.
+    if type(value).__name__ == "bool_":
+        return bool(value)
+    # Numeric 1 (also covers True stored as int, and values that
+    # compare == 1 like ``numpy.int64(1)``).
+    if isinstance(value, (int, float)) and value == 1:
+        return True
+    if isinstance(value, str) and value.strip().lower() == "true":
+        return True
+    return False
+
+
 def _is_empty_value(v: Any) -> bool:
     """Semantic "empty" for a field's expected/actual value in a
     ``field_comparisons`` row.
@@ -414,14 +448,16 @@ def classify_field_comparison(fc: Dict[str, Any]) -> str:
     input — a divergence between them would silently reintroduce the class of
     inconsistency issue #625 was fixing at a different level.
     """
-    # Truthy check (not ``is True``) so BOTH classification here AND the
-    # per-attribute verdict in ``stickler_backend/results.py`` use the
-    # same predicate. Asymmetric truthiness on the SAME row would let
-    # a section's confusion-matrix counts and its per-attribute verdict
-    # disagree — the exact parent-vs-section drift #625 was opened to
-    # fix (finding from #625 review — earlier ``is True`` here vs
-    # ``bool(...)`` in results.py).
-    matched = bool(fc.get("match", False))
+    # Narrow allowlist — accept bool True, numeric 1, or the case-
+    # insensitive string ``"true"``. Rejects everything else, INCLUDING
+    # the string ``"false"`` which is truthy under plain ``bool()`` and
+    # would flip a rejected row to matched=True. The per-attribute
+    # verdict in ``stickler_backend/results.py`` uses the same
+    # predicate via ``_is_match_true`` so section counts and per-
+    # attribute verdict agree on the SAME row — asymmetric truthiness
+    # would reintroduce the exact parent-vs-section drift #625 exists
+    # to eliminate.
+    matched = _is_match_true(fc.get("match"))
     gt_empty = _is_empty_value(fc.get("expected_value"))
     pr_empty = _is_empty_value(fc.get("actual_value"))
     if matched:

@@ -226,7 +226,11 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
     for attr in result.attributes:
         my_rows = list(_rows_under(attr.name))
         if my_rows:
-            expected_matched = all(fc.get("match") is True for fc in my_rows)
+            # Use the SAME predicate production uses so a future refactor
+            # of ``_is_match_true`` is caught by these tests too.
+            from idp_common.evaluation.contract import _is_match_true
+
+            expected_matched = all(_is_match_true(fc.get("match")) for fc in my_rows)
         else:
             # No rows for this attribute — production ``results.py`` reports
             # ``matched = False`` here (no evidence of correctness). Skip
