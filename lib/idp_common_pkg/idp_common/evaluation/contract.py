@@ -246,13 +246,16 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
     ``act=["x", "y", "z"]`` (three positional scalars) has one dotted
     leaf ("name") and three positional leaves with no attribute
     attribution. If we returned only ``["name"]``, per-field spread
-    would attribute one bucket and the confusion-matrix miss the two
-    hallucinated actual leaves; if we counted only positional slots,
-    the "name" attribution would be lost. Emit positional slots as
-    synthetic entries at the SENTINEL path ``""`` — the caller detects
-    them and folds them into the row's collapsed root bucket (they
-    have no attribute name to attribute to). ``_row_weight`` includes
-    them in the total so top-level and per-field still agree.
+    would attribute one bucket and miss the three hallucinated actual
+    leaves; if we counted only positional slots, the "name"
+    attribution would be lost. Emit positional slots as synthetic
+    entries at the magic path ``POSITIONAL_LEAF_NAME`` (currently
+    ``"__positional__"``). The aggregation Lambda spreads those to
+    ``<collapsed>.__positional__`` — a dedicated sub-bucket that
+    can't collide with any real schema attribute name and doesn't trip
+    the parent-bucket collision check in
+    ``_synthesize_parent_buckets``. ``_row_weight`` includes them in
+    the total so top-level and per-field still agree.
 
     Returns [] when neither side has any leaves at all — the caller
     (``_row_weight``) applies its scalar fallback, and the aggregation

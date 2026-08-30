@@ -545,15 +545,14 @@ def _load_comparison_results(
             # dict loaded from S3 (transient — discarded on function return)
             # is not mutated with our sentinel key.
             #
-            # NOTE: the ``tagged`` copy IS what flows to
-            # ``aggregate_from_comparisons`` (Stickler) as well as to
-            # ``_run_level_row_aggregates`` (our code) — Stickler ignores
-            # unknown top-level keys in each row, so the ``_idp_source``
-            # namespace prefix simply rides along without effect. If a
-            # future Stickler version reflects unknown keys into its
-            # output (e.g. through serialization), the ``_idp_source``
-            # would leak; the namespace prefix is what keeps it from
-            # colliding with any Stickler-owned field name.
+            # NOTE: only ``_run_level_row_aggregates`` (our own code) reads
+            # the tagged list — the aggregator builds an ``untagged_comparisons``
+            # view for every Stickler call site (``aggregate_from_comparisons``
+            # and both ``BulkStructuredModelEvaluator.update_from_comparison_result``
+            # loops) so the ``_idp_source`` sentinel never reaches Stickler.
+            # The namespace prefix is still there so if the untagged view is
+            # ever dropped by mistake, the key can't collide with a real
+            # Stickler-owned field name.
             doc_comparisons = []
             for section in section_results:
                 stickler_result = section.get("stickler_comparison_result")

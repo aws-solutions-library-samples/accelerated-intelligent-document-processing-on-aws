@@ -217,10 +217,14 @@ def handler(event, context):
             # point of this branch is that the document survives.
             logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
             # If we managed to load ``actual_document`` before the failure,
-            # return its clean serialization. Otherwise the raw event's
-            # ``document`` field is the doc payload (the ASL parameter
-            # ``document.$: $.document`` guarantees this — no state-level
-            # sibling keys leak through).
+            # prefer its clean serialization — the raw ``event.get('document')``
+            # carries state-level keys the state machine's Catch merged in
+            # (``EvaluationError`` and friends) because the ASL parameter
+            # ``document.$: $`` passes the WHOLE state, and $ at this point
+            # is the doc dict itself with Catch-injected siblings alongside
+            # its fields. Downstream ``$.document.<field>`` would otherwise
+            # see the merged shape. See the state's Comment for why we can't
+            # simply switch to ``$.document`` at the ASL level.
             if actual_document is not None:
                 try:
                     return {
@@ -230,7 +234,19 @@ def handler(event, context):
                     }
                 except Exception:
                     pass
-            return {'document': event.get('document') or {}}
+            raw = event.get('document') or {}
+            if isinstance(raw, dict):
+                raw = {
+                    k: v for k, v in raw.items()
+                    if k not in (
+                        'EvaluationError',
+                        'record_failure_only',
+                        'failure_reason',
+                        'error',
+                        'execution_arn',
+                    )
+                }
+            return {'document': raw}
 
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")
