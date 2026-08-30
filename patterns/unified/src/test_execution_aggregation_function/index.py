@@ -1108,7 +1108,13 @@ def _transform_stickler_metrics(
         confidence_metrics = None
 
     return {
-        "overall_accuracy": metrics.get("cm_accuracy"),
+        # ``overall_accuracy`` matches the Optional[float] shape of the
+        # sibling accuracy_breakdown fields — None on zero-denominator
+        # ("unmeasurable"), float otherwise. ``metrics["cm_accuracy"]``
+        # comes from ``safe_div`` (0.0 on zero-denom); route it through
+        # the same optional helper so Athena IS NULL predicates see all
+        # top-level accuracy fields consistently.
+        "overall_accuracy": _optional_accuracy(metrics),
         "weighted_overall_scores": doc_weighted_scores,
         "average_confidence": average_confidence,  # Now computed from Stickler if available
         "confidence_metrics": confidence_metrics,  # NEW: Full calibration metrics (v0.4.0+)
@@ -1215,6 +1221,21 @@ def _aggregate_graded_packet_metrics(
         "per_document": doc_graded_packet_scores,
         "document_count": len(doc_graded_packet_scores),
     }
+
+
+def _optional_accuracy(metrics: Dict[str, Any]) -> Optional[float]:
+    """Accuracy (``(tp + tn) / total``) or ``None`` on zero-denominator.
+
+    Matches the Optional[float] shape of the sibling accuracy_breakdown
+    fields so ``overall_accuracy`` isn't the odd one out — a downstream
+    ``IS NULL`` check reads all top-level accuracy fields uniformly.
+    """
+    tp = metrics.get("tp", 0)
+    tn = metrics.get("tn", 0)
+    fp = metrics.get("fa", 0) + metrics.get("fd", 0)
+    fn = metrics.get("fn", 0)
+    total = tp + tn + fp + fn
+    return (tp + tn) / total if total > 0 else None
 
 
 def _optional_precision(metrics: Dict[str, Any]) -> Optional[float]:

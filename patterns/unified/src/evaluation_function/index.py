@@ -227,6 +227,26 @@ def handler(event, context):
             # see the merged shape. See the state's Comment for why we can't
             # simply switch to ``$.document`` at the ASL level.
             if actual_document is not None:
+                # Best-effort: try to stamp the status even on the outer-
+                # except path. The whole point of this state is to record
+                # that evaluation did not complete; returning a document
+                # without stamping ``EvaluationStatus`` leaves it stuck
+                # at RUNNING forever (finding from #625 review). Each
+                # step is guarded so a further failure inside status
+                # update or serialize still lets the document survive.
+                try:
+                    fallback_status = (
+                        status
+                        if 'status' in locals()
+                        else EvaluationStatus.FAILED
+                    )
+                    update_document_evaluation_status(
+                        actual_document, fallback_status
+                    )
+                except Exception as status_err:
+                    logger.error(
+                        f"Failed to stamp fallback evaluation status: {status_err}"
+                    )
                 try:
                     return {
                         'document': actual_document.serialize_document(

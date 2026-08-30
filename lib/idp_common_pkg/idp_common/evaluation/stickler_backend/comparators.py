@@ -356,8 +356,6 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         # — the split renderings are for prompt clarity only.
         expected_str = str(expected) if expected is not None else "None"
         actual_str = str(actual) if actual is not None else "None"
-        expected_display = json.dumps(expected)
-        actual_display = json.dumps(actual)
 
         logger.debug(f"Expected value: {expected_str}")
         logger.debug(f"Actual value: {actual_str}")
@@ -396,6 +394,18 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                 "Values are identical after case/whitespace normalization "
                 "(no LLM call required).",
             )
+
+        # JSON-encoded display for the LLM prompt so ``None`` renders as
+        # bare ``null`` and a legitimate string ``"None"`` renders quoted,
+        # giving the judge a distinct rendering for each. Computed AFTER
+        # the None / trivial-equal short-circuits above so a
+        # non-JSON-serializable value (Decimal, datetime, Pydantic
+        # BaseModel, set) can never crash a matching pair: values that
+        # short-circuit as matched never reach this line, and
+        # ``default=str`` handles the residual non-serializable types
+        # for the LLM prompt itself.
+        expected_display = json.dumps(expected, default=str)
+        actual_display = json.dumps(actual, default=str)
 
         # Create task_placeholders dictionary with all possible placeholders
         task_placeholders = {

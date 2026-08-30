@@ -414,7 +414,14 @@ def classify_field_comparison(fc: Dict[str, Any]) -> str:
     input — a divergence between them would silently reintroduce the class of
     inconsistency issue #625 was fixing at a different level.
     """
-    matched = fc.get("match") is True
+    # Truthy check (not ``is True``) so BOTH classification here AND the
+    # per-attribute verdict in ``stickler_backend/results.py`` use the
+    # same predicate. Asymmetric truthiness on the SAME row would let
+    # a section's confusion-matrix counts and its per-attribute verdict
+    # disagree — the exact parent-vs-section drift #625 was opened to
+    # fix (finding from #625 review — earlier ``is True`` here vs
+    # ``bool(...)`` in results.py).
+    matched = bool(fc.get("match", False))
     gt_empty = _is_empty_value(fc.get("expected_value"))
     pr_empty = _is_empty_value(fc.get("actual_value"))
     if matched:
