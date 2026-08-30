@@ -16,9 +16,13 @@ pricing may apply)
 
 > Reproducible via the `benchmarks/` harness (run the `run-benchmarks` skill). Every number
 > here is produced by `benchmarks/harness/aggregate.py` from live runs; none are recalled
-> from memory. Supporting data: `benchmarks/results/v0.6.5-config-core/` (§2),
-> `v0.6.5-config-scaling/` (§3), `v0.6.5-config-cost/` (§4),
-> `v0.6.5-intconf-sonnet5/` + `v0.6.5-intconf-sonnet46/` (§2.1).
+> from memory. Supporting data: the `coresynth` grid (§2), `scaling` (§3), `cost` (§4), and
+> two `intconf` runs on Sonnet 5 and Sonnet 4.6 (§2.1). Per
+> [`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
+> only one complete set is retained per release, so these slices are no longer in the working
+> tree; recover them from git with
+> `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-config-core/` (likewise
+> `-config-scaling`, `-config-cost`, `-intconf-sonnet5`, `-intconf-sonnet46`).
 
 ---
 
@@ -339,9 +343,15 @@ comparisons of configurations that all did the job.
 
 ## Appendix A — Data & reproduction
 
-- Per-(cell,doc) scores: `benchmarks/results/v0.6.5-config-core/summary.{json,csv}` (§2),
-  `v0.6.5-config-scaling/` (§3), `v0.6.5-config-cost/` (§4),
-  `v0.6.5-intconf-sonnet5/` and `v0.6.5-intconf-sonnet46/` (§2.1).
+- Per-(cell,doc) scores — `summary.{json,csv}` for the `coresynth` (§2), `scaling` (§3),
+  `cost` (§4) and two `intconf` (§2.1) runs. Pruned per
+  [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
+  (one complete set per release); restore all five from git with:
+  ```bash
+  git checkout ec3eb05ae -- benchmarks/results/v0.6.5-config-core/ \
+      benchmarks/results/v0.6.5-config-scaling/ benchmarks/results/v0.6.5-config-cost/ \
+      benchmarks/results/v0.6.5-intconf-sonnet5/ benchmarks/results/v0.6.5-intconf-sonnet46/
+  ```
 - Figures: `images/benchmark-scaling.png`
 - Corpus manifest + generators: `benchmarks/corpus/` (regenerable; PDFs/configs gitignored)
 - Matrices + methodology: `benchmarks/matrices/`
@@ -359,7 +369,7 @@ python3 benchmarks/harness/gen_corpus.py
 for s in coresynth scaling cost; do
   python3 benchmarks/harness/make_configs.py --suite $s --class bank_statement --set extraction_model=sonnet5
   AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite $s --native-upload --max-inflight 5
-  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/v0.6.5-config-$s
+  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/v0.6.5/$s
 done
 
 # §2.1 the integrated-confidence hazard, with repeats + same-doc control

@@ -112,8 +112,20 @@ suites:
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
   # assessment completes on v0.5.16 (see corefast group note). This is the clean
-  # apples-to-apples version A/B grid.
-  corefast: {cells: "core_cells", docs: "corefast", repeats: 1}
+  # apples-to-apples version A/B grid — the RELEASE GATE.
+  #
+  # repeats: 3 here even though accuracy is "stable at repeats=1" in the general
+  # note above, because this suite answers a different question: not "how accurate
+  # is this config" but "did the release change anything". At repeats=1 a single
+  # non-deterministic agentic outcome is indistinguishable from a regression, and
+  # that is not hypothetical — the v0.6.5 fix verification reported a NEW FAILURE
+  # (tt-simple-int on the 800-row doc) and a -0.143 accuracy drop from a
+  # single-sample grid, and NEITHER reproduced. Three samples let compare() use
+  # failure RATES and mean-vs-spread instead of one draw. The cost is bounded
+  # because corefast is deliberately the cheap doc subset: 10 cells x 3 docs x 3 =
+  # 90 runs per side. Do not raise the broad grids (core/coresynth/full) to match —
+  # those include the 400/800-row docs and the spend is not comparable.
+  corefast: {cells: "core_cells", docs: "corefast", repeats: 3}
   # coresynth: the cross-config grid the config-guidance paper reports — the full
   # 10-cell core grid over the exact-ground-truth SYNTHETIC list docs only. Same
   # cells as `core` but without the two reference corpora (realkie, ocr_bench),
@@ -126,6 +138,17 @@ suites:
   # non-deterministic and the failure is a partial list, not an error), so it gets
   # repeats and the `separate` cell alongside as a same-doc control.
   intconf: {cells: [core-tt-simple-int, core-tt-simple-sep], docs: [longdesc_100], repeats: 4}
+  # advverify: re-verifies the OTHER standing list-loss hazard — an ADVANCED-mode
+  # agent that declines the recommended table tool and returns the whole list as
+  # `null` (#666/#668). Same rationale as `intconf` above: the failure is
+  # non-deterministic and silent (schema-valid, scalar accuracy 1.000, status
+  # COMPLETED), so a single run cannot settle it. `core-tt-adv-sep` runs alongside
+  # as a same-doc control. Run it with `--set extraction_model=sonnet5`, the model
+  # the failure was observed on. Evidence: docs/benchmarking/releases/v0.6.5.md and
+  # the pre/post-#668 advverify runs, pruned per results/RETENTION.md — restore with
+  # `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-advverify/` (and
+  # `benchmarks/results/v0.6.6-advverify-post668/`).
+  advverify: {cells: [core-tt-adv-int, core-tt-adv-sep], docs: [longdesc_100], repeats: 4}
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}
   # cost: purpose-built to DETECT COST DIFFERENCES between configs with confidence.

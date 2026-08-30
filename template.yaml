@@ -57,15 +57,26 @@ Parameters:
     Type: String
     # Public AWS Lambda Web Adapter layer (x86_64). The account 753240598075 is
     # the LWA publisher; the layer name/version are region-stable. Leave blank
-    # to default to the LWA layer in this stack's region/partition (constructed
-    # as arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...). Override
-    # this parameter for GovCloud (GovCloud publishes LWA under a different
-    # account; see the LWA releases) or to pin a specific version.
+    # to default to the LWA layer in this stack's region (constructed as
+    # arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:...), or set it to
+    # pin a specific version / point at a layer you published yourself.
+    #
+    # NOTE (GovCloud/China): LWA is published ONLY in the commercial partition.
+    # AWS account IDs do not exist across partitions, so ${AWS::Partition}
+    # substitution alone cannot make that ARN resolve — a GovCloud deploy fails
+    # with a 403 on lambda:GetLayerVersion that reads like a missing
+    # resource-based policy but is really a partition mismatch no identity policy
+    # can fix. The --govcloud transform therefore REMOVES
+    # ChatStreamProcessorFunction (and this parameter) outright and the UI falls
+    # back to its polling chat transport; see docs/govcloud-deployment.md. Set
+    # this parameter only if you have published an LWA layer into the target
+    # partition yourself.
     Default: ""
     Description: >-
       ARN of the AWS Lambda Web Adapter layer used by the chat streaming Function
-      URL. Leave blank to use the region-default LWA x86_64 layer; override for
-      GovCloud or to pin a version.
+      URL. Leave blank to use the region-default LWA x86_64 layer, or set it to
+      pin a version / use a layer you published yourself. LWA is published only
+      in the commercial AWS partition.
 
   # Authorization params
   AdminEmail:
@@ -7300,6 +7311,30 @@ Resources:
   # processor publishes the drift (counter minus executions actually RUNNING)
   # whenever it finds itself at the limit; a sustained positive drift means slots
   # are held by workflows that already ended.
+  # The workflow tracker owns the concurrency-counter DECREMENT, so an event it
+  # cannot process is not just a lost status update — it is a workflow slot that
+  # was never released. The counter drifts up and, at MaxConcurrentWorkflows, the
+  # stack stops admitting documents. The reconciler recovers from that and
+  # ConcurrencyCounterDriftAlarm reports it, but both are downstream of the cause;
+  # this alarm fires on the cause, on the first message, before anything stalls.
+  WorkflowTrackerDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} workflow-completion event lands in the Workflow Tracker dead-letter queue. Each one is a workflow-concurrency slot that was not released and a document whose completion status was not recorded."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WorkflowTrackerDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ConcurrencyCounterDriftAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -7857,6 +7892,46 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Save Reporting Data Tracker Lambda Errors",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "ConcurrencyCounterActive",
+                      {
+                        "stat": "Maximum",
+                        "label": "Counter (claimed slots)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterDrift",
+                      {
+                        "stat": "Maximum",
+                        "label": "Drift (slots held by workflows that already ended)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; drift is sampled only when an increment is refused)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "annotations": {
+                    "horizontal": [
+                      {
+                        "value": ${MaxConcurrentWorkflows},
+                        "label": "MaxConcurrentWorkflows (${MaxConcurrentWorkflows}) — queue stops draining here",
+                        "color": "#ff0000"
+                      }
+                    ]
+                  }
                 }
               }
             ]

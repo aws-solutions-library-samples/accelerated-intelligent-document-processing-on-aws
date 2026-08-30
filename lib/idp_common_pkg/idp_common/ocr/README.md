@@ -38,9 +38,17 @@ isolation. A standard-output-only **SYNC** project named
 CloudFormation custom resource (`Custom::BDAOCRProject`) and its ARN is passed
 to the OCR function via the `BDA_OCR_PROJECT_ARN` env var (override via
 `ocr.bda_project_arn`). The OCR function never creates the project at runtime;
-if no ARN is available (e.g. a region without Bedrock Data Automation, where the
-custom resource returns empty), selecting the `bda` backend raises a clear error
-— use the Textract backend there. The project sets `modalityRouting: {jpeg: DOCUMENT,
+if no ARN is available, selecting the `bda` backend raises a clear error — use
+the Textract backend there. Two cases produce an empty ARN: a region where BDA
+is unreachable (the custom resource returns empty rather than failing the
+stack), and **any partition other than `aws`**, where the resource is not
+created at all (condition `ShouldCreateBDAOCRProject`). GovCloud offers BDA but
+rejects this project shape — `ValidationException: Sync project does not support
+video/audio/document modality in Standard Output Configuration` — so the
+`bda` OCR backend is not available in GovCloud or China regions. The handler
+also treats that ValidationException as "unsupported here" and returns an empty
+ARN rather than failing the stack, so a commercial region that refuses the
+project shape degrades the same way. The project sets `modalityRouting: {jpeg: DOCUMENT,
 png: DOCUMENT}` and the page is passed by **`s3Uri`** (extension-bearing) so BDA
 reliably treats each page image as a document — inline `bytes` lack an
 extension and BDA misclassifies some page images as `IMAGE` (empty OCR) under

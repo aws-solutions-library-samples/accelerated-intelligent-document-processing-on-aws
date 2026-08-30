@@ -44,32 +44,10 @@ from pathlib import Path
 from typing import Any, Set
 
 import pytest
-import yaml
+
+from idp_sdk._core.cfn_yaml import load_cfn_template
 
 pytestmark = pytest.mark.unit
-
-
-# --- CFN-aware YAML loader ----------------------------------------------------
-# CloudFormation templates use short intrinsic tags (!Ref, !If, !GetAtt, !Sub).
-# PyYAML's SafeLoader rejects them, so register a no-op multi-constructor that
-# preserves the tag + value as a {"!Tag": value} dict. Safe: subclasses
-# SafeLoader, so no Python-object construction is possible.
-class _CFNLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_multi_constructor(loader, tag_suffix, node):
-    tag = "!" + tag_suffix
-    if isinstance(node, yaml.ScalarNode):
-        value = loader.construct_scalar(node)
-    elif isinstance(node, yaml.SequenceNode):
-        value = loader.construct_sequence(node)
-    else:
-        value = loader.construct_mapping(node)
-    return {tag: value}
-
-
-_CFNLoader.add_multi_constructor("!", _cfn_multi_constructor)
 
 
 def _repo_root() -> Path:
@@ -81,14 +59,9 @@ def _repo_root() -> Path:
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    with open(_repo_root() / "template.yaml", "r", encoding="utf-8") as f:
-        # nosec B506 - _CFNLoader extends yaml.SafeLoader (see class definition
-        # above); it is NOT the default unsafe yaml.Loader, so no
-        # Python-object construction is possible. The only customization is a
-        # no-op multi-constructor for `!`-prefixed CloudFormation intrinsic
-        # tags that returns plain scalars/sequences/mappings. Input is this
-        # repo's own committed template.yaml, not untrusted user input.
-        return yaml.load(f, Loader=_CFNLoader)  # nosec B506
+    # Intrinsics come back as {"!Tag": value}; see idp_sdk._core.cfn_yaml for
+    # the safety rationale.
+    return load_cfn_template(_repo_root() / "template.yaml")
 
 
 # CodeBuild env vars that affect the *built artifact* but are not named VITE_*.

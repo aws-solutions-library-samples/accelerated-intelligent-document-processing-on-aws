@@ -123,6 +123,11 @@ export default defineConfig({
             { label: "Test Studio", slug: "test-studio" },
             { label: "Creating Custom Test Sets", slug: "creating-custom-test-sets" },
             { label: "MLflow Experiment Tracking", slug: "mlflow-integration" },
+            {
+              label: "Release Validation",
+              // README.md is the index; per-release vX.Y.Z.md entries auto-list.
+              items: [{ autogenerate: { directory: "release-validation" } }],
+            },
           ],
         },
         {

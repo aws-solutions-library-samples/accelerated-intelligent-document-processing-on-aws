@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import boto3
 from pydantic import BaseModel
 
+from idp_common.bda.bda_ocr import build_profile_arn
 from idp_common.config.class_names import sanitize_class_name
 
 if TYPE_CHECKING:
@@ -154,17 +155,23 @@ class BlueprintOptimizer:
             return self._profile_arn
 
         try:
-            self._account_id = boto3.client("sts").get_caller_identity().get("Account")
+            identity = boto3.client("sts").get_caller_identity()
         except Exception as e:
             raise RuntimeError(
                 f"Cannot resolve AWS account ID for profile ARN: {e}"
             ) from e
+        self._account_id = identity.get("Account")
 
-        region_prefix = self._region.split("-")[0]
-        profile_id = f"{region_prefix}.data-automation-v1"
-        self._profile_arn = (
-            f"arn:aws:bedrock:{self._region}:{self._account_id}"
-            f":data-automation-profile/{profile_id}"
+        # Same fix as bda_service: build via the shared helper so the partition
+        # is honoured (a hardcoded `arn:aws:` never resolves in GovCloud/China)
+        # and ap-* regions get the `apac` geo prefix rather than `ap`. Partition
+        # comes from the caller ARN on the SAME identity call above — no extra
+        # STS round-trip.
+        partition = (identity.get("Arn") or "arn:aws:").split(":")[
+            1
+        ] or "aws"  # arn-partition-ok: fallback used only to PARSE the partition out
+        self._profile_arn = build_profile_arn(
+            self._region, self._account_id or "", partition
         )
         return self._profile_arn
 

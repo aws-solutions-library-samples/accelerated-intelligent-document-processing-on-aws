@@ -2,9 +2,12 @@
 """Score every run in a runmap, roll into summary tables, compare to a baseline.
 
 Usage:
-  AWS_PROFILE=default python3 aggregate.py --run results/run-XXXX --out results/<release>
-  python3 aggregate.py --compare results/<release>/summary.json --baseline results/baseline.json
-  python3 aggregate.py --figures results/<release>/summary.json   # emit charts
+  AWS_PROFILE=default python3 aggregate.py --run results/run-XXXX --out results/<release>/<suite>
+  python3 aggregate.py --compare results/<release>/<suite>/summary.json --baseline results/baseline.json
+  python3 aggregate.py --figures results/<release>/<suite>/summary.json   # emit charts
+
+Scored output goes in a <suite>/ subdirectory of the release dir; results/ keeps one
+complete set per release (see results/RETENTION.md).
 
 Writes summary.json (per (cell,doc) full scores) + summary.csv (+ meta.json).
 Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration -0.03.
@@ -424,38 +427,150 @@ def compare_cells(summary_path, baseline_path):
     return reg, imp, weak
 
 
+def _by_cell_doc(rows):
+    """Group rows by ``(cell, doc)``, collapsing repeats.
+
+    The repeat INDEX carries no identity — repeat 2 of one run is not "the same
+    run" as repeat 2 of another, they are independent samples of the same
+    (cell, doc). Pairing them by index (which ``compare`` used to do) throws away
+    the only thing repeats buy you and, on a bimodal cell, reports a regression
+    and an improvement from the same pair of runs depending on how the samples
+    happened to land.
+    """
+    out = {}
+    for r in rows:
+        out.setdefault(f"{r['cell']}|{r['doc']}", []).append(r)
+    return out
+
+
+def _mean(rows, metric, successes_only=True):
+    src = [r for r in rows if r.get("success")] if successes_only else rows
+    xs = [r.get(metric) for r in src]
+    xs = [x for x in xs if isinstance(x, (int, float))]
+    return (sum(xs) / len(xs), len(xs)) if xs else (None, 0)
+
+
+def _spread(rows, metric):
+    """Observed max-min of a metric within one (cell, doc) — the run-to-run noise
+    floor measured on THIS side of the comparison. A delta smaller than the
+    baseline's own spread is not evidence of a change."""
+    xs = [
+        r.get(metric)
+        for r in rows
+        if r.get("success") and isinstance(r.get(metric), (int, float))
+    ]
+    return (max(xs) - min(xs)) if len(xs) > 1 else 0.0
+
+
 def compare(summary_path, baseline_path):
-    cur = {(_id(r)): r for r in json.load(open(summary_path))["rows"]}
-    base = {(_id(r)): r for r in json.load(open(baseline_path))["rows"]}
+    """Compare two summaries per ``(cell, doc)``, aggregating over repeats.
+
+    With ``repeats: 1`` this behaves exactly as the previous per-run comparison
+    (mean == the single value, spread == 0). With repeats > 1 it stops reporting
+    single-sample noise as a release regression — the concrete failure that
+    motivated this: a one-off agentic failure and a 0.143 accuracy dip both
+    appeared as regressions in a repeats=1 grid and neither reproduced.
+    """
+    cur = _by_cell_doc(json.load(open(summary_path))["rows"])
+    base = _by_cell_doc(json.load(open(baseline_path))["rows"])
     regressions, improvements = [], []
-    for k, c in cur.items():
-        b = base.get(k)
-        if not b:
+    for k, cs in cur.items():
+        bs = base.get(k)
+        if not bs:
             continue
-        # new failure
-        if b.get("success") and not c.get("success"):
-            regressions.append((k, "NEW FAILURE", b.get("status"), c.get("status")))
-        # accuracy
+
+        # Failures: compare RATES, not "did this one run fail". A cell that fails
+        # 1 in 3 on both sides is not a regression; 0/3 -> 3/3 is.
+        c_fail = sum(1 for r in cs if not r.get("success"))
+        b_fail = sum(1 for r in bs if not r.get("success"))
+        if c_fail / len(cs) > b_fail / len(bs):
+            statuses = sorted(
+                {str(r.get("status")) for r in cs if not r.get("success")}
+            )
+            regressions.append(
+                (
+                    k,
+                    f"FAILURE RATE {b_fail}/{len(bs)} -> {c_fail}/{len(cs)}"
+                    + (
+                        "  [both sides fail sometimes — confirm before believing]"
+                        if b_fail
+                        else ""
+                    ),
+                    f"{b_fail}/{len(bs)}",
+                    f"{c_fail}/{len(cs)} {','.join(statuses)}",
+                )
+            )
+        elif b_fail and not c_fail:
+            improvements.append(
+                (k, f"FAILURE RATE {b_fail}/{len(bs)} -> 0/{len(cs)}", b_fail, 0)
+            )
+
+        # Quality: mean-vs-mean, and require the delta to clear the noise the
+        # baseline itself shows across its repeats.
         for m in ("completeness_recall", "scalar_accuracy", "weighted_accuracy"):
-            cb, cc = b.get(m), c.get(m)
-            if isinstance(cb, (int, float)) and isinstance(cc, (int, float)):
-                if cc - cb <= -0.02:
-                    regressions.append((k, f"{m} -{cb - cc:.3f}", cb, cc))
-                elif cc - cb >= 0.02:
-                    improvements.append((k, f"{m} +{cc - cb:.3f}", cb, cc))
-        # cost
-        cb, cc = b.get("cost"), c.get("cost")
-        if isinstance(cb, (int, float)) and cb > 0 and isinstance(cc, (int, float)):
-            if (cc - cb) / cb >= 0.15:
-                regressions.append((k, f"cost +{100 * (cc - cb) / cb:.0f}%", cb, cc))
-        # calibration
-        cb, cc = b.get("calibration_separation"), c.get("calibration_separation")
-        if (
-            isinstance(cb, (int, float))
-            and isinstance(cc, (int, float))
-            and cc - cb <= -0.03
-        ):
-            regressions.append((k, f"calibration -{cb - cc:.3f}", cb, cc))
+            cb, nb = _mean(bs, m)
+            cc, nc = _mean(cs, m)
+            if cb is None or cc is None:
+                continue
+            delta = cc - cb
+            noise = max(_spread(bs, m), _spread(cs, m))
+            if abs(delta) < 0.02:
+                continue
+            n_note = f" (n={nb}->{nc})" if max(nb, nc) > 1 else ""
+            if abs(delta) <= noise:
+                # Reported, but never as a verdict: this is exactly the shape of
+                # the two findings that wasted a verification cycle.
+                tag = (
+                    f"{m} {delta:+.3f}{n_note}  [within run-to-run spread "
+                    f"{noise:.3f} — INCONCLUSIVE, add repeats]"
+                )
+                print(f"  ~ {k}: {tag}")
+                continue
+            if delta <= -0.02:
+                regressions.append((k, f"{m} {delta:+.3f}{n_note}", cb, cc))
+            else:
+                improvements.append((k, f"{m} {delta:+.3f}{n_note}", cb, cc))
+
+        # Cost: mean-vs-mean. Agentic cost spreads ~4x run-to-run, so a single
+        # sample cannot resolve a cost difference at all (see the `cost` suite).
+        cb, nb = _mean(bs, "cost")
+        cc, nc = _mean(cs, "cost")
+        if cb and cc and cb > 0:
+            rel = (cc - cb) / cb
+            noise = max(_spread(bs, "cost"), _spread(cs, "cost")) / cb
+            if rel >= 0.15:
+                n_note = f" (n={nb}->{nc})" if max(nb, nc) > 1 else ""
+                if rel <= noise:
+                    print(
+                        f"  ~ {k}: cost {100 * rel:+.0f}%{n_note}  [within spread "
+                        f"{100 * noise:.0f}% — INCONCLUSIVE, add repeats]"
+                    )
+                else:
+                    regressions.append(
+                        (
+                            k,
+                            f"cost +{100 * rel:.0f}%{n_note}",
+                            round(cb, 4),
+                            round(cc, 4),
+                        )
+                    )
+
+        # Calibration
+        cb, nb = _mean(bs, "calibration_separation")
+        cc, nc = _mean(cs, "calibration_separation")
+        if cb is not None and cc is not None and cc - cb <= -0.03:
+            noise = max(
+                _spread(bs, "calibration_separation"),
+                _spread(cs, "calibration_separation"),
+            )
+            if abs(cc - cb) <= noise:
+                print(
+                    f"  ~ {k}: calibration {cc - cb:+.3f}  [within spread "
+                    f"{noise:.3f} — INCONCLUSIVE, add repeats]"
+                )
+            else:
+                regressions.append((k, f"calibration {cc - cb:+.3f}", cb, cc))
+
     print(f"\n=== REGRESSIONS ({len(regressions)}) ===")
     for k, what, was, now in regressions:
         print(f"  {k}: {what}  ({was} -> {now})")
@@ -463,10 +578,6 @@ def compare(summary_path, baseline_path):
     for k, what, was, now in improvements:
         print(f"  {k}: {what}  ({was} -> {now})")
     return regressions, improvements
-
-
-def _id(r):
-    return f"{r['cell']}|{r['doc']}|{r.get('repeat', 0)}"
 
 
 def figures(summary_path):

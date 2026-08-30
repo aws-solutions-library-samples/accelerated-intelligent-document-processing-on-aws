@@ -324,6 +324,16 @@ class HeadlessTemplateTransformer:
             "CreateExternalAppClient",
             # Used only by the removed VersionCheckResolverFunction (AppSync UI feature)
             "HasPublicArtifactsBucket",
+            # Tests the AdminEmail parameter against the CI sentinel to suppress
+            # the Cognito invite email. AdminEmail is removed above, and this
+            # condition's only consumer was AdminUser's MessageAction (also
+            # removed) — but a Condition left referencing a deleted parameter is a
+            # HARD template error, not dead weight:
+            #   Template format error: Unresolved dependencies [AdminEmail].
+            #   Cannot reference resources in the Conditions block of the template
+            # CloudFormation rejects the whole template at validate/create time,
+            # so every headless deploy failed before creating a single resource.
+            "SuppressAdminInvite",
         }
 
         # ---- Rules to remove ----
@@ -1080,12 +1090,14 @@ class HeadlessTemplateTransformer:
         template_str = yaml.dump(template, default_flow_style=False)
 
         remaining_arns = len(
-            re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str)
+            re.findall(
+                r"arn:aws:(?!\$\{AWS::Partition\})", template_str
+            )  # arn-partition-ok: regex that DETECTS this pattern
         )
         if remaining_arns > 0:
             logger.warning(f"Found {remaining_arns} hard-coded ARN references — fixing")
             template_str = re.sub(
-                r"arn:aws:(?!\$\{AWS::Partition\})",
+                r"arn:aws:(?!\$\{AWS::Partition\})",  # arn-partition-ok: regex that DETECTS this pattern
                 "arn:${AWS::Partition}:",
                 template_str,
             )
@@ -1161,8 +1173,25 @@ class GovCloudTemplateTransformer:
     # The condition whose Fn::If blocks are collapsed to the else-branch.
     HOSTING_CONDITION = "UseCloudFrontHosting"
 
+    # Markers identifying the public AWS Lambda Web Adapter (LWA) layer. LWA is
+    # published ONLY in the commercial partition (account 753240598075); AWS
+    # account IDs do not exist across partitions, so `arn:${AWS::Partition}:`
+    # substitution cannot make that ARN resolvable in GovCloud — the deploy
+    # fails with a 403 on lambda:GetLayerVersion that *reads* like a missing
+    # resource-based policy but is really a partition mismatch that no identity
+    # policy can fix. Any function layering LWA in is therefore uncreatable in
+    # GovCloud and must be removed, not merely have its Function URL stripped.
+    LWA_LAYER_MARKERS = ("LambdaAdapterLayer", "753240598075")
+    # Parameters/conditions that exist only to override the LWA layer ARN and
+    # become dead once every LWA-dependent function is gone.
+    LWA_PARAMETERS = {"LambdaWebAdapterLayerArn"}
+    LWA_CONDITIONS = {"HasLambdaWebAdapterLayerArn"}
+
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        # Logical ids this transform deleted. Nothing in the output template may
+        # still reference them (validated in validate_no_cloudfront).
+        self._removed_logical_ids: Set[str] = set()
 
     # ---- Entry points ----
 
@@ -1190,6 +1219,7 @@ class GovCloudTemplateTransformer:
 
     def apply_transforms(self, template: Dict[str, Any]) -> Dict[str, Any]:
         """Apply all GovCloud transformations to an in-memory template dict."""
+        self._removed_logical_ids = set()
         # 1. Collapse Fn::If[UseCloudFrontHosting] -> else-branch everywhere.
         n_collapsed = [0]
         template = self._collapse_hosting_ifs(template, n_collapsed)
@@ -1210,6 +1240,16 @@ class GovCloudTemplateTransformer:
         #    UI degrades gracefully (chat streaming disabled) when its
         #    VITE_STREAM_URL is empty.
         template = self._remove_lambda_function_urls(template)
+        # 3b. Remove the functions that CANNOT exist in GovCloud because they
+        #     layer in the AWS Lambda Web Adapter (commercial-partition-only
+        #     publisher account). Stripping only the Function URL (step 3) left
+        #     its handler behind, and the stack rolled back on a 403
+        #     lambda:GetLayerVersion for the LWA layer. The Web UI's chat still
+        #     works: it auto-detects the empty VITE_STREAM_URL and falls back to
+        #     the polling transport, which is served by the (retained)
+        #     AgentChatProcessorFunction / ChatWithDocumentProcessorFunction via
+        #     the UI REST API — the streaming function is not in that path.
+        template = self._remove_lwa_dependent_functions(template)
         # 4. Force WebUIHosting=APIGateway.
         template = self._force_apigateway_hosting(template)
         # 5. Default the Knowledge Base vector store to OpenSearch Serverless —
@@ -1461,6 +1501,327 @@ class GovCloudTemplateTransformer:
                 count += self._blank_function_url_refs(x, url_names)
         return count
 
+    # ---- LWA-dependent function removal (see LWA_LAYER_MARKERS) ----
+
+    def _remove_lwa_dependent_functions(
+        self, template: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Remove Lambda functions that layer in the AWS Lambda Web Adapter.
+
+        The LWA layer is published only in the commercial partition, so any
+        function referencing it cannot be created in GovCloud (403 on
+        lambda:GetLayerVersion). Removing the function is not enough on its own:
+        its log group, its Lambda permissions, the IAM statements that grant
+        invoke on it, and any output referencing it must go too — and an inline
+        IAM policy left with ``Statement: []`` is itself rejected by IAM
+        ("Syntax errors in policy", 400), so emptied policies are dropped
+        entirely rather than left behind.
+        """
+        resources = template.get("Resources", {})
+        functions = {
+            name for name, res in resources.items() if self._uses_lwa_layer(res)
+        }
+        if not functions:
+            return template
+
+        log_groups = self._referenced_log_groups(resources, functions)
+
+        for name in functions:
+            del resources[name]
+            logger.debug(f"Removed LWA-dependent function: {name}")
+
+        # Drop each function's log group, but only if nothing else uses it.
+        orphaned_log_groups = set()
+        for lg in log_groups:
+            if lg not in resources:
+                continue
+            definition = resources.pop(lg)
+            if self._logical_id_referenced(template, lg):
+                resources[lg] = definition  # still used elsewhere — keep it
+            else:
+                orphaned_log_groups.add(lg)
+                logger.debug(f"Removed orphaned log group: {lg}")
+
+        self._removed_logical_ids |= functions | orphaned_log_groups
+        self._prune_references_to(template, self._removed_logical_ids)
+        self._remove_lwa_parameters_and_conditions(template)
+
+        logger.info(
+            f"Removed {len(functions)} AWS Lambda Web Adapter-dependent "
+            f"function(s) (LWA layer is commercial-partition only): "
+            f"{', '.join(sorted(functions))}"
+        )
+        return template
+
+    @classmethod
+    def _uses_lwa_layer(cls, resource: Any) -> bool:
+        """True if a Lambda/Serverless function's Layers reference the LWA layer."""
+        if not isinstance(resource, dict):
+            return False
+        rtype = resource.get("Type")
+        if rtype not in ("AWS::Serverless::Function", "AWS::Lambda::Function"):
+            return False
+        layers = resource.get("Properties", {}).get("Layers")
+        if layers is None:
+            return False
+        # The layer ARN sits behind an Fn::If (parameter override vs. default),
+        # so match on the serialized subtree rather than a fixed shape.
+        blob = yaml.dump(layers, default_flow_style=False)
+        return any(marker in blob for marker in cls.LWA_LAYER_MARKERS)
+
+    @staticmethod
+    def _referenced_log_groups(
+        resources: Dict[str, Any], function_names: Set[str]
+    ) -> Set[str]:
+        """Logical ids of log groups named by the given functions' LoggingConfig."""
+        found: Set[str] = set()
+        for name in function_names:
+            logging_config = (
+                resources.get(name, {}).get("Properties", {}).get("LoggingConfig", {})
+            )
+            log_group = (
+                logging_config.get("LogGroup")
+                if isinstance(logging_config, dict)
+                else None
+            )
+            if isinstance(log_group, dict) and isinstance(log_group.get("Ref"), str):
+                found.add(log_group["Ref"])
+        return found
+
+    @staticmethod
+    def _logical_id_referenced(template: Dict[str, Any], logical_id: str) -> bool:
+        """True if logical_id appears anywhere in the (already-pruned) template.
+
+        The caller pops the resource's own definition first, so a hit here means
+        a genuine Ref/GetAtt/Sub/DependsOn from some other place.
+        """
+        return logical_id in yaml.dump(template, default_flow_style=False)
+
+    def _prune_references_to(self, template: Dict[str, Any], removed: Set[str]) -> None:
+        """Strip every remaining reference to the removed logical ids.
+
+        Handles the four shapes that actually occur: Lambda permissions targeting
+        a removed function, IAM policy statements whose Resource points at one,
+        DependsOn entries, and Outputs.
+        """
+        if not removed:
+            return
+        # Snapshot: pruning can itself remove resources (a Lambda permission
+        # targeting a removed function), and those names must be pruned from
+        # DependsOn/Outputs too — but `removed` may be the instance's own set, so
+        # grow a local copy rather than the set being iterated against.
+        targets = set(removed)
+        resources = template.get("Resources", {})
+
+        # 1. Lambda permissions whose FunctionName is a removed function.
+        for name in list(resources.keys()):
+            res = resources[name]
+            if (
+                isinstance(res, dict)
+                and res.get("Type") == "AWS::Lambda::Permission"
+                and self._node_references(
+                    res.get("Properties", {}).get("FunctionName"), targets
+                )
+            ):
+                del resources[name]
+                self._removed_logical_ids.add(name)
+                targets.add(name)
+                logger.debug(f"Removed Lambda permission for removed function: {name}")
+
+        # 2. IAM statements / policies. An inline policy emptied of statements is
+        #    dropped: IAM rejects `Statement: []` with a 400 syntax error.
+        for name in list(resources.keys()):
+            res = resources[name]
+            if not isinstance(res, dict):
+                continue
+            props = res.get("Properties", {})
+            if not isinstance(props, dict):
+                continue
+
+            # Role-style inline policies: Properties.Policies[*].PolicyDocument
+            policies = props.get("Policies")
+            if isinstance(policies, list):
+                kept_policies = []
+                dropped_any = False
+                for policy in policies:
+                    if not isinstance(policy, dict):
+                        kept_policies.append(policy)
+                        continue
+                    doc = policy.get("PolicyDocument")
+                    if not isinstance(doc, dict):
+                        kept_policies.append(policy)
+                        continue
+                    if self._prune_statements(doc, targets):
+                        kept_policies.append(policy)
+                    else:
+                        dropped_any = True
+                        logger.debug(
+                            f"Dropped now-empty inline policy "
+                            f"{policy.get('PolicyName', '<unnamed>')} on {name} "
+                            "(IAM rejects Statement: [])"
+                        )
+                # Only rewrite Policies when this pass actually dropped one.
+                # Touching it unconditionally rewrote unrelated resources (e.g.
+                # stripping an intentional `Policies: []`), which widened the
+                # GovCloud template diff and made the transform harder to audit.
+                if dropped_any:
+                    if kept_policies:
+                        props["Policies"] = kept_policies
+                    else:
+                        props.pop("Policies", None)
+                        logger.debug(f"Dropped now-empty Policies list on {name}")
+
+            # Standalone policy documents (ManagedPolicy, IAM::Policy, bucket
+            # policies): Properties.PolicyDocument. Only remove the resource if
+            # pruning is what emptied it — a policy that was already statement-
+            # less is not ours to delete.
+            doc = props.get("PolicyDocument")
+            if isinstance(doc, dict) and doc.get("Statement"):
+                if not self._prune_statements(doc, targets):
+                    del resources[name]
+                    self._removed_logical_ids.add(name)
+                    targets.add(name)
+                    logger.debug(f"Removed policy resource emptied by pruning: {name}")
+
+        # 3. DependsOn entries pointing at removed resources.
+        for res in resources.values():
+            if not isinstance(res, dict) or "DependsOn" not in res:
+                continue
+            deps = res["DependsOn"]
+            if isinstance(deps, str):
+                if deps in targets:
+                    del res["DependsOn"]
+            elif isinstance(deps, list):
+                kept = [d for d in deps if d not in targets]
+                if kept:
+                    res["DependsOn"] = kept
+                else:
+                    del res["DependsOn"]
+
+        # 4. Outputs referencing a removed resource.
+        outputs = template.get("Outputs", {})
+        for name in list(outputs.keys()):
+            if self._node_references(outputs[name], targets):
+                del outputs[name]
+                logger.debug(f"Removed output referencing a removed resource: {name}")
+
+    def _prune_statements(self, doc: Dict[str, Any], removed: Set[str]) -> bool:
+        """Prune statements referencing removed ids. Returns True if any remain.
+
+        A statement whose ``Resource`` list only partly references removed ids
+        keeps its surviving entries; one left with no resources at all is
+        dropped, since an Allow with an empty Resource is invalid.
+        """
+        statements = doc.get("Statement")
+        if isinstance(statements, dict):
+            statements = [statements]
+        if not isinstance(statements, list):
+            return True
+
+        kept: List[Any] = []
+        for stmt in statements:
+            if not isinstance(stmt, dict):
+                kept.append(stmt)
+                continue
+            resource = stmt.get("Resource")
+            if isinstance(resource, list):
+                surviving = [
+                    r for r in resource if not self._node_references(r, removed)
+                ]
+                if not surviving:
+                    continue
+                if len(surviving) != len(resource):
+                    stmt = {**stmt, "Resource": surviving}
+            elif self._node_references(resource, removed):
+                continue
+            kept.append(stmt)
+
+        doc["Statement"] = kept
+        return bool(kept)
+
+    @classmethod
+    def _node_references(cls, node: Any, names: Set[str]) -> bool:
+        """True if node contains a Ref/GetAtt/Sub pointing at one of names."""
+        if not names:
+            return False
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "Ref" and isinstance(value, str) and value in names:
+                    return True
+                if key == "Fn::GetAtt":
+                    parts = value if isinstance(value, list) else str(value).split(".")
+                    if parts and parts[0] in names:
+                        return True
+                if key == "Fn::Sub":
+                    text = value[0] if isinstance(value, list) else value
+                    # Match the WHOLE logical id, not a prefix: "${FooAlarm}" is
+                    # NOT a reference to a removed "Foo". A ${...} token either
+                    # closes with "}" or continues with ".Attribute", so require
+                    # one of those to follow the name — otherwise a surviving
+                    # resource whose name merely starts with a removed one would
+                    # have its IAM statement silently pruned.
+                    if isinstance(text, str) and any(
+                        f"${{{n}}}" in text or f"${{{n}." in text for n in names
+                    ):
+                        return True
+                if cls._node_references(value, names):
+                    return True
+        elif isinstance(node, list):
+            return any(cls._node_references(x, names) for x in node)
+        return False
+
+    def _remove_lwa_parameters_and_conditions(self, template: Dict[str, Any]) -> None:
+        """Drop the LWA layer-override parameter and its condition once dead.
+
+        Leaving ``LambdaWebAdapterLayerArn`` in a GovCloud template would keep
+        advertising an override with no target — the base template's comment
+        suggested GovCloud publishes LWA under a different account, but no
+        GovCloud LWA publication exists (the LWA project documents commercial
+        layer ARNs only).
+        """
+        params = template.get("Parameters", {})
+        conditions = template.get("Conditions", {})
+        # Conditions FIRST: `HasLambdaWebAdapterLayerArn` contains the parameter
+        # name as a substring, so a surviving condition would make the
+        # still-in-use probe below report a false positive for the parameter.
+        for name in self.LWA_CONDITIONS:
+            if name in conditions and not self._condition_still_used(template, name):
+                del conditions[name]
+                logger.debug(f"Removed dead LWA condition: {name}")
+        for name in self.LWA_PARAMETERS:
+            if name in params and not self._parameter_still_used(template, name):
+                del params[name]
+                logger.debug(f"Removed dead LWA parameter: {name}")
+        # Tidy the console UI so no group/label points at a removed parameter.
+        interface = template.get("Metadata", {}).get(
+            "AWS::CloudFormation::Interface", {}
+        )
+        for group in interface.get("ParameterGroups", []) or []:
+            plist = group.get("Parameters", [])
+            group["Parameters"] = [p for p in plist if p in params]
+        labels = interface.get("ParameterLabels", {}) or {}
+        for p in list(labels.keys()):
+            if p in self.LWA_PARAMETERS and p not in params:
+                del labels[p]
+
+    @staticmethod
+    def _parameter_still_used(template: Dict[str, Any], name: str) -> bool:
+        """True if anything outside Parameters/Metadata still uses name.
+
+        Parameters holds the declaration itself; Metadata only holds console
+        groups/labels, which are tidied separately. Rules ARE probed — a Rule
+        referencing a deleted parameter is a template error.
+        """
+        probe = {
+            k: v for k, v in template.items() if k not in ("Parameters", "Metadata")
+        }
+        return name in yaml.dump(probe, default_flow_style=False)
+
+    @staticmethod
+    def _condition_still_used(template: Dict[str, Any], name: str) -> bool:
+        probe = {k: v for k, v in template.items() if k != "Conditions"}
+        return name in yaml.dump(probe, default_flow_style=False)
+
     def _remove_cloudfront_policy_statements(
         self, template: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -1645,11 +2006,13 @@ class GovCloudTemplateTransformer:
 
     def _update_arn_partitions(self, template: Dict[str, Any]) -> Dict[str, Any]:
         template_str = yaml.dump(template, default_flow_style=False)
-        remaining = len(re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str))
+        remaining = len(
+            re.findall(r"arn:aws:(?!\$\{AWS::Partition\})", template_str)
+        )  # arn-partition-ok: regex that DETECTS this pattern
         if remaining > 0:
             logger.warning(f"Found {remaining} hard-coded ARN references — fixing")
             template_str = re.sub(
-                r"arn:aws:(?!\$\{AWS::Partition\})",
+                r"arn:aws:(?!\$\{AWS::Partition\})",  # arn-partition-ok: regex that DETECTS this pattern
                 "arn:${AWS::Partition}:",
                 template_str,
             )
@@ -1699,6 +2062,46 @@ class GovCloudTemplateTransformer:
             issues.append(
                 f"Dangling reference to removed condition: {self.HOSTING_CONDITION}"
             )
+
+        # Nothing may still reference a resource this transform deleted (e.g. the
+        # LWA-dependent chat streaming function, its log group, or the IAM
+        # statement that granted invoke on it). A survivor here is a guaranteed
+        # deploy-time rollback, so fail the publish instead.
+        #
+        # Matched on a word boundary, not a raw substring: a SURVIVING resource
+        # whose logical id merely contains a removed one (e.g. a retained
+        # "FooAlarm" after "Foo" was removed) must not fail the publish for a
+        # non-reason. Surviving logical ids are excluded from the haystack for the
+        # same reason.
+        surviving = set(resources) | set(template.get("Outputs", {}) or {})
+        for ref in sorted(self._removed_logical_ids):
+            if any(s != ref and ref in s for s in surviving):
+                # A retained id contains this name, so a raw scan would false-
+                # positive. Fall back to structural reference detection.
+                if self._node_references(template, {ref}):
+                    issues.append(f"Dangling reference to removed resource: {ref}")
+                continue
+            if re.search(rf"\b{re.escape(ref)}\b", template_str):
+                issues.append(f"Dangling reference to removed resource: {ref}")
+
+        # An inline IAM policy emptied by pruning must be dropped, not left with
+        # an empty statement list — IAM rejects it with "Syntax errors in policy"
+        # (400) and the stack rolls back at a different, confusing place.
+        for name, res in resources.items():
+            if not isinstance(res, dict):
+                continue
+            props = res.get("Properties", {})
+            if not isinstance(props, dict):
+                continue
+            docs = [
+                p.get("PolicyDocument")
+                for p in (props.get("Policies") or [])
+                if isinstance(p, dict)
+            ]
+            docs.append(props.get("PolicyDocument"))
+            for doc in docs:
+                if isinstance(doc, dict) and doc.get("Statement") == []:
+                    issues.append(f"Empty IAM policy Statement list on {name}")
 
         if issues:
             for issue in issues:
