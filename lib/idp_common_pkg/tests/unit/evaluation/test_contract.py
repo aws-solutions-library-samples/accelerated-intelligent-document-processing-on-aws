@@ -175,6 +175,69 @@ class TestRowWeight:
         }
         assert contract._row_weight(fc) == 3
 
+    def test_mixed_dotted_and_positional_sides(self):
+        # exp has one dotted leaf ("name"); act has three positional
+        # scalars with no attribute name. Weight = 1 (dotted) + 3
+        # (positional) = 4 so neither side's slots are lost (finding
+        # B1 from #625 adversarial self-review — earlier ``max``-only
+        # union returned 1 and dropped the 3 positional hallucinations).
+        fc = {
+            "expected_value": {"name": "A"},
+            "actual_value": ["x", "y", "z"],
+        }
+        assert contract._row_weight(fc) == 4
+        leaves = contract._row_leaves(fc)
+        assert "name" in leaves
+        # Positional slots emit the empty-string sentinel.
+        assert leaves.count("") == 3
+
+
+@pytest.mark.unit
+class TestIsEmptyValue:
+    """``_is_empty_value`` and ``_is_structured`` must cover the same
+    container shapes — divergence splits classifier semantics from
+    row-weighting.
+    """
+
+    def test_none_is_empty(self):
+        assert contract._is_empty_value(None) is True
+
+    def test_empty_containers_are_empty(self):
+        for v in ("", [], {}, (), set(), frozenset()):
+            assert contract._is_empty_value(v) is True, f"empty {type(v)}"
+
+    def test_non_empty_containers_not_empty(self):
+        for v in ("a", [1], {"a": 1}, (1,), {1}, frozenset({1})):
+            assert contract._is_empty_value(v) is False, f"non-empty {type(v)}"
+
+    def test_scalars_not_empty(self):
+        assert contract._is_empty_value(0) is False
+        assert contract._is_empty_value(0.0) is False
+        assert contract._is_empty_value(False) is False
+
+    def test_arbitrary_class_with_empty_dict_is_empty(self):
+        class Empty:
+            pass
+
+        assert contract._is_empty_value(Empty()) is True
+        assert contract._is_structured(Empty()) is True
+
+    def test_arbitrary_class_with_public_attrs_not_empty(self):
+        class WithAttrs:
+            def __init__(self):
+                self.name = "A"
+
+        assert contract._is_empty_value(WithAttrs()) is False
+        assert contract._is_structured(WithAttrs()) is True
+
+    def test_arbitrary_class_with_only_underscore_attrs_is_empty(self):
+        # Only private attributes → semantically empty (nothing to compare).
+        class OnlyPrivate:
+            def __init__(self):
+                self._x = 1
+
+        assert contract._is_empty_value(OnlyPrivate()) is True
+
 
 @pytest.mark.unit
 class TestSafeDiv:

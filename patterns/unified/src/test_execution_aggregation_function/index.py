@@ -813,7 +813,14 @@ def _run_level_row_aggregates(
             leaves = _row_leaves(fc)
             if leaves:
                 for leaf in leaves:
-                    _add(f"{collapsed}.{leaf}", bucket)
+                    # Sentinel "" from ``_row_leaves`` — a positional
+                    # scalar slot on a list-of-scalars side of a mixed
+                    # row. Attribute it to the collapsed root bucket
+                    # (no dotted sub-attribute available).
+                    if leaf == "":
+                        _add(collapsed, bucket)
+                    else:
+                        _add(f"{collapsed}.{leaf}", bucket)
             else:
                 _add(collapsed, bucket, weight)
 

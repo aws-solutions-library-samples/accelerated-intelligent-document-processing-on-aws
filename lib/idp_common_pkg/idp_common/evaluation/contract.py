@@ -34,16 +34,33 @@ def _is_empty_value(v: Any) -> bool:
     of tn (correctly-empty) / fa (hallucinated) / fn (missed) classification —
     a correctly-empty list is a `tn`, not a `tp`.
 
-    Includes tuple / set / frozenset so the emptiness check agrees with
-    ``_is_structured`` (which treats those as containers). A divergence
-    would split classifier semantics from ``_row_weight``'s enumeration
-    (finding from #625 high review — a Stickler-emitted empty tuple was
-    "structured" for weighting but "non-empty" for classification).
+    Coverage mirrors ``_is_structured``: every shape that ``_is_structured``
+    admits as a "container" must have an emptiness check here, or the
+    classifier and row-weighting diverge on that shape (finding B4 from
+    #625 adversarial self-review — a plain ``class Empty: pass`` instance
+    was structured-but-not-empty). For arbitrary objects, "empty" means:
+    a ``model_dump()`` that returns a falsy dict, or a ``__dict__`` with
+    no non-underscore keys.
     """
     if v is None:
         return True
     if isinstance(v, (str, list, dict, tuple, set, frozenset)) and len(v) == 0:
         return True
+    if not isinstance(v, (str, int, float, bool)):
+        # Pydantic model → check its serialized shape.
+        if hasattr(v, "model_dump"):
+            try:
+                dumped = v.model_dump()
+                return isinstance(dumped, dict) and not dumped
+            except Exception:  # noqa: BLE001
+                return False
+        # Arbitrary class with a public ``__dict__``.
+        if hasattr(v, "__dict__"):
+            try:
+                public = {k: val for k, val in vars(v).items() if not k.startswith("_")}
+                return not public
+            except Exception:  # noqa: BLE001
+                return False
     return False
 
 
@@ -165,23 +182,38 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
     Bag-semantic union of expected and actual leaf paths — repeated paths
     from list-of-items (where every item shares the same key shape)
     contribute one entry per item, so a 5-item list of ``{"name": ..}``
-    dicts weighs 5, not 1. Cross-side overlap counts once (elementwise
-    max of a ``Counter`` per path).
+    dicts weighs 5, not 1. Cross-side overlap uses the elementwise max of
+    a ``Counter`` per path so a partially-matched list-of-items contributes
+    the ``max(count_exp, count_act)`` per key rather than double-counting.
 
-    Returns [] when neither side has enumerable leaf paths — the caller
-    (``_row_weight``) applies its scalar-list fallback, and the aggregation
-    spread falls back to a single ``_add(collapsed, bucket, weight)``.
-
-    ``leaf_paths`` emits an empty container's PREFIX as a placeholder leaf
+    Empty-container placeholder filtering:
+    ``leaf_paths`` emits an empty container's prefix as a placeholder slot
     (so ``_count_leaves`` can floor an all-empty value at one slot). When
     a row's OTHER side populates a strict descendant of that prefix, the
     placeholder is shadowed and would otherwise cause
     ``_synthesize_parent_buckets`` to fire its cross-schema collision
-    warning spuriously (finding from #625 high review — a row like
-    ``exp={"items": [], "name": "A"}``, ``act={"items": [{"x": 1}], "name":
-    "B"}`` would produce leaves ``{items, name, items.x}`` and treat
-    ``items`` as a scalar-vs-structured collision). Drop the shadowed
-    placeholder so the row spreads only to real terminal leaves.
+    warning spuriously — a row like ``exp={"items": [], "name": "A"}``
+    against ``act={"items": [{"x": 1}], "name": "B"}`` produces
+    ``{items, name, items.x}`` and treats ``items`` as a scalar-vs-
+    structured collision. Drop the shadowed placeholder so the row
+    spreads only to real terminal leaves.
+
+    Mixed dotted-vs-scalar sides:
+    A row like ``exp={"name": "A"}`` (one dotted leaf) vs
+    ``act=["x", "y", "z"]`` (three positional scalars) has one dotted
+    leaf ("name") and three positional leaves with no attribute
+    attribution. If we returned only ``["name"]``, per-field spread
+    would attribute one bucket and the confusion-matrix miss the two
+    hallucinated actual leaves; if we counted only positional slots,
+    the "name" attribution would be lost. Emit positional slots as
+    synthetic entries at the SENTINEL path ``""`` — the caller detects
+    them and folds them into the row's collapsed root bucket (they
+    have no attribute name to attribute to). ``_row_weight`` includes
+    them in the total so top-level and per-field still agree.
+
+    Returns [] when neither side has any leaves at all — the caller
+    (``_row_weight``) applies its scalar fallback, and the aggregation
+    spread falls back to a single ``_add(collapsed, bucket, weight)``.
 
     Consolidated helper so top-level counts (via ``_row_weight``) and
     per-field spread enumerate the SAME slots — divergence reintroduces
@@ -212,7 +244,41 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
     if shadowed:
         for p in shadowed:
             del union[p]
-    return list(union.elements())
+    result = list(union.elements())
+    # Mixed dotted-vs-scalar: if one side has positional scalars (list-like
+    # of bare scalars that contribute NO dotted leaf paths but are real
+    # comparison slots) and the other side has dotted leaves, add sentinel
+    # entries so both sides' slots are counted. Sentinel path "" lets the
+    # aggregation caller fold them into the collapsed root bucket without
+    # attributing them to a spurious attribute name.
+    #
+    # Only fires for list-like containers of bare scalars — an empty dict
+    # or dict-with-nested-values reaches its slots through dotted paths,
+    # not positional counting, so we don't double-count them here.
+    positional = max(
+        _scalar_positional_count(exp),
+        _scalar_positional_count(act),
+    )
+    if positional > 0:
+        result.extend([""] * positional)
+    return result
+
+
+def _scalar_positional_count(v: Any) -> int:
+    """Count of BARE-SCALAR elements in a list-like value.
+
+    Returns 0 for anything that isn't a list/tuple/set/frozenset, and for
+    list-likes whose elements are themselves containers or models (those
+    reach the confusion matrix via their own dotted leaf paths). Used
+    only for mixed dotted-vs-scalar row weighting — see ``_row_leaves``.
+    """
+    if not isinstance(v, (list, tuple, set, frozenset)):
+        return 0
+    count = 0
+    for elem in v:
+        if elem is None or isinstance(elem, (str, int, float, bool)):
+            count += 1
+    return count
 
 
 def _is_structured(value: Any) -> bool:
