@@ -625,9 +625,17 @@ class SticklerConfigMapper:
                 cls._validate_method_for_field(schema, method, field_path)
             except ValueError as e:
                 logger.error(str(e))
-                # Remove invalid method to prevent downstream errors
+                # Remove invalid method to prevent downstream errors, but
+                # STILL recurse into children — an outer method validation
+                # failure shouldn't strip IDP-evaluation extensions from
+                # nested items, which have their own methods to translate
+                # (finding from code review — an earlier ``return schema``
+                # here silently skipped nested extension translation on
+                # any parent with an invalid method).
                 del schema[X_AWS_IDP_EVALUATION_METHOD]
-                return schema
+                return cls._recurse_children(
+                    schema, field_path, llm_config, in_list_items, document_class
+                )
 
         # An evaluation method on a STRUCTURED ARRAY is silently discarded below
         # (structured lists score through their item fields' comparators, and

@@ -188,8 +188,12 @@ class TestRowWeight:
         assert contract._row_weight(fc) == 4
         leaves = contract._row_leaves(fc)
         assert "name" in leaves
-        # Positional slots emit the empty-string sentinel.
-        assert leaves.count("") == 3
+        # Positional slots emit the ``POSITIONAL_LEAF_NAME`` sub-name.
+        # A magic name (not the empty string) so the aggregation
+        # Lambda's per-field spread lands them under
+        # ``<parent>.__positional__`` — a plain "" would collide with
+        # the parent bucket and trip the synthesis collision warning.
+        assert leaves.count(contract.POSITIONAL_LEAF_NAME) == 3
 
 
 @pytest.mark.unit

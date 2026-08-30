@@ -506,7 +506,15 @@ def _load_comparison_results(
             # version, log a warning (once per unique payload version per
             # run) so a shape change surfaces before it corrupts aggregation
             # output. Missing stamp (old payload) is tolerated — soft gate.
-            payload_version = eval_data.get("stickler_result_version")
+            # Coerce to string for the comparison — a payload deserialized
+            # from JSON where the writer omitted quotes around the version
+            # (e.g. ``"stickler_result_version": 2.0``) would land as a
+            # float here; ``float(2.0) != str("2.0")`` always fires and
+            # spams the very warning this gate exists to prevent.
+            raw_version = eval_data.get("stickler_result_version")
+            payload_version = (
+                str(raw_version) if raw_version is not None else None
+            )
             if (
                 payload_version is not None
                 and payload_version != STICKLER_RESULT_VERSION
@@ -570,6 +578,15 @@ def _load_comparison_results(
                 excluded_from_scoring = bool(
                     overall_metrics.get("evaluation_excluded") or weighted_score is None
                 )
+            else:
+                # Empty section_results — a payload that made it to disk
+                # but produced no evaluable sections at all. Treat as an
+                # excluded doc so it's visible in the UI's "excluded"
+                # count tile rather than silently vanishing from both the
+                # weighted-scores map AND the excluded list (a bug the
+                # earlier code had: this doc looked identical to a load
+                # failure, so operators couldn't tell what had happened).
+                excluded_from_scoring = True
 
             # R14 graded packet metrics (V-measure / Rand / ordering) computed
             # per-doc by ``compute_graded_packet_metrics`` and serialized into
@@ -580,10 +597,16 @@ def _load_comparison_results(
             # ``evaluate_packet`` returned no rows) are dropped so downstream
             # averaging never sees mixed-type entries.
             doc_split_metrics = eval_data.get("doc_split_metrics") or {}
+            # ``bool`` is a subclass of ``int`` in Python, so plain
+            # ``isinstance(x, (int, float))`` accepts True/False and would
+            # average them into the graded score as 1.0 / 0.0. Explicitly
+            # reject bool so a payload accidentally carrying a boolean at
+            # one of the graded keys doesn't poison the mean.
             graded_scores = {
                 key: doc_split_metrics[key]
                 for key in _GRADED_PACKET_KEYS
                 if isinstance(doc_split_metrics.get(key), (int, float))
+                and not isinstance(doc_split_metrics.get(key), bool)
             }
 
             return {
@@ -813,14 +836,7 @@ def _run_level_row_aggregates(
             leaves = _row_leaves(fc)
             if leaves:
                 for leaf in leaves:
-                    # Sentinel "" from ``_row_leaves`` — a positional
-                    # scalar slot on a list-of-scalars side of a mixed
-                    # row. Attribute it to the collapsed root bucket
-                    # (no dotted sub-attribute available).
-                    if leaf == "":
-                        _add(collapsed, bucket)
-                    else:
-                        _add(f"{collapsed}.{leaf}", bucket)
+                    _add(f"{collapsed}.{leaf}", bucket)
             else:
                 _add(collapsed, bucket, weight)
 
@@ -1378,18 +1394,20 @@ def _empty_metrics() -> Dict[str, Any]:
         "weighted_overall_scores": {},
         "average_confidence": None,
         "accuracy_breakdown": {
-            # All-None on the error path so dashboards / Athena queries
-            # can distinguish "unmeasurable" (None → renders N/A) from
-            # "measured 0.0" (a real zero result). Aligning FAR/FDR with
-            # the sibling precision/recall/f1 shape here is safer than
-            # forcing 0.0, which reads as "measured false alarm rate is
-            # zero" — false-negative to the caller (finding from #625
-            # high review, undoing my earlier ``0.0`` unification).
-            "precision": None,
-            "recall": None,
-            "f1_score": None,
-            "false_alarm_rate": None,
-            "false_discovery_rate": None,
+            # All 0.0 on the error path to match the shape produced by
+            # ``_calculate_false_alarm_rate`` / safe_div on the normal
+            # path — a downstream ``x == 0.0`` check must not read the
+            # same field as different types on different code paths
+            # (finding from #625 high review — I flipped these to None
+            # last round; reviewer immediately re-flagged the drift the
+            # other direction). Consumers that need to distinguish
+            # "unmeasurable" from "measured 0.0" should key off
+            # ``document_count == 0`` on the same envelope.
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1_score": 0.0,
+            "false_alarm_rate": 0.0,
+            "false_discovery_rate": 0.0,
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},

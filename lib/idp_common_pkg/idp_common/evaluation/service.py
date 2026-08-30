@@ -1679,13 +1679,19 @@ class EvaluationService:
 
         # Check if evaluation failed for this section
         if section_result.metrics.get("evaluation_failed", False):
-            # For failed evaluations, count based on expected data
-            # If we have expected data, count as false negatives (expected but not evaluated)
-            # This represents complete failure to evaluate
+            # For failed evaluations, count each expected LEAF as a
+            # false negative — matching the leaf-normalized counting
+            # the rest of the pipeline uses. Counting top-level keys
+            # here (as an earlier version did) under-counted fn by
+            # orders of magnitude on any section with a list-of-items
+            # or nested-object field, so a failed list-heavy section
+            # would report near-zero recall impact while a comparable
+            # healthy section reported the true leaf-normalized fn.
             if expected_results:
-                num_expected_fields = len(expected_results)
-                # Conservative approach: count each expected field as a false negative
-                metrics["fn"] = num_expected_fields if num_expected_fields > 0 else 1
+                from idp_common.evaluation.contract import _count_leaves
+
+                num_expected_leaves = _count_leaves(expected_results)
+                metrics["fn"] = num_expected_leaves if num_expected_leaves > 0 else 1
             else:
                 # If no expected data, still count as at least 1 failure
                 metrics["fn"] = 1
@@ -2023,9 +2029,20 @@ class EvaluationService:
             # render them as "N/A — Excluded" instead of a misleading 0.0.
             # ``skipped_section_count`` was maintained in the executor loop; no
             # second pass over section_results.
+            # Compare against the ORIGINAL pair count, not
+            # ``len(section_results)``. Sections that raised an exception
+            # (rather than emitting the ``evaluation_skipped`` metric flag)
+            # never make it into ``section_results``, so
+            # ``len(section_results)`` is already reduced by errored
+            # sections. Using it as the denominator would let a doc with
+            # (skipped=N, errored=M) match ``skipped_section_count == N ==
+            # len(section_results)=N`` and misclassify as "all excluded"
+            # even though M sections genuinely failed and should surface as
+            # such.
+            total_sections_attempted = len(section_pairs)
             all_sections_skipped = (
                 skipped_section_count > 0
-                and skipped_section_count == len(section_results)
+                and skipped_section_count == total_sections_attempted
             )
             if total_field_weight > 0:
                 document_weighted_score = total_weighted_score / total_field_weight

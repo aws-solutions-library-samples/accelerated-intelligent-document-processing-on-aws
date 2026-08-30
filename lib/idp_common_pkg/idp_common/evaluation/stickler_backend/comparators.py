@@ -338,9 +338,15 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         logger.debug(f"Document class: {doc_class}")
         logger.debug(f"Attribute description: {desc}")
 
-        # Handle None values
-        expected_str = str(expected) if expected is not None else "None"
-        actual_str = str(actual) if actual is not None else "None"
+        # Render display strings for the LLM prompt. Use a sentinel that
+        # CANNOT be confused with a legitimate string value of "None" —
+        # if a document's ground truth or extraction ever emits the
+        # literal string "None", the judge would otherwise see the same
+        # ``EXPECTED_VALUE: None`` regardless of whether the underlying
+        # value is null or the string "None" (finding from code review).
+        _NULL_SENTINEL = "<null>"
+        expected_str = str(expected) if expected is not None else _NULL_SENTINEL
+        actual_str = str(actual) if actual is not None else _NULL_SENTINEL
 
         logger.debug(f"Expected value: {expected_str}")
         logger.debug(f"Actual value: {actual_str}")

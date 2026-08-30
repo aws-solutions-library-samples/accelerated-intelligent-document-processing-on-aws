@@ -363,7 +363,13 @@ def transform_stickler_result(
             if isinstance(comparator_cfg, dict)
             else None
         )
-        configured_threshold = field_schema.get("x-aws-stickler-threshold") or tolerance
+        # ``is not None`` (not ``or``) so a valid threshold of exactly 0.0
+        # survives. ``0.0 or tolerance`` would silently substitute the
+        # tolerance and change the meaning of the comparison.
+        explicit_threshold = field_schema.get("x-aws-stickler-threshold")
+        configured_threshold = (
+            explicit_threshold if explicit_threshold is not None else tolerance
+        )
         applied_threshold: Optional[float] = None
         if root_model_cls is not None and hasattr(root_model_cls, "model_fields"):
             applied_threshold = applied_threshold_from_field_info(
@@ -437,14 +443,24 @@ def transform_stickler_result(
             # threshold: keeping the verdict and the score on the SAME row
             # in agreement avoids "✗ with score 1.0" contradictions in the
             # UI (finding from #625 review-effort code review — earlier
-            # unconditional False produced score/matched drift). Field-
-            # specific threshold takes precedence; falls back to the
-            # section-level ``match_threshold`` (Stickler's 0.8 default).
-            attr_threshold = (
-                field_config.get("applied_threshold")
-                if field_config.get("applied_threshold") is not None
-                else match_threshold
-            )
+            # unconditional False produced score/matched drift). For a
+            # LIST-typed field, use ``list_match_threshold`` (the Hungarian
+            # match gate) rather than ``applied_threshold`` (the scalar
+            # comparator's per-field threshold) — those two are not the
+            # same number and a partial list score compared against a
+            # scalar threshold can flip the verdict the wrong way. Falls
+            # back to the section-level ``match_threshold`` (Stickler's
+            # 0.8 default) when neither is configured.
+            field_schema_here = properties.get(field_name, {}) or {}
+            is_list_field = field_schema_here.get("type") == "array"
+            if is_list_field:
+                list_thresh = field_config.get("match_threshold")
+                attr_threshold = (
+                    list_thresh if list_thresh is not None else match_threshold
+                )
+            else:
+                applied = field_config.get("applied_threshold")
+                attr_threshold = applied if applied is not None else match_threshold
             try:
                 matched = float(score) >= float(attr_threshold)
             except (TypeError, ValueError):
@@ -467,9 +483,11 @@ def transform_stickler_result(
         # Stickler's reason string ``"below threshold (X < Y)"`` uses for Y.
         # Falls back to the configured value when the model lookup wasn't
         # possible (e.g. auto-generated section with no built model).
-        display_threshold = (
-            field_config.get("applied_threshold") or field_specific_threshold
-        )
+        # ``is not None`` (not ``or``) so a display threshold of exactly
+        # 0.0 survives — same reasoning as the ``configured_threshold``
+        # binding above.
+        applied = field_config.get("applied_threshold")
+        display_threshold = applied if applied is not None else field_specific_threshold
         evaluation_method_value = format_evaluation_method(
             comparator_method=comparator_method,
             expected_value=expected_value,

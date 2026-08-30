@@ -95,42 +95,85 @@ def leaf_paths(value: Any, prefix: str = "") -> List[str]:
 
 def _collect_leaf_paths(value: Any, prefix: str, result: List[str]) -> None:
     """Recursive worker for ``leaf_paths``. See there for semantics."""
+    _collect_leaf_paths_tagged(value, prefix, result, None)
+
+
+def _collect_leaf_paths_tagged(
+    value: Any,
+    prefix: str,
+    result: List[str],
+    placeholders: "set[str] | None",
+) -> None:
+    """Worker for ``leaf_paths`` / ``leaf_paths_tagged``.
+
+    When ``placeholders`` is provided, paths emitted because the value at
+    that position is an EMPTY container (rather than a real scalar leaf)
+    are added to the set — the caller can then distinguish "real leaf at
+    this path" from "empty-container placeholder" for shadow filtering.
+    Without this tagging, a shadow filter based only on path structure
+    can't tell a legitimate scalar leaf ``"items": "value"`` apart from
+    an empty placeholder ``"items": []`` and drops both when a strict
+    descendant exists on the other side of the row.
+    """
     if isinstance(value, dict):
         if not value:
             if prefix:
                 result.append(prefix)
+                if placeholders is not None:
+                    placeholders.add(prefix)
             return
         for k, v in value.items():
             child_prefix = f"{prefix}.{k}" if prefix else k
-            _collect_leaf_paths(v, child_prefix, result)
+            _collect_leaf_paths_tagged(v, child_prefix, result, placeholders)
         return
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple, set, frozenset)):
+        # Include frozenset so leaf enumeration matches ``_is_structured`` /
+        # ``_is_empty_value`` (all three now agree on the same container
+        # set; a divergence would let a frozenset-valued row weigh
+        # differently than it classifies).
         if not value:
             if prefix:
                 result.append(prefix)
+                if placeholders is not None:
+                    placeholders.add(prefix)
             return
         for elem in value:
-            _collect_leaf_paths(elem, prefix, result)
+            _collect_leaf_paths_tagged(elem, prefix, result, placeholders)
         return
     if hasattr(value, "model_dump"):
         try:
-            _collect_leaf_paths(value.model_dump(), prefix, result)
+            _collect_leaf_paths_tagged(value.model_dump(), prefix, result, placeholders)
             return
         except Exception:  # noqa: BLE001
             pass
     if hasattr(value, "__dict__") and not isinstance(value, (str, int, float, bool)):
         try:
-            _collect_leaf_paths(
+            _collect_leaf_paths_tagged(
                 {k: v for k, v in vars(value).items() if not k.startswith("_")},
                 prefix,
                 result,
+                placeholders,
             )
             return
         except Exception:  # noqa: BLE001
             pass
     # Scalar, None, or unknown scalar-like — this position IS the leaf slot.
+    # NOT a placeholder — a real value lives here.
     if prefix:
         result.append(prefix)
+
+
+def leaf_paths_tagged(value: Any, prefix: str = "") -> tuple[List[str], "set[str]"]:
+    """Return ``(paths, placeholders)`` where ``placeholders`` is the subset
+    of ``paths`` that were emitted because the value at that position was
+    an EMPTY container (rather than a real scalar leaf). Used by
+    ``_row_leaves`` to shadow-filter empty-container placeholders without
+    also dropping legitimate scalar leaves at the same path.
+    """
+    result: List[str] = []
+    placeholders: set[str] = set()
+    _collect_leaf_paths_tagged(value, prefix, result, placeholders)
+    return result, placeholders
 
 
 def _count_leaves(value: Any) -> int:
@@ -221,26 +264,45 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
     """
     exp = fc.get("expected_value")
     act = fc.get("actual_value")
-    exp_paths = leaf_paths(exp) if _is_structured(exp) else []
-    act_paths = leaf_paths(act) if _is_structured(act) else []
+    if _is_structured(exp):
+        exp_paths, exp_placeholders = leaf_paths_tagged(exp)
+    else:
+        exp_paths, exp_placeholders = [], set()
+    if _is_structured(act):
+        act_paths, act_placeholders = leaf_paths_tagged(act)
+    else:
+        act_paths, act_placeholders = [], set()
     if not exp_paths and not act_paths:
         return []
     exp_bag: Counter = Counter(exp_paths)
     act_bag: Counter = Counter(act_paths)
     union: Counter = exp_bag | act_bag
-    # Filter out placeholder paths shadowed by a strict descendant in the
-    # same row. ``a.b`` is a placeholder if ``a.b.c`` (or deeper) also
-    # exists — the empty-container branch emitted ``a.b`` as a slot but
-    # the populated side turned it into a subtree we're already spreading
-    # into. O(N^2) but N is small per row.
+    # Filter placeholder paths shadowed by a strict descendant in the same
+    # row. Only shadow paths that came from an empty-container placeholder
+    # on the side where the path was emitted (or on BOTH sides). A path
+    # that was a REAL scalar leaf on either side is preserved — otherwise
+    # a row like ``exp={"items": "value", "name": "A"}`` vs
+    # ``act={"items": {"x": 1}, "name": "B"}`` would drop the exp scalar
+    # at ``items`` when act has ``items.x``.
     all_paths = list(union.keys())
     shadowed: set = set()
     for candidate in all_paths:
         prefix_check = candidate + "."
-        for other in all_paths:
-            if other != candidate and other.startswith(prefix_check):
-                shadowed.add(candidate)
-                break
+        has_descendant = any(
+            other != candidate and other.startswith(prefix_check) for other in all_paths
+        )
+        if not has_descendant:
+            continue
+        # Placeholder on the side that emitted the path — i.e., not a real
+        # scalar leaf. A path emitted by both sides is a placeholder only
+        # if both sides emitted it as one; when either side had a real
+        # value there, keep it.
+        exp_has = candidate in exp_bag
+        act_has = candidate in act_bag
+        exp_only_placeholder = not exp_has or candidate in exp_placeholders
+        act_only_placeholder = not act_has or candidate in act_placeholders
+        if exp_only_placeholder and act_only_placeholder:
+            shadowed.add(candidate)
     if shadowed:
         for p in shadowed:
             del union[p]
@@ -260,8 +322,21 @@ def _row_leaves(fc: Dict[str, Any]) -> List[str]:
         _scalar_positional_count(act),
     )
     if positional > 0:
-        result.extend([""] * positional)
+        # Use a sub-name (not the empty string) so per-field spread adds
+        # to ``collapsed.__positional__``, not to ``collapsed`` directly.
+        # Adding to ``collapsed`` would look like a leaf bucket at the
+        # parent path and trip ``_synthesize_parent_buckets``' cross-
+        # schema collision check when other leaves at ``collapsed.<attr>``
+        # also exist — spurious warning + skipped synthesis.
+        result.extend([POSITIONAL_LEAF_NAME] * positional)
     return result
+
+
+# Magic leaf name for positional scalar slots on a mixed dotted+positional
+# row. Kept namespaced (double-underscore both ends) so it can never
+# collide with a real schema attribute name; the aggregation Lambda's
+# per-field bucket for this appears under ``<parent>.__positional__``.
+POSITIONAL_LEAF_NAME = "__positional__"
 
 
 def _scalar_positional_count(v: Any) -> int:

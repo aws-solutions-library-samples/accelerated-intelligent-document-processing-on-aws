@@ -217,12 +217,10 @@ def handler(event, context):
             # point of this branch is that the document survives.
             logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
             # If we managed to load ``actual_document`` before the failure,
-            # prefer its clean serialization — the raw ``event.get('document')``
-            # can carry state-level keys the state machine's Catch merged in
-            # (``EvaluationError``, and — because the ASL passes
-            # ``document.$: $`` — a nested ``document`` key holding the
-            # actual doc). Downstream ``$.document.<field>`` would otherwise
-            # see the merged shape (finding from #625 high review).
+            # return its clean serialization. Otherwise the raw event's
+            # ``document`` field is the doc payload (the ASL parameter
+            # ``document.$: $.document`` guarantees this — no state-level
+            # sibling keys leak through).
             if actual_document is not None:
                 try:
                     return {
@@ -232,25 +230,7 @@ def handler(event, context):
                     }
                 except Exception:
                     pass
-            raw = event.get('document') or {}
-            # The ASL parameter ``document.$: $`` on RecordEvaluationFailure
-            # passes the WHOLE state (including sibling keys like
-            # ``EvaluationError``). Unwrap a nested ``document`` if present,
-            # and drop known state-level keys.
-            if isinstance(raw, dict) and isinstance(raw.get('document'), dict):
-                raw = raw['document']
-            if isinstance(raw, dict):
-                raw = {
-                    k: v for k, v in raw.items()
-                    if k not in (
-                        'EvaluationError',
-                        'record_failure_only',
-                        'failure_reason',
-                        'error',
-                        'execution_arn',
-                    )
-                }
-            return {'document': raw}
+            return {'document': event.get('document') or {}}
 
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")

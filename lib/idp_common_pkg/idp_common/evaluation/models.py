@@ -73,7 +73,10 @@ class SectionEvaluationResult:
     section_id: str
     document_class: str
     attributes: List[AttributeEvaluationResult]
-    metrics: Dict[str, float] = field(default_factory=dict)
+    # ``Dict[str, Any]`` because the runtime dict carries nested dicts
+    # (``_stickler_counts``), booleans (``evaluation_failed``), and
+    # strings (``failure_type``) alongside the derived-metric floats.
+    metrics: Dict[str, Any] = field(default_factory=dict)
     stickler_comparison_result: Optional[Dict[str, Any]] = (
         None  # Raw Stickler result for bulk aggregation
     )
