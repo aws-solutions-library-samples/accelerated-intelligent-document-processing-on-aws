@@ -40,6 +40,9 @@ def handler(event, context):
             if files_to_process is None:
                 files_to_process = number_of_files
             config_version = message.get("configVersion")  # Optional parameter
+            # Revision of that profile the run pinned, stamped onto every copied
+            # object so the documents process under exactly what the run recorded.
+            config_revision = message.get("configRevision")
             object_keys = message.get("objectKeys") or []
             # "draft-labeling" runs create ground truth; anything else is scored
             # against it. Absent on messages enqueued before this field existed.
@@ -145,6 +148,7 @@ def handler(event, context):
                 submission_source="test-studio",
                 test_set_id=test_set_id,
                 forced_document_class=forced_document_class,
+                config_revision=config_revision,
             )
 
             # Copy baseline files from test set bucket to baseline bucket with
@@ -237,6 +241,7 @@ def _copy_files_to_bucket(
     submission_source=None,
     test_set_id=None,
     forced_document_class=None,
+    config_revision=None,
 ):
     """Copy files from source bucket to destination bucket - track failures"""
     successful_files = []
@@ -265,6 +270,8 @@ def _copy_files_to_bucket(
             metadata = {}
             if config_version:
                 metadata["config-version"] = config_version
+                if config_revision is not None:
+                    metadata["config-revision"] = str(config_revision)
             if submission_source:
                 metadata["submission-source"] = submission_source
             if test_set_id:

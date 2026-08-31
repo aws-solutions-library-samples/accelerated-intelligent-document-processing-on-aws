@@ -82,7 +82,7 @@ const buildTroubleshootSection = (doc: DocumentContext): string => {
   const meta: string[] = [];
   if (doc.objectKey) meta.push(`- **Document:** ${doc.objectKey}`);
   if (doc.objectStatus) meta.push(`- **Status:** ${doc.objectStatus}`);
-  if (doc.configVersion) meta.push(`- **Config version:** ${doc.configVersion}`);
+  if (doc.configVersion) meta.push(`- **Config profile:** ${doc.configVersion}`);
   if (doc.executionArn) meta.push(`- **Execution ARN:** ${doc.executionArn}`);
   if (meta.length) parts.push(`## Document context\n${meta.join('\n')}`);
   if (doc.jobError) parts.push(`## Error\n\`\`\`\n${doc.jobError}\n\`\`\``);

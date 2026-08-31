@@ -15,6 +15,23 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+def coerce_revision(value: Any) -> Optional[int]:
+    """
+    Normalize a configuration revision number from any transport.
+
+    The same value arrives as a str (S3 object metadata), a Decimal (DynamoDB), or
+    an int (JSON), and an unparseable value must degrade to None — "no pinned
+    revision, use the profile's current configuration" — rather than raising in the
+    middle of a document's plumbing.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class Status(Enum):
     """Document processing status."""
 
@@ -368,7 +385,12 @@ class Document:
     metering: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     trace_id: Optional[str] = None
-    config_version: Optional[str] = None  # Configuration version to use for processing
+    config_version: Optional[str] = None  # Configuration Profile to process under
+    # Revision of that profile, pinned at queue time. Kept as its own field rather
+    # than folded into config_version because config_version is equality-compared
+    # against allowedConfigVersions in the RBAC scope checks — a composite value
+    # there would either bypass or break scope.
+    config_revision: Optional[int] = None
     submission_source: Optional[str] = None
     test_set_id: Optional[str] = None
     # Class every page must be treated as, instead of classifying. Set when a
@@ -444,6 +466,7 @@ class Document:
             "metering": self.metering,
             "trace_id": self.trace_id,
             "config_version": self.config_version,
+            "config_revision": self.config_revision,
             "submission_source": self.submission_source,
             "test_set_id": self.test_set_id,
             # Carried across step boundaries: set before OCR, read at
@@ -557,6 +580,7 @@ class Document:
             metering=data.get("metering", {}),
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
+            config_revision=coerce_revision(data.get("config_revision")),
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
@@ -662,6 +686,7 @@ class Document:
 
         # Read S3 metadata to get configuration version if available
         config_version = None
+        config_revision = None
         submission_source = None
         test_set_id = None
         forced_document_class = None
@@ -673,8 +698,12 @@ class Document:
             metadata = response.get("Metadata", {})
             logger.info(f"S3 metadata for {input_key}: {metadata}")
             config_version = metadata.get("config-version")
+            config_revision = coerce_revision(metadata.get("config-revision"))
             if config_version:
-                logger.info(f"Found config version in S3 metadata: {config_version}")
+                logger.info(
+                    f"Found config version in S3 metadata: {config_version}"
+                    + (f" r{config_revision}" if config_revision else "")
+                )
             else:
                 logger.info(f"No config-version found in metadata for {input_key}")
             submission_source = metadata.get("submission-source")
@@ -701,6 +730,7 @@ class Document:
             initial_event_time=initial_event_time,
             status=Status.QUEUED,
             config_version=config_version,  # Add config version to document
+            config_revision=config_revision,
             submission_source=submission_source,
             test_set_id=test_set_id,
             forced_document_class=forced_document_class,
@@ -919,6 +949,7 @@ class Document:
                 # that never decompress (e.g. the pipeline-hooks dispatcher) can
                 # still honor the version the document was processed under.
                 "config_version": self.config_version,
+                "config_revision": self.config_revision,
                 "compressed": True,
             }
 

@@ -120,7 +120,10 @@ describe('GenerateDraftLabelsModal', () => {
     await waitFor(() => expect(screen.getByText(/2 document\(s\) selected/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Label 2 document/i }));
-    expect(onSubmit).toHaveBeenCalledWith(undefined, expect.arrayContaining(['doc1.pdf', 'doc51.pdf']));
+    // Third arg is the pinned Configuration Profile revision, which develop added.
+    // Asserted as undefined rather than ignored: the default has to stay "the profile's
+    // current configuration", not some revision the reviewer never chose.
+    expect(onSubmit).toHaveBeenCalledWith(undefined, expect.arrayContaining(['doc1.pdf', 'doc51.pdf']), undefined);
     expect(onSubmit.mock.calls[0][1]).toHaveLength(2);
   });
 
@@ -131,6 +134,6 @@ describe('GenerateDraftLabelsModal', () => {
     await waitFor(() => expect(screen.getByText(/ts1 · 100/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Label every document that needs it/i }));
-    expect(onSubmit).toHaveBeenCalledWith(undefined, undefined);
+    expect(onSubmit).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 });

@@ -226,6 +226,38 @@ operations:
     scope_checked: true
     enforced_in: *cfg
     args: { versionName: "__nope__" }
+  # Configuration Profile revisions. Scope is checked at the PROFILE for all
+  # five: a revision is content inside a profile, never its own RBAC object.
+  listConfigProfileRevisions:
+    groups: [Admin, Author, Viewer]
+    kind: read
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "default" }
+  getConfigProfileRevision:
+    groups: [Admin, Author, Viewer]
+    kind: read
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "default", revision: 1 }
+  restoreConfigProfileRevision:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
+  labelConfigProfileRevision:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
+  deleteConfigProfileRevision:
+    groups: [Admin]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
   getPricing:
     groups: [Admin, Author, Viewer]
     kind: read

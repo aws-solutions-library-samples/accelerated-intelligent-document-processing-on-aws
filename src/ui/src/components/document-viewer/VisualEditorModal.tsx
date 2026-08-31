@@ -1398,7 +1398,11 @@ const VisualEditorModal = ({
           },
           {
             id: 'history',
-            label: 'Revision History',
+            // "Edit history", not "Revision History": these are per-field edits to
+            // extracted values, matching the underlying `_editHistory` data — not
+            // numbered immutable snapshots. "Revision" is reserved for
+            // Configuration Profile revisions, which ARE that.
+            label: 'Edit history',
             content: <EditHistoryTab predictionData={localJsonData} baselineData={localBaselineData} />,
           },
           {

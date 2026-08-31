@@ -61,7 +61,8 @@ if not result["valid"]:
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
-| `constants.py` | Configuration constants. |
+| `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `schema_constants.py` | JSON Schema extension keys (e.g. `x-aws-idp-document-type`, `x-aws-idp-extraction-model`, `x-aws-idp-extraction-system-prompt`, `x-aws-idp-extraction-task-prompt`). |
 | `schema_utils.py` | `deref_schema()` — resolve a local `#/$defs/<name>` `$ref` against a class schema. See [Dereferencing `$ref` subschemas](#dereferencing-ref-subschemas). |
@@ -172,6 +173,85 @@ The same Default/Custom pattern is used for auxiliary records:
   else Default. Consumed at runtime by
   `bedrock.model_utils.get_model_max_output_tokens()` (60s cache; falls back to
   the on-disk `config_library/` YAML when no table is configured).
+
+## Configuration Profiles and revisions
+
+A **Configuration Profile** is the named entity users manage (`default`,
+`Production`, `lending`) — the RBAC object, the document-visibility partition, and
+the activation target. A **revision** is an immutable numbered snapshot of one
+profile's configuration, cut by `save_configuration()` on every save. The user-facing
+guide is [docs/configuration-profiles.md](../../../../docs/configuration-profiles.md).
+
+The invariant: **revisions are content, profiles are access-control objects.** Scope
+(`allowedConfigVersions`) is checked at the profile; nothing checks a revision.
+
+| Item | Key | Holds |
+|---|---|---|
+| Profile head | `Config#<profile>` | The working configuration (gzip Binary), plus `LatestRevision` / `PublishedRevision` |
+| Revision index | `ConfigRevIndex#<profile>` | One small entry per retained revision (number, timestamps, author, label, notes, size, class fingerprint, pinned) |
+| Revision body | `s3://<ConfigurationBucket>/config_revisions/<profile>/<nnnnnn>.json.gz` | The full configuration that revision recorded |
+| Active pointer | `Config#__active` | The active profile name (`__active` is a reserved profile name) |
+
+Four decisions worth knowing before changing this code:
+
+- **Bodies are in S3, not DynamoDB.** `ConfigurationTable` is HASH-only, so listing
+  profiles requires a `Scan`, and DynamoDB bills a scan on **full item size
+  regardless of `ProjectionExpression`**. Storing revision bodies in the table would
+  make the profile list — which the UI loads constantly — more expensive with every
+  save.
+- **Metadata is one index item per profile.** Listing history is a single `get_item`,
+  not a scan. Appends use DynamoDB's native `list_append` (which cannot lose a
+  concurrent append); the rare read-modify-write paths (label, delete, prune) are
+  guarded by an `IndexSeq` counter with one retry.
+- **`ConfigRevIndex#` deliberately does not match `begins_with(Configuration,
+  "Config#")`.** That filter lists profiles and feeds the scope-filtered dropdowns; a
+  revision leaking into it would look like a profile with no configuration.
+  `list_config_versions()` additionally skips reserved names.
+- **History is best-effort.** If the revision cannot be recorded, the save still
+  succeeds (logged at WARNING). Losing a history entry is recoverable; refusing a
+  save is an outage. `ConfigRevisionStore.enabled` is False when no
+  `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
+  working unchanged.
+
+`_record_revisions()` skips the cut entirely when the saved configuration equals
+what was already stored. Every deployment re-saves `default` and each managed
+profile, so without that check a few no-op upgrades would evict a user's real
+history from the retention window.
+
+Retention keeps the last `CONFIG_REVISION_CAP` (default 20) revisions per profile,
+plus the published revision and anything labeled or pinned by a test run. A
+count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
+runs in `ConfigRevisionStore.prune()` on write.
+
+`restore_revision()` is forward-only: it saves the chosen revision as a *new*
+revision rather than rewinding the counter, so history is never rewritten.
+
+### Reading a pinned revision
+
+`get_config(version=…, revision=…)` (→ `ConfigurationManager.get_merged_configuration`)
+loads a specific revision's stored body instead of the profile head. Every pipeline
+Lambda passes `document.config_revision`, which the queue processor pins at queue
+time, so a save made mid-flight cannot change the configuration under an in-flight
+document.
+
+Two deliberate choices:
+
+- **A missing pinned revision raises.** It does *not* fall back to the head: a run
+  that silently used the wrong configuration looks successful, and its numbers then
+  enter a comparison.
+- **No "published revision" branch on the unpinned path.** The head always holds
+  the published revision's content, and reading the head is one `get_item` against
+  an S3 GET, so an unpinned read stays on the head.
+
+`resolve_published_revision(profile)` returns the revision a new document should be
+pinned to, or None when the profile has no history (an older deployment, or one
+untouched since the upgrade) — in which case consumers fall back to the head, which
+is the pre-revision behavior.
+
+`confidence_fingerprint()` hashes only the configuration that determines what a
+confidence number *means* (extraction model/sampling, assessment). It is recorded on
+every revision so confidence curves can eventually be branched per semantics rather
+than per profile; nothing keys off it yet.
 
 ## Rollback-safe DynamoDB serialization
 

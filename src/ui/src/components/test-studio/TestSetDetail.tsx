@@ -464,14 +464,14 @@ const TestSetDetail = (): React.JSX.Element => {
     }
   };
 
-  const handleGenerateDraftLabels = async (configVersion?: string, objectKeys?: string[]) => {
+  const handleGenerateDraftLabels = async (configVersion?: string, objectKeys?: string[], configRevision?: number) => {
     if (!testSetId) return;
     setIsStartingLabels(true);
     setError(null);
     try {
       const response = await client.graphql({
         query: generateDraftLabels,
-        variables: { input: { testSetId, configVersion, objectKeys } },
+        variables: { input: { testSetId, configVersion, objectKeys, configRevision } },
       });
       const job = response.data?.generateDraftLabels;
       if (job) {

@@ -51,7 +51,16 @@ export default defineConfig({
             { label: "VPC-Secured Mode", slug: "vpc-secured-mode" },
             { label: "Configuration", slug: "configuration" },
             {
-              label: "Configuration Versions",
+              label: "Configuration Profiles",
+              slug: "configuration-profiles",
+            },
+            // Redirect stub for the page's old name, kept so existing links and
+            // bookmarks do not 404. Listed next to its replacement, and labelled
+            // so the nav does not read as two competing pages. sync-sidebar.mjs
+            // adds any unlisted doc automatically, so leaving it out entirely
+            // just means it lands in "New & Uncategorized" on the next run.
+            {
+              label: "Configuration Versions (renamed)",
               slug: "configuration-versions",
             },
             {
@@ -123,6 +132,11 @@ export default defineConfig({
             { label: "Test Studio", slug: "test-studio" },
             { label: "Creating Custom Test Sets", slug: "creating-custom-test-sets" },
             { label: "MLflow Experiment Tracking", slug: "mlflow-integration" },
+            {
+              label: "Release Validation",
+              // README.md is the index; per-release vX.Y.Z.md entries auto-list.
+              items: [{ autogenerate: { directory: "release-validation" } }],
+            },
           ],
         },
         {

@@ -130,7 +130,7 @@ def upload_config(stack, version, path, res=None, native=False):
             return False
     r = sh(
         f"PYTHONPATH={REPO}/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload "
-        f'--stack-name {stack} --config-file "{path}" --config-version {version} '
+        f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
     return "uploaded successfully" in (r.stdout + r.stderr)

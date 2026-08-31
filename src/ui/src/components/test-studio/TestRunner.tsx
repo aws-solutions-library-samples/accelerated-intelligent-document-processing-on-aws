@@ -8,6 +8,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { startTestRun, getTestSets } from '../../graphql/generated';
 import handlePrint from './PrintUtils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import { getErrorMessage } from '../../utils/errorUtils';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -28,7 +29,7 @@ interface TestSetData {
   filePattern?: string;
   fileCount: number;
   status: string;
-  /** Config version this test set declares for itself (optional). */
+  /** Config profile this test set declares for itself (optional). */
   configVersion?: string | null;
 }
 
@@ -47,6 +48,9 @@ const TestRunner = ({
   const [testSetsLoading, setTestSetsLoading] = useState(true);
   const [selectedTestSet, setSelectedTestSet] = useState<SelectProps.Option | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
+  // null = the profile's current configuration. Pinning an explicit revision is
+  // what makes two runs of the same profile comparable.
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const [numberOfFiles, setNumberOfFiles] = useState('');
   const [context, setContext] = useState('');
   const [error, setError] = useState('');
@@ -137,6 +141,7 @@ const TestRunner = ({
         ...(context && { context }),
         ...(numberOfFiles.trim() && { numberOfFiles: parseInt(numberOfFiles.trim(), 10) }),
         ...(selectedVersion && { configVersion: selectedVersion.value }),
+        ...(selectedRevision !== null && { configRevision: selectedRevision }),
       };
       console.log('TestRunner: Starting test run with input:', input);
 
@@ -220,7 +225,7 @@ const TestRunner = ({
             onChange={({ detail }) => {
               setSelectedTestSet(detail.selectedOption);
               setNumberOfFiles(''); // Reset numberOfFiles when test set changes
-              // Auto-select the configuration version for the chosen test set, in
+              // Auto-select the configuration profile for the chosen test set, in
               // priority order:
               //
               //   1. `configVersion` declared ON the test set record. Lets a test
@@ -228,7 +233,7 @@ const TestRunner = ({
               //      deployed by an extension, whose config presets are named
               //      `<featureId>-v<version>` by the Feature Platform and so can
               //      never equal the test set id.
-              //   2. A config version whose name EQUALS the test set id. The
+              //   2. A configuration profile whose name EQUALS the test set id. The
               //      convention the stack-managed benchmark sets rely on
               //      (e.g. "fake-w2", "docsplit").
               //   3. The active version — nothing specific applies.
@@ -259,18 +264,26 @@ const TestRunner = ({
         </FormField>
 
         <FormField
-          label="Configuration Version"
-          description="Select which configuration version to use for processing these test documents"
+          label="Configuration Profile"
+          description="Select which configuration profile to use for processing these test documents"
         >
           <Select
             selectedOption={selectedVersion}
             onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
             options={getVersionOptions()}
-            placeholder={versions.length === 0 ? 'Loading versions...' : 'Select configuration version'}
+            placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
             disabled={loading || versions.length === 0}
-            loadingText="Loading versions..."
+            loadingText="Loading profiles..."
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedVersion?.value}
+          value={selectedRevision}
+          onChange={setSelectedRevision}
+          description="Defaults to the profile’s current configuration. Pick an earlier revision to score exactly what it recorded — that is how two runs of the same profile stay comparable."
+          disabled={loading}
+        />
 
         <FormField
           label="Number of Files"

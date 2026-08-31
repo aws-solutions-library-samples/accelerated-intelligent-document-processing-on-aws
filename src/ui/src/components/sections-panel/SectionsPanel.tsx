@@ -883,7 +883,7 @@ const SectionsPanel = ({
   // (see DocumentPanel: it fetches `documentVersionConfig` from the doc's
   // `configVersion` and passes it in here). Using the current live config
   // instead would show the wrong class vocabulary in Edit Mode for docs
-  // processed under a previous or different config version.
+  // processed under a previous or different configuration profile.
   const configuration = mergedConfig;
   const { settings: settings2 } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview } = useUserRole();
@@ -1078,7 +1078,7 @@ const SectionsPanel = ({
     }
   }, [isEditMode, sections]);
 
-  // Get available classes from the document's config version (passed in as
+  // Get available classes from the document's configuration profile (passed in as
   // `mergedConfig`). Shared with Test Studio's annotation editor, which offers
   // the same correction against the same config.
   const getAvailableClasses = () => getConfigClassOptions(configuration);

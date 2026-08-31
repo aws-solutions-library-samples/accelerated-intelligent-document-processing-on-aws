@@ -18,8 +18,10 @@ from idp_common.config.constants import (
     CONFIG_TYPE_DEFAULT_PRICING,
     CONFIG_TYPE_SCHEMA,
     DEFAULT_VERSION,
+    RESERVED_VERSION_NAMES,
 )
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
+from idp_common.config_scope import scope_allows
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -65,6 +67,9 @@ def _get_caller_info(event):
 _OPERATION_REQUIRED_GROUPS = {
     # Admin-only writes
     "deleteConfigVersion": {"Admin"},
+    # Deleting a revision destroys history, so it stays Admin-only — the same
+    # boundary deleteDocumentVersion draws.
+    "deleteConfigProfileRevision": {"Admin"},
     "updatePricing": {"Admin"},
     "restoreDefaultPricing": {"Admin"},
     "updateModelConfigLimits": {"Admin"},
@@ -73,12 +78,21 @@ _OPERATION_REQUIRED_GROUPS = {
     "updateConfiguration": {"Admin", "Author"},
     "setActiveVersion": {"Admin", "Author"},
     "generateRuleJson": {"Admin", "Author"},
+    # Revisions are CONTENT, not access-control objects: an Author scoped to a
+    # profile may move its content freely. Only minting a new profile (a new
+    # RBAC object, via saveAsVersion) stays Admin-only.
+    "restoreConfigProfileRevision": {"Admin", "Author"},
+    "labelConfigProfileRevision": {"Admin", "Author"},
     # Admin + Author + Viewer reads (everything except Reviewer)
     "getConfigVersions": {"Admin", "Author", "Viewer"},
     # Annotator included so the annotate view can populate its class dropdown, and
     # ONLY for that: the response is reduced to the class vocabulary for a caller who
     # is not otherwise entitled to the configuration. See _class_vocabulary_only.
     "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator"},
+    # Not Annotator: revision history serves no annotator flow, and unlike
+    # getConfigVersion there is no reduced payload for it to receive.
+    "listConfigProfileRevisions": {"Admin", "Author", "Viewer"},
+    "getConfigProfileRevision": {"Admin", "Author", "Viewer"},
     "getPricing": {"Admin", "Author", "Viewer"},
     "getModelConfigLimits": {"Admin", "Author", "Viewer"},
     "listConfigurationLibrary": {"Admin", "Author", "Viewer"},
@@ -184,6 +198,10 @@ def validate_version_name(name):
     """
     if not name or not isinstance(name, str):
         return False
+    # Reserved names collide with sentinel records in the configuration table
+    # (e.g. the active-profile pointer), so a user must not be able to claim one.
+    if name in RESERVED_VERSION_NAMES:
+        return False
     return re.match(r"^[a-zA-Z0-9._-]+$", name) and len(name) <= 50
 
 
@@ -245,11 +263,7 @@ def handler(event, context):
         elif operation == "getConfigVersion":
             version_name = event["arguments"].get("versionName")
             # Enforce scope on getConfigVersion
-            if (
-                allowed_versions
-                and version_name
-                and version_name not in allowed_versions
-            ):
+            if not scope_allows(allowed_versions, version_name):
                 return {
                     "success": False,
                     "error": {
@@ -308,7 +322,7 @@ def handler(event, context):
             # a restricted `allowedConfigVersions` scope, they MUST NOT
             # be able to update any version outside that scope, even
             # for plain updateConfiguration (without saveAsVersion).
-            if allowed_versions and version not in allowed_versions:
+            if not scope_allows(allowed_versions, version):
                 return {
                     "success": False,
                     "error": {
@@ -341,7 +355,7 @@ def handler(event, context):
                         },
                     }
             success = manager.handle_update_custom_configuration(
-                custom_config, version, description
+                custom_config, version, description, created_by=caller["email"]
             )
             return {
                 "success": success,
@@ -356,7 +370,7 @@ def handler(event, context):
             # active version pointer onto something outside their scope,
             # which would otherwise redirect new document processing to a
             # config they aren't trusted with.
-            if allowed_versions and version and version not in allowed_versions:
+            if not scope_allows(allowed_versions, version):
                 return {
                     "success": False,
                     "error": {
@@ -371,7 +385,7 @@ def handler(event, context):
             # RBAC: scope-enforce. A scoped Author cannot delete a
             # version outside their scope. (Deletion of `default` is
             # also blocked inside handle_delete_config_version.)
-            if allowed_versions and version and version not in allowed_versions:
+            if not scope_allows(allowed_versions, version):
                 return {
                     "success": False,
                     "error": {
@@ -380,6 +394,59 @@ def handler(event, context):
                     },
                 }
             return handle_delete_config_version(manager, version)
+
+        elif operation in (
+            "listConfigProfileRevisions",
+            "getConfigProfileRevision",
+            "restoreConfigProfileRevision",
+            "labelConfigProfileRevision",
+            "deleteConfigProfileRevision",
+        ):
+            args = event["arguments"]
+            profile = args.get("profileName")
+            # Scope is enforced at the PROFILE, never at the revision: a
+            # revision is content inside a profile, so one check covers every
+            # revision operation and there is only one place to get it right.
+            if not scope_allows(allowed_versions, profile):
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "Unauthorized",
+                        "message": f"Access denied: configuration profile '{profile}' is not in your allowed scope",
+                    },
+                }
+            if not validate_version_name(profile):
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "ValidationError",
+                        "message": "profileName is required and must be a valid profile name",
+                    },
+                }
+            if operation == "listConfigProfileRevisions":
+                return handle_list_profile_revisions(manager, profile)
+            revision = args.get("revision")
+            try:
+                revision = int(revision)
+            except (TypeError, ValueError):
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "ValidationError",
+                        "message": "revision is required and must be a number",
+                    },
+                }
+            if operation == "getConfigProfileRevision":
+                return handle_get_profile_revision(manager, profile, revision)
+            if operation == "restoreConfigProfileRevision":
+                return handle_restore_profile_revision(
+                    manager, profile, revision, caller["email"]
+                )
+            if operation == "labelConfigProfileRevision":
+                return handle_label_profile_revision(
+                    manager, profile, revision, args.get("label"), args.get("notes")
+                )
+            return handle_delete_profile_revision(manager, profile, revision)
 
         elif operation == "getPricing":
             return handle_get_pricing(manager)
@@ -1104,7 +1171,9 @@ def handle_get_config_versions(manager, allowed_versions=None):
 
         # Filter by user's allowed config versions if scope is set
         if allowed_versions:
-            versions = [v for v in versions if v.get("versionName") in allowed_versions]
+            versions = [
+                v for v in versions if scope_allows(allowed_versions, v.get("versionName"))
+            ]
             logger.info(
                 f"Filtered config versions by scope: {len(versions)} versions returned"
             )
@@ -1119,6 +1188,130 @@ def handle_get_config_versions(manager, allowed_versions=None):
                 "type": "Error",
                 "message": f"Failed to get configuration versions: {str(e)}",
             },
+        }
+
+
+# ===== Configuration Profile revisions =====
+#
+# A revision is an immutable numbered snapshot of one profile's configuration,
+# cut on every save. All five operations below are already scope-checked at the
+# profile in handler(); they must not re-derive access from anything else.
+
+
+def handle_list_profile_revisions(manager, profile):
+    """Revision history for one Configuration Profile, newest first."""
+    try:
+        revisions = manager.list_revisions(profile)
+        return {"success": True, "revisions": revisions}
+    except Exception as e:
+        logger.error(f"Error listing revisions for '{profile}': {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to list revisions: {str(e)}"},
+        }
+
+
+def handle_get_profile_revision(manager, profile, revision):
+    """
+    Full configuration recorded in one revision.
+
+    Returned as a JSON string so the UI can feed it straight into the same
+    comparison view it uses for profiles.
+    """
+    try:
+        config = manager.get_revision(profile, revision)
+        if config is None:
+            return {
+                "success": False,
+                "error": {
+                    "type": "NotFound",
+                    "message": f"Revision r{revision} of '{profile}' is no longer retained",
+                },
+            }
+        return {"success": True, "config": json.dumps(config, default=str)}
+    except Exception as e:
+        logger.error(f"Error reading r{revision} of '{profile}': {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to read revision: {str(e)}"},
+        }
+
+
+def handle_restore_profile_revision(manager, profile, revision, caller_email):
+    """
+    Restore an earlier revision as the profile's current configuration.
+
+    Restoring is a forward-only operation: the restored configuration is saved as
+    a NEW revision, so the state being replaced stays inspectable.
+    """
+    try:
+        new_revision = manager.restore_revision(profile, revision, created_by=caller_email)
+        return {
+            "success": True,
+            "revision": new_revision,
+            "message": f"Restored r{revision} as r{new_revision}",
+        }
+    except ValueError as e:
+        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+    except Exception as e:
+        logger.error(f"Error restoring r{revision} of '{profile}': {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to restore revision: {str(e)}"},
+        }
+
+
+def handle_label_profile_revision(manager, profile, revision, label, notes):
+    """Label a revision, which also exempts it from retention pruning."""
+    if label is not None and not validate_description(label):
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": "Label cannot exceed 200 characters"},
+        }
+    if notes is not None and not validate_description(notes):
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": "Notes cannot exceed 200 characters"},
+        }
+    try:
+        updated = manager.label_revision(profile, revision, label=label, notes=notes)
+        if not updated:
+            return {
+                "success": False,
+                "error": {
+                    "type": "NotFound",
+                    "message": f"Revision r{revision} of '{profile}' was not found",
+                },
+            }
+        return {"success": True, "message": f"Updated r{revision}"}
+    except Exception as e:
+        logger.error(f"Error labeling r{revision} of '{profile}': {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to label revision: {str(e)}"},
+        }
+
+
+def handle_delete_profile_revision(manager, profile, revision):
+    """Delete one revision. Admin-only (enforced in _OPERATION_REQUIRED_GROUPS)."""
+    try:
+        deleted = manager.delete_revision(profile, revision)
+        if not deleted:
+            return {
+                "success": False,
+                "error": {
+                    "type": "NotFound",
+                    "message": f"Revision r{revision} of '{profile}' was not found",
+                },
+            }
+        return {"success": True, "message": f"Deleted r{revision}"}
+    except ValueError as e:
+        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+    except Exception as e:
+        logger.error(f"Error deleting r{revision} of '{profile}': {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to delete revision: {str(e)}"},
         }
 
 

@@ -793,9 +793,16 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                             )
                         except Exception:
                             pass
+                        # A stack deployment cuts a revision instead of
+                        # overwriting silently, so an upgrade's configuration
+                        # changes are diffable and can be rolled back.
                         if existing_config:
                             manager.save_configuration(
-                                "Config", config, version=version
+                                "Config",
+                                config,
+                                version=version,
+                                created_by="stack-deployment",
+                                revision_notes="Updated by stack deployment",
                             )
                         else:  # new config
                             manager.save_configuration(
@@ -803,6 +810,8 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                                 config,
                                 version=version,
                                 description=description,
+                                created_by="stack-deployment",
+                                revision_notes="Created by stack deployment",
                             )
                         logger.info(f"Updated config version: {version} configuration")
                 else:

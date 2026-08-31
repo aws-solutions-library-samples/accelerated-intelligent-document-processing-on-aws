@@ -23,6 +23,7 @@ export interface MappedDocument {
   completionTime: string;
   duration: string;
   configVersion: string;
+  configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
   processingIssueCount: number;
@@ -154,8 +155,14 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
   },
   {
     id: 'configVersion',
-    header: 'Config Version',
-    cell: (item) => formatConfigVersionLink(item.configVersion, versions as unknown as ConfigVersion[]),
+    header: 'Config Profile',
+    cell: (item) =>
+      formatConfigVersionLink(
+        item.configVersion,
+        versions as unknown as ConfigVersion[],
+        undefined,
+        item.configRevision as number | null | undefined,
+      ),
     sortingField: 'configVersion',
     width: 150,
   },
@@ -250,7 +257,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'initialEventTime', label: 'Submitted' },
       { id: 'completionTime', label: 'Completed' },
       { id: 'duration', label: 'Duration' },
-      { id: 'configVersion', label: 'Config Version' },
+      { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
       { id: 'processingIssueCount', label: 'Processing Issues' },

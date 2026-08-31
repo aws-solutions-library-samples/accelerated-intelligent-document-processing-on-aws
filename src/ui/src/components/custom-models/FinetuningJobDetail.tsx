@@ -452,7 +452,7 @@ const FinetuningJobDetail = (): React.JSX.Element => {
                               Bedrock InvokeModel API. The model is billed on-demand (pay-per-token) with no hourly charges.
                             </Alert>
                             <Button variant="primary" iconName="add-plus" onClick={() => setShowCreateConfigModal(true)}>
-                              Create Config Version
+                              Create Config Profile
                             </Button>
                           </SpaceBetween>
                         </Box>
@@ -538,7 +538,7 @@ const FinetuningJobDetail = (): React.JSX.Element => {
           </SpaceBetween>
         </Modal>
 
-        {/* Create Config Version Modal */}
+        {/* Create Config Profile Modal */}
         {job.customModelDeploymentArn && (
           <CreateConfigVersionModal
             visible={showCreateConfigModal}
@@ -550,14 +550,14 @@ const FinetuningJobDetail = (): React.JSX.Element => {
               addNotification(
                 'success',
                 <>
-                  Configuration version <strong>{versionName}</strong> created successfully with the custom model deployment ARN. You can
+                  Configuration profile <strong>{versionName}</strong> created successfully with the custom model deployment ARN. You can
                   view and edit it in the{' '}
                   <a href="#/configuration" style={{ color: 'inherit' }}>
                     Configuration
                   </a>{' '}
                   page.
                 </>,
-                'Config Version Created',
+                'Config Profile Created',
               );
             }}
           />

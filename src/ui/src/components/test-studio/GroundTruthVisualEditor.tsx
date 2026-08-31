@@ -320,9 +320,13 @@ const GroundTruthVisualEditor = ({
 
   const documentClassType = (localData?.document_class as Record<string, unknown> | undefined)?.type as string | undefined;
 
-  // Which config's classes to offer, and why. See classConfigVersion.ts — the
-  // fallback order is the whole substance of #662, so it lives in a tested
-  // function rather than inline here.
+  // Which profile's classes to offer, and why. Preferring the profile stamped on the
+  // baseline over the deployment's active one is develop's point — it may have moved on
+  // since the labels were written — but a bare `|| 'default'` fallback is what #662 was:
+  // the classes on offer silently became the built-in preset's and nothing said so. The
+  // fallback order is the whole substance of that fix, so it lives in a tested function
+  // (classConfigVersion.ts) rather than inline, and `classConfig.source` is what lets the
+  // badge below name where the classes came from.
   const stampedConfigVersion = (localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined;
   const { versions } = useConfigurationVersions();
   const activeConfigVersion = useMemo(() => versions.find((v) => v.isActive)?.versionName, [versions]);
@@ -353,7 +357,10 @@ const GroundTruthVisualEditor = ({
   // class was since renamed would silently blank the field.
   const classOptionsWithCurrent = useMemo(() => {
     if (!documentClassType || classOptions.some((o) => o.value === documentClassType)) return classOptions;
-    return [{ label: documentClassType, value: documentClassType, description: 'Not defined in this config version' }, ...classOptions];
+    return [
+      { label: documentClassType, value: documentClassType, description: 'Not defined in this configuration profile' },
+      ...classOptions,
+    ];
   }, [classOptions, documentClassType]);
   const classChanged = Boolean(savedClassType) && documentClassType !== savedClassType;
   const editHistoryCount = Array.isArray(localData?._editHistory) ? (localData._editHistory as unknown[]).length : 0;
@@ -660,7 +667,7 @@ const GroundTruthVisualEditor = ({
           <Badge color={classConfig.source === 'baseline' ? 'grey' : 'blue'}>Classes from: {describeClassConfigSource(classConfig)}</Badge>
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
-              {editHistoryCount} revision{editHistoryCount === 1 ? '' : 's'} — see Revision History
+              {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see Edit history
             </Box>
           )}
         </SpaceBetween>
@@ -779,7 +786,7 @@ const GroundTruthVisualEditor = ({
                           label="Class label"
                           description={
                             classOptions.length > 0
-                              ? 'What this section is classified as, from this config version. Distinct from the extraction labels below.'
+                              ? 'What this section is classified as, from this configuration profile. Distinct from the extraction labels below.'
                               : classListUnavailable
                                 ? 'What this section is classified as. The list of valid classes could not be loaded, so it cannot be changed here.'
                                 : 'What this section is classified as. Distinct from the extraction labels below.'
@@ -788,7 +795,7 @@ const GroundTruthVisualEditor = ({
                             isReextracting
                               ? 'Locked while the re-extraction runs.'
                               : classListUnavailable
-                                ? 'Your role cannot read the configuration this set was labelled with, so the valid classes are unknown. An Admin or Author can change the class.'
+                                ? 'Your role cannot read the configuration profile this set was labelled with, so the valid classes are unknown. An Admin or Author can change the class.'
                                 : !mayChangeClass
                                   ? 'You do not have permission to change this class.'
                                   : undefined
@@ -943,7 +950,10 @@ const GroundTruthVisualEditor = ({
                 },
                 {
                   id: 'history',
-                  label: 'Revision History',
+                  // See the same tab in VisualEditorModal: these are field edits,
+                  // not revisions. This editor sits next to Configuration Profile
+                  // pickers, so the distinction has to hold here especially.
+                  label: 'Edit history',
                   content: <EditHistoryTab predictionData={localData} baselineData={null} />,
                 },
               ]}

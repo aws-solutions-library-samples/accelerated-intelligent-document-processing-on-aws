@@ -1018,7 +1018,7 @@ The UI renders confidence with color coding:
 
 Interface coverage includes the **Visual Editor** tab (split-pane document image
 + form editing, bounding-box overlays, recursive nested display, inline editing
-with change tracking), the **JSON Editor** tab, the **Revision History** tab
+with change tracking), the **JSON Editor** tab, the **Edit history** tab
 (audit trail with field-level diffs), **smart filters** (low-confidence,
 evaluation mismatches, collapsible tree), and nested-data support:
 

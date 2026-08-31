@@ -1,0 +1,53 @@
+{
+  "description": "Hallucination case: 2 GT items × 2 leaves, model returns 5 (3 hallucinated). Pre-fix reported tp=4, fa=3 → precision=0.571; post-fix reports the leaf-normalized truth tp=4, fa=6, precision=0.40. Hallucination is the mirror of truncation — model returns MORE than the ground truth — and would inflate precision under unit-mixed counting the same way truncation inflated recall. Paired with truncated_list_items.input.json for the opposite direction.",
+  "section_id": "hallucinate-1",
+  "classification": "Bank",
+  "page_ids": ["1"],
+  "config": {
+    "classes": [
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "bank",
+        "x-aws-idp-document-type": "Bank",
+        "x-aws-idp-evaluation-model-name": "Bank",
+        "type": "object",
+        "properties": {
+          "Transactions": {
+            "type": "array",
+            "description": "2-item list, model returns 5 (3 hallucinated, 2 leaves per item)",
+            "x-aws-idp-evaluation-match-threshold": 0.5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "x-aws-idp-evaluation-method": "EXACT"
+                },
+                "amount": {
+                  "type": "number",
+                  "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                  "x-aws-idp-evaluation-threshold": 0.01
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "Transactions": [
+      {"date": "2026-01-01", "amount": 100.0},
+      {"date": "2026-01-02", "amount": 200.0}
+    ]
+  },
+  "actual": {
+    "Transactions": [
+      {"date": "2026-01-01", "amount": 100.0},
+      {"date": "2026-01-02", "amount": 200.0},
+      {"date": "2026-01-03", "amount": 300.0},
+      {"date": "2026-01-04", "amount": 400.0},
+      {"date": "2026-01-05", "amount": 500.0}
+    ]
+  }
+}

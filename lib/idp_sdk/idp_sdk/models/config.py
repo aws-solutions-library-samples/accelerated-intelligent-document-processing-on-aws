@@ -44,6 +44,13 @@ class ConfigDownloadResult(BaseModel):
     output_path: Optional[str] = Field(
         default=None, description="Path where config was written"
     )
+    revision: Optional[int] = Field(
+        default=None,
+        description=(
+            "Revision the configuration was read from, when a specific revision "
+            "was requested. None means the profile's current configuration."
+        ),
+    )
 
 
 class ConfigUploadResult(BaseModel):
@@ -56,6 +63,16 @@ class ConfigUploadResult(BaseModel):
     version_created: bool = Field(
         default=False,
         description="True if a new version was created; False if an existing version was updated",
+    )
+    revision: Optional[int] = Field(
+        default=None,
+        description=(
+            "Revision number this upload produced — the value to pass as "
+            "config_revision to pin processing to exactly what was just uploaded. "
+            "None when the stack has no revision history (an older deployment). "
+            "A save that changed nothing records no new revision, so this is then "
+            "the revision already current."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
@@ -96,6 +113,21 @@ class ConfigVersionInfo(BaseModel):
     description: Optional[str] = Field(
         default=None, description="Optional description for this version"
     )
+    latest_revision: Optional[int] = Field(
+        default=None,
+        description=(
+            "Highest revision number ever cut for this profile. None when the "
+            "profile has no history (untouched since the stack was upgraded)."
+        ),
+    )
+    published_revision: Optional[int] = Field(
+        default=None,
+        description=(
+            "Revision the profile's current configuration reflects — the one a "
+            "new document is pinned to. Usually equal to latest_revision; it "
+            "differs while a restore is in flight."
+        ),
+    )
 
 
 class ConfigListResult(BaseModel):
@@ -105,6 +137,58 @@ class ConfigListResult(BaseModel):
         description="List of configuration versions"
     )
     count: int = Field(description="Total number of versions returned")
+
+
+class ConfigRevisionInfo(BaseModel):
+    """One immutable revision of a Configuration Profile."""
+
+    revision: int = Field(description="Revision number (r7 is revision=7)")
+    created_at: Optional[str] = Field(
+        default=None, description="ISO timestamp when the revision was cut"
+    )
+    created_by: Optional[str] = Field(
+        default=None,
+        description="Email of the user whose save cut this, or 'system'",
+    )
+    label: Optional[str] = Field(
+        default=None,
+        description="User-applied label. A labeled revision is exempt from retention pruning.",
+    )
+    notes: Optional[str] = Field(
+        default=None, description="Note recorded with the revision"
+    )
+    size_bytes: Optional[int] = Field(
+        default=None, description="Uncompressed size of the recorded configuration"
+    )
+    published: bool = Field(
+        default=False,
+        description="True for the revision the profile's current configuration reflects",
+    )
+    pinned: bool = Field(
+        default=False,
+        description=(
+            "True when a test run scored against this revision, which exempts it "
+            "from retention pruning so the comparison stays reproducible."
+        ),
+    )
+    class_fingerprint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Hash of the document classes and their schemas. Two revisions with "
+            "the same fingerprint extract the same fields, so their accuracy "
+            "numbers are directly comparable."
+        ),
+    )
+
+
+class ConfigRevisionListResult(BaseModel):
+    """Revision history of one Configuration Profile, newest first."""
+
+    profile: str = Field(description="Configuration profile these revisions belong to")
+    revisions: List[ConfigRevisionInfo] = Field(
+        default_factory=list, description="Retained revisions, newest first"
+    )
+    count: int = Field(default=0, description="Number of retained revisions")
 
 
 class ConfigDeleteResult(BaseModel):

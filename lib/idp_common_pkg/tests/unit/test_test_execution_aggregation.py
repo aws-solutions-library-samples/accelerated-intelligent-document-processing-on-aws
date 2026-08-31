@@ -249,7 +249,10 @@ class TestAggregation:
         rate = index._calculate_false_alarm_rate(metrics)
         assert rate == 0.2  # 2 / (2 + 8), not 7 / (7 + 8)
 
-        # Zero denominator
+        # Zero denominator → None so external Athena / BI queries can
+        # distinguish "unmeasurable" (no fa+tn signal) from "measured
+        # zero" via IS NULL (finding from #625 review — flipping to
+        # 0.0 broke that SQL predicate).
         metrics = {"fa": 0, "tn": 0}
         rate = index._calculate_false_alarm_rate(metrics)
         assert rate is None
@@ -267,7 +270,8 @@ class TestAggregation:
         rate = index._calculate_false_discovery_rate(metrics)
         assert rate == 0.3  # 3 / (3 + 7), not 7 / (7 + 7)
 
-        # Zero denominator
+        # Zero denominator → None (see test_calculate_false_alarm_rate
+        # for the Athena IS NULL rationale).
         metrics = {"fd": 0, "tp": 0}
         rate = index._calculate_false_discovery_rate(metrics)
         assert rate is None
@@ -1257,6 +1261,956 @@ class TestBrierScoreKeyRename:
         }
         out = index._rename_brier_score_key(cm)
         assert out["overall"]["brier"] == {"value": 0.5}
+
+
+@pytest.mark.unit
+class TestRunLevelCountsFromRows:
+    """Regression: run-level top-level metrics come from row-level
+    ``field_comparisons`` across every document, not from Stickler's
+    ``aggregate_from_comparisons(...).metrics`` (which is item-level and
+    hides leaf failures inside Hungarian-paired list items — issue #625).
+    """
+
+    def test_flat_all_pass_matches_row_count(self, mock_env):
+        """Two flat scalars, both correct → 2 tp, 0 failures."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": True,
+                        "expected_value": "y",
+                        "actual_value": "y",
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 2
+        assert m["fd"] == m["fa"] == m["fn"] == m["fp"] == 0
+        assert m["cm_precision"] == 1.0
+        assert m["cm_accuracy"] == 1.0
+        assert m["cm_f1"] == 1.0
+
+    def test_case5_list_kept_but_leaves_wrong(self, mock_env):
+        """CASE 5 — every list item Hungarian-paired but 4 of 10 leaves are
+        wrong. Under Stickler's item-level rollup this reads as 100%
+        precision; row-level correctly reports precision=0.60."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    # Item [0] both leaves right.
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": 1.0,
+                        "actual_value": 1.0,
+                    },
+                    # Items [1..4]: name wrong, amount right.
+                    {
+                        "field_path": "Items[1].name",
+                        "match": False,
+                        "expected_value": "B",
+                        "actual_value": "Foo",
+                    },
+                    {
+                        "field_path": "Items[1].amount",
+                        "match": True,
+                        "expected_value": 2.0,
+                        "actual_value": 2.0,
+                    },
+                    {
+                        "field_path": "Items[2].name",
+                        "match": False,
+                        "expected_value": "C",
+                        "actual_value": "Bar",
+                    },
+                    {
+                        "field_path": "Items[2].amount",
+                        "match": True,
+                        "expected_value": 3.0,
+                        "actual_value": 3.0,
+                    },
+                    {
+                        "field_path": "Items[3].name",
+                        "match": False,
+                        "expected_value": "D",
+                        "actual_value": "Baz",
+                    },
+                    {
+                        "field_path": "Items[3].amount",
+                        "match": True,
+                        "expected_value": 4.0,
+                        "actual_value": 4.0,
+                    },
+                    {
+                        "field_path": "Items[4].name",
+                        "match": False,
+                        "expected_value": "E",
+                        "actual_value": "Qux",
+                    },
+                    {
+                        "field_path": "Items[4].amount",
+                        "match": True,
+                        "expected_value": 5.0,
+                        "actual_value": 5.0,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 6
+        assert m["fd"] == 4
+        assert m["fp"] == 4
+        assert m["fa"] == 0
+        assert m["fn"] == 0
+        assert m["cm_precision"] == pytest.approx(0.6)
+        assert m["cm_f1"] == pytest.approx(0.75)
+        assert m["cm_accuracy"] == pytest.approx(0.6)
+
+    def test_four_of_five_rejected_list(self, mock_env):
+        """4-of-5 items entirely wrong (both leaves wrong per item).
+        Stickler still emits leaf rows for the paired items — 10 rows,
+        2 tp + 8 fd → precision = 0.20."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": 1.0,
+                        "actual_value": 1.0,
+                    },
+                ]
+                + [
+                    {
+                        "field_path": f"Items[{i}].name",
+                        "match": False,
+                        "expected_value": "GT",
+                        "actual_value": "PRED",
+                    }
+                    for i in range(1, 5)
+                ]
+                + [
+                    {
+                        "field_path": f"Items[{i}].amount",
+                        "match": False,
+                        "expected_value": 1.0,
+                        "actual_value": 99.0,
+                    }
+                    for i in range(1, 5)
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 2
+        assert m["fd"] == 8
+        assert m["cm_precision"] == pytest.approx(0.2)
+
+    def test_missing_fields_count_as_fn(self, mock_env):
+        """A row with ``match=False``, expected present, actual absent → fn."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        "expected_value": {"n": "A"},
+                        "actual_value": None,
+                    },
+                    {
+                        "field_path": "Items[1]",
+                        "match": False,
+                        "expected_value": {"n": "B"},
+                        "actual_value": None,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["fn"] == 2
+        assert m["tp"] == m["fd"] == m["fa"] == 0
+        assert m["cm_recall"] == 0.0
+
+    def test_extra_fields_count_as_fa(self, mock_env):
+        """A row with ``match=False``, expected absent, actual present → fa."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[]",
+                        "match": False,
+                        "expected_value": None,
+                        "actual_value": {"n": "X"},
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["fa"] == 1
+        assert m["fp"] == 1
+
+    def test_multi_leaf_extra_item_leaf_normalized_fa(self, mock_env):
+        """Hallucinated-item row weighted by leaf count on the FA side.
+
+        Bob's test-coverage finding: ``test_extra_fields_count_as_fa`` above
+        uses a single-leaf value so ``_row_weight`` returns 1 trivially and
+        the leaf-normalization on the fa side isn't covered. This case
+        pins the multi-leaf shape: a 3-leaf hallucinated item contributes
+        3 fa (leaf-normalized), not 1.
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "expected_key": "Items[]",
+                        "match": False,
+                        "expected_value": None,
+                        "actual_value": {"name": "X", "amount": 99, "unit": "kg"},
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        # 3 leaves in the hallucinated item → 3 fa, not 1
+        assert m["fa"] == 3
+        assert m["fp"] == 3
+        assert m["tp"] == m["fd"] == m["fn"] == 0
+
+    def test_empty_field_pair_counts_as_tn(self, mock_env):
+        """Both sides empty and matched → tn (correctly-empty field)."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "notes",
+                        "match": True,
+                        "expected_value": None,
+                        "actual_value": None,
+                    },
+                ]
+            }
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tn"] == 1
+        assert m["tp"] == 0
+
+    def test_rows_aggregate_across_multiple_documents(self, mock_env):
+        """Across two docs: 3 tp + 1 fd → precision = 3/4, F1 = 6/7."""
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": False,
+                        "expected_value": "y",
+                        "actual_value": "z",
+                    },
+                ]
+            },
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                    {
+                        "field_path": "b",
+                        "match": True,
+                        "expected_value": "y",
+                        "actual_value": "y",
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 3
+        assert m["fd"] == 1
+        assert m["cm_precision"] == pytest.approx(0.75)
+
+    def test_no_comparison_results(self, mock_env):
+        """Zero documents → all zeros, no ZeroDivisionError."""
+        index = import_test_module()
+        m = index._run_level_counts_from_rows([])
+        for k in ("tp", "fa", "fd", "fp", "tn", "fn"):
+            assert m[k] == 0
+        for k in ("cm_precision", "cm_recall", "cm_f1", "cm_accuracy"):
+            assert m[k] == 0.0
+
+    def test_empty_containers_treated_as_absent_values(self, mock_env):
+        """A ``match=True`` row with `expected_value=[]` and `actual_value=[]`
+        is a **correctly-empty** field (tn), NOT a correct-hit (tp). Same for
+        `""` and `{}`. Similarly, `match=False` with `actual=[]` must land in
+        `fn` (missed), not `fd` (wrong-value). Guards against a semantic
+        classifier drift that would inflate precision when a schema legitimately
+        includes empty containers as valid absent values.
+
+        Under leaf-weighting (finding 1 from #625 adversarial review), a row
+        with a structured non-None side is weighted by its leaf count — so
+        ``expected=["a","b"], actual=[]`` (2-leaf expected, missing) contributes
+        2 fn, not 1. Empty containers stay weight-1 (min-1 floor).
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "field_comparisons": [
+                    {
+                        "expected_key": "notes",
+                        "match": True,
+                        "expected_value": [],
+                        "actual_value": [],
+                    },
+                    {
+                        "expected_key": "tags",
+                        "match": True,
+                        "expected_value": {},
+                        "actual_value": {},
+                    },
+                    {
+                        "expected_key": "attrs",
+                        "match": True,
+                        "expected_value": "",
+                        "actual_value": "",
+                    },
+                    {
+                        "expected_key": "items",
+                        "match": False,
+                        "expected_value": ["a", "b"],
+                        "actual_value": [],
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        # Three empty-empty True rows → tn=3 (each weight-1 by min-1 floor)
+        assert m["tn"] == 3
+        assert m["tp"] == 0
+        # False row with expected=["a","b"] (2 leaves) missing → fn=2 leaf-normalized
+        assert m["fn"] == 2
+        assert m["fd"] == 0
+
+    def test_none_document_is_skipped(self, mock_env):
+        """A None entry in the input list is safely ignored."""
+        index = import_test_module()
+        docs = [
+            None,  # tolerated
+            {
+                "field_comparisons": [
+                    {
+                        "field_path": "a",
+                        "match": True,
+                        "expected_value": "x",
+                        "actual_value": "x",
+                    },
+                ]
+            },
+        ]
+        m = index._run_level_counts_from_rows(docs)
+        assert m["tp"] == 1
+
+
+@pytest.mark.unit
+class TestRunLevelRowAggregates:
+    """Direct coverage for ``_run_level_row_aggregates`` — the fused single-
+    pass helper actually invoked by ``_transform_stickler_metrics``. The
+    individual ``_run_level_counts_from_rows`` and
+    ``_run_level_field_metrics_from_rows`` helpers are exercised elsewhere
+    but production only reaches the fused variant, so its own behavior
+    needs to be pinned (finding 5 from #625 xhigh review — the helper was
+    dark to the test suite before this class was added).
+    """
+
+    def test_returns_matching_top_metrics_and_field_breakdown(self, mock_env):
+        """Fused helper must return the SAME top-level and per-field
+        numbers the individual helpers do on the same input, or the
+        production dashboard's top-level and per-field views drift
+        (issue #625 root cause at a different layer).
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "doc-a", "section_id": "s0"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "Alice",
+                        "actual_value": "Alice",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": False,
+                        "expected_value": "10",
+                        "actual_value": "99",
+                    },
+                    {
+                        "field_path": "customer_id",
+                        "match": True,
+                        "expected_value": "C1",
+                        "actual_value": "C1",
+                    },
+                ],
+            }
+        ]
+
+        top, per_field = index._run_level_row_aggregates(docs)
+
+        assert top == index._run_level_counts_from_rows(docs)
+        assert per_field == index._run_level_field_metrics_from_rows(docs)
+
+    def test_top_level_reflects_leaf_failures_inside_kept_list_items(self, mock_env):
+        """CASE 5 through the fused helper: an Items[0] Hungarian-paired
+        with one right leaf and one wrong leaf reports precision 0.5,
+        matching row-level semantics."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "Alice",
+                        "actual_value": "Alice",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": False,
+                        "expected_value": "10",
+                        "actual_value": "99",
+                    },
+                ],
+            }
+        ]
+        top, _ = index._run_level_row_aggregates(docs)
+        assert top["tp"] == 1
+        assert top["fd"] == 1
+        assert top["cm_precision"] == pytest.approx(0.5)
+
+    def test_field_metrics_bucket_by_collapsed_path(self, mock_env):
+        """Per-field breakdown collapses list indices — ``Items[3].name``
+        and ``Items[7].name`` land in one bucket keyed ``Items.name`` so
+        the run-level table shows one row per attribute, not per index."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[3].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[7].name",
+                        "match": True,
+                        "expected_value": "B",
+                        "actual_value": "B",
+                    },
+                ],
+            }
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert "Items.name" in per_field
+        assert per_field["Items.name"]["tp"] == 2
+
+    def test_synthesizes_parent_bucket_for_structured_children(self, mock_env):
+        """A list of structured items emits ``Items.name`` and
+        ``Items.amount`` leaf buckets and synthesizes ``Items`` as the
+        sum, so the UI's expand/collapse tree still has a row at the
+        parent level."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                    {
+                        "field_path": "Items[0].amount",
+                        "match": True,
+                        "expected_value": "1",
+                        "actual_value": "1",
+                    },
+                ],
+            }
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert per_field["Items"]["tp"] == 2
+
+    def test_scalar_collision_accumulates_into_parent_bucket(self, mock_env):
+        """Cross-schema name collision (scalar ``Items`` in one schema
+        vs structured ``Items[].name`` in another): parent ``Items``
+        bucket now ACCUMULATES both the scalar's fd AND the structured
+        descendants' counts — the parent = sum of all rows that ended
+        up under it, regardless of schema. Previous preserve-scalar
+        behavior recreated the exact parent-vs-drilldown contradiction
+        #625 exists to fix (parent ✓ while drilldown showed red)."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    },
+                ],
+            },
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        # Parent Items = scalar's fd (1) + structured Items.name's tp (1).
+        assert per_field["Items"]["fd"] == 1
+        assert per_field["Items"]["tp"] == 1
+        assert per_field["Items.name"]["tp"] == 1
+
+    def test_collision_warning_reflects_accumulate_behavior(self, mock_env, caplog):
+        """Regression pin: the collision-detected WARN log must
+        describe ACCUMULATE semantics (parent = sum of both schemas'
+        counts), not the earlier PRESERVE semantics ("shows only the
+        scalar schema's counts"). A stale message would mislead
+        operators inspecting CloudWatch."""
+        import logging as _logging
+
+        index = import_test_module()
+        # Reset the module-level dedup so this test's WARN fires
+        # regardless of prior tests in the same session.
+        index._seen_collision_names.clear()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].name",
+                        "match": True,
+                        "expected_value": "A",
+                        "actual_value": "A",
+                    }
+                ],
+            },
+        ]
+        # The Lambda module is loaded via sys.path shim so its
+        # ``__name__`` is ``"index"``; use that (or drop the kwarg)
+        # rather than the dotted path.
+        with caplog.at_level(_logging.WARNING, logger="index"):
+            index._run_level_row_aggregates(docs)
+        collision_warns = [
+            r for r in caplog.records if "name collision" in r.getMessage().lower()
+        ]
+        assert collision_warns, "expected the collision WARN to fire"
+        msg = collision_warns[0].getMessage()
+        # New behavior: the parent accumulates from BOTH schemas.
+        assert "accumulates counts" in msg or "sum of its children" in msg, (
+            f"WARN message must describe the new accumulate behavior; got: {msg}"
+        )
+        # Old (misleading) claims must NOT appear.
+        assert "skipped" not in msg.lower(), (
+            f"WARN message still claims synthesis was skipped: {msg}"
+        )
+        assert "shows only the scalar" not in msg, (
+            f"WARN message still claims parent shows only scalar counts: {msg}"
+        )
+
+    def test_empty_input_returns_zero_metrics(self, mock_env):
+        """Empty comparison_results returns 0 counts and 0.0 derived
+        metrics — no crash on a run with no documents (rare but must
+        not throw)."""
+        index = import_test_module()
+        top, per_field = index._run_level_row_aggregates([])
+        assert top["tp"] == top["fp"] == top["fn"] == 0
+        assert top["cm_precision"] == 0.0
+        assert per_field == {}
+
+    def test_zero_denom_top_level_metrics_all_none(self, mock_env):
+        """Regression pin (#625 close-4-blockers): ``overall_accuracy``,
+        ``precision``, ``recall``, ``f1_score``, ``false_alarm_rate``,
+        ``false_discovery_rate`` all return ``None`` on zero-denominator
+        so Athena IS NULL predicates read them uniformly. Earlier
+        versions mixed 0.0 (some fields) and None (others)."""
+        index = import_test_module()
+        # All-zero metrics dict — every derived rate has zero denom.
+        empty_counts = {
+            "tp": 0,
+            "fa": 0,
+            "fd": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+        }
+        assert index._optional_accuracy(empty_counts) is None
+        assert index._optional_precision(empty_counts) is None
+        assert index._optional_recall(empty_counts) is None
+        assert index._optional_f1(empty_counts) is None
+        assert index._calculate_false_alarm_rate(empty_counts) is None
+        assert index._calculate_false_discovery_rate(empty_counts) is None
+
+    def test_stickler_failure_preserves_excluded_doc_keys(self, mock_env):
+        """Regression pin: if Stickler's aggregation raises, the
+        outer-except path must still fold in ``excluded_doc_keys``
+        and ``graded_packet_metrics`` — otherwise the failure path
+        silently loses the doc-list info operators need to
+        investigate (finding from #625 self-review — the failure
+        path was inconsistent with the empty-input path)."""
+        index = import_test_module()
+
+        # Patch _load_comparison_results to return docs + excluded keys,
+        # then patch aggregate_from_comparisons to raise.
+        with (
+            patch.object(index, "_load_comparison_results") as mock_load,
+            patch(
+                "stickler.structured_object_evaluator.bulk_structured_model_evaluator.aggregate_from_comparisons",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_load.return_value = (
+                [{"field_comparisons": [], "_idp_source": {}}],  # one comparison_result
+                {"doc-a.pdf": 0.9},  # doc_weighted_scores
+                {"doc-a.pdf": {"final_score": 0.9}},  # doc_graded_packet_scores
+                ["excluded-b.pdf", "excluded-c.pdf"],  # excluded_doc_keys
+                {},  # doc_classification_errors
+            )
+            result = index.aggregate_test_run_with_stickler("test-run-1", "test-table")
+
+        # Must still surface the excluded docs — the whole point of
+        # this branch's consistency with the empty-input path.
+        assert result.get("excluded_documents") == [
+            "excluded-b.pdf",
+            "excluded-c.pdf",
+        ]
+        assert result.get("excluded_document_count") == 2
+        # And graded_packet_metrics folded in.
+        assert "graded_packet_metrics" in result
+
+    def test_missing_output_bucket_degrades_instead_of_raising(self, mock_env):
+        """The path that had no test, which is why it broke.
+
+        ``_load_comparison_results`` returns a fixed-width tuple that the caller
+        unpacks positionally. When ``doc_classification_errors`` was added, the success
+        path, the type annotation and the unpack were all widened to five and this early
+        return was left at four — so a function with no OUTPUT_BUCKET raised
+        ``ValueError: not enough values to unpack`` on the unpack instead of logging the
+        misconfiguration and returning empties. Nothing failed, because nothing came
+        through here.
+
+        Pinned on the arity rather than the values: the point is that every exit from
+        this helper stays the same width as the annotation.
+        """
+        index = import_test_module()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OUTPUT_BUCKET", None)
+            result = index._load_comparison_results("test-run-1", "test-table")
+
+        assert len(result) == 5
+        comparison_results, weighted, graded, excluded, classification_errors = result
+        assert comparison_results == []
+        assert weighted == {}
+        assert graded == {}
+        assert excluded == []
+        assert classification_errors == {}
+
+    def test_top_equals_sum_of_per_field_on_mixed_shape_row(self, mock_env):
+        """Structural invariant: on a row whose value shape mixes
+        BARE SCALARS, EMPTY CONTAINERS, and POPULATED CONTAINERS, the
+        top-level counts equal the sum of leaf per-field bucket counts.
+        This is the trickiest case for ``_row_leaves`` +
+        ``_scalar_positional_count`` interaction — the invariant would
+        break if one enumeration path counted a slot the other missed
+        (finding from #625 — the class of bug this whole branch
+        exists to eliminate)."""
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        # Mixed: 1 bare scalar, 1 empty container,
+                        # 1 populated container (contributes dotted path).
+                        "expected_value": ["a", {}, {"x": 1}],
+                        "actual_value": None,
+                    }
+                ],
+            }
+        ]
+        top, per_field = index._run_level_row_aggregates(docs)
+        # Structural invariant: top-level == sum of ROOT-LEVEL per-field
+        # buckets (those with no ``.`` in the key). Synthesized parent
+        # buckets aggregate ALL descendants including any filtered
+        # ``__positional__`` sub-buckets, so this is the correct
+        # equality to assert (summing terminal-leaf dotted buckets
+        # would MISS the positional contribution the API response
+        # deliberately hides).
+        for bucket in ("tp", "fa", "fd", "tn", "fn"):
+            root_sum = sum(v[bucket] for k, v in per_field.items() if "." not in k)
+            assert top[bucket] == root_sum, (
+                f"top[{bucket}]={top[bucket]} but root-level sum={root_sum} "
+                f"(per_field keys: {sorted(per_field.keys())})"
+            )
+
+    def test_top_and_per_field_match_on_different_leaf_counts_per_side(self, mock_env):
+        """Top-level and per-field counts must AGREE when expected and
+        actual have DIFFERENT leaf counts.
+
+        Setup: an ``fa`` row where the expected side is empty (``{}``, 0
+        leaves) and the actual side is a 3-key hallucination.
+
+        Before this fix (finding from #625 review-effort code review):
+          * Top-level weight = max(0, 3) = 3 → adds fa=3 at top.
+          * Per-field spread picked ``exp if exp is not None else act``
+            = empty ``{}`` → no leaves → single ``_add(Items, "fa", 3)``.
+            So per-field ``Items`` = 3, but summed across children = 0.
+
+        The fix: per-field spread picks the SAME side ``_row_weight``
+        picks (the one with more leaves). Both sides now enumerate the
+        3-leaf actual → per-field sum = top-level.
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0]",
+                        "match": False,
+                        "expected_value": {},
+                        "actual_value": {"x": 1, "y": 2, "z": 3},
+                    }
+                ],
+            }
+        ]
+        top, per_field = index._run_level_row_aggregates(docs)
+        # Sum the leaf buckets' fa (parent bucket is synthesized last)
+        leaf_fa = sum(v["fa"] for k, v in per_field.items() if "." in k)
+        assert top["fa"] == leaf_fa
+        assert top["fa"] == 3
+
+    def test_three_level_collision_accumulates_into_all_ancestors(self, mock_env):
+        """Deeper-tree cross-schema collision now ACCUMULATES rather than
+        preserving the scalar in isolation. Setup: schema A has scalar
+        ``Items``; schema B has ``Items[i].line.qty``. Buckets are
+        ``Items`` (scalar) and ``Items.line.qty`` (leaf).
+
+        Expected result: each ancestor bucket = sum of everything
+        beneath it (including any pre-existing scalar bucket at that
+        level). Parent-vs-drilldown contradictions are impossible by
+        construction: a red row in the drilldown always reflects in
+        every ancestor's counts.
+
+        * ``Items``          — scalar fd (1) + qty tp (1) = {fd:1, tp:1}
+        * ``Items.line``     — synthesized from qty = {tp:1}
+        * ``Items.line.qty`` — leaf = {tp:1}
+        """
+        index = import_test_module()
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d1", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items",
+                        "match": False,
+                        "expected_value": "X",
+                        "actual_value": "Y",
+                    }
+                ],
+            },
+            {
+                "_idp_source": {"doc_key": "d2", "section_id": "s"},
+                "field_comparisons": [
+                    {
+                        "field_path": "Items[0].line.qty",
+                        "match": True,
+                        "expected_value": "5",
+                        "actual_value": "5",
+                    },
+                ],
+            },
+        ]
+        _, per_field = index._run_level_row_aggregates(docs)
+        assert per_field["Items"]["fd"] == 1
+        assert per_field["Items"]["tp"] == 1  # scalar's fd + qty's tp folded in
+        assert per_field["Items.line"]["tp"] == 1
+        assert per_field["Items.line.qty"]["tp"] == 1
+
+
+@pytest.mark.unit
+class TestVersionDriftWarning:
+    """Version-stamp gate: on rolling deploy or after a Stickler shape change,
+    a v1.0 payload read by v2.0 code (or vice-versa) fires a soft-gate warning
+    so operators know before aggregation numbers silently corrupt. Warning is
+    rate-limited: once per unique payload version per run, not per document —
+    otherwise a historical S3 test set on a new stack would flood CloudWatch
+    (findings 9 + 10 from #625 adversarial review).
+    """
+
+    def _one_doc_payload(self, version: str = "2.0") -> dict:
+        return {
+            "stickler_result_version": version,
+            "section_results": [
+                {
+                    "stickler_comparison_result": {
+                        "field_scores": {"a": 1.0},
+                        "overall_score": 1.0,
+                        "field_comparisons": [
+                            {
+                                "expected_key": "a",
+                                "match": True,
+                                "expected_value": "x",
+                                "actual_value": "x",
+                            }
+                        ],
+                        "confusion_matrix": {"aggregate": {"tp": 1}},
+                    }
+                }
+            ],
+            "overall_metrics": {"weighted_overall_score": 1.0},
+        }
+
+    def _run_loader(self, index, payloads_by_doc, caplog):
+        """Exercise load_document_results by mocking dynamodb + S3 loader."""
+        import logging
+
+        table = MagicMock()
+        table.scan.return_value = {
+            "Items": [
+                {
+                    "PK": f"doc#run#{doc}",
+                    "ObjectKey": doc,
+                    "EvaluationStatus": "COMPLETED",
+                    "EvaluationReportUri": f"s3://b/{doc}/evaluation/report.md",
+                }
+                for doc in payloads_by_doc
+            ]
+        }
+
+        def _load(uri):
+            for doc, payload in payloads_by_doc.items():
+                if doc in uri:
+                    return payload
+            return {}
+
+        with patch.object(index, "dynamodb") as mock_dynamodb:
+            mock_dynamodb.Table.return_value = table
+            with patch.object(index, "_load_s3_json", side_effect=_load):
+                with caplog.at_level(logging.WARNING):
+                    index._load_comparison_results("run", "test-table")
+
+    def test_drift_warning_fires_on_v1_payload(self, mock_env, caplog):
+        """A payload stamped ``1.0`` while code expects ``2.0`` fires a warning."""
+        index = import_test_module()
+        # Two v1.0-stamped documents — expect ONE warning (rate-limited)
+        payloads = {
+            "d1": self._one_doc_payload(version="1.0"),
+            "d2": self._one_doc_payload(version="1.0"),
+        }
+        self._run_loader(index, payloads, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.message.lower()
+            or "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert len(drift_records) == 1, (
+            "expected ONE drift warning across two v1.0 payloads (rate-limited); "
+            f"got {len(drift_records)}: {[r.getMessage() for r in drift_records]}"
+        )
+        assert "1.0" in drift_records[0].getMessage()
+
+    def test_drift_warning_silent_on_current_version(self, mock_env, caplog):
+        """A payload stamped with the current version fires no warning."""
+        index = import_test_module()
+        from idp_common.evaluation.contract import STICKLER_RESULT_VERSION
+
+        payloads = {"d1": self._one_doc_payload(version=STICKLER_RESULT_VERSION)}
+        self._run_loader(index, payloads, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert drift_records == [], (
+            f"expected no drift warnings; got: {[r.getMessage() for r in drift_records]}"
+        )
+
+    def test_drift_warning_silent_when_stamp_missing(self, mock_env, caplog):
+        """Legacy payload with no stamp is tolerated (soft gate)."""
+        index = import_test_module()
+        payload = self._one_doc_payload()
+        del payload["stickler_result_version"]
+        self._run_loader(index, {"d1": payload}, caplog)
+        drift_records = [
+            r
+            for r in caplog.records
+            if "stickler_result_version mismatch" in r.getMessage().lower()
+        ]
+        assert drift_records == [], (
+            "missing stamp should be tolerated (soft gate), not warn: "
+            f"got {[r.getMessage() for r in drift_records]}"
+        )
 
 
 class TestConfidenceCurveRecording:

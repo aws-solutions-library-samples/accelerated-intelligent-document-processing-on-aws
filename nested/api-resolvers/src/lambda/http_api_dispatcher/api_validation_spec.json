@@ -392,6 +392,24 @@
         }
       ]
     },
+    "deleteConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
+        }
+      ]
+    },
     "deleteConfigVersion": {
       "args": [
         {
@@ -594,6 +612,24 @@
     },
     "getCircuitBreakerStatus": {
       "args": []
+    },
+    "getConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
+        }
+      ]
     },
     "getConfigVersion": {
       "args": [
@@ -898,6 +934,38 @@
     "getTestSets": {
       "args": []
     },
+    "labelConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "label",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "notes",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "listAgentJobs": {
       "args": [
         {
@@ -971,6 +1039,17 @@
           "is_list": false,
           "name": "surface",
           "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "listConfigProfileRevisions": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
           "type": "String"
         }
       ]
@@ -1309,6 +1388,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -1320,6 +1406,24 @@
           "name": "testSetId",
           "non_null": true,
           "type": "String"
+        }
+      ]
+    },
+    "restoreConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
         }
       ]
     },
@@ -2140,6 +2244,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -2316,6 +2427,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "TraceId",
         "non_null": false,
         "type": "String"
@@ -2411,6 +2529,13 @@
         "name": "configVersion",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
       },
       {
         "elem_non_null": true,
@@ -2832,6 +2957,13 @@
         "type": "String"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
@@ -3148,6 +3280,13 @@
         "name": "ConfigVersion",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
       },
       {
         "elem_non_null": false,

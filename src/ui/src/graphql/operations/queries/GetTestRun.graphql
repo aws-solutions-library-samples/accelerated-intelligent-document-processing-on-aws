@@ -25,6 +25,7 @@ query GetTestRun($testRunId: String!) {
     context
     isDraftLabeling
     configVersion
+    configRevision
     config
   }
 }

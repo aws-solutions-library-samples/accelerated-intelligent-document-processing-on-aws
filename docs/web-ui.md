@@ -23,7 +23,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - Inspection of processing outputs for section classification and information extraction
 - Accuracy evaluation reports when baseline data is provided
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
-- Manage multiple configuration versions — create, compare, activate, and delete versions (see [configuration-versions.md](configuration-versions.md))
+- Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
 - Retain, view, compare, and delete **document versions** — every processing run of a document is kept and viewable read-only (see [document-versions.md](document-versions.md))
 - **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the Assessment & HITL Configuration section
 - Document upload from your local computer, or from the **bundled sample documents** shipped with the deployment (no local download needed)
@@ -44,7 +44,7 @@ In both modes you can set an optional **folder prefix** and pick the **Configura
 
 ### One-click config for samples
 
-Many bundled samples are tuned for a specific configuration preset in the [Configuration Library](configuration-versions.md) (for example, the bank-statement sample pairs with the `bank-statement-sample` config). When you select such a sample:
+Many bundled samples are tuned for a specific configuration preset in the [Configuration Library](configuration-profiles.md) (for example, the bank-statement sample pairs with the `bank-statement-sample` config). When you select such a sample:
 
 - If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration version and processes the sample with it. Uncheck it to process the sample under the currently selected version instead.
 - If the associated configuration is **already imported**, that version is preselected automatically.

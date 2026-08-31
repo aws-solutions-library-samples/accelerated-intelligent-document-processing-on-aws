@@ -129,7 +129,7 @@ harness — verify they still hold when the schema evolves:
   testset/output buckets + tracking/config tables by name prefix.
 - It registers `bench-<doc>` test sets and uploads `Config#bench-*` versions.
   **It never mutates `Config#default`.** Clean up afterwards if desired:
-  `idp-cli config-delete --config-version bench-* ` (or leave for the next run).
+  `idp-cli config-delete --config-profile bench-* ` (or leave for the next run).
 - BDA and `bedrock_llm` OCR cells require those features enabled on the stack /
   Bedrock model access; cells that can't run are logged, not silently dropped.
 

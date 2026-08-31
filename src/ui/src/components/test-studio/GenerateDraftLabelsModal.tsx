@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * GenerateDraftLabelsModal — choose what to label, and with which config version.
+ * GenerateDraftLabelsModal — choose what to label, and with which configuration profile.
  *
  * Documents carrying authored ground truth (uploaded or generated) are listed but
  * not selectable, because the server refuses to overwrite them. Prior machine
@@ -24,6 +24,7 @@ import {
   Spinner,
   Table,
 } from '@cloudscape-design/components';
+import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
@@ -61,11 +62,13 @@ interface Props {
    */
   setTotalCount?: number | null;
   onDismiss: () => void;
-  onSubmit: (configVersion: string | undefined, objectKeys: string[] | undefined) => void;
+  onSubmit: (configVersion: string | undefined, objectKeys: string[] | undefined, configRevision?: number) => void;
   submitting?: boolean;
 }
 
 const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss, onSubmit, submitting }: Props): React.JSX.Element => {
+  // null = the profile's current configuration.
+  const [configRevision, setConfigRevision] = useState<number | null>(null);
   const [configVersion, setConfigVersion] = useState<SelectProps.Option>({
     label: 'Active configuration',
     value: ACTIVE_CONFIG,
@@ -147,7 +150,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
           })),
       ]);
     } catch (err) {
-      logger.error('Could not load config versions:', err);
+      logger.error('Could not load configuration profiles:', err);
       setVersionOptions([{ label: 'Active configuration', value: ACTIVE_CONFIG }]);
     } finally {
       setLoadingVersions(false);
@@ -175,7 +178,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
   // confusion this dialog exists to fix.
   const targetCount = selectAll ? (isPartialView ? (setTotalCount ?? pageLabelable.length) : pageLabelable.length) : selected.length;
   // Option.value is `string | undefined`, so the type guard is required: a
-  // non-string reaching the API pins the run to a bogus config version.
+  // non-string reaching the API pins the run to a bogus configuration profile.
   const rawConfigVersion = configVersion.value;
   const selectedConfigVersion = typeof rawConfigVersion === 'string' && rawConfigVersion !== ACTIVE_CONFIG ? rawConfigVersion : undefined;
 
@@ -199,7 +202,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
               variant="primary"
               loading={submitting}
               disabled={targetCount === 0}
-              onClick={() => onSubmit(selectedConfigVersion, effectiveKeys)}
+              onClick={() => onSubmit(selectedConfigVersion, effectiveKeys, configRevision ?? undefined)}
             >
               {targetCount === 0
                 ? 'Nothing to label'
@@ -226,18 +229,25 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
         )}
 
         <FormField
-          label="Configuration version"
-          description="Which configuration to label with. Pick a different version to compare, or to redo a run that used the wrong settings."
+          label="Configuration profile"
+          description="Which configuration to label with. Pick a different profile to compare, or to redo a run that used the wrong settings."
         >
           <Select
             selectedOption={configVersion}
             onChange={({ detail }) => setConfigVersion(detail.selectedOption)}
             options={versionOptions}
-            loadingText="Loading configuration versions"
+            loadingText="Loading configuration profiles"
             statusType={loadingVersions ? 'loading' : 'finished'}
             filteringType="auto"
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedConfigVersion}
+          value={configRevision}
+          onChange={setConfigRevision}
+          description="Defaults to the profile’s current configuration. Labels record which revision drafted them, so a later save cannot change what they were drafted with."
+        />
 
         <FormField label="Documents to label">
           <SpaceBetween size="s">
@@ -348,7 +358,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
 
         {loadingVersions && (
           <Box textAlign="center">
-            <Spinner /> Loading configuration versions…
+            <Spinner /> Loading configuration profiles…
           </Box>
         )}
       </SpaceBetween>

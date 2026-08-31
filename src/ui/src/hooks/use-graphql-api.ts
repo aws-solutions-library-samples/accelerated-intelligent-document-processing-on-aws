@@ -311,10 +311,11 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
     }
   };
 
-  const reprocessDocuments = async (objectKeys: string[], version?: string): Promise<unknown> => {
+  const reprocessDocuments = async (objectKeys: string[], version?: string, revision?: number): Promise<unknown> => {
     try {
-      const variables: { objectKeys: string[]; version?: string } = { objectKeys };
+      const variables: { objectKeys: string[]; version?: string; revision?: number } = { objectKeys };
       if (version) variables.version = version;
+      if (revision !== undefined) variables.revision = revision;
       const result = await client.graphql({ query: reprocessDocument, variables });
       setIsDocumentsListLoading(true);
       return result.data.reprocessDocument;

@@ -154,7 +154,7 @@ The goal of this initial run is to produce predictions that are as accurate as p
 
 > **Tip**: You can always create a cheaper configuration later for production use. The expensive model is only used here to bootstrap high-quality ground truth.
 
-For details on configuration management, see [Configuration](./configuration.md) and [Configuration Versions](./configuration-versions.md).
+For details on configuration management, see [Configuration](./configuration.md) and [Configuration Profiles](./configuration-profiles.md).
 
 ## Step 2: Discover the Document Schema
 
