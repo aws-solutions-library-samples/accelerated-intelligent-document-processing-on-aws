@@ -20,7 +20,7 @@ class DiscoveryResult(BaseModel):
     )
     config_version: Optional[str] = Field(
         default=None,
-        description="Configuration version the schema was saved to",
+        description="Configuration profile the schema was saved to",
     )
     document_path: Optional[str] = Field(
         default=None, description="Path to the source document"
@@ -117,7 +117,7 @@ class MultiDocDiscoveryResult(BaseModel):
     )
     config_version: Optional[str] = Field(
         default=None,
-        description="Configuration version schemas were saved to, if any",
+        description="Configuration profile schemas were saved to, if any",
     )
     error: Optional[str] = Field(
         default=None, description="Error message if discovery failed"

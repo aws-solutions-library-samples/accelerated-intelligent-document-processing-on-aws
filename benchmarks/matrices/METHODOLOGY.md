@@ -24,13 +24,13 @@ with curated evaluation baselines. Real-world messiness the synthetic set can't 
 - `make_configs.py` expands `config_matrix.yaml` into full v0.6 configs (one per
   cell × doc-class), validates each with `merge_config_with_defaults(..., validate=True)`,
   strips `managed`, and uploads as `Config#bench-<cell>-<class>` via `idp-cli config-upload`.
-- NEVER mutate `Config#default`. Always run against a named `--config-version`.
+- NEVER mutate `Config#default`. Always run against a named `--config-profile`.
 - PYTHONPATH is pinned to the repo's `idp_common` to avoid a stale sibling checkout
   silently stripping v0.6 fields on upload.
 
 ## 3. Execution
 - `run_matrix.py` launches each (config-cell × doc) via the stack TestRunner
-  (`idp-cli run-inference --test-set bench-<id> --config-version bench-<cell>-<class>`),
+  (`idp-cli run-inference --test-set bench-<id> --config-profile bench-<cell>-<class>`),
   records `runId`s to `results/<run>/runmap.json`, and polls per-doc rows in the
   TrackingTable (`ObjectStatus`/`EvaluationStatus`) until COMPLETED/FAILED.
 - Concurrency is capped and large docs are launched last to limit Bedrock throttling.

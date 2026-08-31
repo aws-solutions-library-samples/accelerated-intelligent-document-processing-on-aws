@@ -75,15 +75,15 @@ python config_operations.py validate my-config.yaml --pattern pattern-2
 python config_operations.py download --stack-name idp-stack-01 --format minimal --output current-config.yaml
 
 # Download a specific version
-python config_operations.py download --stack-name idp-stack-01 --config-version v2 --output v2-config.yaml
+python config_operations.py download --stack-name idp-stack-01 --config-profile v2 --output v2-config.yaml
 
 # Upload config to deployed stack (creates version if it doesn't exist)
-python config_operations.py upload my-config.yaml --stack-name idp-stack-01 --config-version default
+python config_operations.py upload my-config.yaml --stack-name idp-stack-01 --config-profile default
 
 # Upload as a new named version with description
 python config_operations.py upload my-config.yaml \
     --stack-name idp-stack-01 \
-    --config-version v2 \
+    --config-profile v2 \
     --description "Updated extraction rules"
 ```
 
