@@ -3004,6 +3004,10 @@ Resources:
         # ConfigurationCopyFunction). listCatalogFeatures / getFeatureLaunchUrl
         # read it at runtime — the catalog source, no artifacts-bucket dependency.
         ConfigurationBucketName: !Ref ConfigurationBucket
+        # So applyFeatureConfigPreset can record a feature's config preset as a
+        # REVISION of the feature's profile instead of minting a new profile per
+        # feature release (issue #697).
+        IDPCommonBaseLayerArn: !Ref IDPCommonBaseLayer
         LogLevel: !Ref LogLevel
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,

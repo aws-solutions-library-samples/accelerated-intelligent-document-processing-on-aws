@@ -271,3 +271,80 @@ def test_config_list_shows_the_current_revision(monkeypatch):
         assert "r0" not in result.output
     finally:
         patcher.stop()
+
+
+@pytest.mark.unit
+def test_delete_warns_before_removing_a_stack_managed_profile():
+    """
+    The UI refuses to delete a managed profile, so the CLI is the only route for
+    cleaning up profiles an uninstalled extension left behind. It must say what it
+    is about to delete: the same flag also protects the built-in config_library
+    presets, which the next stack update would simply restore.
+    """
+    patcher, client = _client()
+    try:
+        client.config.list.return_value = ConfigListResult(
+            count=1,
+            versions=[
+                ConfigVersionInfo(version_name="claims-pack-v0.2.0", managed=True)
+            ],
+        )
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "config-delete",
+                "--stack-name",
+                "s",
+                "--config-profile",
+                "claims-pack-v0.2.0",
+            ],
+            input="y\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "stack-managed" in result.output
+        assert client.config.delete.called
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_delete_does_not_warn_for_an_ordinary_profile():
+    patcher, client = _client()
+    try:
+        client.config.list.return_value = ConfigListResult(
+            count=1, versions=[ConfigVersionInfo(version_name="lending", managed=False)]
+        )
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            ["config-delete", "--stack-name", "s", "--config-profile", "lending"],
+            input="y\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "stack-managed" not in result.output
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_force_delete_skips_the_managed_lookup_entirely():
+    """A script passing --force must not pay for a table scan, or depend on one."""
+    patcher, client = _client()
+    try:
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "config-delete",
+                "--stack-name",
+                "s",
+                "--config-profile",
+                "claims-pack-v0.2.0",
+                "--force",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert not client.config.list.called
+    finally:
+        patcher.stop()

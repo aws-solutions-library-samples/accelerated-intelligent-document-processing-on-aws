@@ -54,7 +54,7 @@ It exercises the full host contract:
   `rule_validation.postHook` (using the hook Lambda's resolved ARN), then calls
   the host's `applyFeatureConfigPreset` mutation, which writes the preset as a
   **new, non-active** configuration version
-  (`sample-health-insurance-review-v<version>`). An admin reviews and activates
+  (`sample-health-insurance-review` — one profile, a revision per release). An admin reviews and activates
   it from the **Configuration** page — installing the feature never silently
   changes the active configuration. Because the hook lives **inside** the preset
   version, activating that version brings the rules and the hook together
@@ -87,7 +87,7 @@ page with one click. Once installed it gets its own entry in the
 
 After installing:
 
-1. Open **Configuration**, find the `sample-health-insurance-review-v<version>` version, and
+1. Open **Configuration**, find the `sample-health-insurance-review` profile, and
    **activate** it.
 2. Upload the sample prior-auth packet
    `samples/rule-validation/medicare_respiratory_pa_packet.pdf` to the input

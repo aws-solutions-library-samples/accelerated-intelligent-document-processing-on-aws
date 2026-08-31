@@ -36,6 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATES = (
     REPO_ROOT / "nested/api-resolvers/template.yaml",
     REPO_ROOT / "template.yaml",
+    # Feature-platform resolvers run the same risk: applyFeatureConfigPreset now
+    # uses idp_common's ConfigurationManager, and an ImportError there would leave
+    # the preset applied but its revision silently unrecorded.
+    REPO_ROOT / "feature-platform/main-stack-extensions/template.yaml",
 )
 
 # Any layer that ships idp_common. The package is split into feature layers

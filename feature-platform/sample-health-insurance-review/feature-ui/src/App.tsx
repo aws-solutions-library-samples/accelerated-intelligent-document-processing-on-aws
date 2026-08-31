@@ -42,7 +42,9 @@ const App: React.FC<FeatureContext> = ({
   const [activeTab, setActiveTab] = useState('claims');
 
   // Config version the bundled preset was installed as.
-  const configVersion = `sample-health-insurance-review-v${installedVersion || __FEATURE_VERSION__}`;
+  // One Configuration Profile per feature — an upgrade cuts a revision of it
+  // rather than creating `<featureId>-v<version>` afresh (issue 697).
+  const configVersion = 'sample-health-insurance-review';
 
   useEffect(() => {
     if (!uiAccessAllowed) return;
