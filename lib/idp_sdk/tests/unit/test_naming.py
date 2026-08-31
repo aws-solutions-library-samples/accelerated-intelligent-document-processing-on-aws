@@ -86,7 +86,9 @@ def test_required_and_missing_names_both_spellings():
 def test_every_method_taking_the_old_keyword_also_takes_the_new_one():
     surface = dict(_aliased_methods())
     assert len(surface) >= 12, f"expected the known operations, found {len(surface)}"
-    missing = [name for name, params in surface.items() if "config_profile" not in params]
+    missing = [
+        name for name, params in surface.items() if "config_profile" not in params
+    ]
     assert not missing, f"SDK methods missing the config_profile keyword: {missing}"
 
 
