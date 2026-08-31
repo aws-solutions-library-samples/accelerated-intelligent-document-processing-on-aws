@@ -949,9 +949,13 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Pages in this section** shows which pages a section covers, and **Edit page
-grouping** opens a board with every section side by side and each page as a
-thumbnail. Drag a page from one section to another, or use its **Move to section**
+**Edit page grouping**, beside the section selector at the top of the document, opens a
+board with every section side by side and each page as a thumbnail. It sits with the
+section pills rather than down among the extracted fields because it changes the
+document's structure, not one section's values. (**Pages in this section**, in the field
+list below, stays as a read-only record of which pages the open section covers.)
+
+Drag a page from one section to another, or use its **Move to section**
 menu, which is the keyboard and screen-reader route to the same operation. Select several
 pages first — shift-click extends over document order — and they move together, which
 is usually what is wanted: a bad split normally misplaces a *run* of pages rather than

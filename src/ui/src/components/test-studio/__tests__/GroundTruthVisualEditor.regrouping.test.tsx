@@ -209,3 +209,76 @@ describe('GroundTruthVisualEditor page regrouping', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeDisabled());
   });
 });
+
+/**
+ * Where the control lives, after Spencer's review: beside the section pills rather than
+ * among one section's extracted values.
+ *
+ * Re-grouping rewrites the document's structure, so sitting it next to the field data made
+ * it read as part of that data. These are DOM-relationship and document-order assertions
+ * on purpose — `getByRole('button', { name: /Edit page grouping/ })` passes wherever the
+ * button happens to be, so a presence check could not have caught the old placement and
+ * cannot protect the new one.
+ */
+describe('GroundTruthVisualEditor page grouping placement', () => {
+  it('sits on the same row as the section pills', async () => {
+    renderEditor();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeEnabled());
+
+    const button = screen.getByRole('button', { name: /Edit page grouping/i });
+    const pill = screen.getByRole('button', { name: /^Section 2\b/ });
+
+    expect(button.closest('div')).toContainElement(pill);
+  });
+
+  it('comes before the extracted values rather than inside them', async () => {
+    renderEditor();
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+
+    const button = screen.getByRole('button', { name: /Edit page grouping/i });
+    // The read-only Pages field is where the button used to be, immediately after this
+    // input — so in the old layout the input PRECEDED the button.
+    const pagesField = screen.getByDisplayValue('1, 2');
+
+    expect(button.compareDocumentPosition(pagesField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('is still offered for a single-section document', async () => {
+    // The regression the move could have introduced: the pills only render when there is
+    // more than one section, and pairing the button with that condition would remove the
+    // only route to splitting a single section into two.
+    render(
+      <GroundTruthVisualEditor
+        bucket="test-set-bucket"
+        inputKey="ts1/input/p.pdf"
+        objectKey="p.pdf"
+        sections={[SECTIONS[0]]}
+        isReadOnly={false}
+        testSetId="ts1"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeEnabled());
+    // And with one section there are no pills to sit beside.
+    expect(screen.queryByRole('button', { name: /^Section 2\b/ })).not.toBeInTheDocument();
+  });
+
+  it('leaves the pages field readable, without a control in it', async () => {
+    renderEditor();
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+
+    // Still informational — a reviewer looking at a section wants to know which pages it
+    // covers — and it now says where the editing control went.
+    expect(screen.getByText(/Use Edit page grouping, above/i)).toBeInTheDocument();
+  });
+
+  it('hides the control while the board is open, so it cannot be re-triggered', async () => {
+    renderEditor();
+    await openBoard();
+
+    // The pills hide during regrouping; a lone button beside them would be a dead affordance
+    // pointing at the thing already on screen.
+    expect(screen.queryByRole('button', { name: /^Edit page grouping$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Save page grouping/i })).toBeInTheDocument();
+  });
+});

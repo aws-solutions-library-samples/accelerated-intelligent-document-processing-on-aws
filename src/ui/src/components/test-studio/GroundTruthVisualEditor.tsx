@@ -413,6 +413,15 @@ const GroundTruthVisualEditor = ({
   /** Pages for the board, in the same 1-based space. */
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
 
+  /**
+   * Whether there is a grouping to edit at all.
+   *
+   * Both are what `PageGroupingEditor` renders from, so this is true exactly when the board
+   * would have something to show — rather than keying on the open section's fetched
+   * `result.json`, which says nothing about the other sections.
+   */
+  const canRegroup = boardPages.length > 0 && groupingForBoard.length > 0;
+
   const handleSaveGrouping = async (next: GroupedSection[]) => {
     if (!testSetId) return;
     setIsSavingGrouping(true);
@@ -693,15 +702,37 @@ const GroundTruthVisualEditor = ({
         />
       )}
 
-      {sections.length > 1 && !isRegrouping && (
-        <SegmentedControl
-          selectedId={selectedSectionId}
-          onChange={({ detail }) => handleSectionChange(detail.selectedId)}
-          options={sections.map((s) => ({
-            id: s.sectionId,
-            text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
-          }))}
-        />
+      {/* The section selector and the control that changes the sections themselves, on one
+          row. Re-grouping alters the document's structure, so it belongs beside the section
+          pills rather than down among one section's extracted values, where it read as if
+          it were part of that section's field data. Wraps rather than holding one line: a
+          six-section packet already fills this row, and the pills must not be pushed into
+          an overflow to make space for a button. */}
+      {!isRegrouping && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          {sections.length > 1 ? (
+            <SegmentedControl
+              selectedId={selectedSectionId}
+              onChange={({ detail }) => handleSectionChange(detail.selectedId)}
+              options={sections.map((s) => ({
+                id: s.sectionId,
+                text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
+              }))}
+            />
+          ) : (
+            <span />
+          )}
+          {/* Gated on what the board itself consumes, not on the open section's fetched
+              baseline: the button should exist exactly when the board it opens would work.
+              Deliberately NOT gated on `sections.length > 1` — splitting a single section
+              into two is a legitimate fix, and pairing this with the pills' own condition
+              would have removed the only route to it. */}
+          {canRegroup && (
+            <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
+              Edit page grouping
+            </Button>
+          )}
+        </div>
       )}
 
       {error && <Alert type="error">{error}</Alert>}
@@ -828,17 +859,13 @@ const GroundTruthVisualEditor = ({
                       {splitPageIndices !== undefined && (
                         <FormField
                           label="Pages in this section"
-                          description="Which pages of the document this section covers. Wrong groupings are corrected by moving pages between sections."
+                          /* Informational now. The control that changes it lives up beside
+                             the section pills, because it rewrites the document's structure
+                             rather than this section's field data — so the description says
+                             where to find it instead of implying it is here. */
+                          description="Which pages of the document this section covers, in reading order. Use Edit page grouping, above, to move or reorder pages."
                         >
-                          <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                            <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
-                            {/* The affordance that was missing entirely: the grouping was
-                                displayed read-only, so a wrong packet split could be seen
-                                and not fixed. */}
-                            <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
-                              Edit page grouping
-                            </Button>
-                          </SpaceBetween>
+                          <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
                         </FormField>
                       )}
                       {inferenceResult ? (
