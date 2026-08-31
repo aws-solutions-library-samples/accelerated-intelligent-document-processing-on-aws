@@ -2186,8 +2186,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # own instance axis (x-aws-idp-instance-array) is meant to hold several
         # records, and every one of them is extracted and scored, so warning about
         # it would be pure noise on a correctly-configured class.
+        # Only "recovered" warrants the warning. "declared" means the class asked
+        # for several records and every one is extracted and scored; "single"
+        # means one object, which the > 1 check already excludes. Naming both
+        # exclusions is clearer than excluding "declared" alone and leaving
+        # "single" to fall through by accident. An ABSENT source is treated as
+        # recovered, so metadata written before the label existed still warns.
         instance_count = int(metadata.get("instance_count") or 0)
-        if instance_count > 1 and metadata.get("instance_source") != "declared":
+        if instance_count > 1 and metadata.get("instance_source") not in (
+            "declared",
+            "single",
+        ):
             issues.append(
                 ProcessingIssue(
                     stage="extraction",
@@ -4424,7 +4433,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # that is worth a warning. "declared" = the class named its own instance
         # axis with x-aws-idp-instance-array, so several documents are exactly
         # what the config asked for and there is nothing to warn about.
-        instance_source = "recovered" if instance_count else None
+        # "single" is the ordinary case: the model returned one object, so the
+        # count is 1 and nothing was recovered. Labelling that "recovered" —
+        # which an earlier version did once instance_count started reporting 1
+        # for a plain object — is simply untrue in the audit trail, and would
+        # have someone reading metadata looking for records that never existed.
+        if not instance_count:
+            instance_source = None
+        elif result.recovered_instances:
+            instance_source = "recovered"
+        else:
+            instance_source = "single"
 
         # Designate mode: a class whose schema is ALREADY modelled as a packet of
         # records names its own instance axis. The count comes from that array's

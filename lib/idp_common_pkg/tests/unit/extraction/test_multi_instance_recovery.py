@@ -351,3 +351,52 @@ def test_recovered_multi_instance_still_raises_the_warning():
         section_id="1",
     )
     assert [i for i in issues if i.code == "extraction_multi_instance_detected"]
+
+
+# --------------------------------------------------------------------------
+# instance_source labelling
+#
+# Caught by reading a live e2e audit trail: every ordinary single-object
+# extraction was labelled source="recovered", which is untrue — nothing was
+# recovered — and would send someone reading the metadata looking for records
+# that never existed.
+# --------------------------------------------------------------------------
+
+
+def test_single_object_is_labelled_single_not_recovered():
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "Anderson"},
+        metadata={"instance_count": 1, "instance_source": "single"},
+        section_id="1",
+    )
+    # A single instance never warrants the multi-instance warning.
+    assert not [i for i in issues if i.code == "extraction_multi_instance_detected"]
+
+
+def test_declared_source_still_suppresses_the_warning():
+    svc = _packet_svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"records": [{"patient_name": "A"}, {"patient_name": "B"}]},
+        metadata={"instance_count": 2, "instance_source": "declared"},
+        section_id="1",
+    )
+    assert not [i for i in issues if i.code == "extraction_multi_instance_detected"]
+
+
+def test_recovered_source_is_the_only_one_that_warns():
+    svc = _svc()
+    for source, expect_warning in (
+        ("recovered", True),
+        ("declared", False),
+        ("single", False),
+    ):
+        issues = svc._build_extraction_issues(
+            extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+            metadata={"instance_count": 2, "instance_source": source},
+            section_id="1",
+        )
+        got = bool(
+            [i for i in issues if i.code == "extraction_multi_instance_detected"]
+        )
+        assert got is expect_warning, f"source={source} -> warning={got}"
