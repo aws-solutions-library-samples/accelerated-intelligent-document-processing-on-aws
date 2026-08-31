@@ -968,7 +968,7 @@
       ]
     },
     "RecordEvaluationFailure": {
-      "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written.",
+      "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written. document.$ is $ (not $.document) because ApplyPostSummarizationHookDocument set $ to the document dict itself, so there is no $.document key at this point; the Catch above adds $.EvaluationError as a sibling of the doc fields, and the Lambda handler strips known state-level keys (EvaluationError, record_failure_only, failure_reason, error, execution_arn) on the raw-fallback path.",
       "Type": "Task",
       "Resource": "${EvaluationLambdaArn}",
       "Parameters": {

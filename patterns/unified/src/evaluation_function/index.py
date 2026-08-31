@@ -173,9 +173,50 @@ def handler(event, context):
         try:
             actual_document = extract_document_from_event(event)
             reason = event.get('failure_reason') or 'Evaluation did not complete'
+            # Match AWS error codes by EXACT parse of Step Functions'
+            # ``{Error, Cause}`` envelope, not by substring on the
+            # JSON-serialized blob — a "connection timeout" mentioned in
+            # a ``Cause`` prose message must NOT re-classify a non-
+            # timeout failure as TIMED_OUT (finding from #625 high
+            # review, replacing the earlier substring check). The state
+            # machine's Catch delivers ``error`` as either the dict
+            # ``{"Error": "States.Timeout", "Cause": "..."}`` or a
+            # string / other shape on non-standard invocations; the
+            # dict form is the one AWS retries as a timeout.
+            # Lambda's own timeout surfaces via ``Sandbox.Timedout`` and Step
+            # Functions' state-level timeout via ``States.Timeout`` — both are
+            # unambiguous, and both are the codes ``EvaluationStep``'s
+            # single-attempt Retry policy matches on.
+            #
+            # ``Lambda.Unknown`` is Step Functions' CATCH-ALL for a Lambda
+            # failure it cannot classify — a timeout is one cause, but so is
+            # any other unhandled runtime fault. Treating the bare code as a
+            # timeout would mislabel those, so it only counts when the
+            # ``Cause`` prose actually names ``Sandbox.Timedout`` (which is how
+            # AWS reports a function timeout wrapped in ``Lambda.Unknown``).
+            # That keeps the exact-``Error`` parse for the unambiguous codes
+            # while still catching the wrapped-timeout shape the earlier
+            # substring check happened to cover.
+            TIMEOUT_ERROR_CODES = {
+                'Sandbox.Timedout',
+                'States.Timeout',
+            }
+            raw_error = event.get('error')
+            error_code = (
+                raw_error.get('Error') if isinstance(raw_error, dict) else None
+            )
+            error_cause = (
+                str(raw_error.get('Cause') or '')
+                if isinstance(raw_error, dict)
+                else ''
+            )
+            is_timeout = error_code in TIMEOUT_ERROR_CODES or (
+                error_code == 'Lambda.Unknown'
+                and 'Sandbox.Timedout' in error_cause
+            )
             status = (
                 EvaluationStatus.TIMED_OUT
-                if 'Timedout' in json.dumps(event.get('error', ''))
+                if is_timeout
                 else EvaluationStatus.FAILED
             )
             logger.error(
@@ -188,7 +229,57 @@ def handler(event, context):
             # Never let the failure-recorder itself break the workflow — the whole
             # point of this branch is that the document survives.
             logger.error(f"Could not record evaluation failure: {str(e)}", exc_info=True)
-            return event.get('document') or {}
+            # If we managed to load ``actual_document`` before the failure,
+            # prefer its clean serialization — the raw ``event.get('document')``
+            # carries state-level keys the state machine's Catch merged in
+            # (``EvaluationError`` and friends) because the ASL parameter
+            # ``document.$: $`` passes the WHOLE state, and $ at this point
+            # is the doc dict itself with Catch-injected siblings alongside
+            # its fields. Downstream ``$.document.<field>`` would otherwise
+            # see the merged shape. See the state's Comment for why we can't
+            # simply switch to ``$.document`` at the ASL level.
+            if actual_document is not None:
+                # Best-effort: try to stamp the status even on the outer-
+                # except path. The whole point of this state is to record
+                # that evaluation did not complete; returning a document
+                # without stamping ``EvaluationStatus`` leaves it stuck
+                # at RUNNING forever (finding from #625 review). Each
+                # step is guarded so a further failure inside status
+                # update or serialize still lets the document survive.
+                try:
+                    fallback_status = (
+                        status
+                        if 'status' in locals()
+                        else EvaluationStatus.FAILED
+                    )
+                    update_document_evaluation_status(
+                        actual_document, fallback_status
+                    )
+                except Exception as status_err:
+                    logger.error(
+                        f"Failed to stamp fallback evaluation status: {status_err}"
+                    )
+                try:
+                    return {
+                        'document': actual_document.serialize_document(
+                            working_bucket, 'evaluation'
+                        )
+                    }
+                except Exception:
+                    pass
+            raw = event.get('document') or {}
+            if isinstance(raw, dict):
+                raw = {
+                    k: v for k, v in raw.items()
+                    if k not in (
+                        'EvaluationError',
+                        'record_failure_only',
+                        'failure_reason',
+                        'error',
+                        'execution_arn',
+                    )
+                }
+            return {'document': raw}
 
     try:
         logger.info(f"Starting evaluation process: {json.dumps(event)}")

@@ -1,0 +1,53 @@
+{
+  "description": "Truncation case: 5 GT items × 2 leaves, model returns only 2 (3 truncated). Pre-fix reported tp=4, fn=3 → recall=0.571; post-fix reports the leaf-normalized truth tp=4, fn=6, recall=0.40. Truncation is the flagship failure mode for bank-statement / agentic-table configs, so this fixture guards against a revert to unit-mixed counting. Paired with hallucinated_list_items.input.json for the opposite direction.",
+  "section_id": "trunc-hallucinate-1",
+  "classification": "Bank",
+  "page_ids": ["1"],
+  "config": {
+    "classes": [
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "bank",
+        "x-aws-idp-document-type": "Bank",
+        "x-aws-idp-evaluation-model-name": "Bank",
+        "type": "object",
+        "properties": {
+          "Transactions": {
+            "type": "array",
+            "description": "5-item list, model returns only 2 (3 truncated, 2 leaves per item)",
+            "x-aws-idp-evaluation-match-threshold": 0.5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "x-aws-idp-evaluation-method": "EXACT"
+                },
+                "amount": {
+                  "type": "number",
+                  "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                  "x-aws-idp-evaluation-threshold": 0.01
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "Transactions": [
+      {"date": "2026-01-01", "amount": 100.0},
+      {"date": "2026-01-02", "amount": 200.0},
+      {"date": "2026-01-03", "amount": 300.0},
+      {"date": "2026-01-04", "amount": 400.0},
+      {"date": "2026-01-05", "amount": 500.0}
+    ]
+  },
+  "actual": {
+    "Transactions": [
+      {"date": "2026-01-01", "amount": 100.0},
+      {"date": "2026-01-02", "amount": 200.0}
+    ]
+  }
+}
