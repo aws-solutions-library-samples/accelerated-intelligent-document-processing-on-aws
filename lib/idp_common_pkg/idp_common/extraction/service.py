@@ -1983,7 +1983,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           as a parse failure, unchanged.
         """
         if not isinstance(parsed, list):
-            return parsed, True, 0, None
+            # A plain object is one document, and we know that — so report 1
+            # rather than 0. 0 is reserved for "not determined" (an extraction
+            # that failed before producing a result, or a section written by
+            # older code), which the UI renders as "-" instead of a count.
+            return parsed, True, 1, None
 
         if len(parsed) == 1 and isinstance(parsed[0], dict):
             logger.warning(

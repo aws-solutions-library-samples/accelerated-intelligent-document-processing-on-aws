@@ -219,3 +219,72 @@ class TestMergeOrder:
             {"extraction": {"model": "us.x"}}, pattern="pattern-2"
         )
         assert str(merged.get("config_format_version")) == CONFIG_FORMAT_VERSION
+
+
+class TestRawConfigurationIsMigrated:
+    """`get_raw_configuration` must relocate legacy keys.
+
+    This is what the config EDITOR reads (the sparse-delta pattern deliberately
+    skips Pydantic defaults). "Raw" means "no defaults injected" — it does NOT
+    mean "the stored bytes at whatever path they used to live". After a key MOVE,
+    returning the un-migrated delta breaks the editor for every pre-existing
+    custom profile: it renders the Schema (new path) populated from a delta that
+    still holds the value at the old path, so the panel shows the DEFAULT while
+    the runtime uses the user's real value — and a save from that panel persists
+    the wrong one.
+
+    Observed live on IDP1 after the v0.7 move: the editor reported validation
+    enabled/warn on profiles the pipeline was running disabled/escalate.
+    """
+
+    @staticmethod
+    def _manager_with(stored):
+        from unittest.mock import MagicMock
+
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        mgr = ConfigurationManager.__new__(ConfigurationManager)
+        mgr.table = MagicMock()
+        mgr.table.get_item.return_value = {"Item": dict(stored)}
+        return mgr
+
+    LEGACY = {
+        "Configuration": "Config#legacy-profile",
+        "config_format_version": "0.6",
+        "extraction": {
+            "agentic": {"validation": {"enabled": False, "fail_action": "escalate"}}
+        },
+    }
+
+    def test_legacy_delta_is_relocated_for_the_editor(self):
+        mgr = self._manager_with(self.LEGACY)
+        raw = mgr.get_raw_configuration("Config", "legacy-profile")
+        assert raw["extraction"]["validation"] == {
+            "enabled": False,
+            "fail_action": "escalate",
+        }, "the editor must see the user's real setting at the CURRENT path"
+        assert "validation" not in raw["extraction"].get("agentic", {})
+
+    def test_no_defaults_are_injected(self):
+        """The sparse-delta contract still holds: relocation only, no defaults."""
+        mgr = self._manager_with(self.LEGACY)
+        raw = mgr.get_raw_configuration("Config", "legacy-profile")
+        v = raw["extraction"]["validation"]
+        assert set(v) == {"enabled", "fail_action"}, v
+        assert "coercion" not in raw["extraction"]
+        assert set(raw["extraction"]) == {"validation"}, raw["extraction"]
+
+    def test_already_current_delta_is_untouched(self):
+        stored = {
+            "Configuration": "Config#p",
+            "config_format_version": "0.7",
+            "extraction": {"validation": {"fail_action": "reject"}},
+        }
+        mgr = self._manager_with(stored)
+        raw = mgr.get_raw_configuration("Config", "p")
+        assert raw["extraction"]["validation"] == {"fail_action": "reject"}
+
+    def test_metadata_fields_are_still_stripped(self):
+        mgr = self._manager_with(self.LEGACY)
+        raw = mgr.get_raw_configuration("Config", "legacy-profile")
+        assert "Configuration" not in raw

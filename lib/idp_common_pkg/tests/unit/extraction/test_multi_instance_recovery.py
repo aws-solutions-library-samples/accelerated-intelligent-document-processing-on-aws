@@ -48,13 +48,20 @@ def _svc(*, agentic: bool = False) -> ExtractionService:
 
 
 def test_non_list_passes_through_untouched():
+    """A plain object is one document, and we know it — so count is 1, not 0.
+
+    0 means "not determined" (extraction failed before producing a result, or a
+    section written by older code), which the UI renders as "-" rather than a
+    count. Reporting 0 for a perfectly good single-record extraction would make
+    the common case look undetermined.
+    """
     obj = {"patient_name": "Anderson"}
     fields, ok, count, recovered = ExtractionService._normalize_list_result(
         obj, context="t"
     )
     assert fields is obj
     assert ok is True
-    assert count == 0
+    assert count == 1
     assert recovered is None
 
 
