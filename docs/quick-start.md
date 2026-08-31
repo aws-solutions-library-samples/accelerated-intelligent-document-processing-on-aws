@@ -88,7 +88,7 @@ in two places:
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
-[Configuration Versions](configuration-versions.md)).
+[Configuration Profiles](configuration-profiles.md)).
 
 ### Disabling the widget
 

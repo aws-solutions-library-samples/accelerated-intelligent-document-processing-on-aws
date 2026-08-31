@@ -428,7 +428,7 @@ const GroundTruthVisualEditor = ({
           {baselineConfigVersion !== 'default' && <Badge color="grey">Config: {baselineConfigVersion}</Badge>}
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
-              {editHistoryCount} revision{editHistoryCount === 1 ? '' : 's'} — see Revision History
+              {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see Edit history
             </Box>
           )}
         </SpaceBetween>
@@ -607,7 +607,10 @@ const GroundTruthVisualEditor = ({
                 },
                 {
                   id: 'history',
-                  label: 'Revision History',
+                  // See the same tab in VisualEditorModal: these are field edits,
+                  // not revisions. This editor sits next to Configuration Profile
+                  // pickers, so the distinction has to hold here especially.
+                  label: 'Edit history',
                   content: <EditHistoryTab predictionData={localData} baselineData={null} />,
                 },
               ]}

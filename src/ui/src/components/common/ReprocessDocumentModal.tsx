@@ -5,6 +5,7 @@ import type { SelectProps } from '@cloudscape-design/components';
 import { Box, Modal, SpaceBetween, Button, Select, FormField, Alert } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import ConfigRevisionSelector from './ConfigRevisionSelector';
 import useSettingsContext from '../../contexts/settings';
 
 const logger = new ConsoleLogger('ReprocessDocumentModal');
@@ -16,7 +17,7 @@ interface ReprocessDocumentItem {
 interface ReprocessDocumentModalProps {
   visible: boolean;
   onDismiss: () => void;
-  onConfirm: (versionName?: string) => void;
+  onConfirm: (versionName?: string, revision?: number) => void;
   selectedItems?: readonly ReprocessDocumentItem[];
   isLoading?: boolean;
 }
@@ -29,6 +30,7 @@ const ReprocessDocumentModal = ({
   isLoading = false,
 }: ReprocessDocumentModalProps): React.JSX.Element => {
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const { versions, getVersionOptions } = useConfigurationVersions();
   const { settings } = useSettingsContext();
 
@@ -39,6 +41,7 @@ const ReprocessDocumentModal = ({
   useEffect(() => {
     if (!visible) {
       setSelectedVersion(null);
+      setSelectedRevision(null);
     }
   }, [visible]);
 
@@ -86,8 +89,8 @@ const ReprocessDocumentModal = ({
   }
 
   const handleConfirm = () => {
-    logger.debug('Reprocessing documents', selectedItems, 'with version', selectedVersion?.value);
-    onConfirm(selectedVersion?.value);
+    logger.debug('Reprocessing documents', selectedItems, 'with version', selectedVersion?.value, 'r', selectedRevision);
+    onConfirm(selectedVersion?.value, selectedRevision ?? undefined);
   };
 
   return (
@@ -128,6 +131,14 @@ const ReprocessDocumentModal = ({
             loadingText="Loading versions..."
           />
         </FormField>
+
+        <ConfigRevisionSelector
+          profileName={selectedVersion?.value}
+          value={selectedRevision}
+          onChange={setSelectedRevision}
+          description="Defaults to the profile’s current configuration. Pick an earlier revision to reproduce what an earlier run produced."
+          disabled={isLoading}
+        />
 
         <p>This will trigger workflow reprocessing for the following {selectedItems.length > 1 ? 'documents' : 'document'}:</p>
         <ul>

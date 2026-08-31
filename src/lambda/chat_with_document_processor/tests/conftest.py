@@ -10,8 +10,10 @@ locally.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
@@ -33,6 +35,18 @@ sys.modules.setdefault("idp_common", MagicMock())
 _cfg_mod = MagicMock()
 _cfg_mod.get_config = MagicMock(return_value={})
 sys.modules["idp_common.config"] = _cfg_mod
+
+# config_scope is loaded for REAL rather than stubbed: it is the security boundary
+# the RBAC test below exercises, and a MagicMock would make that test pass
+# regardless of what the matcher does. The module is dependency-free (stdlib
+# only), so loading it from the repo costs nothing.
+_scope_spec = importlib.util.spec_from_file_location(
+    "idp_common.config_scope",
+    Path(__file__).resolve().parents[4] / "lib/idp_common_pkg/idp_common/config_scope.py",
+)
+_scope_mod = importlib.util.module_from_spec(_scope_spec)
+_scope_spec.loader.exec_module(_scope_mod)
+sys.modules["idp_common.config_scope"] = _scope_mod
 
 # Stub idp_common.bedrock.client — used by the processor for is_claude_4_7_model
 # (Claude 4.7+ temperature/top_p skip) and default_client (passed to the OpenAI

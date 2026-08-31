@@ -121,7 +121,8 @@ def handler(event, context):
         
         # Get configuration - use document's version if specified, otherwise use active version
         config_version = getattr(document, 'config_version', None)
-        config = get_config(version=config_version)
+        config_revision = getattr(document, 'config_revision', None)
+        config = get_config(version=config_version, revision=config_revision)
         
         # Create rule validation orchestrator service
         summarization_service = rule_validation.RuleValidationOrchestratorService(
