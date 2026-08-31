@@ -359,7 +359,7 @@ const ConfigurationComparison = ({ versions, configs }: ConfigurationComparisonP
         <Box textAlign="center" color="inherit">
           <SpaceBetween size="m">
             <b>No differences found</b>
-            <Box variant="p">The selected configuration versions are identical.</Box>
+            <Box variant="p">The selected configuration profiles are identical.</Box>
           </SpaceBetween>
         </Box>
       ) : (

@@ -1882,14 +1882,14 @@ const ConfigBuilder = ({
                 <SpaceBetween size="l">
                   {/* Version Description Field */}
                   <FormField
-                    label="Version Description"
-                    description="Optional description for this configuration version (max 200 characters)"
+                    label="Profile Description"
+                    description="Optional description for this configuration profile (max 200 characters)"
                     errorText={versionDescription && versionDescription.length > 200 ? 'Description cannot exceed 200 characters' : ''}
                   >
                     <Input
                       value={versionDescription}
                       onChange={({ detail }) => onDescriptionChange?.(detail.value)}
-                      placeholder="Enter a description for this configuration version..."
+                      placeholder="Enter a description for this configuration profile..."
                       invalid={!!versionDescription && versionDescription.length > 200}
                     />
                   </FormField>

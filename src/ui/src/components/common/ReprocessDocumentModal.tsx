@@ -116,19 +116,19 @@ const ReprocessDocumentModal = ({
 
         {isPattern1 && (
           <Alert type="info">
-            <strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected config version, be sure to execute
-            &quot;Sync To BDA&quot; for your config version from the View/Edit Configuration page.
+            <strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected configuration profile, be sure to
+            execute &quot;Sync To BDA&quot; for your configuration profile from the View/Edit Configuration page.
           </Alert>
         )}
 
-        <FormField label="Configuration Version" description="Select which configuration version to use for reprocessing these documents">
+        <FormField label="Configuration Profile" description="Select which configuration profile to use for reprocessing these documents">
           <Select
             selectedOption={selectedVersion}
             onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
             options={getVersionOptions()}
-            placeholder={versions.length === 0 ? 'Loading versions...' : 'Select configuration version'}
+            placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
             disabled={isLoading || versions.length === 0}
-            loadingText="Loading versions..."
+            loadingText="Loading profiles..."
           />
         </FormField>
 

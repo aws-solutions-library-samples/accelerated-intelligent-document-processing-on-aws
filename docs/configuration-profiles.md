@@ -97,10 +97,10 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
-- **Editable copies** — use "Save as Version" to create a custom, editable copy from any managed version
+- **Editable copies** — use "Save as Profile" to create a custom, editable copy from any managed profile
 - **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
 
-> **Tip:** To customize a managed configuration, open it, then click **Save as Version** to create an editable copy. The original managed version remains untouched and will continue to be updated with solution upgrades.
+> **Tip:** To customize a managed configuration, open it, then click **Save as Profile** to create an editable copy. The original managed profile remains untouched and will continue to be updated with solution upgrades.
 
 For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions).
 
@@ -294,9 +294,9 @@ When you open a version in the configuration editor:
 #### Unsaved Changes Indicator
 
 - Individual fields with unsaved edits display an **orange dot** (●) next to the field label
-- An **info banner** appears at the top: *"You have unsaved changes. Click Save changes to persist, or Discard changes to revert."* — this appears for **all** versions, including the stack-managed `default` (where the banner instead points you to **Save as Version**, since Save changes is disabled)
+- An **info banner** appears at the top: *"You have unsaved changes. Click Save changes to persist, or Discard changes to revert."* — this appears for **all** profiles, including the stack-managed `default` (where the banner instead points you to **Save as Profile**, since Save changes is disabled)
 - The **Discard changes** button reloads the last-saved configuration from the server
-- A successful save (or Save as Version / Reset to Default) also shows a brief **success toast** in the top-right notification area, visible even when scrolled deep in a long form
+- A successful save (or Save as Profile / Reset to Default) also shows a brief **success toast** in the top-right notification area, visible even when scrolled deep in a long form
 
 #### Browser Navigation Guard
 

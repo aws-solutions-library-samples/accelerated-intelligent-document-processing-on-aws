@@ -553,8 +553,8 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
               label="Model"
               description={
                 modelOptions.length
-                  ? `Default from configuration version "${configVersion}". Choose a larger-context model if the document is very long.`
-                  : `Default model from configuration version "${configVersion}". (Model list not available — using configured default.)`
+                  ? `Default from configuration profile "${configVersion}". Choose a larger-context model if the document is very long.`
+                  : `Default model from configuration profile "${configVersion}". (Model list not available — using configured default.)`
               }
             >
               {modelOptions.length > 0 ? (

@@ -251,7 +251,7 @@ const TestResultsList = ({
 
   const downloadToExcel = () => {
     // Convert test runs data to CSV format
-    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Version', 'Status', 'Files Count', 'Created At', 'Completed At'];
+    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Profile', 'Status', 'Files Count', 'Created At', 'Completed At'];
     const csvData = testRuns.map((run) => [
       run.testRunId,
       run.testSetName || '',
@@ -451,7 +451,7 @@ const TestResultsList = ({
           },
           {
             id: 'configVersion',
-            header: 'Config Version',
+            header: 'Config Profile',
             cell: (item) => formatConfigVersionLink(item.configVersion, versions, undefined, item.configRevision),
             sortingField: 'configVersion',
             width: 150,

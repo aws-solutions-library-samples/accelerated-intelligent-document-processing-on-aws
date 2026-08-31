@@ -44,7 +44,7 @@ export const MAX_COUNT = 50;
 export const FAST_THRESHOLD = 7;
 export const QUALITY_THRESHOLD = 9;
 
-// Document-class names from a fetched config version. Configs arrive as AWSJSON
+// Document-class names from a fetched configuration profile. Configs arrive as AWSJSON
 // strings; classes live under `.classes[]`, identified by `$id` /
 // `x-aws-idp-document-type` as on the backend. A version's own classes win, and
 // the default config is consulted only when the version defines none: otherwise
@@ -328,7 +328,7 @@ export const useGenerateSyntheticForm = ({
     ...(mode === 'prompt'
       ? [{ label: 'Description', value: prompt.trim() || '—' }]
       : [
-          { label: 'Configuration version', value: (selectedVersion?.label as string) || '—' },
+          { label: 'Configuration profile', value: (selectedVersion?.label as string) || '—' },
           { label: 'Document class', value: (selectedClass?.label as string) || '—' },
         ]),
     {
@@ -358,7 +358,7 @@ export const useGenerateSyntheticForm = ({
             {
               value: 'config',
               label: 'From a configuration',
-              description: "Use an existing config version's document class, so labels match your extraction schema.",
+              description: "Use an existing configuration profile's document class, so labels match your extraction schema.",
             },
           ]}
         />
@@ -380,23 +380,23 @@ export const useGenerateSyntheticForm = ({
         </>
       ) : (
         <>
-          <FormField label="Configuration version" description="The version whose document class defines the fields to generate.">
+          <FormField label="Configuration profile" description="The profile whose document class defines the fields to generate.">
             <Select
               selectedOption={selectedVersion}
               onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
               options={versionOptions}
-              placeholder="Select a configuration version"
+              placeholder="Select a configuration profile"
               filteringType="auto"
             />
           </FormField>
-          <FormField label="Document class" description="Which class from that version to generate documents for.">
+          <FormField label="Document class" description="Which class from that profile to generate documents for.">
             <Select
               selectedOption={selectedClass}
               onChange={({ detail }) => setSelectedClass(detail.selectedOption)}
               options={classOptions}
-              placeholder={selectedVersion ? 'Select a document class' : 'Select a configuration version first'}
+              placeholder={selectedVersion ? 'Select a document class' : 'Select a configuration profile first'}
               disabled={!selectedVersion}
-              empty="No document classes in this version"
+              empty="No document classes in this profile"
               statusType={classesLoading ? 'loading' : 'finished'}
               loadingText="Loading document classes"
               filteringType="auto"

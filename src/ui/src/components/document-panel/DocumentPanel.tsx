@@ -559,7 +559,7 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
         <SpaceBetween size="xs">
           <div>
             <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Config Version</strong>
+              <strong>Config Profile</strong>
             </Box>
             <div>{formatConfigVersionLink(item.configVersion, versions)}</div>
           </div>
@@ -741,7 +741,7 @@ export const DocumentPanel = ({
 
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
   const { mergedConfig } = useConfiguration();
-  // Fetch the specific config version that was used to process this document (for flow viewer).
+  // Fetch the specific configuration profile that was used to process this document (for flow viewer).
   // Optimization: skip the extra API call when the document version is 'default' or unset,
   // since useConfiguration() above already fetches the default config.
   const docConfigVersion = localItem?.configVersion || 'default';
@@ -1012,7 +1012,7 @@ export const DocumentPanel = ({
             sections: displayedItem.sections,
             pages: displayedItem.pages,
             documentItem: displayedItem,
-            // Use the config version the document was processed with, not the
+            // Use the configuration profile the document was processed with, not the
             // stack's current live config. This drives the Edit Mode class
             // dropdown (so users see the classes the doc was actually
             // classified against) and section confidence-alert thresholds.
@@ -1029,7 +1029,7 @@ export const DocumentPanel = ({
         <DocumentVersionsPanel objectKey={localItem.objectKey} viewingRunId={viewingRunId} onViewVersion={handleViewVersion} />
         <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
 
-        {/* Step Function Flow Viewer - uses the document's config version, not the active stack config */}
+        {/* Step Function Flow Viewer - uses the document's configuration profile, not the active stack config */}
         {localItem?.executionArn && (
           <StepFunctionFlowViewer
             executionArn={localItem.executionArn}

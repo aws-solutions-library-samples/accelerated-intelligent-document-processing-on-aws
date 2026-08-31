@@ -155,7 +155,7 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
   },
   {
     id: 'configVersion',
-    header: 'Config Version',
+    header: 'Config Profile',
     cell: (item) =>
       formatConfigVersionLink(
         item.configVersion,
@@ -257,7 +257,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'initialEventTime', label: 'Submitted' },
       { id: 'completionTime', label: 'Completed' },
       { id: 'duration', label: 'Duration' },
-      { id: 'configVersion', label: 'Config Version' },
+      { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
       { id: 'processingIssueCount', label: 'Processing Issues' },
