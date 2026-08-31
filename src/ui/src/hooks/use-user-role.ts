@@ -16,7 +16,7 @@ import { getMyProfile } from '../graphql/generated';
  * Users can be in multiple groups (union of permissions applies).
  * Users can optionally have allowedConfigVersions for config-version scoping and
  * allowedTestSets for test-set annotation scoping. These are independent axes:
- * the former limits which config versions' documents a user sees, the latter
+ * the former limits which configuration profiles' documents a user sees, the latter
  * which test sets they may annotate.
  *
  * Every group name the app understands must appear in APP_GROUPS below: the
@@ -46,13 +46,13 @@ interface UserRoleReturn {
   canWrite: boolean;
   /** True if user can manage users (Admin only) */
   canManageUsers: boolean;
-  /** True if user can delete config versions (Admin only) */
+  /** True if user can delete configuration profiles (Admin only) */
   canDeleteConfig: boolean;
   /** True if user can perform HITL reviews (Admin or Reviewer) */
   canReview: boolean;
   /** True if user can annotate test-set ground truth (Admin, Author or Annotator) */
   canAnnotate: boolean;
-  /** Config versions the user is allowed to access. null/undefined = unrestricted (all versions). */
+  /** Config profiles the user is allowed to access. null/undefined = unrestricted (all versions). */
   allowedConfigVersions: string[] | null;
   /**
    * Test sets an Annotator is scoped to. null = unrestricted for Admin/Author;

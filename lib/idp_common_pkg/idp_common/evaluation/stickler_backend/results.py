@@ -3,12 +3,15 @@
 
 """Stickler raw ``compare_with`` dict → IDP dataclasses.
 
-Encodes R3: verdicts / counts / derived metrics come straight from Stickler's
-``confusion_matrix`` (per-field ``fields[name].overall`` cells + section
-``aggregate``). No re-scoring, no private threshold table. IDP dataclasses
-receive whatever Stickler said — the two paths that used to disagree (per-doc
-IDP re-derivation vs. run-level Stickler counts on the aggregation Lambda)
-are now the same numbers by construction.
+Verdicts / counts / derived metrics come from Stickler's ROW-LEVEL
+``field_comparisons`` (issue #625): per-attribute ``matched`` is the AND of
+its rows' ``match`` fields via ``_is_match_true``, and section counts come
+from ``aggregate_row_counts`` over the same rows. The pre-#625 design read
+``cm.fields[name].overall`` and ``cm.aggregate``, both of which are
+item-level after Hungarian pairing and hid leaf failures inside kept items
+— parent verdict and drilldown could disagree on the same row. Using the
+raw rows guarantees parent, section counts, and drilldown agree by
+construction. No re-scoring, no private threshold table.
 
 Kept module-boundary-clean: this module knows about Stickler's result shape
 and IDP's dataclasses, but not about ``EvaluationService`` state or
@@ -17,10 +20,18 @@ orchestration. The service provides ``field_config``, ``match_threshold``,
 ``SectionEvaluationResult``.
 """
 
+import logging
 import types
 import typing
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from idp_common.evaluation.contract import (
+    _is_match_true,
+    aggregate_row_counts,
+    iter_countable_rows,
+    row_root_attribute,
+    safe_div,
+)
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     SectionEvaluationResult,
@@ -30,6 +41,8 @@ if TYPE_CHECKING:
     from stickler import StructuredModel
 
     from idp_common.models import Section
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_leaf_schema(
@@ -234,6 +247,36 @@ def _instance_to_dict(instance: Any) -> Dict[str, Any]:
     return dict(instance)
 
 
+def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
+    """True iff a Stickler confusion-matrix cell dict has ANY positive count.
+
+    Used to distinguish "genuinely-empty section" (all-zero populated
+    ``cm.aggregate``/``overall`` dict, which is what Stickler emits for
+    that shape and is NOT a Stickler shape change to warn about) from
+    "row list is empty but counts say otherwise" (a shape drift we DO
+    want to log).
+
+    Defensive against non-numeric values under the count keys — a
+    Stickler shape drift that put a string / None / dict at one of the
+    ``tp/fa/fd/tn/fn`` slots should be a WARN (from the caller), not a
+    ValueError-crash in the helper that was supposed to detect it.
+    """
+    if not node:
+        return False
+    for k in ("tp", "fa", "fd", "tn", "fn"):
+        raw = node.get(k, 0)
+        if raw is None:
+            continue
+        try:
+            if int(raw) > 0:
+                return True
+        except (TypeError, ValueError):
+            # Non-numeric under a count key — treat as "some content"
+            # so the caller's shape-drift warning still fires.
+            return True
+    return False
+
+
 def transform_stickler_result(
     section: "Section",
     expected_instance: "StructuredModel",
@@ -246,16 +289,20 @@ def transform_stickler_result(
     get_confidence_for_field: Callable[[Dict[str, Any], str], Optional[Dict[str, Any]]],
     generate_reason: Callable[..., str],
     format_evaluation_method: Callable[..., str],
+    document_context: str = "",
 ) -> SectionEvaluationResult:
     """Convert Stickler's ``compare_with`` dict into a ``SectionEvaluationResult``.
 
-    Verdicts / counts / derived metrics come straight from Stickler's
-    ``confusion_matrix`` (R3): the per-field ``fields[name].overall`` cell for
-    ``matched``, and the section-level ``aggregate`` for counts / precision /
-    recall / F1 / accuracy. IDP no longer re-derives these from
-    score-threshold rules — those diverged from Stickler's built-in
-    ``NullHelper`` + ``ThresholdHelper`` decisions and produced two different
-    numbers per document (per-doc vs. run-level).
+    Verdicts / counts / derived metrics come from Stickler's row-level
+    ``field_comparisons`` (issue #625): per-attribute ``matched`` is the
+    AND of its rows' ``match`` fields via the shared ``_is_match_true``
+    predicate, and section-level counts / precision / recall / F1 /
+    accuracy are derived from ``aggregate_row_counts`` over the same
+    rows. The pre-#625 design read ``cm.fields[name].overall`` and
+    ``cm.aggregate``, both item-level rollups that hid leaf failures
+    inside Hungarian-matched items — parent verdict could show ✓ while
+    the drilldown showed red children. Row-level derivation guarantees
+    parent, section counts, and drilldown agree by construction.
 
     Args:
         section: Section metadata (id, classification).
@@ -290,14 +337,26 @@ def transform_stickler_result(
     root_model_cls = type(expected_instance) if expected_instance is not None else None
 
     field_scores = stickler_result.get("field_scores", {})
-    field_comparisons = stickler_result.get("field_comparisons", [])
+    # ``or []`` (not ``.get(key, [])``) so a ``{"field_comparisons": null}``
+    # payload from a Stickler variant emitting an explicit null still
+    # iterates safely — the default in ``.get`` only fires when the key
+    # is missing, not when the value is None.
+    field_comparisons: List[Dict[str, Any]] = (
+        stickler_result.get("field_comparisons") or []
+    )
 
     # Group field comparisons by top-level field name for attachment to
     # attributes: field_comparisons is a flat list, group by root field.
+    # Uses the SHARED ``row_root_attribute`` helper (also consumed by
+    # ``iter_countable_rows`` below and by the aggregation Lambda) so
+    # the two groupings can't drift on rows whose root comes from
+    # ``actual_key`` or ``field_path`` rather than ``expected_key``
+    # (finding from #625 high review — the previous local
+    # ``expected_key.split(...)`` was a second, less-forgiving copy of
+    # the same logic).
     field_comparison_map: Dict[str, List[Dict[str, Any]]] = {}
     for fc in field_comparisons:
-        expected_key = fc.get("expected_key", "")
-        root_field = expected_key.split("[")[0].split(".")[0] if expected_key else ""
+        root_field = row_root_attribute(fc)
         if root_field:
             field_comparison_map.setdefault(root_field, []).append(fc)
 
@@ -327,7 +386,13 @@ def transform_stickler_result(
             if isinstance(comparator_cfg, dict)
             else None
         )
-        configured_threshold = field_schema.get("x-aws-stickler-threshold") or tolerance
+        # ``is not None`` (not ``or``) so a valid threshold of exactly 0.0
+        # survives. ``0.0 or tolerance`` would silently substitute the
+        # tolerance and change the meaning of the comparison.
+        explicit_threshold = field_schema.get("x-aws-stickler-threshold")
+        configured_threshold = (
+            explicit_threshold if explicit_threshold is not None else tolerance
+        )
         applied_threshold: Optional[float] = None
         if root_model_cls is not None and hasattr(root_model_cls, "model_fields"):
             applied_threshold = applied_threshold_from_field_info(
@@ -341,9 +406,36 @@ def transform_stickler_result(
             "weight": field_schema.get("x-aws-stickler-weight"),
         }
 
-    # Per-field verdicts + section counts come from Stickler's confusion matrix.
+    # Per-field verdicts + section counts come from Stickler's row-level
+    # ``field_comparisons`` — the same rows the UI drilldown displays.
+    # Reading these directly is the only way to guarantee the parent verdict
+    # never contradicts its children: for a list field, ``cm.overall`` and
+    # ``all_fields_matched`` collapse to item-level after Hungarian pairing
+    # and hide leaf failures inside kept items (issue #625). ``cm.aggregate``
+    # goes the other way — it drops rejected items entirely, so their
+    # false discoveries never reach the section counts. Only the raw
+    # ``field_comparisons`` rows honor every failure mode.
     cm = stickler_result.get("confusion_matrix") or {}
-    cm_fields: Dict[str, Any] = cm.get("fields") or {}
+    # ``field_comparisons`` was already bound above for the attachment map;
+    # reuse that binding instead of re-reading from ``stickler_result``.
+
+    # Filter to rows attributable to a parent attribute — both per-doc and
+    # run-level aggregators use the same shared filter so their counts agree
+    # (issue #625 finding 2). Then bucket by root attribute for O(N) per-
+    # attribute verdict evaluation.
+    # Include doc context so warnings from different documents with the
+    # same section_id don't dedupe against each other (a section_id like
+    # ``"s1"`` recurs across documents; without doc-scoping the first doc
+    # would silence every subsequent doc's warning — finding 1 from
+    # round-4 review). Falls back to section-only when no doc context is
+    # available.
+    ctx_prefix = f"doc={document_context} " if document_context else ""
+    countable_rows = iter_countable_rows(
+        field_comparisons, context=f"{ctx_prefix}section:{section.section_id}"
+    )
+    rows_by_attr: Dict[str, List[Dict[str, Any]]] = {}
+    for fc in countable_rows:
+        rows_by_attr.setdefault(row_root_attribute(fc), []).append(fc)
 
     attribute_results: List[AttributeEvaluationResult] = []
     for field_name, score in field_scores.items():
@@ -352,10 +444,57 @@ def transform_stickler_result(
         actual_value = get_nested_value(actual_dict, field_name)
         confidence_info = get_confidence_for_field(confidence_scores, field_name)
 
-        # Verdict from Stickler's per-field cell (tp+tn>0 → matched).
-        field_cell = cm_fields.get(field_name) or {}
-        field_overall = field_cell.get("overall") or {}
-        matched = (field_overall.get("tp", 0) > 0) or (field_overall.get("tn", 0) > 0)
+        # Verdict: parent is ✓ iff every drilldown row under it is ✓. Falls
+        # through to a counts-only rule ONLY if the field has no rows (rare —
+        # Stickler always emits at least one for scalars, and one per item or
+        # leaf for structured fields). Fallback re-derives its counts from the
+        # SAME per-attribute rows source ``aggregate_row_counts`` reads for
+        # section-level metrics — reading ``cm_fields[name].overall`` here
+        # would let the row-based section aggregate and the attribute verdict
+        # drift on the same document (finding 2 from #625 round-4 review).
+        # Fallback deliberately does NOT consult ``all_fields_matched`` — that
+        # flag is item-level for list fields and is exactly the item-level
+        # rollup this module was rewritten to stop trusting (issue #625).
+        my_rows = rows_by_attr.get(field_name) or []
+        if my_rows:
+            # Narrow allowlist via the SHARED ``_is_match_true`` helper
+            # so this predicate agrees with ``classify_field_comparison``
+            # on the SAME row (section counts and per-attribute verdict
+            # must not disagree — that's the parent-vs-section drift
+            # #625 exists to eliminate). Accepts True / 1 / "true";
+            # rejects everything else including the truthy-but-semantic-
+            # False string ``"false"`` that raw ``bool()`` would flip.
+            matched = all(_is_match_true(fc.get("match")) for fc in my_rows)
+        else:
+            # No rows — nothing in ``field_comparisons`` for this attribute.
+            # Section counts are unaffected (no rows contributed), so any
+            # verdict here is compatible with the section-count source.
+            # Defer to Stickler's ``score`` compared to the field's match
+            # threshold: keeping the verdict and the score on the SAME row
+            # in agreement avoids "✗ with score 1.0" contradictions in the
+            # UI (finding from #625 review-effort code review — earlier
+            # unconditional False produced score/matched drift). For a
+            # LIST-typed field, use ``list_match_threshold`` (the Hungarian
+            # match gate) rather than ``applied_threshold`` (the scalar
+            # comparator's per-field threshold) — those two are not the
+            # same number and a partial list score compared against a
+            # scalar threshold can flip the verdict the wrong way. Falls
+            # back to the section-level ``match_threshold`` (Stickler's
+            # 0.8 default) when neither is configured.
+            field_schema_here = properties.get(field_name, {}) or {}
+            is_list_field = field_schema_here.get("type") == "array"
+            if is_list_field:
+                list_thresh = field_config.get("match_threshold")
+                attr_threshold = (
+                    list_thresh if list_thresh is not None else match_threshold
+                )
+            else:
+                applied = field_config.get("applied_threshold")
+                attr_threshold = applied if applied is not None else match_threshold
+            try:
+                matched = float(score) >= float(attr_threshold)
+            except (TypeError, ValueError):
+                matched = False
 
         reason = generate_reason(
             field_name,
@@ -374,9 +513,11 @@ def transform_stickler_result(
         # Stickler's reason string ``"below threshold (X < Y)"`` uses for Y.
         # Falls back to the configured value when the model lookup wasn't
         # possible (e.g. auto-generated section with no built model).
-        display_threshold = (
-            field_config.get("applied_threshold") or field_specific_threshold
-        )
+        # ``is not None`` (not ``or``) so a display threshold of exactly
+        # 0.0 survives — same reasoning as the ``configured_threshold``
+        # binding above.
+        applied = field_config.get("applied_threshold")
+        display_threshold = applied if applied is not None else field_specific_threshold
         evaluation_method_value = format_evaluation_method(
             comparator_method=comparator_method,
             expected_value=expected_value,
@@ -422,29 +563,50 @@ def transform_stickler_result(
 
     attribute_results.sort(key=lambda ar: ar.name)
 
-    # Section-level metrics: derive from Stickler's aggregate. FAR/FDR from
-    # ``fa`` / ``fd`` cells so per-doc + run-level dashboards report the
-    # same numbers (previously per-doc used IDP's ``fp1``/``fp2`` re-count
-    # while the aggregation Lambda already used Stickler's counts).
-    aggregate = cm.get("aggregate") or {}
-    derived = aggregate.get("derived") or {}
-    agg_tp = int(aggregate.get("tp", 0) or 0)
-    agg_fa = int(aggregate.get("fa", 0) or 0)
-    agg_fd = int(aggregate.get("fd", 0) or 0)
-    agg_fp = int(aggregate.get("fp", 0) or 0)
-    agg_tn = int(aggregate.get("tn", 0) or 0)
-    agg_fn = int(aggregate.get("fn", 0) or 0)
-    metrics: Dict[str, float] = {
-        "precision": float(derived.get("cm_precision", 0.0) or 0.0),
-        "recall": float(derived.get("cm_recall", 0.0) or 0.0),
-        "f1_score": float(derived.get("cm_f1", 0.0) or 0.0),
-        "accuracy": float(derived.get("cm_accuracy", 0.0) or 0.0),
-        "false_alarm_rate": (
-            agg_fa / (agg_fa + agg_tn) if (agg_fa + agg_tn) > 0 else 0.0
-        ),
-        "false_discovery_rate": (
-            agg_fd / (agg_fd + agg_tp) if (agg_fd + agg_tp) > 0 else 0.0
-        ),
+    # Section-level counts: derive by classifying every ``field_comparisons``
+    # row via the shared ``aggregate_row_counts`` helper (kept in
+    # ``idp_common.evaluation.contract`` so the aggregation Lambda uses the same
+    # semantics — a divergence between per-doc and run-level classification
+    # would silently reintroduce the class of inconsistency issue #625 fixed).
+    # This view captures both list-item FDs (which ``cm.aggregate`` misses) and
+    # leaf-level FDs inside kept items (which ``cm.overall`` misses).
+    #
+    # If Stickler emits no rows we do NOT silently fall back to
+    # ``cm.aggregate`` — that would stamp v2.0-semantics on v1.0-semantics
+    # counts, defeating the drift-warning gate downstream (finding 2 from #625
+    # adversarial review). An empty row list is either a genuinely empty
+    # document (0 counts is correct) or a Stickler shape change we want to
+    # surface loudly rather than paper over.
+    if not countable_rows and (
+        _has_nonzero_counts(cm.get("aggregate"))
+        or _has_nonzero_counts(cm.get("overall"))
+    ):
+        logger.warning(
+            "Stickler emitted non-zero confusion_matrix counts but empty "
+            "field_comparisons on section %s — reporting 0 counts. This may "
+            "indicate a Stickler shape change; investigate before trusting "
+            "the run's metrics.",
+            section.section_id,
+        )
+    counts = aggregate_row_counts(countable_rows)
+    agg_tp = counts["tp"]
+    agg_fa = counts["fa"]
+    agg_fd = counts["fd"]
+    agg_fp = counts["fp"]
+    agg_tn = counts["tn"]
+    agg_fn = counts["fn"]
+    total = agg_tp + agg_fp + agg_fn + agg_tn
+
+    # ``Dict[str, Any]`` because later code adds ``_stickler_counts`` (nested
+    # dict), ``evaluation_failed`` (bool), and ``failure_type`` (str). An
+    # earlier ``Dict[str, float]`` annotation lied about the actual shape.
+    metrics: Dict[str, Any] = {
+        "precision": safe_div(agg_tp, agg_tp + agg_fp),
+        "recall": safe_div(agg_tp, agg_tp + agg_fn),
+        "f1_score": safe_div(2 * agg_tp, 2 * agg_tp + agg_fp + agg_fn),
+        "accuracy": safe_div(agg_tp + agg_tn, total),
+        "false_alarm_rate": safe_div(agg_fa, agg_fa + agg_tn),
+        "false_discovery_rate": safe_div(agg_fd, agg_fd + agg_tp),
     }
     # Raw counts for _process_section's document-level rollup (surfaced under
     # a stable key so the metrics dict stays visually clean).

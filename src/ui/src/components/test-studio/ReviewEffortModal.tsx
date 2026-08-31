@@ -133,7 +133,7 @@ const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; he
   measured: {
     type: 'success',
     header: 'Measured on this set',
-    body: 'Derived from observed confidence-vs-accuracy on these documents under this config version.',
+    body: 'Derived from observed confidence-vs-accuracy on these documents under this configuration profile.',
   },
   unreliable: {
     type: 'warning',
@@ -256,7 +256,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                 ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
                 : ''}
               , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
-              everything, or change the confidence model for this config version and re-score.
+              everything, or change the confidence model for this configuration profile and re-score.
             </Alert>
           )}
 

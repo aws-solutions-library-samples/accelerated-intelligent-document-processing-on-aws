@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from idp_common.evaluation.contract import _is_match_true
+
 
 class EvaluationMethod(Enum):
     """Evaluation method types for different field comparison approaches."""
@@ -73,7 +75,10 @@ class SectionEvaluationResult:
     section_id: str
     document_class: str
     attributes: List[AttributeEvaluationResult]
-    metrics: Dict[str, float] = field(default_factory=dict)
+    # ``Dict[str, Any]`` because the runtime dict carries nested dicts
+    # (``_stickler_counts``), booleans (``evaluation_failed``), and
+    # strings (``failure_type``) alongside the derived-metric floats.
+    metrics: Dict[str, Any] = field(default_factory=dict)
     stickler_comparison_result: Optional[Dict[str, Any]] = (
         None  # Raw Stickler result for bulk aggregation
     )
@@ -196,7 +201,13 @@ class DocumentEvaluationResult:
             actual_key = fc.get("actual_key", "N/A")
             expected_val = str(fc.get("expected_value", ""))[:100]
             actual_val = str(fc.get("actual_value", ""))[:100]
-            match = fc.get("match", False)
+            # Use the SHARED predicate so the drilldown's green/red painting
+            # agrees with section counts and per-attribute verdict on the
+            # same row. Raw ``bool(fc.get("match", False))`` would paint the
+            # string ``"false"`` or a numeric score like ``0.5`` GREEN
+            # while the row was counted as a failure — the exact parent-
+            # vs-drilldown contradiction #625 exists to eliminate.
+            match = _is_match_true(fc.get("match"))
             score = fc.get("score", 0.0)
             weight = fc.get("weight")
             # Per-field comparison method (annotated in service.py); fall back to
@@ -298,6 +309,15 @@ class DocumentEvaluationResult:
         # Add excluded sections (not evaluated, but surfaced for transparency)
         if self.excluded_sections:
             result["excluded_sections"] = list(self.excluded_sections)
+
+        # NOTE: ``stickler_result_version`` is NOT stamped here. Stamping in
+        # ``to_dict()`` would silently upgrade the version on any round-trip
+        # (load a historical v1.0 ``results.json``, wrap it in a
+        # ``DocumentEvaluationResult``, re-serialize) — defeating the
+        # drift-detection soft gate the stamp exists to enable. The single
+        # writer path in ``service.py`` stamps at write time; new callers
+        # must do the same explicitly rather than inheriting it as a
+        # side-effect of ``to_dict()``.
 
         return result
 

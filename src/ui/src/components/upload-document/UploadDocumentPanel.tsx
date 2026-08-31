@@ -151,7 +151,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   };
 
   // Fetch + parse a library preset (config.yaml, falling back to config.json)
-  // and save it as a new, non-active configuration version named after the
+  // and save it as a new, non-active configuration profile named after the
   // config folder. Returns the version name to use for processing.
   const importConfigVersion = async (configId: string): Promise<string> => {
     let file = await getFile(SAMPLE_CONFIG_PATTERN_DIR, configId, 'config.yaml');
@@ -352,14 +352,14 @@ const UploadDocumentPanel = (): React.JSX.Element => {
           <Input value={prefix} onChange={handlePrefixChange} placeholder="Leave empty for root folder" disabled={isUploading} />
         </FormField>
 
-        <FormField label="Configuration Version" description="Select which configuration version to use for processing these documents">
+        <FormField label="Configuration Profile" description="Select which configuration profile to use for processing these documents">
           <Select
             selectedOption={selectedVersion}
             onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
             options={getVersionOptions()}
-            placeholder={versions.length === 0 ? 'Loading versions...' : 'Select configuration version'}
+            placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
             disabled={isUploading || versions.length === 0 || (isSampleMode && showAutoImport && autoImportConfig)}
-            loadingText="Loading versions..."
+            loadingText="Loading profiles..."
           />
         </FormField>
 
@@ -415,14 +415,14 @@ const UploadDocumentPanel = (): React.JSX.Element => {
             Also import and use its configuration ({activeSample?.configId})
             <Box variant="small" color="text-body-secondary">
               This sample is tuned for the &ldquo;{activeSample?.configId}&rdquo; library configuration, which is not yet imported. It will
-              be saved as a new configuration version and selected for processing.
+              be saved as a new configuration profile and selected for processing.
             </Box>
           </Checkbox>
         )}
 
         {isSampleMode && activeSample?.configId && configAlreadyImported && (
           <Alert type="info">
-            This sample is tuned for the already-imported &ldquo;{activeSample.configId}&rdquo; configuration version, which has been
+            This sample is tuned for the already-imported &ldquo;{activeSample.configId}&rdquo; configuration profile, which has been
             pre-selected above. You can choose a different version if you prefer.
           </Alert>
         )}

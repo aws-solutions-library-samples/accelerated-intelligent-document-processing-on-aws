@@ -1,0 +1,56 @@
+{
+  "description": "5-item list, 4 items entirely wrong. Regression fixture for the parent-verdict-ignores-FD defect (issue #625) and for section metrics reading cm.overall instead of cm.aggregate. Pre-fix: parent Items marked matched=True, section precision/recall/F1/accuracy all 1.0. Post-fix: matched=False, precision=0.20, F1=0.333, accuracy=0.20, FDR=0.80. Locks in the fix so a revert fails loudly.",
+  "section_id": "list-partial-1",
+  "classification": "Doc",
+  "page_ids": ["1"],
+  "config": {
+    "classes": [
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "doc",
+        "x-aws-idp-document-type": "Doc",
+        "x-aws-idp-evaluation-model-name": "Doc",
+        "type": "object",
+        "properties": {
+          "Items": {
+            "type": "array",
+            "description": "5-item list",
+            "x-aws-idp-evaluation-match-threshold": 0.5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "x-aws-idp-evaluation-method": "EXACT"
+                },
+                "amount": {
+                  "type": "number",
+                  "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                  "x-aws-idp-evaluation-threshold": 0.01
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "Items": [
+      {"name": "A", "amount": 1.0},
+      {"name": "B", "amount": 2.0},
+      {"name": "C", "amount": 3.0},
+      {"name": "D", "amount": 4.0},
+      {"name": "E", "amount": 5.0}
+    ]
+  },
+  "actual": {
+    "Items": [
+      {"name": "A", "amount": 1.0},
+      {"name": "X", "amount": 99.0},
+      {"name": "Y", "amount": 88.0},
+      {"name": "Z", "amount": 77.0},
+      {"name": "W", "amount": 66.0}
+    ]
+  }
+}

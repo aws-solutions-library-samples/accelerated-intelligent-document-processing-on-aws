@@ -313,7 +313,7 @@ Phases 0, 1 and 2 are implemented. Three deliberate departures in Phases 0–1:
 2. **No `compareConfigProfileRevisions` API.** The UI fetches both revisions and
    reuses the existing client-side `ConfigurationComparison` diff, so the server
    gained no comparison endpoint. Fewer moving parts, identical output.
-3. **The feature-preset change is deferred.** `apply_feature_config_preset` still
+3. **The feature-preset change is deferred** ([#697](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/697)). `apply_feature_config_preset` still
    mints `<feature>-v<semver>` profile names. It writes raw sparse rows directly with
    `put_item` (bypassing `ConfigurationManager`), has no `idp_common` layer and no
    configuration-bucket access, and its version names are load-bearing for feature
@@ -438,19 +438,34 @@ badly (§5.1), so their spread is itself worth watching.
    nobody will turn.
 3. ~~**Should `Viewer` see revision history?**~~ **Resolved:** yes, read-only, for
    in-scope profiles — consistent with `getConfigVersion`.
-3b. ~~**Confidence-curve keying**~~ **Resolved for now:** curves stay keyed per
+4. ~~**Confidence-curve keying**~~ **Resolved for now:** curves stay keyed per
    profile. Fingerprint keying was deliberately not wired, because doing it at only
    the call site that knows the pinned revision (a scoring run) while review
    observations kept landing on the profile key would split the two data sources the
    estimate reads — worse than today. Each revision records a
    `confidenceFingerprint` so the switch is cheap once all three call sites can
-   supply it.
-4. **Author-created profiles**, ever? Staying Admin-only keeps the privilege boundary
+   supply it. Tracked as
+   [#698](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/698).
+5. **Author-created profiles**, ever? Staying Admin-only keeps the privilege boundary
    clean, but a scoped Author still needs an Admin to start a genuinely new use case.
    An alternative is "Author may create a profile *within a family they are scoped
    to*", which requires the families work closed above. **Open on purpose**: this is
    the question a customer request would answer, and answering it speculatively is
    how the grouping layer would get built for nobody.
+6. ~~**A revision picker in Capacity Planning?**~~ **Decided against.** Capacity
+   Planning estimates throughput and cost *from* a configuration, so pinning a
+   revision would let you ask "what would this have cost under r5?" — coherent, and
+   the selector component already exists, so it is cheap. It is not being added
+   because nobody asked for it, and a control that exists only because it was easy is
+   a control someone has to understand. Revisit if a real capacity question turns out
+   to need a historical configuration.
+7. ~~**Auto-collapse the profiles section once a profile is open?**~~ **Decided
+   against for now.** `versionsTableExpanded` always defaults to true; the change
+   would expand it when nothing is selected and collapse it while editing (~10 lines).
+   The vertical-footprint complaint it was meant to answer was instead fixed at the
+   source — the table's width budget was over-committed, so rows wrapped; with that
+   fixed plus compact density and one fewer column, the section no longer dominates
+   the page. Revisit only if the page still reads as busy in daily use.
 
 ## 14. Related
 

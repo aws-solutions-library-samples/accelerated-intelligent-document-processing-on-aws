@@ -296,7 +296,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
       ['Test Set', ...Object.values(completeTestRuns).map((run) => run.testSetName || 'N/A')],
       ['Context', ...Object.values(completeTestRuns).map((run) => run.context || 'N/A')],
       [
-        'Config Version',
+        'Config Profile',
         ...Object.values(completeTestRuns).map((run) =>
           formatConfigVersionText(
             run.configVersion as string | undefined,
@@ -1056,8 +1056,8 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                   ),
                 },
                 {
-                  metric: 'Config Version',
-                  metricKey: 'Config Version',
+                  metric: 'Config Profile',
+                  metricKey: 'Config Profile',
                   ...Object.fromEntries(
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
@@ -1195,7 +1195,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
                     return (
                       <span style={{ ...style, WebkitPrintColorAdjust: 'exact', colorAdjust: 'exact' }}>
-                        {item.metricKey === 'Config Version' ? (value as React.ReactNode) : String(value)}
+                        {item.metricKey === 'Config Profile' ? (value as React.ReactNode) : String(value)}
                       </span>
                     );
                   },

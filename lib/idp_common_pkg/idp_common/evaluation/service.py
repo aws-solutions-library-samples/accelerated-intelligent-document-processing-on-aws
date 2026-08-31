@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -923,6 +924,7 @@ class EvaluationService:
         actual_instance: "StructuredModel",
         stickler_result: Dict[str, Any],
         confidence_scores: Dict[str, Any],
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """Delegate to ``stickler_backend.results.transform_stickler_result``.
 
@@ -942,6 +944,7 @@ class EvaluationService:
             get_confidence_for_field=self._get_confidence_for_field,
             generate_reason=self._generate_reason,
             format_evaluation_method=_format_evaluation_method,
+            document_context=document_context,
         )
 
     # _transform_stickler_result / _annotate_nested_comparison_methods /
@@ -1279,6 +1282,7 @@ class EvaluationService:
         expected_results: Dict[str, Any],
         actual_results: Dict[str, Any],
         confidence_scores: Optional[Dict[str, Any]] = None,
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """
         Evaluate extraction results for a document section using Stickler.
@@ -1471,6 +1475,7 @@ class EvaluationService:
                 actual_instance,
                 stickler_result,
                 confidence_scores or {},
+                document_context=document_context,
             )
 
             # Surface any fields that were skipped due to per-field validation
@@ -1615,7 +1620,10 @@ class EvaluationService:
     # (§6 reorg).
 
     def _process_section(
-        self, actual_section: Section, expected_section: Section
+        self,
+        actual_section: Section,
+        expected_section: Section,
+        document_context: str = "",
     ) -> Tuple[Optional[SectionEvaluationResult], Dict[str, int]]:
         """
         Process a single section for evaluation.
@@ -1647,6 +1655,7 @@ class EvaluationService:
             expected_results=expected_results,
             actual_results=actual_results,
             confidence_scores=confidence_scores,
+            document_context=document_context,
         )
 
         # Extract metrics from section result — R3: use Stickler counts stored
@@ -1671,12 +1680,17 @@ class EvaluationService:
 
         # Check if evaluation failed for this section
         if section_result.metrics.get("evaluation_failed", False):
-            # For failed evaluations, count based on expected data
-            # If we have expected data, count as false negatives (expected but not evaluated)
-            # This represents complete failure to evaluate
+            # For failed evaluations, count each expected top-level KEY as
+            # a false negative. Kept at top-level (not leaf-normalized)
+            # because Athena / parquet historical baselines were built
+            # against the top-level count — switching to a leaf-normalized
+            # count would silently shift historical trends 10-30× on
+            # list-heavy schemas without operators knowing what changed.
+            # A failed section under-counts fn relative to a healthy
+            # section on the same schema; that's a KNOWN LIMITATION,
+            # documented, and preferable to a silent baseline break.
             if expected_results:
                 num_expected_fields = len(expected_results)
-                # Conservative approach: count each expected field as a false negative
                 metrics["fn"] = num_expected_fields if num_expected_fields > 0 else 1
             else:
                 # If no expected data, still count as at least 1 failure
@@ -1872,12 +1886,34 @@ class EvaluationService:
             # sections table without re-scanning the document.
             actual_sections_by_id = {s.section_id: s for s, _ in section_pairs}
 
+            # Pass the document identity through so any per-doc log warnings
+            # can be located to the source document (a section_id like
+            # ``"s1"`` recurs across documents; without doc-scoping the
+            # first doc's warning would silence every subsequent doc's —
+            # finding 1 from round-4 review). Prefer input_key over id when
+            # present (more human-locatable in CloudWatch).
+            # Fall back to a ``uuid4()`` rather than an empty string —
+            # multi-doc runs where every document has missing/empty
+            # ``input_key`` and ``id`` would otherwise share ``doc_ctx=""``
+            # and silence every subsequent doc's anonymous-root warning.
+            # A uuid (not ``id(actual_document)``) so the context is unique
+            # for the LIFE of the run even if a warm Lambda GC's an earlier
+            # doc and reuses its memory address (which ``id()`` would
+            # collide on — finding from #625 review).
+            doc_ctx = (
+                actual_document.input_key
+                or actual_document.id
+                or f"anonymous:{uuid.uuid4()}"
+            )
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor
                 future_to_section = {
                     executor.submit(
-                        self._process_section, actual_section, expected_section
+                        self._process_section,
+                        actual_section,
+                        expected_section,
+                        doc_ctx,
                     ): actual_section.section_id
                     for actual_section, expected_section in section_pairs
                 }
@@ -2005,9 +2041,20 @@ class EvaluationService:
             # render them as "N/A — Excluded" instead of a misleading 0.0.
             # ``skipped_section_count`` was maintained in the executor loop; no
             # second pass over section_results.
+            # Compare against the ORIGINAL pair count, not
+            # ``len(section_results)``. Sections that raised an exception
+            # (rather than emitting the ``evaluation_skipped`` metric flag)
+            # never make it into ``section_results``, so
+            # ``len(section_results)`` is already reduced by errored
+            # sections. Using it as the denominator would let a doc with
+            # (skipped=N, errored=M) match ``skipped_section_count == N ==
+            # len(section_results)=N`` and misclassify as "all excluded"
+            # even though M sections genuinely failed and should surface as
+            # such.
+            total_sections_attempted = len(section_pairs)
             all_sections_skipped = (
                 skipped_section_count > 0
-                and skipped_section_count == len(section_results)
+                and skipped_section_count == total_sections_attempted
             )
             if total_field_weight > 0:
                 document_weighted_score = total_weighted_score / total_field_weight
@@ -2053,10 +2100,11 @@ class EvaluationService:
 
                 # Store evaluation results in S3.
                 result_dict = evaluation_result.to_dict()
-                # Stamp the Stickler-result-blob version so the aggregation
-                # Lambda can detect shape drift at read time rather than
-                # silently emit wrong dashboard numbers if Stickler's raw
-                # ``compare_with`` output ever changes shape.
+                # Stamp the version at write time — the ONLY place we stamp,
+                # so round-tripping a historical payload through
+                # ``DocumentEvaluationResult`` doesn't silently upgrade it
+                # (which would defeat the drift-detection soft gate). Any new
+                # writer of ``results.json`` must call this line explicitly.
                 result_dict["stickler_result_version"] = STICKLER_RESULT_VERSION
                 # Convert numpy types to native Python types for JSON serialization
                 result_dict = _convert_numpy_types(result_dict)

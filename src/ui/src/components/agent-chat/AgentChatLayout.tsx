@@ -155,7 +155,7 @@ const AgentChatLayout = ({
         `documents (introduce the term gently, do not assume I already know it). Then ask whether I'd ` +
         `like to adjust any fields or start processing my documents. Keep it concise; save deeper ` +
         `configuration-version details for if I ask.\n\n` +
-        `[Discovery saved the schema to configuration version "${result.configVersion}". Its fields ` +
+        `[Discovery saved the schema to configuration profile "${result.configVersion}". Its fields ` +
         `are not shown here — call get_class_schema for version "${result.configVersion}" before ` +
         `answering questions about the fields or refining them.]`;
       setAttachedFiles([]);

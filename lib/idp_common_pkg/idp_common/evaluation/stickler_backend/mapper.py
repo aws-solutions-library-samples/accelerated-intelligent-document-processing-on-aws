@@ -13,6 +13,7 @@ neutral evaluation configuration that can be translated to Stickler's format.
 
 import copy
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from idp_common.config.schema_constants import (
@@ -40,6 +41,23 @@ from idp_common.config.schema_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a schema value to a boolean, treating YAML-quoted ``"false"``
+    / ``"no"`` / ``"off"`` (case-insensitive) as False.
+
+    Raw Python ``bool()`` returns True for any non-empty string, so a
+    YAML config with ``x-aws-idp-evaluation-llm-in-list: "false"``
+    would evaluate truthy under ``bool()`` and bypass truthiness
+    guards. This helper honors the strings the way YAML would if
+    the field were unquoted.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "false", "no", "off", "0", "n"}
+    return bool(value)
 
 
 class SticklerConfigMapper:
@@ -624,9 +642,17 @@ class SticklerConfigMapper:
                 cls._validate_method_for_field(schema, method, field_path)
             except ValueError as e:
                 logger.error(str(e))
-                # Remove invalid method to prevent downstream errors
+                # Remove invalid method to prevent downstream errors, but
+                # STILL recurse into children — an outer method validation
+                # failure shouldn't strip IDP-evaluation extensions from
+                # nested items, which have their own methods to translate
+                # (finding from code review — an earlier ``return schema``
+                # here silently skipped nested extension translation on
+                # any parent with an invalid method).
                 del schema[X_AWS_IDP_EVALUATION_METHOD]
-                return schema
+                return cls._recurse_children(
+                    schema, field_path, llm_config, in_list_items, document_class
+                )
 
         # An evaluation method on a STRUCTURED ARRAY is silently discarded below
         # (structured lists score through their item fields' comparators, and
@@ -634,14 +660,26 @@ class SticklerConfigMapper:
         # than dropping the author's intent without a word — a config carrying
         # `x-aws-idp-evaluation-method: LLM` on a list looks like it configured
         # something and did not.
+        #
+        # HUNGARIAN is the default/correct list-matching algorithm — no
+        # warning when that's what the author asked for (finding from
+        # #625 review). Also strip the key after warning so it doesn't
+        # linger as dead metadata that downstream code could re-interpret
+        # (finding from #625 review).
         if is_structured_array and X_AWS_IDP_EVALUATION_METHOD in schema:
-            logger.warning(
-                f"Field '{field_path}': evaluation method "
-                f"'{schema[X_AWS_IDP_EVALUATION_METHOD]}' on a structured array is "
-                f"ignored — structured lists are scored through their item fields' "
-                f"comparators (row matching is Hungarian). Set the method on the "
-                f"item fields instead."
-            )
+            list_method = schema[X_AWS_IDP_EVALUATION_METHOD]
+            if list_method != EVALUATION_METHOD_HUNGARIAN:
+                logger.warning(
+                    f"Field '{field_path}': evaluation method "
+                    f"'{list_method}' on a structured array is "
+                    f"ignored — structured lists are scored through their item fields' "
+                    f"comparators (row matching is Hungarian). Set the method on the "
+                    f"item fields instead."
+                )
+            # Strip the key regardless — it's inert for structured arrays,
+            # keeping it lingering as dead metadata invites a downstream
+            # consumer to reinterpret it later.
+            del schema[X_AWS_IDP_EVALUATION_METHOD]
 
         # Translate evaluation method to comparator
         # BUT skip for structured arrays - they use item field comparators
@@ -662,10 +700,17 @@ class SticklerConfigMapper:
             # (string -> Levenshtein, number -> Numeric, boolean -> Exact), which
             # is what a matching cost function should be anyway, unless the author
             # explicitly opts in for a small list.
+            # ``_coerce_bool`` handles YAML-quoted ``"false"`` / ``"no"``
+            # / ``"off"`` (all truthy under raw Python ``bool()``, so
+            # ``not schema.get(...)`` would let a config with
+            # ``x-aws-idp-evaluation-llm-in-list: "false"`` bypass this
+            # guard, triggering ~N² Bedrock calls and a Lambda timeout).
             if (
                 method == EVALUATION_METHOD_LLM
                 and in_list_items
-                and not schema.get(X_AWS_IDP_EVALUATION_LLM_IN_LIST, False)
+                and not _coerce_bool(
+                    schema.get(X_AWS_IDP_EVALUATION_LLM_IN_LIST, False)
+                )
             ):
                 logger.warning(
                     f"Field '{field_path}': LLM evaluation method inside a "
@@ -730,9 +775,32 @@ class SticklerConfigMapper:
                     ctx = schema.setdefault("x-aws-stickler-comparator-config", {})
                     if isinstance(ctx, dict):
                         ctx.setdefault("document_class", document_class or "")
-                        ctx.setdefault(
-                            "attribute_name", field_path.split(".")[-1] or field_path
-                        )
+                        # Strip bracket suffixes (``Items[]`` → ``Items``) so
+                        # the LLM judge's prompt shows the schema attribute
+                        # name, not the list-index punctuation that a
+                        # top-level list retains from Stickler's field-path
+                        # syntax (finding from code review — a top-level
+                        # list attribute previously sent ``ATTRIBUTE_NAME
+                        # = "Items[]"`` to the judge).
+                        #
+                        # Fall back to ``document_class`` (then ``"root"``)
+                        # when field_path is empty — a top-level scalar
+                        # attribute scored via LLM would otherwise send
+                        # ``ATTRIBUTE_NAME = ""`` and lose the context-
+                        # threading fix this block enforces (finding
+                        # from #625 review).
+                        raw_name = field_path.split(".")[-1] or field_path
+                        # Fallback chain: bracket-stripped → document_class
+                        # → "root". Each candidate is ``.strip()``-checked
+                        # so a whitespace-only value doesn't leak through
+                        # as truthy — the LLM judge would otherwise see
+                        # ``ATTRIBUTE_NAME = "   "`` (finding from #625
+                        # self-review — same trap as the bracketed-raw
+                        # case this block already avoided).
+                        stripped = re.sub(r"\[[^\]]*\]", "", raw_name).strip()
+                        doc_class_str = (document_class or "").strip()
+                        clean_name = stripped or doc_class_str or "root"
+                        ctx.setdefault("attribute_name", clean_name)
                         ctx.setdefault(
                             "attribute_description", schema.get("description") or ""
                         )

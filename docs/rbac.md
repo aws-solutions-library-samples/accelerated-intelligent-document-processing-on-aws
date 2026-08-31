@@ -96,7 +96,7 @@ HITL REVIEW
 CONFIGURATION
   View config profiles            ✅      ✅†      ❌        ✅†
   View/Edit configuration         ✅      ✅†      ❌        ❌
-  Save as Version (new profile)   ✅      ❌       ❌        ❌
+  Save as Profile (new profile)   ✅      ❌       ❌        ❌
   Save as Default                 ✅      ❌       ❌        ❌
   Delete config profile           ✅      ❌       ❌        ❌
   Set active profile              ✅      ✅†      ❌        ❌
@@ -351,7 +351,7 @@ The UI adapts based on the user's role and scope:
 - Action buttons (delete, reprocess, upload, save, import) are hidden for roles that can't perform those actions
 - Version dropdowns are automatically filtered to show only scoped versions
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
-- **Admin-only buttons**: "Save as Version", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
+- **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
 - **Pricing page**: Shows "View Pricing" (read-only) for non-admin; "Pricing Configuration" (editable) for admin
 - **Model Limits page**: Shows "View Model Limits" (read-only) for non-admin; "Model Limits Configuration" (editable) for admin
 
