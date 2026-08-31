@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -1891,20 +1892,18 @@ class EvaluationService:
             # first doc's warning would silence every subsequent doc's —
             # finding 1 from round-4 review). Prefer input_key over id when
             # present (more human-locatable in CloudWatch).
-            # Use ``id(actual_document)`` as the ultimate fallback rather
-            # than empty string — multi-doc runs where every document has
-            # missing/empty ``input_key`` and ``id`` would otherwise share
-            # ``doc_ctx=""`` and silence every subsequent doc's anonymous-
-            # root warning. Use a ``uuid4()`` so the context is unique
-            # for the LIFE of the run even if a warm Lambda GC's an
-            # earlier doc and reuses its memory address (which ``id()``
-            # would collide on — finding from #625 review).
-            import uuid as _uuid
-
+            # Fall back to a ``uuid4()`` rather than an empty string —
+            # multi-doc runs where every document has missing/empty
+            # ``input_key`` and ``id`` would otherwise share ``doc_ctx=""``
+            # and silence every subsequent doc's anonymous-root warning.
+            # A uuid (not ``id(actual_document)``) so the context is unique
+            # for the LIFE of the run even if a warm Lambda GC's an earlier
+            # doc and reuses its memory address (which ``id()`` would
+            # collide on — finding from #625 review).
             doc_ctx = (
                 actual_document.input_key
                 or actual_document.id
-                or f"anonymous:{_uuid.uuid4()}"
+                or f"anonymous:{uuid.uuid4()}"
             )
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:

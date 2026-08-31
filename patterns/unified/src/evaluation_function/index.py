@@ -183,28 +183,40 @@ def handler(event, context):
             # ``{"Error": "States.Timeout", "Cause": "..."}`` or a
             # string / other shape on non-standard invocations; the
             # dict form is the one AWS retries as a timeout.
-            # Lambda's own timeout surfaces via ``Sandbox.Timedout`` (the
-            # runtime terminates the invocation and Step Functions
-            # propagates that code); some Lambda timeouts surface as
-            # ``Lambda.Unknown`` (the invocation didn't return a
-            # response in time and SFN can't classify the failure);
-            # Step Functions' state-level timeout uses
-            # ``States.Timeout``. All three are retried as timeouts in
-            # the state machine and all should map to TIMED_OUT here
-            # (finding from #625 review — the earlier set omitted
-            # ``Lambda.Unknown`` and misclassified those as FAILED).
+            # Lambda's own timeout surfaces via ``Sandbox.Timedout`` and Step
+            # Functions' state-level timeout via ``States.Timeout`` — both are
+            # unambiguous, and both are the codes ``EvaluationStep``'s
+            # single-attempt Retry policy matches on.
+            #
+            # ``Lambda.Unknown`` is Step Functions' CATCH-ALL for a Lambda
+            # failure it cannot classify — a timeout is one cause, but so is
+            # any other unhandled runtime fault. Treating the bare code as a
+            # timeout would mislabel those, so it only counts when the
+            # ``Cause`` prose actually names ``Sandbox.Timedout`` (which is how
+            # AWS reports a function timeout wrapped in ``Lambda.Unknown``).
+            # That keeps the exact-``Error`` parse for the unambiguous codes
+            # while still catching the wrapped-timeout shape the earlier
+            # substring check happened to cover.
             TIMEOUT_ERROR_CODES = {
                 'Sandbox.Timedout',
                 'States.Timeout',
-                'Lambda.Unknown',
             }
             raw_error = event.get('error')
             error_code = (
                 raw_error.get('Error') if isinstance(raw_error, dict) else None
             )
+            error_cause = (
+                str(raw_error.get('Cause') or '')
+                if isinstance(raw_error, dict)
+                else ''
+            )
+            is_timeout = error_code in TIMEOUT_ERROR_CODES or (
+                error_code == 'Lambda.Unknown'
+                and 'Sandbox.Timedout' in error_cause
+            )
             status = (
                 EvaluationStatus.TIMED_OUT
-                if error_code in TIMEOUT_ERROR_CODES
+                if is_timeout
                 else EvaluationStatus.FAILED
             )
             logger.error(

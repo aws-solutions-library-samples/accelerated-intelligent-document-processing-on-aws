@@ -1225,7 +1225,7 @@ The evaluation framework includes comprehensive monitoring through CloudWatch me
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics.** As of v0.6.6, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
 
 - **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
 - **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
@@ -1237,7 +1237,7 @@ The framework calculates the following detailed metrics for each document and se
 
 The distinction between `fa` (predicted a value where none was expected) and `fd` (predicted a wrong value where one was expected) matters because they represent different failure modes and warrant different remediations — FAR isolates hallucinations, FDR isolates wrong extractions.
 
-**Historical data note:** runs recorded on v0.6.3–v0.6.5 predate this counting semantics and may show inflated or deflated section metrics on list-heavy configs; re-run those evaluations after upgrading for accurate comparison. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625).
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this counting semantics and may show inflated or deflated section metrics on list-heavy configs; re-run those evaluations after upgrading for accurate comparison. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625).
 
 **Document Split Classification Metrics:**
 - **Page Level Accuracy**: Classification accuracy for individual pages

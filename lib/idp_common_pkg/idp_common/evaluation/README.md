@@ -401,7 +401,8 @@ The evaluation produces:
 
 ## Metrics
 
-The evaluation calculates the following metrics. Counts come directly from
+The evaluation calculates the following metrics. As of v0.6.7, counts come
+directly from
 Stickler's row-level `field_comparisons` — one count per drilldown row the
 UI displays — with item-level rejected/missing/extra rows weighted by their
 leaf count so a truncated 5-item list and a partially-wrong 5-item list
@@ -424,7 +425,7 @@ modes and warrant different remediations — FAR isolates hallucinations, FDR
 isolates wrong extractions. These metrics are calculated at attribute
 level (per field), section level (per document class), and document level.
 
-**Historical data note:** runs recorded on v0.6.3–v0.6.5 predate this
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this
 counting semantics and may show inflated (leaves-inside-kept-items masked)
 or deflated (item-level rows counted as one unit each) section metrics on
 list-heavy configs. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625);

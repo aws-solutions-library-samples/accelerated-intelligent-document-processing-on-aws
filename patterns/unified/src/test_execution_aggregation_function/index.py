@@ -790,6 +790,7 @@ def _run_level_row_aggregates(
     bodies had become one-line delegates).
     """
     from idp_common.evaluation.contract import (
+        POSITIONAL_LEAF_NAME,
         _row_leaves,
         _row_weight,
         classify_field_comparison,
@@ -875,13 +876,11 @@ def _run_level_row_aggregates(
     # with no schema counterpart, and would render as a phantom child
     # in Test Studio's per-field table. Counts are already rolled up
     # into the parent bucket by ``_synthesize_parent_buckets``.
-    from idp_common.evaluation.contract import POSITIONAL_LEAF_NAME as _POS
-
-    _pos_suffix = f".{_POS}"
+    _pos_suffix = f".{POSITIONAL_LEAF_NAME}"
     field_counts = {
         k: v
         for k, v in field_counts.items()
-        if not k.endswith(_pos_suffix) and k != _POS
+        if not k.endswith(_pos_suffix) and k != POSITIONAL_LEAF_NAME
     }
 
     field_metrics: Dict[str, Dict[str, Any]] = {}

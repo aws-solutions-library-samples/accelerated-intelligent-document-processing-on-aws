@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from idp_common.evaluation.contract import _is_match_true
+
 
 class EvaluationMethod(Enum):
     """Evaluation method types for different field comparison approaches."""
@@ -193,11 +195,6 @@ class DocumentEvaluationResult:
             "<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Reason</th>"
             "</tr></thead><tbody>"
         )
-
-        # Lazy-import ``_is_match_true`` to avoid a hard import cycle with
-        # ``contract.py`` at module load; this method is only called at
-        # HTML-report time so the runtime import cost is negligible.
-        from idp_common.evaluation.contract import _is_match_true
 
         for fc in field_comparisons:
             expected_key = fc.get("expected_key", "N/A")

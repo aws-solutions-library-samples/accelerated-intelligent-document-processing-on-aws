@@ -232,10 +232,12 @@ def test_section_attribute_matched_agrees_with_drilldown_rows(fixture_name):
 
             expected_matched = all(_is_match_true(fc.get("match")) for fc in my_rows)
         else:
-            # No rows for this attribute — production ``results.py`` reports
-            # ``matched = False`` here (no evidence of correctness). Skip
-            # the drilldown-derived assertion; the golden byte-comparison
-            # already pins that rare case.
+            # No rows for this attribute — production ``results.py`` falls
+            # back to ``score >= threshold`` (list fields against the
+            # Hungarian ``match_threshold``, scalars against the field's
+            # ``applied_threshold``), so there is no drilldown to derive an
+            # expectation from. Skip; the golden byte-comparison already
+            # pins that rare case.
             continue
         assert attr.matched == expected_matched, (
             f"{fixture_name}.{attr.name}: IDP matched={attr.matched} vs "
