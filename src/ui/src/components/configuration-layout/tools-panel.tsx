@@ -22,7 +22,7 @@ const ToolsPanel = (): React.JSX.Element => (
           </li>
           <li>
             <a href={`${DOCS_BASE_URL}/configuration-versions/`} target="_blank" rel="noopener noreferrer">
-              Configuration Versions
+              Configuration Profiles
             </a>
           </li>
           <li>
@@ -49,7 +49,7 @@ const ToolsPanel = (): React.JSX.Element => (
       <p>
         Each configuration is a self-contained <strong>version</strong>. The <strong>default</strong> version is managed by the stack and is
         read-only — it is overwritten on stack upgrades. To customize it, open it and click <strong>Save as Version</strong> to create an
-        editable copy. Use the <strong>Configuration Versions</strong> table at the top of the page to open, activate, compare, import, or
+        editable copy. Use the <strong>Configuration Profiles</strong> table at the top of the page to open, activate, compare, import, or
         delete versions.
       </p>
 

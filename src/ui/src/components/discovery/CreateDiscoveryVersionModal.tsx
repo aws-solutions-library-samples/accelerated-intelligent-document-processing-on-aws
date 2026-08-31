@@ -4,7 +4,7 @@
 /**
  * CreateDiscoveryVersionModal
  *
- * Lets a user create a brand-new configuration version from within the
+ * Lets a user create a brand-new configuration profile from within the
  * Discovery panels, so discovered schema can be saved to a fresh version
  * without leaving the Discovery workflow.
  *
@@ -82,16 +82,16 @@ const CreateDiscoveryVersionModal = ({
   }, [visible, defaultSourceVersion]);
 
   const validate = useCallback((): string | null => {
-    if (!selectedSource) return 'Please select a source configuration version to copy from.';
+    if (!selectedSource) return 'Please select a source configuration profile to copy from.';
     const name = newVersionName.trim();
-    if (!name) return 'Please enter a name for the new configuration version.';
+    if (!name) return 'Please enter a name for the new configuration profile.';
     if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
       return 'Version name can only contain letters, numbers, periods, hyphens, and underscores.';
     }
     if (name.length > 50) return 'Version name cannot exceed 50 characters.';
     if (name === 'default') return 'Cannot use "default" as a version name — it is reserved.';
     if (versions.some((v) => v.versionName === name)) {
-      return `A configuration version named "${name}" already exists. Please choose a different name.`;
+      return `A configuration profile named "${name}" already exists. Please choose a different name.`;
     }
     return null;
   }, [selectedSource, newVersionName, versions]);
@@ -115,11 +115,11 @@ const CreateDiscoveryVersionModal = ({
       const name = newVersionName.trim();
       const result = await saveAsNewVersion(fullConfig, name, description.trim() || `Created from ${selectedSource!.value} for discovery`);
       if (!result.success) {
-        throw new Error(result.error || 'Failed to create configuration version.');
+        throw new Error(result.error || 'Failed to create configuration profile.');
       }
       onCreated(name);
     } catch (err) {
-      console.error('Error creating discovery config version:', err);
+      console.error('Error creating discovery configuration profile:', err);
       setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
     } finally {
       setCreating(false);
@@ -130,7 +130,7 @@ const CreateDiscoveryVersionModal = ({
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Create New Configuration Version"
+      header="Create New Configuration Profile"
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
@@ -152,24 +152,24 @@ const CreateDiscoveryVersionModal = ({
         )}
 
         <Alert type="info">
-          Creates a new configuration version that inherits its settings and document classes from the selected source version. Discovered
+          Creates a new configuration profile that inherits its settings and document classes from the selected source version. Discovered
           schema will then be saved to this new version.
         </Alert>
 
-        <FormField label="Copy from version" description="The existing configuration version to use as the base for the new version">
+        <FormField label="Copy from profile" description="The existing configuration profile to use as the base for the new version">
           <Select
             selectedOption={selectedSource}
             onChange={({ detail }) => setSelectedSource(detail.selectedOption)}
             options={getVersionOptions()}
-            placeholder="Select a source version"
+            placeholder="Select a source profile"
             filteringType="auto"
-            empty="No configuration versions available"
+            empty="No configuration profiles available"
           />
         </FormField>
 
         <FormField
-          label="New version name"
-          description="A unique name for the new configuration version"
+          label="New profile name"
+          description="A unique name for the new configuration profile"
           constraintText="Letters, numbers, periods, hyphens, underscores. Max 50 characters. Cannot be 'default'."
         >
           <Input
@@ -179,7 +179,7 @@ const CreateDiscoveryVersionModal = ({
           />
         </FormField>
 
-        <FormField label="Description" description="Optional description for the new configuration version">
+        <FormField label="Description" description="Optional description for the new configuration profile">
           <Input value={description} onChange={({ detail }) => setDescription(detail.value)} placeholder="Optional description" />
         </FormField>
       </SpaceBetween>

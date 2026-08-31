@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * GenerateDraftLabelsModal — choose what to label, and with which config version.
+ * GenerateDraftLabelsModal — choose what to label, and with which configuration profile.
  *
  * Documents carrying authored ground truth (uploaded or generated) are listed but
  * not selectable, because the server refuses to overwrite them. Prior machine
@@ -83,7 +83,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
           })),
       ]);
     } catch (err) {
-      logger.error('Could not load config versions:', err);
+      logger.error('Could not load configuration profiles:', err);
       setVersionOptions([{ label: 'Active configuration', value: ACTIVE_CONFIG }]);
     } finally {
       setLoadingVersions(false);
@@ -100,7 +100,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
   const effectiveKeys = selectAll ? undefined : selected.map((d) => d.objectKey);
   const targetCount = selectAll ? labelable.length : selected.length;
   // Option.value is `string | undefined`, so the type guard is required: a
-  // non-string reaching the API pins the run to a bogus config version.
+  // non-string reaching the API pins the run to a bogus configuration profile.
   const rawConfigVersion = configVersion.value;
   const selectedConfigVersion = typeof rawConfigVersion === 'string' && rawConfigVersion !== ACTIVE_CONFIG ? rawConfigVersion : undefined;
 
@@ -147,14 +147,14 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
         )}
 
         <FormField
-          label="Configuration version"
-          description="Which configuration to label with. Pick a different version to compare, or to redo a run that used the wrong settings."
+          label="Configuration profile"
+          description="Which configuration to label with. Pick a different profile to compare, or to redo a run that used the wrong settings."
         >
           <Select
             selectedOption={configVersion}
             onChange={({ detail }) => setConfigVersion(detail.selectedOption)}
             options={versionOptions}
-            loadingText="Loading configuration versions"
+            loadingText="Loading configuration profiles"
             statusType={loadingVersions ? 'loading' : 'finished'}
             filteringType="auto"
           />
@@ -226,7 +226,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, documents, onDismiss, on
 
         {loadingVersions && (
           <Box textAlign="center">
-            <Spinner /> Loading configuration versions…
+            <Spinner /> Loading configuration profiles…
           </Box>
         )}
       </SpaceBetween>

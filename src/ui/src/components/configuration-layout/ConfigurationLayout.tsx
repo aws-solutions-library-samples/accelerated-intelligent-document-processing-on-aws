@@ -47,7 +47,7 @@ const logger = new ConsoleLogger('ConfigurationLayout');
 
 // Shown as the disabled-reason tooltip on actions that cannot run against the
 // stack-managed `default` version (the user must first create an editable copy).
-const STACK_MANAGED_DISABLED_REASON = 'This is the stack-managed default version — use Save as Version to create an editable copy.';
+const STACK_MANAGED_DISABLED_REASON = 'This is the stack-managed default profile — use Save as Profile to create an editable copy.';
 
 // One-line explanations shown on hover for the version Type/state badges.
 const BADGE_TOOLTIPS = {
@@ -1991,7 +1991,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
 
   return (
     <SpaceBetween size="s">
-      {/* Configuration Versions Table */}
+      {/* Configuration Profiles Table */}
       <ExpandableSection
         headerText="Configuration Profiles"
         headingTagOverride="h1"
@@ -2082,7 +2082,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
       <Modal
         visible={showSaveAsVersionModal}
         onDismiss={() => setShowSaveAsVersionModal(false)}
-        header="Save as New Version"
+        header="Save as New Profile"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -2090,7 +2090,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 Cancel
               </Button>
               <Button variant="primary" onClick={handleSaveAsVersion} loading={isSaving} disabled={!saveAsVersionName.trim()}>
-                Save as Version
+                Save as Profile
               </Button>
             </SpaceBetween>
           </Box>
@@ -2103,8 +2103,8 @@ const ConfigurationLayout = (): React.JSX.Element => {
             </Alert>
           )}
           <FormField
-            label="Version Name"
-            description="Enter a unique name for this configuration version"
+            label="Profile Name"
+            description="Enter a unique name for this configuration profile"
             errorText={
               saveAsVersionName && !/^[a-zA-Z0-9._-]+$/.test(saveAsVersionName)
                 ? 'Version name can only contain letters, numbers, periods, hyphens, and underscores'
@@ -2118,14 +2118,14 @@ const ConfigurationLayout = (): React.JSX.Element => {
             />
           </FormField>
           <FormField
-            label="Version Description (Optional)"
-            description="Optional description for this version (max 200 characters)"
+            label="Profile Description (Optional)"
+            description="Optional description for this profile (max 200 characters)"
             errorText={saveAsVersionDescription && saveAsVersionDescription.length > 200 ? 'Description cannot exceed 200 characters' : ''}
           >
             <Input
               value={saveAsVersionDescription}
               onChange={({ detail }) => setSaveAsVersionDescription(detail.value)}
-              placeholder="Enter a description for this version..."
+              placeholder="Enter a description for this profile..."
             />
           </FormField>
         </SpaceBetween>
@@ -2211,7 +2211,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
           setImportError(null);
           setShowImportSourceModal(false);
         }}
-        header="Import as New Version"
+        header="Import as New Profile"
         footer={
           <Box float="right">
             <Button variant="link" onClick={() => setShowImportSourceModal(false)}>
@@ -2371,7 +2371,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
                       ? [
                           {
                             id: 'save-as-version',
-                            text: 'Save as Version…',
+                            text: 'Save as Profile…',
                             disabled: validationErrors.length > 0,
                             disabledReason: 'Resolve validation errors first',
                           },
@@ -2502,13 +2502,13 @@ const ConfigurationLayout = (): React.JSX.Element => {
                       setShowSaveAsVersionModal(true);
                     }}
                   >
-                    Save as Version
+                    Save as Profile
                   </Button>
                 ) : undefined
               }
             >
               This configuration is managed by the stack and cannot be saved directly. It will be overwritten on stack updates. Use{' '}
-              <strong>Save as Version</strong> to create an editable copy.
+              <strong>Save as Profile</strong> to create an editable copy.
             </Alert>
           )}
 
@@ -2641,7 +2641,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
               {currentVersionName === 'default' || currentVersion?.managed === true ? (
                 <>
                   You have unsaved changes to this stack-managed version, which can&rsquo;t be saved directly. Use{' '}
-                  <strong>Save as Version</strong> to keep them as an editable copy, or <strong>Discard changes</strong> to revert.
+                  <strong>Save as Profile</strong> to keep them as an editable copy, or <strong>Discard changes</strong> to revert.
                 </>
               ) : (
                 <>
@@ -2800,7 +2800,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
           setNewVersionName('');
           setNewVersionDescription('');
         }}
-        header="Create New Version"
+        header="Create New Profile"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -2842,7 +2842,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
           </Alert>
 
           <FormField
-            label="Version Name"
+            label="Profile Name"
             errorText={
               newVersionName &&
               (newVersionName.length > 50
@@ -2855,7 +2855,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
             <Input
               value={newVersionName}
               onChange={({ detail }) => setNewVersionName(detail.value)}
-              placeholder="Version name"
+              placeholder="Profile name"
               invalid={!!newVersionName && (newVersionName.length > 50 || !/^[a-zA-Z0-9._-]+$/.test(newVersionName))}
             />
           </FormField>
@@ -2961,7 +2961,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 {
                   value: 'create',
                   label: 'Create a new BDA project',
-                  description: 'A new BDA project will be automatically created for this config version.',
+                  description: 'A new BDA project will be automatically created for this configuration profile.',
                 },
                 {
                   value: 'existing',
@@ -3030,10 +3030,10 @@ const ConfigurationLayout = (): React.JSX.Element => {
         <SpaceBetween size="m">
           {syncFromBdaMode === 'replace' && (
             <Alert type="warning">
-              <strong>Replace</strong> mode will remove all document classes in this config version that are not in the BDA project.
+              <strong>Replace</strong> mode will remove all document classes in this configuration profile that are not in the BDA project.
             </Alert>
           )}
-          <FormField label="Sync Mode" description="Choose how BDA blueprints are applied to your config version.">
+          <FormField label="Sync Mode" description="Choose how BDA blueprints are applied to your configuration profile.">
             <RadioGroup
               value={syncFromBdaMode}
               onChange={({ detail }) => setSyncFromBdaMode(detail.value)}
@@ -3041,20 +3041,20 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 {
                   value: 'replace',
                   label: 'Replace',
-                  description: 'Align config version with BDA project. Classes not in BDA will be removed.',
+                  description: 'Align configuration profile with BDA project. Classes not in BDA will be removed.',
                 },
                 {
                   value: 'merge',
                   label: 'Merge',
-                  description: 'Import BDA blueprints into config version. Existing classes will be kept.',
+                  description: 'Import BDA blueprints into configuration profile. Existing classes will be kept.',
                 },
               ]}
             />
           </FormField>
           {!currentVersion?.bdaProjectArn && (
             <Box>
-              No BDA project is currently linked to this config version. Enter the ARN of the BDA project to import blueprints from. The
-              project will be linked to this version for future syncs.
+              No BDA project is currently linked to this configuration profile. Enter the ARN of the BDA project to import blueprints from.
+              The project will be linked to this version for future syncs.
             </Box>
           )}
           {Boolean(currentVersion?.bdaProjectArn) && (
@@ -3091,7 +3091,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
           setShowActivateVersionConfirmModal(false);
           setActivateVersionTarget(null);
         }}
-        header="Confirm Activate Version"
+        header="Confirm Activate Profile"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -3127,7 +3127,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
             {activateVersionTarget ? (
               <>
                 Activating version <strong>{activateVersionTarget}</strong> will first sync your IDP document classes to BDA blueprints,
-                then set it as the active configuration version.
+                then set it as the active configuration profile.
               </>
             ) : (
               <>No version selected. Please select a version to activate.</>
