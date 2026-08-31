@@ -115,7 +115,12 @@ class BatchOperation:
 
             if test_set:
                 result = self._process_test_set(
-                    processor, test_set, context, number_of_files, config_version
+                    processor,
+                    test_set,
+                    context,
+                    number_of_files,
+                    config_version,
+                    config_revision,
                 )
             elif manifest:
                 # Pass config_version to process_batch if the method supports it
@@ -242,12 +247,14 @@ class BatchOperation:
         context: Optional[str],
         number_of_files: Optional[int],
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Process a test set (internal helper).
 
         Enhancement 1:
         - Step 1: Invoke TestSetResolverFunction (non-fatal if missing)
-        - Step 2: Invoke TestRunnerFunction with configVersion in payload
+        - Step 2: Invoke TestRunnerFunction with configVersion (and configRevision,
+          when the caller pinned one) in payload
         """
         import json
 
@@ -321,6 +328,11 @@ class BatchOperation:
             payload["arguments"]["input"]["numberOfFiles"] = number_of_files
         if config_version:
             payload["arguments"]["input"]["configVersion"] = config_version
+        # Pinning must reach the run, or the caller believes they scored r7 while
+        # the run actually used whatever the profile currently holds — a silently
+        # wrong answer that then goes into a comparison.
+        if config_revision is not None:
+            payload["arguments"]["input"]["configRevision"] = int(config_revision)
 
         response = lambda_client.invoke(
             FunctionName=test_runner_function, Payload=json.dumps(payload)
