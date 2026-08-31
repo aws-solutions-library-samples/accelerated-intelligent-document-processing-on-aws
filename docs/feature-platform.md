@@ -650,9 +650,13 @@ UI and hooks. See the
 > **Extensions that write the ConfigurationTable directly** (rather than calling
 > `applyFeatureConfigPreset`) did not get this fix, and a Delete handler that
 > removes only the version being uninstalled leaves every earlier release's profile
-> orphaned — undeletable from the UI if it was written `Managed`. See
-> [Migration Prompt: one profile per feature](extensions/MIGRATION-PROMPT-config-profile-per-feature.md),
-> which also covers clearing profiles already orphaned.
+> orphaned — undeletable from the Web UI if it was written `Managed`. Such an
+> extension should write `Config#<featureId>` (no version suffix) and, on Delete,
+> remove that profile **and** any legacy `<featureId>-v*` rows — preferably by
+> invoking the host's `removeFeatureConfigPreset`, which also drops each profile's
+> revision history. To clear profiles already orphaned, use
+> `idp-cli config-delete` (the Web UI refuses stack-managed profiles; the CLI warns
+> and proceeds).
 
 ## Two reference samples
 
