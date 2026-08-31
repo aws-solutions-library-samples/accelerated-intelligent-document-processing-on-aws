@@ -54,6 +54,15 @@ export default defineConfig({
               label: "Configuration Profiles",
               slug: "configuration-profiles",
             },
+            // Redirect stub for the page's old name, kept so existing links and
+            // bookmarks do not 404. Listed next to its replacement, and labelled
+            // so the nav does not read as two competing pages. sync-sidebar.mjs
+            // adds any unlisted doc automatically, so leaving it out entirely
+            // just means it lands in "New & Uncategorized" on the next run.
+            {
+              label: "Configuration Versions (renamed)",
+              slug: "configuration-versions",
+            },
             {
               label: "Configuration Best Practices",
               slug: "idp-configuration-best-practices",
