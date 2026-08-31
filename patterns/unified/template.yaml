@@ -1297,7 +1297,7 @@ Resources:
                 type: object
                 sectionLabel: Value Coercion
                 description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction; Advanced already coerces through its generated model."
-                order: 4
+                order: 5
                 properties:
                   enabled:
                     type: boolean
@@ -1315,7 +1315,7 @@ Resources:
                 type: object
                 sectionLabel: Schema Validation & Escalation
                 description: "Validates the extraction result against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce), and optionally escalates failing fields to a stronger model. Applies to BOTH Simple and Advanced extraction. On by default at Fail Action 'warn', which adds no inference cost."
-                order: 5
+                order: 6
                 properties:
                   enabled:
                     type: boolean
