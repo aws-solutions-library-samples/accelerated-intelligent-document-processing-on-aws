@@ -454,7 +454,7 @@ idp-cli discover-multidoc --dir /path/to/documents/
 idp-cli discover-multidoc -d invoice1.pdf -d invoice2.pdf -d w2_form.pdf -d w2_form2.pdf
 
 # Save results to a configuration version
-idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-version v1
+idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-profile v1
 ```
 
 See [IDP CLI Reference — `discover-multidoc`](idp-cli.md) for all options.

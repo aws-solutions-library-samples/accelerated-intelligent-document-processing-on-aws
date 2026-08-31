@@ -20,6 +20,15 @@ uv pip install -e ./lib/idp_sdk
 
 ## Quick Start
 
+> **Argument naming:** the named configuration entity is a **Configuration
+> Profile**, selected with `config_profile=`. The former keyword,
+> `config_version=`, is still accepted everywhere it used to be — both set the
+> same value, and existing code does not need to change. Passing both with
+> *different* values raises `ValueError` rather than silently picking one. Use
+> `config_profile=` in new code. `config_revision=` is unrelated: it selects a
+> *revision within* a profile. See
+> [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
+
 ### Using the Public Interface
 
 The SDK is designed around a single entry point: `IDPClient`. Always import from the top-level `idp_sdk` package — this is the stable public interface. Avoid importing directly from internal submodules (e.g., `idp_sdk._core`, `idp_sdk.operations`, `idp_sdk.models.*`) as these are private implementation details and may change without notice.
@@ -127,6 +136,7 @@ client.config.validate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
+client.config.revisions(...)
 client.config.activate(...)
 client.config.delete(...)
 client.config.sync_bda(...)
@@ -362,7 +372,7 @@ Process multiple documents through the IDP pipeline.
 - `recursive` (bool, optional): Recursively process subdirectories (default: True)
 - `number_of_files` (int, optional): Limit number of files to process
 - `config_path` (str, optional): Path to custom configuration file
-- `config_version` (str, optional): Configuration version to use for processing
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to use for processing
 - `context` (str, optional): Context for test set processing
 - `stack_name` (str, optional): Stack name override
 
@@ -386,7 +396,7 @@ result = client.batch.process(
     recursive=True,
     number_of_files=10,
     config_path="./config.yaml",
-    config_version="v2"
+    config_profile="v2"
 )
 
 print(f"Batch ID: {result.batch_id}")
@@ -1388,19 +1398,26 @@ Upload configuration to a deployed stack.
 
 **Parameters:**
 - `config_file` (str, required): Path to the YAML or JSON configuration file
-- `config_version` (str, required): Version to upload to (e.g., `"default"`, `"v1"`, `"production"`). If the version doesn't exist, it will be created automatically.
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"v1"`, `"production"`). If the profile doesn't exist, it will be created automatically.
 - `stack_name` (str, optional): Stack name override
 - `validate` (bool, optional): Validate configuration before uploading (default: `True`)
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
 - `description` (str, optional): Description for the configuration version
+- `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 
-**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
+
+`revision` is the revision number this upload produced — pass it as
+`config_revision=` to pin processing to exactly what was just uploaded. It is
+`None` when the stack has no revision history. A save that changed nothing cuts
+no new revision, so `revision` is then the one already current, which is still
+the right value to pin.
 
 ```python
 # Upload to the default version
 result = client.config.upload(
     config_file="./my-config.yaml",
-    config_version="default",
+    config_profile="default",
     validate=True
 )
 
@@ -1410,7 +1427,7 @@ if result.success:
 # Create a new named version
 result = client.config.upload(
     config_file="./my-config.yaml",
-    config_version="v2",
+    config_profile="v2",
     description="Updated extraction rules"
 )
 
@@ -1419,6 +1436,18 @@ if result.success:
         print(f"New version created: {result.version}")
     else:
         print(f"Version updated: {result.version}")
+
+# Score exactly what was uploaded, rather than "whatever that profile holds now"
+result = client.config.upload(
+    config_file="./attempt.yaml",
+    config_profile="tuning-run-42",
+    description="raised topK to 20",
+)
+client.batch.process(
+    directory="./docs/",
+    config_profile="tuning-run-42",
+    config_revision=result.revision,
+)
 ```
 
 ### config.download()
@@ -1430,9 +1459,15 @@ Download configuration from a deployed stack.
 - `output` (str, optional): Output file path
 - `format` (str, optional): Format type — `"full"` or `"minimal"` (default: `"full"`)
 - `pattern` (str, optional): Pattern override (auto-detected if not provided)
-- `config_version` (str, optional): Configuration version to download (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active version)
+- `config_revision` (int, optional): Download an exact **revision** of that profile instead of its current configuration
 
-**Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, and `output_path`
+**Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
+
+**Raises:** `IDPResourceNotFoundError` if the requested revision is no longer
+retained. It does not fall back to the profile's current configuration — that
+would hand back a *different* configuration under the name you asked for, and it
+would look like a success.
 
 ```python
 result = client.config.download(
@@ -1441,6 +1476,9 @@ result = client.config.download(
 )
 
 print(result.yaml_content)
+
+# Retrieve exactly what an earlier run used
+earlier = client.config.download(config_profile="lending", config_revision=7)
 ```
 
 ### config.list()
@@ -1452,23 +1490,67 @@ List all configuration versions in a deployed stack.
 
 **Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`) and `count`
 
-**ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`
+**ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`, `latest_revision`, `published_revision`
+
+`published_revision` is the revision each profile's configuration currently
+reflects — the one to pin. It equals `latest_revision` except while a restore is in
+flight. Both are `None` for a profile with no history.
 
 ```python
 result = client.config.list()
 
-print(f"Found {result.count} versions:")
+print(f"Found {result.count} profiles:")
 for version in result.versions:
     status = " (ACTIVE)" if version.is_active else ""
-    print(f"  - {version.version_name}{status}")
+    at = f" @r{version.published_revision}" if version.published_revision else ""
+    print(f"  - {version.version_name}{status}{at}")
 ```
+
+### config.revisions()
+
+Revision history of one Configuration Profile, newest first.
+
+Every save of a profile cuts an immutable revision. This returns the ones still
+retained — the last 20, plus anything labeled, pinned by a test run, or currently
+in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+**Parameters:**
+- `config_profile` (alias: `config_version`) (str, required): Profile whose history to list
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `ConfigRevisionListResult` with `profile`, `revisions` (list of `ConfigRevisionInfo`), and `count`
+
+**ConfigRevisionInfo fields:** `revision`, `created_at`, `created_by`, `label`, `notes`, `size_bytes`, `published`, `pinned`, `class_fingerprint`
+
+`published` marks the revision the profile currently reflects. `pinned` means a
+test run scored against it, which exempts it from retention pruning. Two revisions
+with the same `class_fingerprint` extract the same fields, so their accuracy
+numbers are directly comparable.
+
+```python
+history = client.config.revisions(config_profile="lending")
+
+for rev in history.revisions:
+    marker = " <- current" if rev.published else ""
+    print(f"  r{rev.revision} by {rev.created_by}: {rev.notes or ''}{marker}")
+
+# An empty list means no history: an older deployment, or a profile untouched
+# since the stack was upgraded.
+```
+
+**Iterating on one profile instead of many.** `upload()` returning `revision`,
+`revisions()`, and `config_revision=` on `download()` / `batch.process()` together
+let an automated tuning loop keep **one** profile and track its attempts as
+revisions. Naming a new profile per attempt also works, but every one of them then
+appears in the profile pickers and access-control scope lists of the whole
+deployment.
 
 ### config.activate()
 
 Activate a configuration version. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
 
 **Parameters:**
-- `config_version` (str, required): Configuration version to activate
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigActivateResult` with `success`, `activated_version`, `bda_synced`, `bda_classes_synced`, `bda_classes_failed`, and `error`
@@ -1489,7 +1571,7 @@ else:
 Delete a configuration version.
 
 **Parameters:**
-- `config_version` (str, required): Configuration version to delete
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to delete
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigDeleteResult` with `success`, `deleted_version`, and `error`
@@ -1512,7 +1594,7 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 **Parameters:**
 - `direction` (str, optional): Sync direction — `"bidirectional"` (default), `"bda_to_idp"`, or `"idp_to_bda"`
 - `mode` (str, optional): Sync mode — `"replace"` (default, full alignment) or `"merge"` (additive)
-- `config_version` (str, optional): Configuration version to sync (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, and `error`
@@ -1530,7 +1612,7 @@ result = client.config.sync_bda(
 # Push IDP classes to BDA
 result = client.config.sync_bda(
     direction="idp_to_bda",
-    config_version="v2"
+    config_profile="v2"
 )
 
 if result.success:
@@ -1558,7 +1640,7 @@ Analyze a document to generate a JSON Schema definition for a document class.
 **Parameters:**
 - `document_path` (str, required): Local path to document file (PDF, PNG, JPG, TIFF)
 - `ground_truth_path` (str, optional): Path to JSON ground truth file
-- `config_version` (str, optional): Config version to save to (stack mode only)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save to (stack mode only)
 - `stack_name` (str, optional): Stack name override
 - `page_range` (str, optional): Page range to extract from a PDF (e.g., "1-3")
 - `class_name_hint` (str, optional): Hint for the document class name (LLM uses this as `$id`)
@@ -1600,7 +1682,7 @@ result = client.discovery.run(
 batch_result = client.discovery.run(
     "./lending_package.pdf",
     auto_detect=True,
-    config_version="v2"
+    config_profile="v2"
 )
 for r in batch_result.results:
     print(f"{r.document_class} (pages {r.page_range}): {r.status}")
@@ -1608,7 +1690,7 @@ for r in batch_result.results:
 # Save to specific config version
 result = client.discovery.run(
     "./form.pdf",
-    config_version="v2"
+    config_profile="v2"
 )
 
 # Override the Bedrock model (e.g. use Claude Opus instead of the default)
@@ -1652,7 +1734,7 @@ Discover multiple document classes from page ranges in a single PDF.
 **Parameters:**
 - `document_path` (str, required): Local path to a multi-page PDF
 - `page_ranges` (list, required): List of dicts with `start` (int), `end` (int), and optional `label` (str)
-- `config_version` (str, optional): Config version to save to
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save to
 - `stack_name` (str, optional): Stack name override
 - `model_id` (str, optional): Override the Bedrock model ID used for discovery. Applied to every per-range discovery call.
 
@@ -1667,7 +1749,7 @@ result = client.discovery.run_multi_section(
         {"start": 3, "end": 5, "label": "W2 Form"},
         {"start": 6, "end": 8, "label": "Bank Statement"},
     ],
-    config_version="v2"
+    config_profile="v2"
 )
 
 print(f"Discovered {result.succeeded}/{result.total} sections")
@@ -1690,7 +1772,7 @@ Discover document classes from a collection of documents using embedding-based c
 - `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`)
 - `output_dir` (str, optional): Directory to write individual JSON schema files per discovered class
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
-- `config_version` (str, optional): Configuration version to save schemas to (required with `save_to_config`)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
 - `region` (str, optional): AWS region
 
@@ -1721,7 +1803,7 @@ client = IDPClient(stack_name="my-stack")
 result = client.discovery.run_multi_doc(
     document_dir="./samples/",
     save_to_config=True,
-    config_version="v2"
+    config_profile="v2"
 )
 
 # With explicit document paths
@@ -1752,7 +1834,7 @@ Run discovery on multiple documents sequentially. Ground truth paths are auto-ma
 **Parameters:**
 - `document_paths` (list, required): List of local file paths
 - `ground_truth_paths` (list, optional): Parallel list of ground truth paths (use `None` for docs without ground truth)
-- `config_version` (str, optional): Config version to save to
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save to
 - `stack_name` (str, optional): Stack name override
 - `model_id` (str, optional): Override the Bedrock model ID used for discovery. Applied to every document in the batch.
 
@@ -1827,7 +1909,7 @@ Run load testing by copying files to the input bucket.
 - `duration` (int, optional): Duration in minutes (default: 1)
 - `schedule_file` (str, optional): Optional schedule file for variable load
 - `dest_prefix` (str, optional): Destination prefix in S3 (default: `"load-test"`)
-- `config_version` (str, optional): Configuration version to tag files with
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to tag files with
 
 **Returns:** `LoadTestResult` with `success`, `total_files`, `duration_minutes`, and `error`
 

@@ -2029,6 +2029,7 @@ export type TestSet = {
   name: Scalars['String']['output'];
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
 };
 
 export type TestSetDocument = {
@@ -2892,7 +2893,7 @@ export type GetTestSetVersionsQuery = { getTestSetVersions?: Array<{ testSetId: 
 export type GetTestSetsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type GetTestSetsQuery = { getTestSets?: Array<{ id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, source?: string | null, latestVersion?: number | null, activeReference?: number | null, labelState?: string | null, labelJobId?: string | null, labelJobStatus?: string | null, status?: string | null, createdAt: string, error?: string | null, documentClassType?: DocumentClassType | null, configVersion?: string | null } | null> | null };
+export type GetTestSetsQuery = { getTestSets?: Array<{ id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, source?: string | null, latestVersion?: number | null, activeReference?: number | null, labelState?: string | null, labelJobId?: string | null, labelJobStatus?: string | null, status?: string | null, createdAt: string, updatedAt?: string | null, error?: string | null, documentClassType?: DocumentClassType | null, configVersion?: string | null } | null> | null };
 
 export type ListAgentJobsQueryVariables = Exact<{
   limit?: InputMaybe<Scalars['Int']['input']>;

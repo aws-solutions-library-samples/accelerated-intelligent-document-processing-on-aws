@@ -787,6 +787,10 @@ type TestSet @aws_cognito_user_pools @aws_iam {
   labelJobStatus: String
   status: String
   createdAt: AWSDateTime!
+  # Set by the getTestSets reconcile path when direct-S3 edits are detected.
+  # Absent on rows written before the reconcile logic existed and on rows
+  # that have not been touched since.
+  updatedAt: AWSDateTime
   error: String
   lastAddResult: String
   documentClassType: DocumentClassType

@@ -2029,6 +2029,7 @@ export type TestSet = {
   name: Scalars['String']['output'];
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
 };
 
 export type TestSetDocument = {

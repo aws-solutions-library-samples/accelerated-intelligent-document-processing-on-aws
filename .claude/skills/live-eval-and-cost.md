@@ -30,7 +30,7 @@ configs (`ocr-benchmark`, `realkie-fcc-verified`, ...) are seeded at deploy and
 ### Preferred: the CLI (works on v0.6 / API-Gateway stacks)
 ```bash
 PYTHONPATH=<repo>/lib/idp_common_pkg AWS_PROFILE=default idp-cli run-inference \
-  --stack-name <stack> --test-set <test-set> --config-version <version> \
+  --stack-name <stack> --test-set <test-set> --config-profile <version> \
   --number-of-files <N> --context "<label>" --region us-west-2
 # returns testRunId like "OmniAI-OCR-Benchmark-20260704-004852"
 ```
@@ -52,9 +52,9 @@ PYTHONPATH=<repo>/lib/idp_common_pkg python3 -c "
 import yaml; from idp_common.config.merge_utils import merge_config_with_defaults
 merge_config_with_defaults(yaml.safe_load(open('variant.yaml')), validate=True)"
 PYTHONPATH=<repo>/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload \
-  --stack-name <stack> --config-file variant.yaml --config-version <name> \
+  --stack-name <stack> --config-file variant.yaml --config-profile <name> \
   --version-description "A/B" --region us-west-2
-# cleanup afterwards: idp-cli config-delete --config-version <name> --force
+# cleanup afterwards: idp-cli config-delete --config-profile <name> --force
 ```
 
 ---
