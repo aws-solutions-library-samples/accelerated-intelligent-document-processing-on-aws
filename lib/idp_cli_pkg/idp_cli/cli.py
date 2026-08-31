@@ -1541,6 +1541,7 @@ def _process_impl(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
@@ -1589,6 +1590,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             elif directory:
                 result = client.batch.process(
@@ -1599,6 +1601,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -1609,6 +1612,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -1701,7 +1705,16 @@ def _process_impl(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to use for processing (e.g., v1, v2)",
+    help="Configuration profile to use for processing (e.g., v1, v2)",
+)
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Revision of --config-version to pin (e.g. 7). Omit to process under the "
+        "profile's current configuration; pinning reproduces exactly what that "
+        "revision recorded."
+    ),
 )
 def process(
     stack_name: str,
@@ -1720,6 +1733,7 @@ def process(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int],
 ):
     """
     Process documents
@@ -1787,6 +1801,7 @@ def process(
         region,
         number_of_files,
         config_version,
+        config_revision,
     )
 
 
@@ -1923,7 +1938,16 @@ def reprocess(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to use for processing (e.g., v1, v2)",
+    help="Configuration profile to use for processing (e.g., v1, v2)",
+)
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Revision of --config-version to pin (e.g. 7). Omit to process under the "
+        "profile's current configuration; pinning reproduces exactly what that "
+        "revision recorded."
+    ),
 )
 def run_inference(
     stack_name: str,
@@ -1942,6 +1966,7 @@ def run_inference(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int],
 ):
     """
     Run inference on a batch of documents
@@ -1969,6 +1994,7 @@ def run_inference(
         region,
         number_of_files,
         config_version,
+        config_revision,
     )
 
 
@@ -3313,6 +3339,7 @@ def _process_test_set(
     client,
     number_of_files: Optional[int] = None,
     config_version: Optional[str] = None,
+    config_revision: Optional[int] = None,
 ):
     """Common function to process test sets"""
     # Resolve resources dict from IDPClient for Lambda helper functions
@@ -3338,6 +3365,7 @@ def _process_test_set(
         resources,
         number_of_files,
         config_version,
+        config_revision,
     )
     batch_id = test_run_result["testRunId"]
 
@@ -3444,6 +3472,7 @@ def _invoke_test_runner(
     resources: dict,
     number_of_files: Optional[int] = None,
     config_version: Optional[str] = None,
+    config_revision: Optional[int] = None,
 ):
     """Invoke test runner lambda to start test set processing"""
     import json
@@ -3493,6 +3522,10 @@ def _invoke_test_runner(
     # Add configVersion if provided
     if config_version:
         payload["arguments"]["input"]["configVersion"] = config_version
+    # Pin the revision too, or the run records a profile while actually using
+    # whatever that profile currently holds.
+    if config_revision is not None:
+        payload["arguments"]["input"]["configRevision"] = int(config_revision)
 
     console.print(f"[bold blue]Starting test run for test set: {test_set}[/bold blue]")
     if number_of_files:
@@ -3810,7 +3843,7 @@ def stop_workflows(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to use for processing (default: active version)",
+    help="Configuration profile to use for processing (default: active version)",
 )
 @click.option("--region", help="AWS region (optional)")
 def load_test(
@@ -4351,7 +4384,7 @@ def config_validate(
 @click.option(
     "--config-version",
     required=True,
-    help="Configuration version to update (e.g., v1, v2). If version doesn't exist, it will be created.",
+    help="Configuration profile to update (e.g., v1, v2). If version doesn't exist, it will be created.",
 )
 @click.option(
     "--version-description",
@@ -4459,7 +4492,7 @@ def config_upload(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to download (e.g., v1, v2). If not specified, downloads active version.",
+    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version.",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_download(
@@ -4521,7 +4554,7 @@ def config_download(
 @click.option(
     "--config-version",
     required=True,
-    help="Configuration version to activate",
+    help="Configuration profile to activate",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_activate(
@@ -4670,7 +4703,7 @@ def config_list(stack_name: str, region: str = None):
 @click.option(
     "--config-version",
     required=True,
-    help="Configuration version to delete",
+    help="Configuration profile to delete",
 )
 @click.option(
     "--force",
@@ -4752,7 +4785,7 @@ def config_delete(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to sync (default: active version)",
+    help="Configuration profile to sync (default: active version)",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
@@ -4855,7 +4888,7 @@ def config_sync_bda(
 )
 @click.option(
     "--config-version",
-    help="Configuration version to save the discovered schema to (default: active version)",
+    help="Configuration profile to save the discovered schema to (default: active version)",
 )
 @click.option("--region", help="AWS region (optional)")
 @click.option(
@@ -5402,7 +5435,7 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
 @click.option(
     "--config-version",
     default=None,
-    help="Configuration version to save schemas to",
+    help="Configuration profile to save schemas to",
 )
 @click.option(
     "--save-to-config",
