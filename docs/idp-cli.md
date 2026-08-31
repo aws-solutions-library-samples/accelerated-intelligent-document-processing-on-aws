@@ -203,6 +203,13 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 
 ## Commands Reference
 
+> **Flag naming:** the named configuration entity is a **Configuration Profile**,
+> selected with `--config-profile`. The former name, `--config-version`, is kept
+> as an accepted alias so existing scripts keep working — both spellings set the
+> same value, and there is no plan to remove the old one. New scripts should use
+> `--config-profile`. `--config-revision` is unrelated: it selects a *revision
+> within* a profile. See [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
+
 ### `deploy`
 
 Deploy or update an IDP CloudFormation stack.
@@ -719,8 +726,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 - `--stack-name`: Target CloudFormation stack. **Omit for local mode** (print schema, no save).
 - `--class-name`: Document class name to use as the schema `$id` / document type.
 - `--field-hint`: A field the schema must include. Repeatable: `--field-hint X --field-hint Y`.
-- `--config-version`: Existing config version to source catalog classes from / merge the new class into.
-- `--target-version`: Name of the config version to create (default: `bootstrap-<class>`).
+- `--config-profile` (alias: `--config-version`): Existing configuration profile to source catalog classes from / merge the new class into.
+- `--target-profile` (alias: `--target-version`): Name of the configuration profile to create (default: `bootstrap-<class>`).
 - `--count`, `-c`: Number of synthetic documents to generate (default: `3`).
 - `--threshold`: Generation quality threshold, 1–10 (default: `7`).
 - `--augment`: Apply scan/fax-style image augmentation to generated documents.
@@ -762,7 +769,7 @@ idp-cli run-inference [OPTIONS]
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: Path to configuration YAML file (optional)
-- `--config-version`: Configuration version to use for processing (e.g., v1, v2)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
@@ -827,14 +834,14 @@ idp-cli process \
 idp-cli process \
     --stack-name my-stack \
     --dir ./documents/ \
-    --config-version v2 \
+    --config-profile v2 \
     --monitor
 
 # Process test set with configuration version
 idp-cli process \
     --stack-name my-stack \
     --test-set fcc-example-test \
-    --config-version v1 \
+    --config-profile v1 \
     --context "Testing with config v1" \
     --monitor
 ```
@@ -2008,7 +2015,7 @@ idp-cli load-test [OPTIONS]
 - `--duration`: Duration in minutes (default: 1)
 - `--schedule`: CSV schedule file (minute,count) - overrides --rate and --duration
 - `--dest-prefix`: Destination prefix in input bucket (default: load-test)
-- `--config-version`: Configuration version to use for processing (default: active version)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (default: active version)
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2027,7 +2034,7 @@ idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --sche
 idp-cli load-test --stack-name my-stack --source-file s3://my-bucket/test.pdf --rate 500
 
 # Load test with a specific config version
-idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --rate 100 --config-version v2
+idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --rate 100 --config-profile v2
 ```
 
 **Schedule File Format (CSV):**
@@ -2235,7 +2242,7 @@ idp-cli config-download [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
-- `--config-version`: Configuration version to download (e.g., v1, v2). If not specified, downloads active version
+- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads active version
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2245,7 +2252,7 @@ idp-cli config-download [OPTIONS]
 idp-cli config-download --stack-name my-stack --output config.yaml
 
 # Download specific version
-idp-cli config-download --stack-name my-stack --config-version v2 --output config.yaml
+idp-cli config-download --stack-name my-stack --config-profile v2 --output config.yaml
 
 # Download minimal config (only customizations)
 idp-cli config-download --stack-name my-stack --format minimal --output config.yaml
@@ -2271,7 +2278,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-version` (required): Configuration version to update (e.g., `default`, `v1`, `v2`). If the version doesn't exist, it will be created automatically.
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically.
 - `--version-description`: Description for the configuration version (used when creating new versions)
 - `--region`: AWS region (optional)
 
@@ -2279,13 +2286,13 @@ idp-cli config-upload [OPTIONS]
 
 ```bash
 # Upload config to active version
-idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-version default
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile default
 
 # Update existing version
-idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-version Production
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile Production
 
 # Create new version with description
-idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-version NewVersion --version-description "Test configuration for new feature"
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile NewVersion --version-description "Test configuration for new feature"
 
 # Skip validation (use with caution)
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --no-validate
@@ -2330,16 +2337,16 @@ idp-cli config-activate [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--config-version` (required): Configuration version to activate
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to activate
 - `--region`: AWS region (optional)
 
 **Examples:**
 ```bash
 # Activate a specific version
-idp-cli config-activate --stack-name my-stack --config-version v2
+idp-cli config-activate --stack-name my-stack --config-profile v2
 
 # Activate default version
-idp-cli config-activate --stack-name my-stack --config-version default
+idp-cli config-activate --stack-name my-stack --config-profile default
 ```
 
 **Behavior:**
@@ -2371,17 +2378,17 @@ idp-cli config-delete [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--config-version` (required): Configuration version to delete
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to delete
 - `--force`: Skip confirmation prompt
 - `--region`: AWS region (optional)
 
 **Examples:**
 ```bash
 # Delete a version with confirmation
-idp-cli config-delete --stack-name my-stack --config-version old-version
+idp-cli config-delete --stack-name my-stack --config-profile old-version
 
 # Delete without confirmation prompt
-idp-cli config-delete --stack-name my-stack --config-version old-version --force
+idp-cli config-delete --stack-name my-stack --config-profile old-version --force
 ```
 
 **Restrictions:**
@@ -2402,7 +2409,7 @@ idp-cli config-delete --stack-name my-stack --config-version old-version --force
 - **New version**: Creates a new independent version with the uploaded configuration
 - **Version descriptions**: Can be added to new versions for better organization
 
-`--config-revision <n>` pins an exact revision of `--config-version` on `process`
+`--config-revision <n>` pins an exact revision of `--config-profile` on `process`
 and `run-inference`; omit it to process under the profile's current configuration.
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
@@ -2616,7 +2623,7 @@ idp-cli discover -d ./lending_package.pdf --auto-detect --detect-only
 idp-cli discover -d ./lending_package.pdf --auto-detect --detect-only -o sections.json
 
 # Stack mode (saves to config)
-idp-cli discover --stack-name my-stack -d ./invoice.pdf --config-version v2
+idp-cli discover --stack-name my-stack -d ./invoice.pdf --config-profile v2
 
 # Override the Bedrock model (e.g. use Claude Opus instead of the configured default)
 idp-cli discover -d ./invoice.pdf -g ./invoice.json \
@@ -2628,7 +2635,7 @@ idp-cli discover -d ./invoice.pdf -g ./invoice.json \
 | `--stack-name` | CloudFormation stack name (optional — omit for local mode) |
 | `-d, --document` | Path to document file (required, repeatable for batch) |
 | `-g, --ground-truth` | Path to JSON ground truth file(s) (repeatable, auto-matched by filename stem) |
-| `--config-version` | Config version to save to (stack mode only) |
+| `--config-profile` (alias: `--config-version`) | Configuration profile to save to (stack mode only) |
 | `-o, --output` | Output path: file (single/JSON array) or directory (one file per schema) |
 | `--class-hint` | Hint for the document class name (e.g., "W2 Form"). The LLM will use this as `$id`. |
 | `--page-range` | Page range to discover (e.g., "1-3"). Repeatable for multi-section. Requires PDF. |
@@ -2665,7 +2672,7 @@ idp-cli discover-multidoc [OPTIONS]
 | `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
-| `--config-version` | Configuration version to save schemas to |
+| `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |
 | `--save-to-config` | Save discovered schemas to the stack's configuration |
 | `--region` | AWS region |
 
@@ -2683,7 +2690,7 @@ idp-cli discover-multidoc --dir ./samples/ -o ./schemas/
 
 # Save to stack configuration
 idp-cli discover-multidoc --dir ./samples/ --save-to-config \
-    --stack-name IDP --config-version v2
+    --stack-name IDP --config-profile v2
 
 # Use custom models
 idp-cli discover-multidoc --dir ./samples/ \
@@ -2715,7 +2722,7 @@ idp-cli config-sync-bda [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, or `idp-to-bda`
 - `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete)
-- `--config-version`: Configuration version to sync (default: active version)
+- `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active version)
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2734,7 +2741,7 @@ idp-cli config-sync-bda --stack-name my-stack --direction idp-to-bda
 idp-cli config-sync-bda --stack-name my-stack --direction bda-to-idp --mode merge
 
 # Sync specific config version
-idp-cli config-sync-bda --stack-name my-stack --config-version v2
+idp-cli config-sync-bda --stack-name my-stack --config-profile v2
 ```
 
 ---
