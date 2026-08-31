@@ -1293,9 +1293,12 @@ const SectionsPanel = ({
       return true;
     }
 
-    // Check for changes in page IDs (deep comparison)
-    const originalPageIds = [...(originalSection.PageIds || [])].sort();
-    const currentPageIds = [...(section.PageIds || [])].sort();
+    // Page ids, compared in order. Both sides used to be sorted before comparing, which
+    // made a pure reorder invisible — Save would stay disabled on a real change — and the
+    // sort had no comparator, so it ordered numbers lexicographically (1, 10, 2). Order is
+    // part of the grouping: it is what `split_accuracy_with_order` scores.
+    const originalPageIds = originalSection.PageIds || [];
+    const currentPageIds = section.PageIds || [];
 
     if (originalPageIds.length !== currentPageIds.length) {
       return true;

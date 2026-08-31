@@ -2,13 +2,32 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Which pages belong to which section of a packet, and whether a grouping is legal.
+ * Which pages belong to which section of a packet, in which order, and whether a grouping
+ * is legal.
  *
  * A packet split is a **partition**: every page of the document belongs to exactly one
  * section. That is the property the drag-and-drop editor has to preserve, and it is the
  * property `split_document.page_indices` encodes as ground truth — see
  * `stickler_backend/doc_split.py:load_sections_for_doc_split`, which scores
  * classification against it.
+ *
+ * ## Order within a section is ground truth too
+ *
+ * An earlier version of this module asserted that a page's position within a section
+ * carried no meaning, and sorted accordingly. That was wrong, and it silently normalised
+ * authored order on every save. Three consumers read the order:
+ *
+ * - `doc_split_classification_metrics.py:332` — `gt_pages == pred_pages`, a **list**
+ *   equality, driving `split_accuracy_with_order` (the report's strictest metric).
+ * - `packet_evaluation_metrics.py:157` — Kendall's Tau per group over each page's position
+ *   in its section. `calculate_final_score` weights ordering at 0.5, so it is *half* the
+ *   graded packet score.
+ * - `evaluation/models.py:656` — rendered into the section-details table.
+ *
+ * The confusion is worth naming, because the opposite is true one layer down: extraction
+ * (`service.py:907`), summarization (`:549`), assessment (`:1322`) and rule validation
+ * (`:919`) each call `sorted(section.page_ids, key=int)` before use, so order never
+ * reaches *extraction*. It reaches *scoring*. Nothing here may reorder page ids.
  *
  * Extracted from SectionsPanel's inline `validateSections`, which had the same rules
  * minus the orphan check, so both the test-set annotate view and the document view can
@@ -36,6 +55,7 @@ export interface GroupedSection {
   sectionId: string;
   /** The class this section is labelled as. Absent for a section not yet classified. */
   documentClass?: string | null;
+  /** Ordered. Position is the section's reading order and is scored — never re-sort it. */
   pageIds: number[];
 }
 
@@ -133,10 +153,73 @@ export const pageIndicesToIds = (pageIndices: number[]): number[] => pageIndices
 /**
  * `TestDocPage.Id` (1-based) → `split_document.page_indices` (0-based).
  *
- * Sorted ascending: `page_indices` describes which pages a section contains, not the
- * order they were dropped in, and downstream readers assume document order.
+ * Order-preserving. `page_indices` records the section's reading order as well as its
+ * membership, and sorting here is exactly how authored order used to be lost: the value
+ * written stayed valid JSON with plausible numbers, so nothing raised.
  */
-export const pageIdsToIndices = (pageIds: number[]): number[] => pageIds.map((id) => id - 1).sort((a, b) => a - b);
+export const pageIdsToIndices = (pageIds: number[]): number[] => pageIds.map((id) => id - 1);
+
+/**
+ * Ascending document order, for the "sort this section's pages" reset and for placing a
+ * page dropped onto a column rather than onto a specific position.
+ *
+ * Separate from `pageIdsToIndices` on purpose: normalising is now something a caller asks
+ * for explicitly, never something that happens on the way to storage.
+ */
+export const sortPageIds = (pageIds: number[]): number[] => [...pageIds].sort((a, b) => a - b);
+
+/**
+ * Whether a section's pages run in ascending document order.
+ *
+ * Used to mark a deliberately reordered section, so a reader does not take it for a bug.
+ */
+export const isAscending = (pageIds: number[]): boolean => pageIds.every((id, i) => i === 0 || pageIds[i - 1] < id);
+
+/**
+ * Insert `moving` into `pageIds` at `beforePageId`, or in ascending position when no
+ * anchor is given.
+ *
+ * The two cases are the two gestures: dropping onto a page means "exactly here", dropping
+ * onto the column means "where it belongs". A multi-page selection lands as one
+ * contiguous block, ordered among themselves by document order, because a selection is
+ * normally a run and splitting it up would never be what was meant.
+ */
+export const insertPageIds = (pageIds: number[], moving: number[], beforePageId?: number): number[] => {
+  const block = sortPageIds(moving);
+  const kept = pageIds.filter((id) => !block.includes(id));
+
+  if (beforePageId !== undefined && !block.includes(beforePageId)) {
+    const at = kept.indexOf(beforePageId);
+    if (at !== -1) return [...kept.slice(0, at), ...block, ...kept.slice(at)];
+  }
+
+  // No anchor: place the block where document order puts its first page.
+  const at = kept.findIndex((id) => id > block[0]);
+  return at === -1 ? [...kept, ...block] : [...kept.slice(0, at), ...block, ...kept.slice(at)];
+};
+
+/**
+ * Nudge `moving` one position earlier (`-1`) or later (`1`) within its section.
+ *
+ * The keyboard and screen-reader route to reordering, so it has to reach every position a
+ * drag can. Clamps rather than wraps at either end: a wrap would move a page the length of
+ * the section on a keystroke meant to move it one place.
+ *
+ * Unlike `insertPageIds` this keeps the block's existing internal order rather than
+ * normalising it — a nudge should move a group without also rearranging inside it.
+ */
+export const nudgePageIds = (pageIds: number[], moving: number[], direction: -1 | 1): number[] => {
+  const isMoving = (id: number) => moving.includes(id);
+  const block = pageIds.filter(isMoving);
+  if (block.length === 0) return pageIds;
+
+  const kept = pageIds.filter((id) => !isMoving(id));
+  const firstIndex = pageIds.findIndex(isMoving);
+  const target = pageIds.slice(0, firstIndex).filter((id) => !isMoving(id)).length + direction;
+  if (target < 0 || target > kept.length) return pageIds;
+
+  return [...kept.slice(0, target), ...block, ...kept.slice(target)];
+};
 
 /**
  * Sections in document order, by their first page.

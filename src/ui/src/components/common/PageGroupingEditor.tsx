@@ -41,10 +41,19 @@
  * 5-9 in the wrong section that is one mistake, and moving it should be one action rather
  * than five. Selection is by checkbox, with shift-click for a range.
  *
- * **Draggable/droppable, not sortable.** `pageIdsToIndices` normalises to ascending
- * document order, so a page's position *within* a section carries no meaning. Sorting
- * machinery would imply otherwise and bring its edge cases along. Pages therefore render
- * in document order however they were dropped.
+ * **Pages within a section are ordered, and the order is editable.** An earlier version
+ * treated a section as a set and sorted on save, on the belief that position carried no
+ * meaning. It does: `split_accuracy_with_order` compares `page_indices` by **list**
+ * equality and the graded packet score is half Kendall's Tau over each page's position
+ * (see the header of `section-grouping.ts` for the three consumers). So the board renders
+ * stored order and never re-sorts it.
+ *
+ * **Drop targets are cards, not just columns — no `@dnd-kit/sortable`.** Each card is a
+ * droppable as well as a draggable, so a drop onto a card inserts before it. That yields
+ * an insert position both within a column and across columns from the machinery already
+ * here, without `SortableContext` and its container-transfer edge cases. Dropping on the
+ * column *strip* instead inserts in ascending position: "exactly here" versus "where it
+ * belongs", which keeps the ordinary contiguous-packet move free of surprises.
  *
  * **Dragging is never the only route.** Every page also has a "Move to" menu, and
  * selection is by checkbox rather than click-to-select. A drag-only interface is unusable
@@ -86,7 +95,15 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 
 import type { ConfigClassOption } from './config-class-options';
-import { GroupedSection, sortSectionsByFirstPage, validateGrouping } from './section-grouping';
+import {
+  GroupedSection,
+  insertPageIds,
+  isAscending,
+  nudgePageIds,
+  sortPageIds,
+  sortSectionsByFirstPage,
+  validateGrouping,
+} from './section-grouping';
 
 /** One page of the document, in the caller's own numbering. */
 export interface GroupingPage {
@@ -135,35 +152,53 @@ const PageThumb = ({ page }: { page: GroupingPage }): React.JSX.Element =>
     </Box>
   );
 
-/** A page thumbnail: selectable, draggable, and movable without dragging. */
+/** A page thumbnail: selectable, draggable, a drop target, and movable without dragging. */
 const PageCard = ({
   page,
   sectionId,
   isSelected,
   selectionSize,
+  isFirstInSection,
+  isLastInSection,
   otherSections,
   onToggleSelect,
   onMove,
+  onNudge,
 }: {
   page: GroupingPage;
   sectionId: string;
   isSelected: boolean;
   selectionSize: number;
+  isFirstInSection: boolean;
+  isLastInSection: boolean;
   otherSections: GroupedSection[];
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
   onMove: (pageId: number, toSectionId: string) => void;
+  onNudge: (pageId: number, direction: -1 | 1) => void;
 }): React.JSX.Element => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `page-${page.id}`,
     data: { pageId: page.id, fromSectionId: sectionId },
   });
+  // Also a drop target, which is what gives a drop an insert *position* rather than only a
+  // destination section — within a column and across columns alike.
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: `before-page-${page.id}`,
+    data: { sectionId, beforePageId: page.id },
+  });
 
   // Dragging one page of a selection carries the whole selection, so say so.
   const movesWithSelection = isSelected && selectionSize > 1;
+  const moving = movesWithSelection
+    ? `page ${page.id} and ${selectionSize - 1} other selected page${selectionSize > 2 ? 's' : ''}`
+    : `page ${page.id}`;
 
   return (
     <div
-      ref={setNodeRef}
+      ref={(node) => {
+        setNodeRef(node);
+        setDropRef(node);
+      }}
       style={{
         /* No transform here on purpose: DragOverlay carries the page while it is in
            flight, because a transformed child cannot escape this column's own
@@ -171,6 +206,9 @@ const PageCard = ({
            and dims, marking where the page came from. */
         opacity: isDragging ? 0.4 : 1,
         border: `2px solid ${isSelected ? '#0073bb' : '#d5dbdb'}`,
+        /* A left edge while hovered, because a drop here inserts *before* this page —
+           a whole-card highlight would not say which side. */
+        borderLeft: isOver && !isDragging ? '4px solid #0073bb' : undefined,
         borderRadius: '4px',
         padding: '4px',
         background: isSelected ? 'rgba(0, 115, 187, 0.06)' : '#ffffff',
@@ -184,7 +222,7 @@ const PageCard = ({
         aria-label={
           movesWithSelection
             ? `Page ${page.id}, drag to move it and ${selectionSize - 1} other selected page${selectionSize > 2 ? 's' : ''}`
-            : `Page ${page.id}, drag to another section`
+            : `Page ${page.id}, drag to reorder it or move it to another section`
         }
       >
         <PageThumb page={page} />
@@ -206,21 +244,41 @@ const PageCard = ({
             {page.id}
           </Checkbox>
         </span>
-        {otherSections.length > 0 && (
-          <ButtonDropdown
-            variant="icon"
-            ariaLabel={
-              movesWithSelection
-                ? `Move page ${page.id} and ${selectionSize - 1} other selected page${selectionSize > 2 ? 's' : ''} to another section`
-                : `Move page ${page.id} to another section`
-            }
-            items={otherSections.map((s) => ({
-              id: s.sectionId,
-              text: `Section ${s.sectionId}${s.documentClass ? ` (${s.documentClass})` : ''}`,
-            }))}
-            onItemClick={({ detail }) => onMove(page.id, detail.id)}
-          />
-        )}
+        <ButtonDropdown
+          variant="icon"
+          ariaLabel={`Move ${moving}`}
+          /* Reordering has to be reachable without a pointer: a drag-only route would put
+             this section's page order — a scored field — out of reach of a keyboard or
+             screen-reader user. Grouped so "earlier/later" reads as position and the
+             section list reads as destination. */
+          items={[
+            {
+              id: '__reorder',
+              text: 'Order within this section',
+              items: [
+                { id: '__earlier', text: 'Move earlier', disabled: isFirstInSection },
+                { id: '__later', text: 'Move later', disabled: isLastInSection },
+              ],
+            },
+            ...(otherSections.length > 0
+              ? [
+                  {
+                    id: '__move',
+                    text: 'Move to section',
+                    items: otherSections.map((s) => ({
+                      id: s.sectionId,
+                      text: `Section ${s.sectionId}${s.documentClass ? ` (${s.documentClass})` : ''}`,
+                    })),
+                  },
+                ]
+              : []),
+          ]}
+          onItemClick={({ detail }) => {
+            if (detail.id === '__earlier') onNudge(page.id, -1);
+            else if (detail.id === '__later') onNudge(page.id, 1);
+            else onMove(page.id, detail.id);
+          }}
+        />
       </SpaceBetween>
     </div>
   );
@@ -239,6 +297,8 @@ const SectionColumn = ({
   onClassChange,
   onDelete,
   onMove,
+  onNudge,
+  onSortPages,
   onToggleSelect,
 }: {
   section: GroupedSection;
@@ -252,10 +312,15 @@ const SectionColumn = ({
   onClassChange: (sectionId: string, value: string) => void;
   onDelete: (sectionId: string) => void;
   onMove: (pageId: number, toSectionId: string) => void;
+  onNudge: (pageId: number, direction: -1 | 1) => void;
+  onSortPages: (sectionId: string) => void;
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
 }): React.JSX.Element => {
   const { setNodeRef, isOver } = useDroppable({ id: `section-${section.sectionId}`, data: { sectionId: section.sectionId } });
   const selected = classOptions.find((o) => o.value === section.documentClass);
+  // A section whose pages do not run in document order is legitimate — a packet can be
+  // assembled out of order — but it looks like a bug unless it is labelled.
+  const customOrder = section.pageIds.length > 1 && !isAscending(section.pageIds);
 
   return (
     <div style={{ minWidth: '260px', maxWidth: '260px', flex: '0 0 auto' }}>
@@ -264,17 +329,27 @@ const SectionColumn = ({
           <Header
             variant="h3"
             actions={
-              <Button
-                iconName="remove"
-                variant="icon"
-                ariaLabel={`Delete section ${section.sectionId}`}
-                /* Only an empty section can go: deleting one with pages would orphan
-                   them, and deleting one with field values should be deliberate. Drag
-                   the pages out first — validateGrouping's empty-section error says
-                   exactly that. */
-                disabled={section.pageIds.length > 0}
-                onClick={() => onDelete(section.sectionId)}
-              />
+              <SpaceBetween direction="horizontal" size="xxs">
+                {customOrder && (
+                  <Button
+                    iconName="undo"
+                    variant="icon"
+                    ariaLabel={`Sort section ${section.sectionId} pages in document order`}
+                    onClick={() => onSortPages(section.sectionId)}
+                  />
+                )}
+                <Button
+                  iconName="remove"
+                  variant="icon"
+                  ariaLabel={`Delete section ${section.sectionId}`}
+                  /* Only an empty section can go: deleting one with pages would orphan
+                     them, and deleting one with field values should be deliberate. Drag
+                     the pages out first — validateGrouping's empty-section error says
+                     exactly that. */
+                  disabled={section.pageIds.length > 0}
+                  onClick={() => onDelete(section.sectionId)}
+                />
+              </SpaceBetween>
             }
           >
             Section {section.sectionId}
@@ -293,6 +368,8 @@ const SectionColumn = ({
               }
             />
           )}
+
+          {customOrder && <Badge color="blue">Custom page order</Badge>}
 
           <div
             ref={setNodeRef}
@@ -314,14 +391,17 @@ const SectionColumn = ({
                 Drop a page here.
               </Box>
             ) : (
-              pages.map((page) => (
+              pages.map((page, index) => (
                 <PageCard
                   key={page.id}
                   page={page}
                   sectionId={section.sectionId}
                   isSelected={selectedPageIds.has(page.id)}
                   selectionSize={selectedPageIds.size}
+                  isFirstInSection={index === 0}
+                  isLastInSection={index === pages.length - 1}
                   otherSections={otherSections}
+                  onNudge={onNudge}
                   onToggleSelect={onToggleSelect}
                   onMove={onMove}
                 />
@@ -396,24 +476,44 @@ const PageGroupingEditor = ({
     setLastTouchedPageId(pageId);
   };
 
-  /** Move `pageId`, or the whole selection when `pageId` is part of it. */
-  const movePages = (pageId: number, toSectionId: string) => {
-    const moving = selectedPageIds.has(pageId) ? new Set(selectedPageIds) : new Set([pageId]);
+  /** What a gesture on `pageId` acts on: the whole selection when it is part of it. */
+  const movingSet = (pageId: number): number[] => (selectedPageIds.has(pageId) ? [...selectedPageIds] : [pageId]);
+
+  /**
+   * Move `pageId` (or the selection) into `toSectionId`, before `beforePageId` when given.
+   *
+   * Without an anchor the block lands in ascending position, so an ordinary move into
+   * another section still reads in document order; with one it lands exactly there, which
+   * is how a manual order gets authored.
+   */
+  const movePages = (pageId: number, toSectionId: string, beforePageId?: number) => {
+    const moving = movingSet(pageId);
     setDraft((prev) =>
-      prev.map((section) => {
-        if (section.sectionId === toSectionId) {
-          const kept = section.pageIds.filter((id) => !moving.has(id));
-          // Ascending, because page_indices records membership rather than drop order.
-          return { ...section, pageIds: [...kept, ...moving].sort((a, b) => a - b) };
-        }
-        return { ...section, pageIds: section.pageIds.filter((id) => !moving.has(id)) };
-      }),
+      prev.map((section) =>
+        section.sectionId === toSectionId
+          ? { ...section, pageIds: insertPageIds(section.pageIds, moving, beforePageId) }
+          : { ...section, pageIds: section.pageIds.filter((id) => !moving.includes(id)) },
+      ),
     );
     // Clear afterwards: a selection that outlives its move is a trap, because the next
     // drag would silently carry pages the reviewer had forgotten were selected.
     setSelectedPageIds(new Set());
     setLastTouchedPageId(null);
   };
+
+  /** Reorder within the section the page already belongs to. */
+  const nudgePage = (pageId: number, direction: -1 | 1) => {
+    const moving = movingSet(pageId);
+    setDraft((prev) =>
+      prev.map((section) =>
+        section.pageIds.includes(pageId) ? { ...section, pageIds: nudgePageIds(section.pageIds, moving, direction) } : section,
+      ),
+    );
+  };
+
+  /** Put one section's pages back into document order, without touching the others. */
+  const sortSectionPages = (sectionId: string) =>
+    setDraft((prev) => prev.map((s) => (s.sectionId === sectionId ? { ...s, pageIds: sortPageIds(s.pageIds) } : s)));
 
   const handleDragStart = ({ active }: DragStartEvent) =>
     setActivePageId((active.data.current as { pageId?: number } | undefined)?.pageId ?? null);
@@ -422,9 +522,10 @@ const PageGroupingEditor = ({
     setActivePageId(null);
     if (!over) return;
     const pageId = (active.data.current as { pageId?: number } | undefined)?.pageId;
-    const toSectionId = (over.data.current as { sectionId?: string } | undefined)?.sectionId;
-    if (pageId === undefined || !toSectionId) return;
-    movePages(pageId, toSectionId);
+    // A card droppable carries `beforePageId`; the column strip carries only `sectionId`.
+    const target = over.data.current as { sectionId?: string; beforePageId?: number } | undefined;
+    if (pageId === undefined || !target?.sectionId) return;
+    movePages(pageId, target.sectionId, target.beforePageId);
   };
 
   const addSection = () => setDraft((prev) => [...prev, { sectionId: nextSectionId(prev), documentClass: null, pageIds: [] }]);
@@ -491,11 +592,9 @@ const PageGroupingEditor = ({
             <SectionColumn
               key={section.sectionId}
               section={section}
-              /* Document order, not drop order — see the note at the top of the file. */
-              pages={[...section.pageIds]
-                .sort((a, b) => a - b)
-                .map((id) => pageById.get(id))
-                .filter((p): p is GroupingPage => Boolean(p))}
+              /* Stored order, NOT sorted — the order is the section's reading order and is
+                 scored. Sorting here is how authored order used to become invisible. */
+              pages={section.pageIds.map((id) => pageById.get(id)).filter((p): p is GroupingPage => Boolean(p))}
               errors={validation.bySection[section.sectionId] ?? []}
               classOptions={classOptions}
               canChangeClass={canChangeClass}
@@ -505,6 +604,8 @@ const PageGroupingEditor = ({
               onClassChange={changeClass}
               onDelete={deleteSection}
               onMove={movePages}
+              onNudge={nudgePage}
+              onSortPages={sortSectionPages}
               onToggleSelect={toggleSelect}
             />
           ))}

@@ -951,11 +951,32 @@ classification ground truth wrong, not merely untidy.
 
 **Pages in this section** shows which pages a section covers, and **Edit page
 grouping** opens a board with every section side by side and each page as a
-thumbnail. Drag a page from one section to another, or use its **Move to** menu,
-which is the keyboard and screen-reader route to the same operation. Select several
+thumbnail. Drag a page from one section to another, or use its **Move to section**
+menu, which is the keyboard and screen-reader route to the same operation. Select several
 pages first — shift-click extends over document order — and they move together, which
 is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
 one.
+
+#### Page order within a section
+
+A section's pages are **ordered**, and the order is ground truth in its own right, not a
+display detail. Two metrics read it: **Document Split Accuracy (With Page Order)**
+compares the page lists exactly, and the graded packet score is half a page-ordering
+score. So a packet whose pages were assembled out of reading order needs that recorded,
+or the pipeline is scored against the wrong answer.
+
+Drop a page **onto another page** to place it immediately before that one — within a
+section or coming from another. Dropping onto the column's empty space instead puts the
+page where document order says it belongs, which is what an ordinary move wants, so
+correcting a split does not silently invent a custom order. Without a pointer, use
+**Order within this section → Move earlier / Move later**.
+
+A section whose pages are not in document order is marked **Custom page order**, so it
+reads as deliberate rather than as a glitch, and that column gets a button to put it back
+into document order. Only the section you ask for is re-sorted.
+
+Saving preserves the order exactly as shown — including when you only came to change a
+section's class.
 
 **Your field values are kept.** This is the whole point of the feature. Saving a new
 grouping writes the page grouping and the class and nothing else: extracted values,

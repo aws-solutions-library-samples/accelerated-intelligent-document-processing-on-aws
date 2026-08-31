@@ -1207,7 +1207,10 @@ def update_test_set_document_sections(args, event=None):
     }
     _validate_regrouping(incoming, previously_labelled)
 
-    # First-page order, so the ids we assign below agree with page order.
+    # First-page order, so the ids we assign below agree with page order. Keyed on
+    # ``min`` rather than ``pageIndices[0]``: now that a section can carry a manual page
+    # order, those differ, and a section's place in the document is where it *starts*, not
+    # which of its pages happens to be read first.
     ordered = sorted(incoming, key=lambda sec: min(sec["pageIndices"]))
 
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
@@ -1226,7 +1229,13 @@ def update_test_set_document_sections(args, event=None):
         content = dict(content)
 
         split = dict(content.get("split_document") or {})
-        split["page_indices"] = sorted(int(i) for i in section["pageIndices"])
+        # Order-preserving, deliberately. ``page_indices`` records the section's reading
+        # order as well as its membership: ``split_accuracy_with_order`` compares the two
+        # lists with ``==`` and the graded packet score is half Kendall's Tau over each
+        # page's position (see ``stickler_backend/doc_split.py:111``). Sorting here — as
+        # this once did — silently discarded authored order on every save, including on a
+        # save that only meant to correct a section's class.
+        split["page_indices"] = [int(i) for i in section["pageIndices"]]
         content["split_document"] = split
 
         document_class = section.get("documentClass")
@@ -1262,7 +1271,8 @@ def update_test_set_document_sections(args, event=None):
             {
                 "sectionId": str(position),
                 "documentClass": section.get("documentClass"),
-                "pageIndices": sorted(int(i) for i in section["pageIndices"]),
+                # As written, so the client's board reflects what is now on disk.
+                "pageIndices": [int(i) for i in section["pageIndices"]],
             }
             for position, section in enumerate(ordered, start=1)
         ],

@@ -422,7 +422,7 @@ describe('PageGroupingEditor board stability', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollIntoView, writable: true, configurable: true });
 
-    const handle = screen.getByLabelText('Page 1, drag to another section');
+    const handle = screen.getByLabelText(/^Page 1, drag to reorder/);
     handle.focus();
     // dnd-kit's KeyboardSensor matches on `event.code`, not `key`.
     fireEvent.keyDown(handle, { key: ' ', code: 'Space' });
@@ -435,5 +435,144 @@ describe('PageGroupingEditor board stability', () => {
     expect(overlay).toBeTruthy();
     expect(overlay!.closest('[data-page-grouping-columns]')).toBeNull();
     expect(overlay!.textContent).toContain('Page 1');
+  });
+});
+
+/**
+ * Reordering pages within a section.
+ *
+ * Position within a section is scored — `split_accuracy_with_order` compares `page_indices`
+ * by list equality and half the graded packet score is Kendall's Tau over each page's
+ * position — so this is annotation, not presentation. An earlier version of the board sorted
+ * on save and lost it.
+ *
+ * The drop-onto-a-card gesture is not exercised here: dnd-kit resolves a drop from measured
+ * rects and jsdom reports every rect as zero, so a drop test would assert against the
+ * fixture rather than the component. The placement logic it calls is covered directly in
+ * `section-grouping.test.ts`, and the gesture itself was verified in a browser. What is
+ * covered here is the route that has to work without a pointer.
+ */
+describe('PageGroupingEditor page ordering', () => {
+  const FOUR = [1, 2, 3, 4].map((id) => ({ id, imageUri: `blob:page-${id}` }));
+  const ONE_SECTION: GroupedSection[] = [{ sectionId: '1', documentClass: 'Invoice', pageIds: [1, 2, 3, 4] }];
+
+  const nudge = async (pageId: number, label: 'Move earlier' | 'Move later') => {
+    await userEvent.click(screen.getByRole('button', { name: new RegExp(`^Move page ${pageId}\\b`) }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: label }));
+  };
+
+  const savedPages = (onSave: ReturnType<typeof vi.fn>) => (onSave.mock.calls[0][0] as GroupedSection[])[0].pageIds;
+
+  it('moves a page later without a pointer, and saves the new order', async () => {
+    const { onSave } = renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    await nudge(2, 'Move later');
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    expect(savedPages(onSave)).toEqual([1, 3, 2, 4]);
+  });
+
+  it('moves a page earlier without a pointer', async () => {
+    const { onSave } = renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    await nudge(3, 'Move earlier');
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    expect(savedPages(onSave)).toEqual([1, 3, 2, 4]);
+  });
+
+  it('offers no move earlier on the first page, nor later on the last', async () => {
+    // Disabled rather than absent, so the menu does not change shape per page, and
+    // clamped rather than wrapped — see nudgePageIds.
+    renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    await userEvent.click(screen.getByRole('button', { name: /^Move page 1\b/ }));
+    expect(await screen.findByRole('menuitem', { name: 'Move earlier' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('menuitem', { name: 'Move later' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('treats a reorder as a change worth saving', async () => {
+    renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeDisabled();
+    await nudge(1, 'Move later');
+
+    // Order is part of the grouping, so a pure reorder has to arm Save.
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
+  });
+
+  it('carries the whole selection when reordering one of its members', async () => {
+    const { onSave } = renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Select page 3/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /Select page 4/i }));
+    await nudge(3, 'Move earlier');
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    // Consistent with dragging, which also carries the selection.
+    expect(savedPages(onSave)).toEqual([1, 3, 4, 2]);
+  });
+
+  it('labels a section whose pages are out of document order', async () => {
+    renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    expect(screen.queryByText('Custom page order')).not.toBeInTheDocument();
+    await nudge(1, 'Move later');
+
+    // Otherwise a deliberately reordered section reads as a rendering bug.
+    expect(screen.getByText('Custom page order')).toBeInTheDocument();
+  });
+
+  it('offers a way back to document order, only once it is needed', async () => {
+    const { onSave } = renderEditor({ pages: FOUR, sections: ONE_SECTION });
+
+    expect(screen.queryByRole('button', { name: /Sort section 1 pages in document order/i })).not.toBeInTheDocument();
+    await nudge(1, 'Move later');
+    await userEvent.click(screen.getByRole('button', { name: /Sort section 1 pages in document order/i }));
+
+    // Back to the original, so Save disarms again.
+    expect(screen.queryByText('Custom page order')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeDisabled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('sorts only the section asked for', async () => {
+    const { onSave } = renderEditor({
+      pages: FOUR,
+      sections: [
+        { sectionId: '1', documentClass: 'Invoice', pageIds: [2, 1] },
+        { sectionId: '2', documentClass: 'FieldTicket', pageIds: [4, 3] },
+      ],
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: /Sort section 1 pages in document order/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    const saved = onSave.mock.calls[0][0] as GroupedSection[];
+    expect(saved.find((s) => s.sectionId === '1')?.pageIds).toEqual([1, 2]);
+    // Section 2's custom order is left exactly as it was.
+    expect(saved.find((s) => s.sectionId === '2')?.pageIds).toEqual([4, 3]);
+  });
+
+  it('places a page moved from another section in document order, not at the end', async () => {
+    // A move with no drop position is the ordinary case; it must not manufacture a custom
+    // order as a side effect.
+    const { onSave } = renderEditor({
+      pages: FOUR,
+      sections: [
+        // Section 2 keeps a spare page: emptying it would block the save for an unrelated
+        // reason and prove nothing about placement.
+        { sectionId: '1', documentClass: 'Invoice', pageIds: [1, 4] },
+        { sectionId: '2', documentClass: 'FieldTicket', pageIds: [2, 3] },
+      ],
+    });
+
+    await movePageTo(2, '1');
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    const saved = onSave.mock.calls[0][0] as GroupedSection[];
+    // Between 1 and 4, not appended after them — and so no 'Custom page order' badge.
+    expect(saved.find((s) => s.sectionId === '1')?.pageIds).toEqual([1, 2, 4]);
+    expect(screen.queryByText('Custom page order')).not.toBeInTheDocument();
   });
 });

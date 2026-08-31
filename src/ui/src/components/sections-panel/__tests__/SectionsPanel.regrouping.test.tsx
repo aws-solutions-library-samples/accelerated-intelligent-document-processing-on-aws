@@ -112,6 +112,35 @@ describe('SectionsPanel page regrouping', () => {
     });
   });
 
+  it('sends a reordered section in the reviewer order, not sorted', async () => {
+    // Page order within a section is scored (`split_accuracy_with_order` compares the
+    // lists with `==`), so the document view must persist it as authored. This surface
+    // shares the board with the test-set view, so the gesture is the same one.
+    renderPanel();
+    await openBoard();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Move page 1\b/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Move later' }));
+    await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+
+    await waitFor(() => {
+      const call = graphql.mock.calls.find((c) => c[0].query === 'updateDocumentSections');
+      expect(call).toBeDefined();
+      expect(call![0].variables.sections[0].pageIds).toEqual(['2', '1']);
+    });
+  });
+
+  it('treats a pure reorder as a change, so Save is reachable', async () => {
+    renderPanel();
+    await openBoard();
+
+    expect(screen.getByRole('button', { name: /Save page grouping/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: /^Move page 1\b/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Move later' }));
+
+    expect(screen.getByRole('button', { name: /Save page grouping/i })).toBeEnabled();
+  });
+
   it('says the values are kept and the document is not reprocessed', async () => {
     renderPanel();
     await openBoard();

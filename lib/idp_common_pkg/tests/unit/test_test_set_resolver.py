@@ -3041,6 +3041,148 @@ class TestTestSetResolver:
         assert after["1"]["labelSource"] == "reviewed-human"
         assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
 
+    def test_a_custom_page_order_survives_the_save(self, labeling_env):
+        """The defect this pair of tests exists for.
+
+        ``page_indices`` records the section's reading order as well as its membership:
+        ``split_accuracy_with_order`` compares the two lists with ``==`` and half the
+        graded packet score is Kendall's Tau over each page's position
+        (``stickler_backend/doc_split.py:111``). This once called ``sorted()`` here, so a
+        reviewer's authored order was discarded on every save — and the value written was
+        still plausible-looking JSON, so nothing raised.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        # Page 1 read before page 0: a packet assembled out of order.
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [1, 0],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3, 2],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [1, 0]
+        assert after["2"]["split_document"]["page_indices"] == [3, 2]
+        # And the values are still preserved alongside the order.
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["1"]["labelSource"] == "reviewed-human"
+
+    def test_the_response_reports_the_order_actually_written(self, labeling_env):
+        """The client redraws its board from this, so a sorted response would show the
+        reviewer an order that is not what is on disk."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("Invoice", [0, 1, 2])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 0, 1],
+                        }
+                    ],
+                }
+            }
+        )
+
+        assert result["sections"][0]["pageIndices"] == [2, 0, 1]
+        assert self._read_sections(s3)["1"]["split_document"]["page_indices"] == [
+            2,
+            0,
+            1,
+        ]
+
+    def test_a_class_only_edit_does_not_normalise_an_existing_order(self, labeling_env):
+        """The worst shape of the bug: a reviewer who touched only the *class* would have
+        silently rewritten the section's page order as a side effect, changing a metric
+        they never went near."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [2, 0, 1])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 0, 1],
+                        }
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["document_class"]["type"] == "Invoice"
+        assert after["1"]["split_document"]["page_indices"] == [2, 0, 1]
+
+    def test_section_order_keys_on_the_lowest_page_not_the_first_listed(
+        self, labeling_env
+    ):
+        """Now that a section can carry a manual page order, ``min`` and ``[0]`` differ.
+
+        A section's place in the document is where it *starts*, so section ordering keys on
+        the lowest page. Keying on the first listed page would let a within-section reorder
+        silently renumber the sections around it.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        # Reads page 3 first, but still starts at page 2.
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3, 2],
+                        },
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1],
+                        },
+                    ],
+                }
+            }
+        )
+
+        # FieldTicket still comes first: it starts at page 0.
+        assert [s["documentClass"] for s in result["sections"]] == [
+            "FieldTicket",
+            "Invoice",
+        ]
+
     def test_sections_are_renumbered_so_ids_agree_with_page_order(self, labeling_env):
         """Consumers take a section's group index from its position in a list.
 

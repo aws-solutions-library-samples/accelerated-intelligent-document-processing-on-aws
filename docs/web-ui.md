@@ -121,9 +121,21 @@ set, see
 
 **Document Sections → Edit page grouping** opens a board with every section side by
 side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
-to** menu — the keyboard and screen-reader route to the same operation. Shift-click
-selects a run of pages so they move together, which is usually what a wrong split
-needs.
+to section** menu — the keyboard and screen-reader route to the same operation.
+Shift-click selects a run of pages so they move together, which is usually what a wrong
+split needs.
+
+Pages within a section can also be **reordered**: drop a page onto another to place it
+immediately before that one, or use **Order within this section → Move earlier / Move
+later**. Dropping onto the column's empty space instead places the page in document order,
+so an ordinary move does not create a custom order by accident. It is the same board as
+the annotate view, so the gesture is identical — see
+[Page order within a section](./test-studio.md#page-order-within-a-section), which also
+covers why order matters for scoring.
+
+One caveat specific to this surface: extraction sorts a section's pages before reading
+them, so reordering here does not change what the pipeline extracts. It is stored and it
+matters if the document is used as the prediction side of an evaluation.
 
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
@@ -136,6 +148,7 @@ That is the difference between the two routes, and it is the reason both exist:
 | | Edit page grouping | Edit Mode → Process Changes |
 |---|---|---|
 | Page assignments | drag and drop | comma-separated text |
+| Page order within a section | drag, or Move earlier / later | order of the ids you type |
 | Section ids | not editable | editable |
 | Extracted values | **kept** | cleared and regenerated |
 | Reprocessing | none | the document is requeued |
