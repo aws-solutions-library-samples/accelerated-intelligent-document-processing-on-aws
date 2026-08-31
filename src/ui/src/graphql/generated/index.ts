@@ -925,6 +925,7 @@ export const getTestSets = /* GraphQL */ `
       labelJobStatus
       status
       createdAt
+      updatedAt
       error
       documentClassType
       configVersion

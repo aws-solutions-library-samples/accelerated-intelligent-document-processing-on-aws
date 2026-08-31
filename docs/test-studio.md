@@ -426,6 +426,142 @@ components/
     └── index.js
 ```
 
+## Lifecycle flows: online vs offline paths
+
+Test Studio has two subsystems: **test-set management** (creating, updating,
+and validating the folder of documents you run against) and **test-run
+management** (starting a run, tracking it, and aggregating its metrics).
+Each has an **online** path (the user is in the UI and the UI drives every
+transition through GraphQL) and an **offline** path (something happens
+outside the UI — a direct S3 edit, or a CLI command — and the workflow has
+to catch up later).
+
+The two paths are not equivalent. What advances *without* a user watching
+is worth knowing.
+
+### 1. Test-set management
+
+**1a. Online — created and managed from the UI**
+
+```mermaid
+flowchart LR
+    User([User in Test Studio]) --> UI[UI TestSets page]
+    UI -->|"Create test set → Upload zip"| Zip["S3 ObjectCreated<br/>(.zip filter)"]
+    UI -->|"Add documents → From bucket"| SQS[SQS TestSetFileCopyQueue]
+    UI -->|"3s fast poll<br/>60s discovery poll<br/>Refresh button"| Resolver{{"getTestSets<br/>resolver"}}
+
+    Zip --> ZipLambda[TestSetZipExtractor]
+    SQS --> Copier[TestSetFileCopier]
+    ZipLambda -->|"write files + <br/>put_item"| Both[(TestSetBucket +<br/>TrackingTable)]
+    Copier -->|"copy files + <br/>update_item"| Both
+    Resolver -->|"reconcile row"| Both
+```
+
+Every write into DDB happens through a Lambda that the UI triggered directly
+(zip upload, add-documents), or through the `getTestSets` resolver the UI
+polls. There is no gap: the row is authoritative and current the moment the
+UI shows it, because the UI's own actions caused the writes.
+
+**1b. Offline — someone edited S3 directly**
+
+```mermaid
+flowchart LR
+    Actor([User or CLI]) -->|"aws s3 cp<br/>into <prefix>/input/<br/>or <prefix>/baseline/"| Bucket[(TestSetBucket)]
+    Bucket -. no S3 event<br/>no schedule .-> Nothing((nothing fires))
+    Bucket -. row is stale<br/>until next getTestSets .-> DDB[(TrackingTable)]
+
+    NextCall{{Next getTestSets call<br/>UI poll / Refresh / CLI auto-detect}} --> Resolver[Reconcile<br/>_reconcile_test_set_tracking_entry]
+    Resolver -->|"if signature changed:<br/>update fileCount / status /<br/>error / updatedAt"| DDB
+    Resolver -->|"if new folder:<br/>put_item"| DDB
+    Resolver -->|"if S3 prefix gone:<br/>delete_item"| DDB
+```
+
+Nothing fires when the S3 object appears — the bucket's only event notification
+is `.zip` → `TestSetZipExtractor`, and a raw `input/` or `baseline/` write
+matches nothing. The DDB row **is stale** until the next `getTestSets` call,
+whoever makes it: a UI page load, the fast/discovery polls, the Refresh
+button, or `idp-cli run-inference` (which invokes the resolver before every
+run for auto-detect).
+
+That resolver call is what runs the reconcile — new folder gets registered,
+existing folder gets `fileCount`/`status`/`error` refreshed, and a folder
+that has been deleted from S3 gets its row removed. A `contentSignature`
+short-circuit means unchanged folders cost no DDB write.
+
+**Latency caveat.** Each Lambda container memoizes a per-prefix TTL (30 s
+by default) so the UI's 3 s fast poll doesn't repeat two paginated
+`list_objects_v2` calls per registered set every tick. **The TTL is
+server-side and Refresh does not bypass it** — after a direct-S3 add, the
+UI can show a stale `fileCount` for up to 30 s. In practice the discovery
+poll and any second-tab reload land inside the window, so the delay is
+usually invisible; if you're staring at the row after a manual S3 write
+and want the new count immediately, wait one TTL and try again.
+
+### 2. Test-run management
+
+**2a. Online — started from Test Studio**
+
+```mermaid
+flowchart LR
+    User([User in Test Studio]) -->|"Start Test Run"| Runner[TestRunnerFunction]
+    Runner -->|"put_item testrun#<br/>Status=QUEUED"| RunDDB[(TrackingTable)]
+    Runner --> WF[Document processing workflow]
+    WF -->|"docs finish"| RunDDB
+
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll --> AggQ[SQS aggregation queue]
+    AggQ --> Agg[Metrics aggregation Lambda]
+    Agg -->|"write testRunResult"| RunDDB
+    RunDDB -->|"next poll ⇒<br/>badge clears"| UI[UI]
+```
+
+The tab that started the run stays on Test Studio, so the 5-second
+`getTestRunStatus` poll runs against the row. When the workflow finishes and
+every document has terminated, that poll — **not** the workflow — transitions
+`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
+transitions happen in real time while the user watches.
+
+**2b. Offline — started from the CLI (`idp-cli run-inference`)**
+
+```mermaid
+flowchart LR
+    CLI([idp-cli run-inference]) -->|"direct Lambda invoke"| Runner[TestRunnerFunction]
+    Runner -->|"put_item testrun#<br/>Status=QUEUED"| RunDDB[(TrackingTable)]
+    Runner --> WF[Document processing workflow]
+    WF -->|"docs finish"| RunDDB
+    CLI -. exits .-> Nothing((no poller))
+
+    WF -. no event / no rule .-> Gap[/"Status stays QUEUED<br/>testRunResult never written"/]
+
+    Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
+    UI -->|"per-row getTestRunStatus poll"| RunDDB
+    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    AggQ --> Agg[Aggregation]
+    Agg -->|"write testRunResult"| RunDDB
+    RunDDB -.->|"badge clears"| UI
+```
+
+The CLI creates the run and walks away. The workflow processes every
+document, but **nothing writes to the aggregate `testrun#` row** — Test
+Studio has no event listener, no scheduled Lambda, and no completion hook
+that transitions the run. `Status` stays at `QUEUED` and `testRunResult`
+never appears, so the row's UI display sits at `EVALUATING` until a person
+opens Test Studio.
+
+When that finally happens, the Executions page mounts, the per-row
+`getTestRunStatus` poll fires against every non-terminal row, and each one
+does the deferred transition + aggregation enqueue in turn. That is why a
+hands-off CLI loop that produces test runs while no one is watching shows a
+wall of `EVALUATING` badges the next time an operator logs in — they clear
+over the next few minutes as aggregation catches up. It is a design choice
+(the alternative was to fan out multi-minute Lambda invocations on every
+Executions page load), not a defect.
+
+If truly no-UI-needed catch-up is required, a Test-Studio-side completion
+listener could enqueue into the aggregation queue directly. That is not
+shipped today.
+
 ## Test Sets
 
 ### Creating Test Sets
