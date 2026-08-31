@@ -9,5 +9,6 @@ query GetTestRuns($timePeriodHours: Int, $startDateTime: AWSDateTime, $endDateTi
     completedAt
     context
     configVersion
+    configRevision
   }
 }

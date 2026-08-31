@@ -246,7 +246,8 @@ def handler(event, context):
     # Load configuration and initialize the OCR service using new simplified pattern
     # Use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
-    config = get_config(as_model=True, version=config_version)
+    config_revision = getattr(document, 'config_revision', None)
+    config = get_config(as_model=True, version=config_version, revision=config_revision)
     backend = config.ocr.backend
     
     logger.info(f"Initializing OCR with backend: {backend}")

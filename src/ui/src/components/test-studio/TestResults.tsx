@@ -1452,7 +1452,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Box>
           {Boolean(results.configVersion) && (
             <Box>
-              <Box variant="awsui-key-label">Config Version</Box>
+              <Box variant="awsui-key-label">Config Profile</Box>
               <Box fontSize="heading-l">{formatConfigVersionLink(results.configVersion as string, versions)}</Box>
             </Box>
           )}

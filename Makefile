@@ -269,7 +269,7 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
-TARGET_BRANCH ?= main
+TARGET_BRANCH ?= develop
 typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)

@@ -220,13 +220,13 @@ const DocumentList = (): React.JSX.Element => {
     }
   };
 
-  const handleReprocessConfirm = async (version?: string) => {
+  const handleReprocessConfirm = async (version?: string, revision?: number) => {
     const objectKeys = (collectionProps.selectedItems as MappedDocument[]).map((item) => item.objectKey);
-    logger.debug('Reprocessing documents', objectKeys, 'with version', version);
+    logger.debug('Reprocessing documents', objectKeys, 'with version', version, 'r', revision);
 
     setIsReprocessLoading(true);
     try {
-      const result = await reprocessDocuments(objectKeys, version);
+      const result = await reprocessDocuments(objectKeys, version, revision);
       logger.debug('Reprocess result', result);
 
       // Close the modal

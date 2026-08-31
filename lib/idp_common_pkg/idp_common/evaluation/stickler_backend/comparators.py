@@ -22,7 +22,11 @@ registry raises on duplicates.
 import json
 import logging
 import re
+import threading
+from collections import OrderedDict
 from typing import Any, Optional, Tuple
+
+from idp_common.evaluation.contract import _is_match_true
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,21 @@ logger = logging.getLogger(__name__)
 _VERDICT_CACHE_MAX = 10_000
 
 
+# Prefixes matching every error-path ``reason`` string ``compare_llm``
+# emits (see the ``error_msg = ...`` assignments at approximately lines
+# 472 / 558 / 596 / 602 below). ``LLMComparator.compare`` skips caching
+# any verdict whose reason starts with one of these — a transient
+# Bedrock throttle / 5xx / JSON-parse error must not poison the (v1, v2)
+# pair for the warm container's lifetime. Update this tuple if a new
+# ``error_msg`` shape is added in compare_llm.
+_TRANSIENT_ERROR_PREFIXES = (
+    "Task prompt formatting error",
+    "Error parsing LLM response as JSON",
+    "Unexpected error processing LLM response",
+    "Error in LLM evaluation for ",
+)
+
+
 def _trivially_equal(a: str, b: str) -> bool:
     """True when two rendered values differ only by case or whitespace.
 
@@ -44,6 +63,22 @@ def _trivially_equal(a: str, b: str) -> bool:
     abbreviation, word order, synonymy) still reaches the model.
     """
     return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
+def _cache_key(value1: Any, value2: Any) -> Tuple[str, str]:
+    """Build a stable cache key for a (value1, value2) pair.
+
+    Uses ``json.dumps(sort_keys=True, default=str)`` so semantically-
+    identical dicts hash to the same key regardless of insertion order
+    (dict repr reflects insertion order in Py3.7+, which would cause
+    cache misses precisely where Hungarian matching for structured
+    lists needs hits). Non-JSON-serializable values fall through
+    ``default=str`` to their string form; the pair still keys stably.
+    """
+    return (
+        json.dumps(value1, sort_keys=True, default=str),
+        json.dumps(value2, sort_keys=True, default=str),
+    )
 
 
 # Check if Stickler is available
@@ -153,10 +188,22 @@ class LLMComparator(BaseComparator):
         # lifetime. Structured-list matching compares the same value pairs
         # repeatedly across the assignment matrix and again when scoring the
         # matched pairs, and the judge is deterministic at temperature 0, so a
-        # repeat is a wasted round trip. Bounded because comparator instances are
-        # cached per (model, field) for the life of a warm Lambda container, which
-        # processes many documents — an unbounded dict would be a slow leak.
-        self._verdict_cache: dict[Tuple[str, str], float] = {}
+        # repeat is a wasted round trip.
+        #
+        # Bounded, LRU-evicting, thread-safe:
+        # * Bounded because comparator instances are cached per (model, field)
+        #   for the life of a warm Lambda container, which processes many
+        #   documents — an unbounded dict would be a slow leak.
+        # * LRU rather than "insert until full, then never evict" so a warm
+        #   Lambda that filled the cache on one big document still caches
+        #   later documents' pairs (finding from code review — earlier
+        #   design froze the cache at 10 000 entries for the container's
+        #   lifetime).
+        # * Locked because Stickler's Hungarian matching drives ``compare``
+        #   from a thread pool, and OrderedDict's move_to_end + popitem +
+        #   __setitem__ combo used below is a three-op critical section.
+        self._verdict_cache: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+        self._verdict_cache_lock = threading.Lock()
 
         logger.debug(
             f"Initialized LLMComparator with model={self.llm_config['model']}, threshold={self.threshold}"
@@ -176,11 +223,22 @@ class LLMComparator(BaseComparator):
             Similarity score between 0.0 and 1.0
         """
         try:
-            cache_key = (repr(value1), repr(value2))
-            if cache_key in self._verdict_cache:
-                return self._verdict_cache[cache_key]
+            # Cache key uses JSON with ``sort_keys=True`` (not ``repr``)
+            # so semantically-identical dicts from different JSON parses
+            # hash to the SAME key — dict repr reflects insertion order
+            # in Py3.7+, and Hungarian matching for structured lists
+            # (the raison d'être of this cache) cross-compares dicts
+            # whose key order may differ between the two sides. Fall
+            # back to ``repr`` for non-JSON-serializable values.
+            cache_key = _cache_key(value1, value2)
+            with self._verdict_cache_lock:
+                if cache_key in self._verdict_cache:
+                    self._verdict_cache.move_to_end(cache_key)
+                    return self._verdict_cache[cache_key]
 
             # Call the existing LLM comparison logic, WITH this field's context.
+            # Bedrock invocation is outside the lock — locking across a
+            # network call would serialize the Hungarian-matching thread pool.
             matched, score, reason = compare_llm(
                 expected=value1,
                 actual=value2,
@@ -194,8 +252,34 @@ class LLMComparator(BaseComparator):
                 f"LLM comparison: matched={matched}, score={score:.3f}, reason='{reason}'"
             )
 
-            if len(self._verdict_cache) < _VERDICT_CACHE_MAX:
-                self._verdict_cache[cache_key] = score
+            # Only cache successful verdicts — ``compare_llm`` returns
+            # ``(False, 0.0, err_msg)`` on Bedrock throttle / 5xx / JSON
+            # parse errors, and caching that permanently would freeze the
+            # value pair at 0.0 for the warm container's lifetime after a
+            # single transient failure. Prefixes taken from the four
+            # actual ``error_msg = ...`` sites in ``compare_llm`` below
+            # (lines 472/558/596/602). Update ``_TRANSIENT_ERROR_PREFIXES``
+            # if a new error path is added.
+            # Guard against a Stickler variant emitting ``reason=None``
+            # from ``compare_llm`` — plain ``reason.startswith(...)``
+            # would crash and the outer except would return 0.0
+            # without caching, so every retry re-invokes Bedrock
+            # and re-crashes. Coerce to str first.
+            reason_str = reason if isinstance(reason, str) else ""
+            is_transient_error = any(
+                reason_str.startswith(p) for p in _TRANSIENT_ERROR_PREFIXES
+            )
+            if not is_transient_error:
+                with self._verdict_cache_lock:
+                    # Recheck after acquiring the lock: another thread may
+                    # have scored the same pair while we were waiting on
+                    # Bedrock.
+                    if cache_key in self._verdict_cache:
+                        self._verdict_cache.move_to_end(cache_key)
+                    else:
+                        if len(self._verdict_cache) >= _VERDICT_CACHE_MAX:
+                            self._verdict_cache.popitem(last=False)
+                        self._verdict_cache[cache_key] = score
             return score
 
         except Exception as e:
@@ -313,7 +397,22 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         logger.debug(f"Document class: {doc_class}")
         logger.debug(f"Attribute description: {desc}")
 
-        # Handle None values
+        # Two renderings per side:
+        # * ``expected_str`` / ``actual_str`` — bare ``str(v)`` for the
+        #   trivial-equal short-circuit below (case/whitespace-normalized
+        #   equality, works on plain strings without JSON quoting/spacing
+        #   getting in the way).
+        # * ``expected_display`` / ``actual_display`` — JSON-encoded for
+        #   the LLM prompt so ``None`` renders as bare ``null`` and a
+        #   legitimate string ``"None"`` renders quoted, giving the
+        #   judge a distinct rendering for each. Any single string
+        #   sentinel would collide with the same-named string value
+        #   (finding from #625 review — ``<null>`` sentinel could
+        #   itself be a legitimate ground-truth string).
+        # The None-check above short-circuits before ANY comparison
+        # touches these strings, so the None/"None" ambiguity that
+        # ``_trivially_equal`` could otherwise fall for isn't reachable
+        # — the split renderings are for prompt clarity only.
         expected_str = str(expected) if expected is not None else "None"
         actual_str = str(actual) if actual is not None else "None"
 
@@ -329,7 +428,25 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
         # correctly. Deliberately conservative: case, surrounding and repeated
         # whitespace only — no punctuation or abbreviation folding, since deciding
         # those is exactly the judge's job.
-        if _trivially_equal(expected_str, actual_str):
+        #
+        # Compare on the RAW values (not the display strings): the display path
+        # renders ``None`` as the literal ``"None"`` for the LLM prompt, so
+        # ``expected=None`` vs ``actual="None"`` (the string) would otherwise
+        # short-circuit as a match — they are NOT equal, one is null and the
+        # other is a literal string (finding from code review: real bug on any
+        # document whose ground truth or extraction emits the string
+        # ``"None"``).
+        if expected is None or actual is None:
+            if expected is None and actual is None:
+                return (
+                    True,
+                    1.0,
+                    "Both values are None (correctly-empty; no LLM call required).",
+                )
+            # Exactly one side is None: not equal, don't short-circuit — let
+            # the judge decide (some comparators still want to reason about
+            # partial-null matches).
+        elif _trivially_equal(expected_str, actual_str):
             return (
                 True,
                 1.0,
@@ -337,13 +454,25 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                 "(no LLM call required).",
             )
 
+        # JSON-encoded display for the LLM prompt so ``None`` renders as
+        # bare ``null`` and a legitimate string ``"None"`` renders quoted,
+        # giving the judge a distinct rendering for each. Computed AFTER
+        # the None / trivial-equal short-circuits above so a
+        # non-JSON-serializable value (Decimal, datetime, Pydantic
+        # BaseModel, set) can never crash a matching pair: values that
+        # short-circuit as matched never reach this line, and
+        # ``default=str`` handles the residual non-serializable types
+        # for the LLM prompt itself.
+        expected_display = json.dumps(expected, default=str)
+        actual_display = json.dumps(actual, default=str)
+
         # Create task_placeholders dictionary with all possible placeholders
         task_placeholders = {
             "DOCUMENT_CLASS": doc_class,
             "ATTRIBUTE_NAME": name,
             "ATTRIBUTE_DESCRIPTION": desc,
-            "EXPECTED_VALUE": expected_str,
-            "ACTUAL_VALUE": actual_str,
+            "EXPECTED_VALUE": expected_display,
+            "ACTUAL_VALUE": actual_display,
         }
 
         try:
@@ -410,7 +539,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                         logger.info(
                             f"LLM evaluation for {name} (from code block): match={match_value}, score={score_value}, reason={reason}"
                         )
-                        return bool(match_value), float(score_value), reason
+                        return _is_match_true(match_value), float(score_value), reason
                 except json.JSONDecodeError:
                     # This code block wasn't valid JSON, try next one
                     continue
@@ -429,7 +558,11 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                             logger.info(
                                 f"LLM evaluation for {name}: match={match_value}, score={score_value}, reason={reason}"
                             )
-                            return bool(match_value), float(score_value), reason
+                            return (
+                                _is_match_true(match_value),
+                                float(score_value),
+                                reason,
+                            )
                     except json.JSONDecodeError:
                         # This particular block wasn't valid JSON, try next one
                         continue
@@ -443,7 +576,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
             logger.info(
                 f"LLM evaluation for {name}: match={match_value}, score={score_value}, reason={reason}"
             )
-            return bool(match_value), float(score_value), reason
+            return _is_match_true(match_value), float(score_value), reason
         except json.JSONDecodeError as e:
             error_msg = f"Error parsing LLM response as JSON: {str(e)}"
             logger.error(error_msg)
@@ -472,7 +605,7 @@ Respond ONLY with the JSON and nothing else.  Here's the exact format:
                     logger.info(
                         f"LLM evaluation for {name} (extracted from text): match={match_value}, score={score_value}"
                     )
-                    return bool(match_value), float(score_value), reason
+                    return _is_match_true(match_value), float(score_value), reason
             except Exception as extract_error:
                 logger.error(
                     f"Failed to extract values from malformed response: {str(extract_error)}"

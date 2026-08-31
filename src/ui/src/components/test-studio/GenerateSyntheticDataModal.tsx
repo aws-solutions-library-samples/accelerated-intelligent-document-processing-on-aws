@@ -4,7 +4,7 @@
 /**
  * Modal shell for synthetic generation, serving the Schema Builder deep-link
  * (`?generate=1&version=…&className=…`) that lands directly on the form with a
- * preselected config version and class. The create-test-set wizard is the normal
+ * preselected configuration profile and class. The create-test-set wizard is the normal
  * entry point; both render the same fields via useGenerateSyntheticForm.
  */
 

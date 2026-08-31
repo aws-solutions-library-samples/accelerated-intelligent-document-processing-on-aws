@@ -101,6 +101,11 @@ FIELD_ALIASES: Dict[str, str] = {
     "getDocumentVersion": "compareDocumentVersions",
     "listDocumentVersions": "compareDocumentVersions",
     # deleteConfigVersion (ConfigurationResolverFunction)
+    "deleteConfigProfileRevision": "deleteConfigVersion",
+    "getConfigProfileRevision": "deleteConfigVersion",
+    "labelConfigProfileRevision": "deleteConfigVersion",
+    "listConfigProfileRevisions": "deleteConfigVersion",
+    "restoreConfigProfileRevision": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",
