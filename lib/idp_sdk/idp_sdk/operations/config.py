@@ -6,6 +6,7 @@
 import logging
 from typing import Optional
 
+from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
 from idp_sdk.models import (
     ConfigActivateResult,
@@ -189,6 +190,8 @@ class ConfigOperation:
         format: str = "full",
         pattern: Optional[str] = None,
         config_version: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> ConfigDownloadResult:
         """Download configuration from a deployed IDP stack.
@@ -198,12 +201,15 @@ class ConfigOperation:
             output: Optional output file path
             format: Format type ('full' or 'minimal')
             pattern: Pattern override
-            config_version: Configuration version to download (default: active version)
+            config_version: Configuration profile to download (default: active version)
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             **kwargs: Additional parameters
 
         Returns:
             ConfigDownloadResult with downloaded configuration
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         import os
 
         import yaml
@@ -281,20 +287,24 @@ class ConfigOperation:
     def upload(
         self,
         config_file: str,
-        config_version: str,
+        config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
         validate: bool = True,
         pattern: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> ConfigUploadResult:
         """Upload a configuration file to a deployed IDP stack.
 
         Args:
             config_file: Path to configuration file
-            config_version: Configuration version to upload to (e.g., "default", "v1", "v2").
+            config_version: Configuration profile to upload to (e.g., "default", "v1", "v2").
                 Use "default" to update the base default configuration.
                 If the version doesn't exist, it will be created.
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override
             validate: Validate before uploading
             pattern: Pattern for validation
@@ -304,6 +314,9 @@ class ConfigOperation:
         Returns:
             ConfigUploadResult with upload status
         """
+        config_version = resolve_config_profile(
+            config_profile, config_version, required=True
+        )
         import json
         import os
 
@@ -438,8 +451,10 @@ class ConfigOperation:
 
     def activate(
         self,
-        config_version: str,
+        config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> ConfigActivateResult:
         """Activate a configuration version in a deployed IDP stack.
@@ -448,13 +463,18 @@ class ConfigOperation:
         before activation (matches CLI and Web UI behavior).
 
         Args:
-            config_version: Configuration version to activate
+            config_version: Configuration profile to activate
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override
             **kwargs: Additional parameters
 
         Returns:
             ConfigActivateResult with typed activation status and BDA sync details
         """
+        config_version = resolve_config_profile(
+            config_profile, config_version, required=True
+        )
         import os
 
         name = self._client._require_stack(stack_name)
@@ -589,20 +609,27 @@ class ConfigOperation:
 
     def delete(
         self,
-        config_version: str,
+        config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> ConfigDeleteResult:
         """Delete a configuration version from a deployed IDP stack.
 
         Args:
-            config_version: Configuration version to delete
+            config_version: Configuration profile to delete
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override
             **kwargs: Additional parameters
 
         Returns:
             ConfigDeleteResult with typed deletion status
         """
+        config_version = resolve_config_profile(
+            config_profile, config_version, required=True
+        )
         import os
 
         name = self._client._require_stack(stack_name)
@@ -629,6 +656,8 @@ class ConfigOperation:
         mode: str = "replace",
         config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> ConfigSyncBdaResult:
         """Synchronize document class schemas between IDP configuration and BDA blueprints.
@@ -642,13 +671,16 @@ class ConfigOperation:
                 ``'bda_to_idp'``, or ``'idp_to_bda'``.
             mode: Sync mode — ``'replace'`` (default, full alignment) or
                 ``'merge'`` (additive, don't delete).
-            config_version: Configuration version to sync (default: active version).
+            config_version: Configuration profile to sync (default: active version).
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
             **kwargs: Additional parameters.
 
         Returns:
             ConfigSyncBdaResult with sync status and details.
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         import os
 
         name = self._client._require_stack(stack_name)

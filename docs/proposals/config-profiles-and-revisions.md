@@ -65,7 +65,7 @@ Concrete consequences in the current code:
 | **Configuration Profile** (UI: "Profile") | The named entity that exists today (`default`, `Production`, `lending`). The RBAC object, the document partition, the activation target. |
 | **Revision** (`r7`) | An immutable numbered snapshot of one profile's configuration. Cut on every save. |
 | **Configuration** | Unchanged — the *content*: OCR/classification/extraction/assessment settings, classes, prompts. What `get_configuration()` returns and the editor form edits. |
-| ~~Configuration version~~ | Retired from UI and docs. Retained as a wire/DB name (`ConfigVersion`, `versionName`, `--config-version`, `allowedConfigVersions`) for compatibility. |
+| ~~Configuration version~~ | Retired from UI and docs. Retained as a wire/DB name (`ConfigVersion`, `versionName`, `allowedConfigVersions`) for compatibility, and as an accepted CLI/SDK alias (`--config-version`, `config_version=`) alongside the new `--config-profile` / `config_profile=`. |
 
 Naming rules:
 

@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
     IDPConfigurationError,
     IDPProcessingError,
@@ -54,6 +55,8 @@ class BatchOperation:
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
         context: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Process multiple documents through the IDP pipeline.
@@ -72,6 +75,8 @@ class BatchOperation:
             number_of_files: Limit number of files to process
             config_path: Path to custom configuration file
             config_version: Configuration Profile to use for processing
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             config_revision: Optional revision of that profile. Omit to process
                 under the profile's current configuration.
             context: Context for test set processing
@@ -80,6 +85,7 @@ class BatchOperation:
         Returns:
             BatchProcessResult with batch processing information
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         from idp_sdk._core.batch_processor import BatchProcessor
 
         name = self._client._require_stack(stack_name)
@@ -211,9 +217,12 @@ class BatchOperation:
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
         context: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Deprecated: Use process() instead."""
+        config_version = resolve_config_profile(config_profile, config_version)
         import warnings
 
         warnings.warn(

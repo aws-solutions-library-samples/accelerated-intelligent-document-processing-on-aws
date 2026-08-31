@@ -134,8 +134,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 | `--stack-name` | Target CloudFormation stack. **Omit for local mode** (print schema, no save). |
 | `--class-name` | Document class name to use as the schema `$id` / document type. |
 | `--field-hint` | A field the schema must include. Repeatable: `--field-hint X --field-hint Y`. |
-| `--config-version` | Existing config version to source catalog classes from / merge the new class into. |
-| `--target-version` | Name of the config version to create (default: `bootstrap-<class>`). |
+| `--config-profile` (alias: `--config-version`) | Existing configuration profile to source catalog classes from / merge the new class into. |
+| `--target-profile` (alias: `--target-version`) | Name of the configuration profile to create (default: `bootstrap-<class>`). |
 | `--count`, `-c` | Number of synthetic documents to generate (default: `3`). |
 | `--threshold` | Generation quality threshold, 1–10 (default: `7`). |
 | `--augment` | Apply scan/fax-style image augmentation to generated documents. |

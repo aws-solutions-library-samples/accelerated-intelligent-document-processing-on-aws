@@ -18,8 +18,10 @@ one of those. The vocabulary is now split:
 | **Configuration Profile** | The named entity: `default`, `Production`, `lending`. The access-control unit, the document partition, and what you activate. |
 | **Revision** (`r7`) | An immutable numbered snapshot of one profile's configuration, cut on every save. |
 
-API, CLI, and stored field names are unchanged for compatibility —
-`getConfigVersions`, `versionName`, `--config-version`, `ConfigVersion`, and
-`allowedConfigVersions` all still refer to **profiles**.
+API and stored field names are unchanged for compatibility —
+`getConfigVersions`, `versionName`, `ConfigVersion`, and `allowedConfigVersions`
+all still refer to **profiles**. The CLI and SDK accept `--config-profile` /
+`config_profile=` as well as `--config-version` / `config_version=`; both set the
+same value, and the older spelling is kept for backward compatibility.
 
 This stub remains so existing links and bookmarks do not break.

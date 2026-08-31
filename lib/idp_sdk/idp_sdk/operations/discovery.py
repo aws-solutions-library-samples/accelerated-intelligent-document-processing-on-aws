@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPConfigurationError, IDPResourceNotFoundError
 from idp_sdk.models.discovery import (
     AutoDetectResult,
@@ -65,6 +66,8 @@ class DiscoveryOperation:
         class_name_hint: Optional[str] = None,
         auto_detect: bool = False,
         model_id: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> "DiscoveryResult | DiscoveryBatchResult":
         """Run discovery on a single document to generate a document class schema.
@@ -77,7 +80,9 @@ class DiscoveryOperation:
         Args:
             document_path: Local path to the document file (PDF, PNG, JPG, TIFF)
             ground_truth_path: Optional local path to a JSON ground truth file.
-            config_version: Configuration version to save to (stack mode only).
+            config_version: Configuration profile to save to (stack mode only).
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
             page_range: Optional page range string (e.g., "1-3") to extract
                 specific pages from a PDF before discovery.
@@ -100,6 +105,7 @@ class DiscoveryOperation:
         Raises:
             FileNotFoundError: If the document or ground truth file doesn't exist.
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         doc_path = Path(document_path)
         if not doc_path.exists():
             raise FileNotFoundError(f"Document not found: {document_path}")
@@ -189,6 +195,8 @@ class DiscoveryOperation:
         config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
         model_id: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
     ) -> DiscoveryBatchResult:
         """Discover multiple document classes from page ranges in a single PDF.
 
@@ -201,7 +209,9 @@ class DiscoveryOperation:
                 and optional 'label' (str) for class name hint.
                 Example: [{"start": 1, "end": 2, "label": "W2 Form"},
                           {"start": 3, "end": 5, "label": "Invoice"}]
-            config_version: Configuration version to save to (stack mode only).
+            config_version: Configuration profile to save to (stack mode only).
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
             model_id: Optional Bedrock model ID override. Applied to every
                 per-range discovery call.
@@ -209,6 +219,7 @@ class DiscoveryOperation:
         Returns:
             DiscoveryBatchResult with one result per page range.
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         doc_path = Path(document_path)
         if not doc_path.exists():
             raise FileNotFoundError(f"Document not found: {document_path}")
@@ -662,6 +673,8 @@ class DiscoveryOperation:
         progress_callback=None,
         stack_name: Optional[str] = None,
         region: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
     ) -> "MultiDocDiscoveryResult":
         """Run multi-document discovery on a collection of documents.
 
@@ -681,7 +694,9 @@ class DiscoveryOperation:
                 generation. Default: ``us.anthropic.claude-sonnet-4-6``.
             save_to_config: If True, save discovered schemas to the stack's
                 config. Requires ``stack_name`` and ``config_version``.
-            config_version: Configuration version to save schemas to.
+            config_version: Configuration profile to save schemas to.
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             output_dir: Directory to write discovered JSON schemas to.
             progress_callback: Optional callable(step_name, step_data) for
                 pipeline status updates.
@@ -716,6 +731,7 @@ class DiscoveryOperation:
                 ...     config_version="v2",
                 ... )
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         # Validate parameters before attempting heavy import
         if not document_dir and not document_paths:
             raise ValueError("Either document_dir or document_paths must be provided.")
@@ -855,6 +871,8 @@ class DiscoveryOperation:
         config_version: Optional[str] = None,
         stack_name: Optional[str] = None,
         model_id: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> DiscoveryBatchResult:
         """Run discovery on multiple documents sequentially.
@@ -862,7 +880,9 @@ class DiscoveryOperation:
         Args:
             document_paths: List of local paths to document files.
             ground_truth_paths: Optional list of ground truth file paths.
-            config_version: Configuration version to save to.
+            config_version: Configuration profile to save to.
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
             model_id: Optional Bedrock model ID override. Applied to every
                 document in the batch.
@@ -870,6 +890,7 @@ class DiscoveryOperation:
         Returns:
             DiscoveryBatchResult with overall stats and per-document results.
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         if ground_truth_paths and len(ground_truth_paths) != len(document_paths):
             raise IDPConfigurationError(
                 f"ground_truth_paths length ({len(ground_truth_paths)}) "

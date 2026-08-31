@@ -1704,14 +1704,16 @@ def _process_impl(
     help="Limit number of files to process (for testing purposes)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to use for processing (e.g., v1, v2)",
+    "config_version",
+    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
     type=int,
     help=(
-        "Revision of --config-version to pin (e.g. 7). Omit to process under the "
+        "Revision of --config-profile to pin (e.g. 7). Omit to process under the "
         "profile's current configuration; pinning reproduces exactly what that "
         "revision recorded."
     ),
@@ -1937,14 +1939,16 @@ def reprocess(
     help="Limit number of files to process (for testing purposes)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to use for processing (e.g., v1, v2)",
+    "config_version",
+    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
     type=int,
     help=(
-        "Revision of --config-version to pin (e.g. 7). Omit to process under the "
+        "Revision of --config-profile to pin (e.g. 7). Omit to process under the "
         "profile's current configuration; pinning reproduces exactly what that "
         "revision recorded."
     ),
@@ -3842,8 +3846,10 @@ def stop_workflows(
     help="Destination prefix in input bucket (default: load-test)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to use for processing (default: active version)",
+    "config_version",
+    help="Configuration profile to use for processing (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def load_test(
@@ -4382,9 +4388,11 @@ def config_validate(
     help="Validate config before uploading (default: validate)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration profile to update (e.g., v1, v2). If version doesn't exist, it will be created.",
+    help="Configuration profile to update (e.g., v1, v2). If version doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
@@ -4463,7 +4471,7 @@ def config_upload(
                 f"[bold]Configuration version '{config_version}' {action}![/bold]"
             )
             console.print(
-                "Use --config-version parameter to process documents with this version."
+                "Use --config-profile to process documents with this profile."
             )
         else:
             console.print("[bold]Configuration is now active![/bold]")
@@ -4491,8 +4499,10 @@ def config_upload(
     help="Output format: 'full' (complete config) or 'minimal' (only differences from defaults)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version.",
+    "config_version",
+    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version. --config-version is the former name and still works.",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_download(
@@ -4552,9 +4562,11 @@ def config_download(
     help="CloudFormation stack name",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration profile to activate",
+    help="Configuration profile to activate; --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_activate(
@@ -4701,9 +4713,11 @@ def config_list(stack_name: str, region: str = None):
     help="CloudFormation stack name",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration profile to delete",
+    help="Configuration profile to delete; --config-version is the former name and still works",
 )
 @click.option(
     "--force",
@@ -4784,8 +4798,10 @@ def config_delete(
     help="Sync mode: 'replace' (full alignment) or 'merge' (additive, don't delete) (default: replace)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to sync (default: active version)",
+    "config_version",
+    help="Configuration profile to sync (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
@@ -4887,8 +4903,10 @@ def config_sync_bda(
     help="Path to JSON ground truth file(s). Auto-matched to documents by filename stem",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration profile to save the discovered schema to (default: active version)",
+    "config_version",
+    help="Configuration profile to save the discovered schema to (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 @click.option(
@@ -5433,9 +5451,11 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
     help="CloudFormation stack name (required for --save-to-config)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     default=None,
-    help="Configuration profile to save schemas to",
+    help="Configuration profile to save schemas to; --config-version is the former name and still works",
 )
 @click.option(
     "--save-to-config",
@@ -5504,7 +5524,7 @@ def multi_discover(
 
     if save_to_config and not config_version:
         console.print(
-            "[red]Error: --config-version is required when using --save-to-config[/red]"
+            "[red]Error: --config-profile is required when using --save-to-config[/red]"
         )
         sys.exit(1)
 
@@ -6339,12 +6359,16 @@ def abort_test_run(
     help="A field the schema must include. Repeatable: --field-hint X --field-hint Y",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Existing config version to source catalog classes from / merge into",
+    "config_version",
+    help="Existing configuration profile to source catalog classes from / merge into; --config-version is the former name and still works",
 )
 @click.option(
+    "--target-profile",
     "--target-version",
-    help="Name of the config version to create (default: bootstrap-<class>)",
+    "target_version",
+    help="Name of the configuration profile to create (default: bootstrap-<class>); --target-version is the former name and still works",
 )
 @click.option(
     "--count", "-c", default=3, show_default=True, help="Documents to generate"
