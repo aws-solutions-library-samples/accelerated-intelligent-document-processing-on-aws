@@ -15,7 +15,7 @@
  * and it is what makes this screen usable without a pointer.
  */
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -345,5 +345,95 @@ describe('PageGroupingEditor expand', () => {
     await userEvent.click(screen.getByRole('button', { name: /^Expand$/i }));
 
     expect(screen.queryByRole('button', { name: /^Expand$/i })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Two rendering-layer defects found by dragging on a real stack, not in jsdom.
+ *
+ * Both made the board "feel off" while every logic test above still passed, which is the
+ * point of keeping them in their own block: the move was always computed correctly, it
+ * was the *board* that misbehaved. jsdom can pin the ordering half directly. The overlay
+ * half is a layout property jsdom has no opinion about — it computes no scroll boxes and
+ * clips nothing — so what is pinned here is the invariant the fix rests on: the source
+ * card must not carry a transform, because a transformed child cannot escape the
+ * column's own `overflowY: auto`. The visible behaviour was verified in a browser.
+ */
+describe('PageGroupingEditor board stability', () => {
+  const SIX_PAGES = [1, 2, 3, 4, 5, 6].map((id) => ({ id, imageUri: `blob:page-${id}` }));
+  // Section 2 starts at page 3. Move page 1 into it and it starts at page 1, so a sort by
+  // first page would pull it left of section 1 — the reshuffle this block exists for.
+  const TWO_SECTIONS: GroupedSection[] = [
+    { sectionId: '1', documentClass: 'FieldTicket', pageIds: [1, 2] },
+    { sectionId: '2', documentClass: 'Invoice', pageIds: [3, 4, 5, 6] },
+  ];
+
+  const columnOrder = () =>
+    screen
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent?.trim())
+      .filter((t): t is string => Boolean(t));
+
+  it('does not reshuffle the columns when a move changes which section starts first', async () => {
+    renderEditor({ pages: SIX_PAGES, sections: TWO_SECTIONS });
+
+    expect(columnOrder()).toEqual(['Section 1', 'Section 2']);
+
+    await movePageTo(1, '2');
+
+    // Section 2 now owns page 1, so document order says it belongs first. It must still
+    // be rendered second: a column that swaps places under the cursor makes the next
+    // drag land somewhere the reviewer did not aim.
+    expect(columnOrder()).toEqual(['Section 1', 'Section 2']);
+  });
+
+  it('still saves sections in document order, however they are displayed', async () => {
+    const { onSave } = renderEditor({ pages: SIX_PAGES, sections: TWO_SECTIONS });
+
+    await movePageTo(1, '2');
+    await userEvent.click(screen.getByRole('button', { name: /Save grouping/i }));
+
+    // Holding the display steady must not leak into what is written: doc-split scoring
+    // takes a group's index from its list position, so the saved order is load-bearing.
+    expect((onSave.mock.calls[0][0] as GroupedSection[]).map((s) => s.sectionId)).toEqual(['2', '1']);
+  });
+
+  it('treats a move and its reverse as no change at all', async () => {
+    renderEditor({ pages: SIX_PAGES, sections: TWO_SECTIONS });
+
+    await movePageTo(1, '2');
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
+
+    await movePageTo(1, '1');
+
+    // Compared in canonical form, so returning to the original grouping disarms Save
+    // rather than offering a write that would bump provenance for nothing.
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeDisabled();
+  });
+
+  it('lifts the dragged page into an overlay outside the scrolling columns', async () => {
+    renderEditor({ pages: SIX_PAGES, sections: TWO_SECTIONS });
+
+    // The keyboard sensor is the one drag jsdom can actually start, and starting a drag
+    // is all this needs: the overlay either exists at that moment or it does not.
+    // jsdom has no scrollIntoView, and dnd-kit's KeyboardSensor calls it precisely
+    // because the page sits in a scrolling column — the same `overflow: auto` this fix is
+    // about. Without the stub the sensor throws and no drag ever starts.
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollIntoView, writable: true, configurable: true });
+
+    const handle = screen.getByLabelText('Page 1, drag to another section');
+    handle.focus();
+    // dnd-kit's KeyboardSensor matches on `event.code`, not `key`.
+    fireEvent.keyDown(handle, { key: ' ', code: 'Space' });
+    await waitFor(() => expect(document.body.querySelector('[data-page-grouping-overlay]')).toBeTruthy());
+
+    // Portaled to the body, so it is outside the column's `overflowY: auto` and the
+    // row's `overflowX: auto`. Rendered inside them, the page vanished at the column
+    // edge on every cross-section drag.
+    const overlay = document.body.querySelector('[data-page-grouping-overlay]');
+    expect(overlay).toBeTruthy();
+    expect(overlay!.closest('[data-page-grouping-columns]')).toBeNull();
+    expect(overlay!.textContent).toContain('Page 1');
   });
 });

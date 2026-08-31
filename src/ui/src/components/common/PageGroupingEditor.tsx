@@ -14,7 +14,22 @@
  * needing identical rules and identical UI. Validation lives in `section-grouping.ts`,
  * shared with the same two surfaces.
  *
- * ## Four decisions, each with a reason
+ * ## Six decisions, each with a reason
+ *
+ * **The dragged page rides a `DragOverlay`, not its own transform.** Each column scrolls
+ * its own pages (`overflowY: auto`) inside a row that scrolls sideways (`overflowX:
+ * auto`), and a transformed child is clipped by a scrolling ancestor. Moving the card in
+ * place therefore made it vanish the instant it left its own column — which is every
+ * cross-section drag, the only drag that does anything. The overlay is `position: fixed`
+ * and portaled to the body, so it is outside both clips; the source card stays put and
+ * dims to mark where the page came from.
+ *
+ * **Columns hold their position while editing; order settles on save.** Sections are
+ * stored in document order, because doc-split scoring takes a group's index from its list
+ * position. Applying that sort to the *live* board instead made columns swap places under
+ * the cursor: drop page 1 into the next section and that section now starts at page 1, so
+ * it sorts left and the board reshuffles mid-edit. The draft is sorted on open and again
+ * in `onSave`, and left alone in between.
  *
  * **Sections sit side by side, not stacked.** The hard part of a large packet is not
  * scroll length, it is that the page you are moving and the section you are moving it to
@@ -40,9 +55,12 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   DndContext,
   DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
   KeyboardSensor,
   PointerSensor,
   closestCenter,
@@ -105,6 +123,18 @@ const nextSectionId = (sections: GroupedSection[]): string => {
   return String((numeric.length > 0 ? Math.max(...numeric) : 0) + 1);
 };
 
+const CARD_WIDTH = 112;
+
+/** The thumbnail itself, with no drag wiring — shared by the card and the drag overlay. */
+const PageThumb = ({ page }: { page: GroupingPage }): React.JSX.Element =>
+  page.imageUri ? (
+    <img src={page.imageUri} alt={`Page ${page.id}`} style={{ width: '100%', display: 'block', borderRadius: '2px' }} />
+  ) : (
+    <Box textAlign="center" padding="s">
+      <Spinner />
+    </Box>
+  );
+
 /** A page thumbnail: selectable, draggable, and movable without dragging. */
 const PageCard = ({
   page,
@@ -123,7 +153,7 @@ const PageCard = ({
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
   onMove: (pageId: number, toSectionId: string) => void;
 }): React.JSX.Element => {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `page-${page.id}`,
     data: { pageId: page.id, fromSectionId: sectionId },
   });
@@ -135,13 +165,16 @@ const PageCard = ({
     <div
       ref={setNodeRef}
       style={{
-        transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+        /* No transform here on purpose: DragOverlay carries the page while it is in
+           flight, because a transformed child cannot escape this column's own
+           `overflowY: auto`. See the note at the top of the file. The card stays put
+           and dims, marking where the page came from. */
         opacity: isDragging ? 0.4 : 1,
         border: `2px solid ${isSelected ? '#0073bb' : '#d5dbdb'}`,
         borderRadius: '4px',
         padding: '4px',
         background: isSelected ? 'rgba(0, 115, 187, 0.06)' : '#ffffff',
-        width: '112px',
+        width: `${CARD_WIDTH}px`,
       }}
     >
       <div
@@ -154,13 +187,7 @@ const PageCard = ({
             : `Page ${page.id}, drag to another section`
         }
       >
-        {page.imageUri ? (
-          <img src={page.imageUri} alt={`Page ${page.id}`} style={{ width: '100%', display: 'block', borderRadius: '2px' }} />
-        ) : (
-          <Box textAlign="center" padding="s">
-            <Spinner />
-          </Box>
-        )}
+        <PageThumb page={page} />
       </div>
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
         {/* A checkbox rather than click-to-select: it is reachable by keyboard, it does
@@ -328,10 +355,13 @@ const PageGroupingEditor = ({
   onSave,
   onCancel,
 }: PageGroupingEditorProps): React.JSX.Element => {
+  // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
+  // at the top of the file.
   const [draft, setDraft] = useState<GroupedSection[]>(() => sortSectionsByFirstPage(sections));
   const [selectedPageIds, setSelectedPageIds] = useState<Set<number>>(new Set());
   const [lastTouchedPageId, setLastTouchedPageId] = useState<number | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [activePageId, setActivePageId] = useState<number | null>(null);
 
   // A small distance threshold so a click on the thumbnail is a click, not a 0px drag.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor));
@@ -339,8 +369,13 @@ const PageGroupingEditor = ({
   const pageById = useMemo(() => new Map(pages.map((p) => [p.id, p])), [pages]);
   const availablePageIds = useMemo(() => pages.map((p) => p.id), [pages]);
   const validation = useMemo(() => validateGrouping(draft, availablePageIds), [draft, availablePageIds]);
-  const isChanged = useMemo(() => JSON.stringify(sortSectionsByFirstPage(sections)) !== JSON.stringify(draft), [sections, draft]);
-  const ordered = useMemo(() => sortSectionsByFirstPage(draft), [draft]);
+  // Canonical form on both sides. Equivalent to comparing the raw draft today, but it
+  // stops being so the moment display order and stored order can diverge — which is now
+  // the case, since the board no longer re-sorts as you edit.
+  const isChanged = useMemo(
+    () => JSON.stringify(sortSectionsByFirstPage(sections)) !== JSON.stringify(sortSectionsByFirstPage(draft)),
+    [sections, draft],
+  );
 
   const toggleSelect = (pageId: number, viaShift: boolean) => {
     setSelectedPageIds((prev) => {
@@ -380,7 +415,11 @@ const PageGroupingEditor = ({
     setLastTouchedPageId(null);
   };
 
+  const handleDragStart = ({ active }: DragStartEvent) =>
+    setActivePageId((active.data.current as { pageId?: number } | undefined)?.pageId ?? null);
+
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    setActivePageId(null);
     if (!over) return;
     const pageId = (active.data.current as { pageId?: number } | undefined)?.pageId;
     const toSectionId = (over.data.current as { sectionId?: string } | undefined)?.sectionId;
@@ -394,6 +433,11 @@ const PageGroupingEditor = ({
     setDraft((prev) => prev.map((s) => (s.sectionId === sectionId ? { ...s, documentClass: value } : s)));
 
   const columnHeight = isExpanded ? EXPANDED_COLUMN_HEIGHT : INLINE_COLUMN_HEIGHT;
+
+  const activeDragPage = activePageId === null ? undefined : pageById.get(activePageId);
+  // Matches what movePages will actually do, so the overlay cannot promise a different
+  // move from the one that lands.
+  const draggingCount = activePageId !== null && selectedPageIds.has(activePageId) ? selectedPageIds.size : 1;
 
   const body = (
     <SpaceBetween size="m">
@@ -433,11 +477,17 @@ const PageGroupingEditor = ({
         )}
       </SpaceBetween>
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={() => setActivePageId(null)}
+      >
         {/* Horizontal, so the page being moved and its destination are both on screen.
             Scrolls sideways only once there are more sections than fit. */}
-        <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '8px' }}>
-          {ordered.map((section) => (
+        <div data-page-grouping-columns style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '8px' }}>
+          {draft.map((section) => (
             <SectionColumn
               key={section.sectionId}
               section={section}
@@ -459,6 +509,36 @@ const PageGroupingEditor = ({
             />
           ))}
         </div>
+
+        {/* Portaled to the body because a column has `overflowY: auto` and the row has
+            `overflowX: auto`, so anything rendered inside them is clipped at their edges —
+            which is every cross-section drag, the only drag that does anything. The
+            overlay is `position: fixed`, and the portal keeps it out of reach of a
+            containing block the Cloudscape modal might establish in the expanded view. */}
+        {createPortal(
+          <DragOverlay zIndex={9999} dropAnimation={null}>
+            {activeDragPage ? (
+              <div
+                data-page-grouping-overlay
+                style={{
+                  border: '2px solid #0073bb',
+                  borderRadius: '4px',
+                  padding: '4px',
+                  background: '#ffffff',
+                  width: `${CARD_WIDTH}px`,
+                  boxShadow: '0 4px 12px rgba(0, 7, 22, 0.35)',
+                  cursor: 'grabbing',
+                }}
+              >
+                <PageThumb page={activeDragPage} />
+                <Box textAlign="center" fontSize="body-s">
+                  {draggingCount > 1 ? `${draggingCount} pages` : `Page ${activeDragPage.id}`}
+                </Box>
+              </div>
+            ) : null}
+          </DragOverlay>,
+          document.body,
+        )}
       </DndContext>
     </SpaceBetween>
   );
