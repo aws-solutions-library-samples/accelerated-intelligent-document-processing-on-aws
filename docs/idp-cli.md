@@ -51,6 +51,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [config-download](#config-download)
   - [config-upload](#config-upload)
   - [config-list](#config-list)
+  - [config-revisions](#config-revisions)
   - [config-activate](#config-activate)
   - [config-delete](#config-delete)
   - [test-result](#test-result)
@@ -2243,6 +2244,7 @@ idp-cli config-download [OPTIONS]
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
 - `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads active version
+- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained rather than silently returning the current configuration
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2259,6 +2261,10 @@ idp-cli config-download --stack-name my-stack --format minimal --output config.y
 
 # Print to stdout
 idp-cli config-download --stack-name my-stack
+
+# Download an exact revision — what an earlier run actually used
+idp-cli config-download --stack-name my-stack --config-profile lending \
+    --config-revision 7 --output r7.yaml
 ```
 
 ---
@@ -2298,6 +2304,21 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --no-validate
 ```
 
+**Output:** on success the command prints the **revision** the upload produced,
+with the flags to process under it:
+
+```
+✓ Configuration uploaded successfully
+
+Configuration profile 'lending' updated!
+Revision: r7
+Process under it with: --config-profile lending --config-revision 7
+```
+
+Nothing is printed when the stack has no revision history. A save that changes
+nothing records no new revision, so the number printed is then the revision
+already current — which is still the correct one to pin.
+
 ---
 
 ### `config-list`
@@ -2320,7 +2341,72 @@ idp-cli config-list --stack-name my-stack
 ```
 
 **Output:**
-Shows a table with version names, active status, creation/update timestamps, and descriptions.
+Shows a table with profile names, active status, the current **revision** (`Rev`),
+creation/update timestamps, and descriptions. `Rev` is the revision each profile's
+configuration currently reflects — the value to pass to `--config-revision`. It is
+blank for a profile with no history.
+
+---
+
+### `config-revisions`
+
+List the revision history of a Configuration Profile.
+
+Every save of a profile cuts an immutable revision. This shows the ones still
+retained: the last 20, plus anything labeled, pinned by a test run, or currently
+in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+**Usage:**
+```bash
+idp-cli config-revisions [OPTIONS]
+```
+
+**Options:**
+- `--stack-name` (required): CloudFormation stack name
+- `--config-profile` (alias: `--config-version`) **(required)**: Profile whose history to list
+- `--json`: Emit JSON instead of a table, for scripting
+- `--region`: AWS region (optional)
+
+**Examples:**
+```bash
+# Revision history of a profile
+idp-cli config-revisions --stack-name my-stack --config-profile lending
+
+# Machine-readable — e.g. pick the current revision
+idp-cli config-revisions --stack-name my-stack --config-profile lending --json \
+    | jq -r '.revisions[] | select(.published) | .revision'
+```
+
+**Output:** one row per retained revision, newest first, with `Rev`, which one the
+profile currently reflects, when and by whom it was cut, its label and notes, and
+**why it is exempt from pruning** (`labeled` / `test run`). A profile with no
+history reports that and exits 0 — a profile untouched since the stack was
+upgraded genuinely has none.
+
+#### Iterating on one profile instead of many
+
+`config-upload` (which prints the revision it produced), `config-revisions`, and
+`--config-revision` on `config-download` / `process` / `run-inference` together
+let an automated tuning loop keep **one** profile and track its attempts as
+revisions:
+
+```bash
+# Upload attempt N and capture the revision it became
+rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
+        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+      | sed -n 's/^Revision: r//p')
+
+# Score exactly that revision
+idp-cli run-inference --stack-name my-stack --test-set my-tests \
+    --config-profile tuning-run-42 --config-revision "$rev" --monitor
+
+# Later: retrieve the configuration that produced the best score
+idp-cli config-download --stack-name my-stack --config-profile tuning-run-42 \
+    --config-revision 7 --output best.yaml
+```
+
+Naming a new profile per attempt also works, but every one of them then appears in
+the profile pickers and access-control scope lists of the whole deployment.
 
 ---
 

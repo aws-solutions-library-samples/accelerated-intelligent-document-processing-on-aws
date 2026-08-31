@@ -93,13 +93,17 @@ def test_every_method_taking_the_old_keyword_also_takes_the_new_one():
 
 
 @pytest.mark.unit
-def test_the_new_keyword_is_last_and_keyword_only():
+def test_the_new_keyword_is_out_of_the_positional_region():
     """
     Adding a parameter in the MIDDLE of these signatures would silently change
     what a positional call means: `config.activate("lending", "my-stack")` passed
     the stack name as the second positional, and inserting `config_profile` there
-    would make it the profile instead. So the new keyword goes last, and is
-    keyword-only so it can never be positional in the first place.
+    would make it the profile instead. `config_profile` therefore sits after the
+    `*`, where it can never be positional and cannot displace anything.
+
+    This checks that placement, not literal last place: `upload()` has since gained
+    another keyword-only argument, and keyword-only arguments can be added in any
+    order without affecting a single caller. Ordering among them is style.
     """
     offenders = []
     for name, params in _aliased_methods():
@@ -110,13 +114,22 @@ def test_the_new_keyword_is_last_and_keyword_only():
         if config_profile.kind is not inspect.Parameter.KEYWORD_ONLY:
             offenders.append(f"{name}: {config_profile.kind.name}")
             continue
-        # Last, ignoring **kwargs.
-        positional_or_named = [
-            p for p in ordered if p.kind is not inspect.Parameter.VAR_KEYWORD
+        index = [p.name for p in ordered].index("config_profile")
+        positional_after = [
+            p.name
+            for p in ordered[index + 1 :]
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.POSITIONAL_ONLY,
+            )
         ]
-        if positional_or_named[-1].name != "config_profile":
-            offenders.append(f"{name}: followed by {positional_or_named[-1].name}")
-    assert not offenders, f"config_profile is not last/keyword-only in: {offenders}"
+        if positional_after:
+            offenders.append(f"{name}: positional args follow it: {positional_after}")
+    assert not offenders, (
+        f"config_profile is inside the positional region in: {offenders} — adding it "
+        f"there changes what an existing positional call means"
+    )
 
 
 @pytest.mark.unit

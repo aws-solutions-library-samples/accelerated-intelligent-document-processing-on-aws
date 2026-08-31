@@ -194,10 +194,42 @@ profile is chosen you can instead pin an earlier one:
 | **Upload Documents** | Pin a revision for the documents being uploaded. |
 | **Reprocess Document** | Pin a revision to reproduce what an earlier run produced. |
 | **Generate draft labels** | Pin the revision that drafts the labels. |
-| **CLI** | `--config-revision 7` alongside `--config-profile` on `process` / `run-inference`. |
+| **CLI / SDK** | `--config-revision 7` alongside `--config-profile` on `process` / `run-inference` (`config_revision=` on `batch.process`). |
 
 The revision picker appears only when the profile actually has history — a
 dropdown whose only entry is "Current" is noise rather than a choice.
+
+### Revisions from the CLI and SDK
+
+Everything above is also reachable programmatically, which is what lets an
+automated loop keep **one** profile and track its attempts as revisions:
+
+| Task | CLI | SDK |
+|---|---|---|
+| Save, and learn which revision it became | `config-upload` prints `Revision: r7` | `upload()` returns `revision` |
+| See a profile's history | `config-revisions --config-profile lending` (`--json` for scripting) | `revisions(config_profile=...)` |
+| See each profile's current revision | `config-list` (`Rev` column) | `list()` → `published_revision` |
+| Fetch what an earlier run used | `config-download --config-profile lending --config-revision 7` | `download(config_profile=..., config_revision=7)` |
+| Process / score under an exact revision | `--config-revision 7` on `process` / `run-inference` | `config_revision=7` on `batch.process` |
+
+```bash
+# Upload attempt N, capture the revision it became, and score exactly that
+rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
+        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+      | sed -n 's/^Revision: r//p')
+
+idp-cli run-inference --stack-name my-stack --test-set my-tests \
+    --config-profile tuning-run-42 --config-revision "$rev" --monitor
+```
+
+Requesting a revision that retention has already pruned **fails** rather than
+falling back to the profile's current configuration: substituting a different
+configuration under the name you asked for would look like a success, and its
+numbers would go into a comparison. Label or pin the revisions you need to keep.
+
+Naming a new profile per attempt also works and predates revisions, but every one
+of those profiles then appears in the profile pickers and `allowedConfigVersions`
+scope lists of the whole deployment.
 
 **Every document is pinned, whether or not you chose a revision.** The queue
 processor stamps the profile's current revision onto the document as it starts. So

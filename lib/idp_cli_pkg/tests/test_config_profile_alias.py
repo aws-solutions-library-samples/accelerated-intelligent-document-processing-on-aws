@@ -16,6 +16,7 @@ is "someone adds the twelfth command and only wires the old name", and a test
 that enumerates today's commands cannot see that.
 """
 
+import ast
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -95,14 +96,25 @@ def test_both_flags_reach_the_sdk_identically(flag):
 
 
 @pytest.mark.unit
-def test_the_cli_never_passes_the_new_keyword_to_the_sdk():
+def test_no_call_passes_both_names_to_the_sdk():
     """
-    The CLI resolves the alias itself, at the Click layer, and calls the SDK with
-    the single internal name. Passing both onward would give two places that can
-    disagree about which profile a run used.
+    Click already collapses --config-profile / --config-version into one value, so
+    a CLI call site has exactly one name to pass. Passing BOTH would be a live
+    ValueError the moment the two disagreed — the SDK refuses to guess — and it is
+    the kind of thing a copy-paste between two commands produces.
+
+    Which of the two names a call site uses is its own business: they mean the
+    same thing. Only using both at once is wrong.
     """
-    source = (Path(cli.callback.__code__.co_filename)).read_text()
-    assert "config_profile=" not in source, (
-        "the CLI should hand the SDK config_version only; Click already collapsed "
-        "--config-profile / --config-version into that one dest"
+    source = Path(cli.callback.__code__.co_filename).read_text()
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        keywords = {kw.arg for kw in node.keywords if kw.arg}
+        if {"config_profile", "config_version"} <= keywords:
+            offenders.append(node.lineno)
+    assert not offenders, (
+        f"cli.py passes both config_profile= and config_version= to one call at "
+        f"lines {offenders}; they are two names for the same argument"
     )
