@@ -14,6 +14,8 @@ from idp_sdk.models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigRevisionInfo,
+    ConfigRevisionListResult,
     ConfigSyncBdaResult,
     ConfigUploadResult,
     ConfigValidationResult,
@@ -29,30 +31,79 @@ class ConfigOperation:
     def __init__(self, client):
         self._client = client
 
+    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
+        """Physical IDs for the requested logical IDs, in one pass over the stack."""
+        import boto3
+
+        wanted = set(logical_ids)
+        found: dict = {}
+
+        # Enhancement 8: use self._client._region consistently
+        cfn = boto3.client("cloudformation", region_name=self._client._region)
+        paginator = cfn.get_paginator("list_stack_resources")
+
+        for page in paginator.paginate(StackName=stack_name):
+            for resource in page.get("StackResourceSummaries", []):
+                logical_id = resource.get("LogicalResourceId")
+                if logical_id in wanted:
+                    found[logical_id] = resource.get("PhysicalResourceId")
+            if len(found) == len(wanted):
+                break
+
+        return found
+
     def _get_config_table(self, stack_name: str) -> str:
         """Look up the ConfigurationTable physical resource ID for a stack.
 
         Returns the physical resource ID.
         Raises IDPResourceNotFoundError if not found.
         """
-        import boto3
-
-        # Enhancement 8: use self._client._region consistently
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
-        paginator = cfn.get_paginator("list_stack_resources")
-        config_table = None
-
-        for page in paginator.paginate(StackName=stack_name):
-            for resource in page.get("StackResourceSummaries", []):
-                if resource.get("LogicalResourceId") == "ConfigurationTable":
-                    config_table = resource.get("PhysicalResourceId")
-                    break
-            if config_table:
-                break
+        config_table = self._lookup_stack_resources(
+            stack_name, {"ConfigurationTable"}
+        ).get("ConfigurationTable")
 
         if not config_table:
             raise IDPResourceNotFoundError(
                 f"ConfigurationTable not found in stack '{stack_name}'"
+            )
+
+        return config_table
+
+    def _configure_config_env(self, stack_name: str) -> str:
+        """
+        Point `idp_common` at this stack's configuration table AND bucket.
+
+        Both, because revision history lives in two places: the counters and index
+        in DynamoDB, the recorded configurations in S3 under the Configuration
+        bucket. `ConfigRevisionStore` treats a missing `CONFIGURATION_BUCKET` as
+        "history disabled" and silently does nothing — so setting only the table
+        (which is all the SDK used to do) meant every CLI/SDK save skipped cutting
+        a revision, every history listing came back empty, and deleting a profile
+        left its revision bodies orphaned in S3. The Lambdas always had both set,
+        which is why this was invisible until the CLI read a real stack.
+
+        Returns the configuration table's physical ID.
+        """
+        import os
+
+        found = self._lookup_stack_resources(
+            stack_name, {"ConfigurationTable", "ConfigurationBucket"}
+        )
+
+        config_table = found.get("ConfigurationTable")
+        if not config_table:
+            raise IDPResourceNotFoundError(
+                f"ConfigurationTable not found in stack '{stack_name}'"
+            )
+        os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+
+        config_bucket = found.get("ConfigurationBucket")
+        if config_bucket:
+            os.environ["CONFIGURATION_BUCKET"] = config_bucket
+        else:
+            logger.warning(
+                f"Stack '{stack_name}' has no ConfigurationBucket; configuration "
+                f"revision history is unavailable for this stack"
             )
 
         return config_table
@@ -190,6 +241,7 @@ class ConfigOperation:
         format: str = "full",
         pattern: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         *,
         config_profile: Optional[str] = None,
         **kwargs,
@@ -202,27 +254,33 @@ class ConfigOperation:
             format: Format type ('full' or 'minimal')
             pattern: Pattern override
             config_version: Configuration profile to download (default: active version)
+            config_revision: Download an exact revision of that profile rather than
+                its current configuration — how you retrieve what an earlier run
+                actually used, or branch a new iteration from an older one.
             config_profile: Configuration profile (the current name for
                 config_version; either may be given, not both with different values).
             **kwargs: Additional parameters
 
         Returns:
             ConfigDownloadResult with downloaded configuration
+
+        Raises:
+            IDPResourceNotFoundError: If the requested revision is not retained.
+                Falling back to the profile head would hand back a *different*
+                configuration than the one asked for, under the same filename.
         """
         config_version = resolve_config_profile(config_profile, config_version)
-        import os
 
         import yaml
 
         name = self._client._require_stack(stack_name)
-        config_table = self._get_config_table(name)
+        config_table = self._configure_config_env(name)
 
         # If no version specified, resolve the active version from DynamoDB
         # (all configs are stored as Config#<version>, never as bare "Config")
         if not config_version:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             manager = ConfigurationManager()
             for v in manager.list_config_versions():
                 if v.get("isActive"):
@@ -237,12 +295,31 @@ class ConfigOperation:
                     f"No active version found, falling back to: {config_version}"
                 )
 
-        from idp_common.config import ConfigurationReader
+        if config_revision is not None:
+            from idp_common.config.configuration_manager import ConfigurationManager
 
-        reader = ConfigurationReader(table_name=config_table)
-        config_data = reader.get_configuration(
-            "Config", version=config_version, as_model=False
-        )
+            manager = ConfigurationManager()
+            body = manager.get_revision(config_version, int(config_revision))
+            if body is None:
+                raise IDPResourceNotFoundError(
+                    f"Revision r{config_revision} of configuration profile "
+                    f"'{config_version}' is not available (deleted, pruned, or the "
+                    f"stack has no revision history)"
+                )
+            # Strip the storage-format marker and the discriminator; neither is
+            # part of the configuration a caller edits or re-uploads.
+            config_data = {
+                k: v
+                for k, v in body.items()
+                if k not in ("_config_format", "config_type")
+            }
+        else:
+            from idp_common.config import ConfigurationReader
+
+            reader = ConfigurationReader(table_name=config_table)
+            config_data = reader.get_configuration(
+                "Config", version=config_version, as_model=False
+            )
 
         if format == "minimal":
             from idp_common.config.merge_utils import (
@@ -277,11 +354,21 @@ class ConfigOperation:
         if output:
             with open(output, "w", encoding="utf-8") as f:
                 f.write(f"# Configuration downloaded from stack: {name}\n")
-                f.write(f"# Format: {format}\n\n")
+                f.write(f"# Format: {format}\n")
+                if config_revision is not None:
+                    # Provenance in the file itself: a downloaded revision and a
+                    # downloaded head are otherwise indistinguishable on disk.
+                    f.write(
+                        f"# Profile: {config_version} (revision r{config_revision})\n"
+                    )
+                f.write("\n")
                 f.write(yaml_content)
 
         return ConfigDownloadResult(
-            config=config_data or {}, yaml_content=yaml_content, output_path=output
+            config=config_data or {},
+            yaml_content=yaml_content,
+            output_path=output,
+            revision=int(config_revision) if config_revision is not None else None,
         )
 
     def upload(
@@ -294,6 +381,7 @@ class ConfigOperation:
         description: Optional[str] = None,
         *,
         config_profile: Optional[str] = None,
+        created_by: Optional[str] = None,
         **kwargs,
     ) -> ConfigUploadResult:
         """Upload a configuration file to a deployed IDP stack.
@@ -309,6 +397,11 @@ class ConfigOperation:
             validate: Validate before uploading
             pattern: Pattern for validation
             description: Description for the configuration version
+            created_by: Recorded as the author of the revision this save cuts, and
+                shown as "By" in the revision history. The API path derives it from
+                the caller's Cognito identity; an SDK caller has no such identity,
+                so it defaults to "system" — set it to something that identifies
+                your automation if you want its saves attributable.
             **kwargs: Additional parameters
 
         Returns:
@@ -318,7 +411,6 @@ class ConfigOperation:
             config_profile, config_version, required=True
         )
         import json
-        import os
 
         import yaml
 
@@ -360,10 +452,9 @@ class ConfigOperation:
                     error=f"Validation failed: {'; '.join(result.errors)}",
                 )
 
-        config_table = self._get_config_table(name)
+        self._configure_config_env(name)
 
         try:
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             from idp_common.config.configuration_manager import ConfigurationManager
 
             manager = ConfigurationManager()
@@ -388,13 +479,35 @@ class ConfigOperation:
 
             config_json = json.dumps(user_config)
             success = manager.handle_update_custom_configuration(
-                config_json, version=config_version, description=description
+                config_json,
+                version=config_version,
+                description=description,
+                created_by=created_by,
             )
+
+            # Report the revision this upload produced. Without it a caller can
+            # upload iteration N and then have no way to pin the run to exactly
+            # what it just uploaded — it would have to guess a number, or name a
+            # whole new profile per iteration (which is what the Auto Optimizer
+            # extension does today). Reading the published counter rather than
+            # threading a return value through handle_update_custom_configuration
+            # also gets the no-op case right: a save that changed nothing cuts no
+            # new revision, and the correct answer is the revision already current.
+            revision = None
+            if success and config_version:
+                try:
+                    revision = manager.resolve_published_revision(config_version)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Uploaded '{config_version}' but could not read its "
+                        f"revision number: {e}"
+                    )
 
             return ConfigUploadResult(
                 success=success,
                 version=config_version,
                 version_created=version_created,
+                revision=revision,
                 error=None if success else "Upload failed",
             )
         except Exception as e:
@@ -414,13 +527,11 @@ class ConfigOperation:
         Returns:
             ConfigListResult with typed list of configuration versions
         """
-        import os
 
         name = self._client._require_stack(stack_name)
-        config_table = self._get_config_table(name)
+        self._configure_config_env(name)
 
         try:
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             from idp_common.config.configuration_manager import ConfigurationManager
 
             manager = ConfigurationManager()
@@ -431,7 +542,13 @@ class ConfigOperation:
                     version_name=v.get("versionName", v.get("version_name", str(v)))
                     if isinstance(v, dict)
                     else str(v),
-                    is_active=v.get("isActive", v.get("is_active", False))
+                    # `bool(... or False)` rather than `.get(key, False)`: a profile
+                    # record written without an IsActive attribute comes back with
+                    # the key PRESENT and the value None, so the default never
+                    # applied and pydantic rejected None — which took the whole
+                    # command down for every profile, not just that one. Found by
+                    # running config-list against a live stack.
+                    is_active=bool(v.get("isActive") or v.get("is_active") or False)
                     if isinstance(v, dict)
                     else False,
                     created_at=v.get("createdAt", v.get("created_at"))
@@ -441,6 +558,12 @@ class ConfigOperation:
                     if isinstance(v, dict)
                     else None,
                     description=v.get("description") if isinstance(v, dict) else None,
+                    latest_revision=v.get("latestRevision")
+                    if isinstance(v, dict)
+                    else None,
+                    published_revision=v.get("publishedRevision")
+                    if isinstance(v, dict)
+                    else None,
                 )
                 for v in (versions_raw or [])
             ]
@@ -448,6 +571,83 @@ class ConfigOperation:
             return ConfigListResult(versions=versions, count=len(versions))
         except Exception as e:
             raise IDPResourceNotFoundError(f"Failed to list configurations: {e}") from e
+
+    def revisions(
+        self,
+        config_version: Optional[str] = None,
+        stack_name: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
+        **kwargs,
+    ) -> ConfigRevisionListResult:
+        """Revision history of one Configuration Profile, newest first.
+
+        Every save of a profile cuts an immutable revision. This lists the ones
+        still retained (the last 20, plus anything labeled, pinned by a test run,
+        or currently in use), so a caller can see its own iterations, fetch an
+        earlier one with `download(config_revision=...)`, or pin one for
+        processing with `config_revision=` on `batch.process`.
+
+        Args:
+            config_version: Configuration profile whose history to list
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
+            stack_name: Optional stack name override
+            **kwargs: Additional parameters
+
+        Returns:
+            ConfigRevisionListResult with the retained revisions, newest first.
+            An empty list means no history — an older deployment, or a profile
+            untouched since the stack was upgraded.
+        """
+        config_version = resolve_config_profile(
+            config_profile, config_version, required=True
+        )
+
+        name = self._client._require_stack(stack_name)
+        self._configure_config_env(name)
+
+        try:
+            from idp_common.config.configuration_manager import ConfigurationManager
+
+            manager = ConfigurationManager()
+            # A disabled store returns [] from every read, which would report
+            # "this profile has no history" for a profile that has plenty — the
+            # store just cannot see it. Say which of the two it is.
+            if not manager.revisions.enabled:
+                raise IDPProcessingError(
+                    f"Configuration revision history is unavailable for stack "
+                    f"'{name}' (no Configuration bucket resolved), so the history "
+                    f"of profile '{config_version}' cannot be read. This is not the "
+                    f"same as the profile having no revisions."
+                )
+            entries = manager.list_revisions(config_version)
+        except IDPProcessingError:
+            raise
+        except Exception as e:
+            raise IDPResourceNotFoundError(
+                f"Failed to list revisions of configuration profile "
+                f"'{config_version}': {e}"
+            ) from e
+
+        revisions = [
+            ConfigRevisionInfo(
+                revision=int(entry["revision"]),
+                created_at=entry.get("createdAt"),
+                created_by=entry.get("createdBy"),
+                label=entry.get("label"),
+                notes=entry.get("notes"),
+                size_bytes=entry.get("sizeBytes"),
+                published=bool(entry.get("published", False)),
+                pinned=bool(entry.get("pinned", False)),
+                class_fingerprint=entry.get("classFingerprint"),
+            )
+            for entry in (entries or [])
+            if entry.get("revision") is not None
+        ]
+        return ConfigRevisionListResult(
+            profile=config_version, revisions=revisions, count=len(revisions)
+        )
 
     def activate(
         self,
@@ -478,10 +678,9 @@ class ConfigOperation:
         import os
 
         name = self._client._require_stack(stack_name)
-        config_table = self._get_config_table(name)
+        self._configure_config_env(name)
 
         try:
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             os.environ["STACK_NAME"] = name
             from idp_common.config.configuration_manager import ConfigurationManager
 
@@ -630,13 +829,11 @@ class ConfigOperation:
         config_version = resolve_config_profile(
             config_profile, config_version, required=True
         )
-        import os
 
         name = self._client._require_stack(stack_name)
-        config_table = self._get_config_table(name)
+        self._configure_config_env(name)
 
         try:
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             from idp_common.config.configuration_manager import ConfigurationManager
 
             manager = ConfigurationManager()
@@ -684,10 +881,9 @@ class ConfigOperation:
         import os
 
         name = self._client._require_stack(stack_name)
-        config_table = self._get_config_table(name)
+        self._configure_config_env(name)
 
         try:
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
             os.environ["STACK_NAME"] = name
             from idp_common.bda.bda_blueprint_service import BdaBlueprintService
             from idp_common.config.configuration_manager import ConfigurationManager

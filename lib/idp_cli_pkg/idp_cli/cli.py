@@ -4468,11 +4468,20 @@ def config_upload(
         if config_version:
             action = "created" if result.version_created else "updated"
             console.print(
-                f"[bold]Configuration version '{config_version}' {action}![/bold]"
+                f"[bold]Configuration profile '{config_version}' {action}![/bold]"
             )
-            console.print(
-                "Use --config-profile to process documents with this profile."
-            )
+            if result.revision is not None:
+                # Printed so a script can pin the run to exactly what it just
+                # uploaded instead of naming a new profile per iteration.
+                console.print(f"Revision: r{result.revision}")
+                console.print(
+                    f"Process under it with: --config-profile {config_version} "
+                    f"--config-revision {result.revision}"
+                )
+            else:
+                console.print(
+                    "Use --config-profile to process documents with this profile."
+                )
         else:
             console.print("[bold]Configuration is now active![/bold]")
             console.print("New documents will use this configuration immediately.")
@@ -4504,12 +4513,21 @@ def config_upload(
     "config_version",
     help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version. --config-version is the former name and still works.",
 )
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Download an exact revision of the profile (e.g. 7) instead of its "
+        "current configuration. Requires --config-profile."
+    ),
+)
 @click.option("--region", help="AWS region (optional)")
 def config_download(
     stack_name: str,
     output: Optional[str],
     output_format: str,
     config_version: Optional[str],
+    config_revision: Optional[int],
     region: Optional[str],
 ):
     """
@@ -4528,18 +4546,34 @@ def config_download(
 
       # Print to stdout
       idp-cli config-download --stack-name my-stack
+
+      # Download an exact revision of a profile (what an earlier run used)
+      idp-cli config-download --stack-name my-stack --config-profile lending \\
+          --config-revision 7 --output r7.yaml
     """
     try:
         from idp_sdk import IDPClient
 
+        if config_revision is not None and not config_version:
+            # Revisions belong to a profile; "revision 7 of whatever is active"
+            # would silently change meaning the moment someone activates
+            # another profile.
+            console.print(
+                "[red]Error: --config-revision requires --config-profile[/red]"
+            )
+            sys.exit(1)
+
         console.print(
             f"[bold blue]Downloading config from stack: {stack_name}[/bold blue]"
         )
+        if config_revision is not None:
+            console.print(f"Profile: {config_version} (revision r{config_revision})")
 
         client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.download(
             format=output_format,
             config_version=config_version,
+            config_revision=config_revision,
             output=output,
         )
 
@@ -4672,8 +4706,9 @@ def config_list(stack_name: str, region: str = None):
         )
 
         table = Table(show_header=True, header_style="bold blue")
-        table.add_column("Version Name", style="cyan")
+        table.add_column("Profile Name", style="cyan")
         table.add_column("Status", justify="center")
+        table.add_column("Rev", justify="right")
         table.add_column("Created", style="dim")
         table.add_column("Updated", style="dim")
         table.add_column("Description", style="green")
@@ -4690,19 +4725,150 @@ def config_list(stack_name: str, region: str = None):
                 if version.updated_at
                 else ""
             )
+            # The current revision, so `config-list` alone tells a script what to
+            # pin. A profile with no history shows nothing rather than "r0".
+            current = (
+                version.published_revision
+                if version.published_revision is not None
+                else version.latest_revision
+            )
             table.add_row(
                 version.version_name,
                 status,
+                f"r{current}" if current is not None else "",
                 created,
                 updated,
                 version.description or "",
             )
 
         console.print(table)
+        console.print(
+            "\n[dim]Rev = the revision each profile's current configuration "
+            "reflects. See revision history with: idp-cli config-revisions "
+            "--config-profile <name>[/dim]"
+        )
 
     except Exception as e:
         logger.error(f"Error listing configs: {e}", exc_info=True)
         console.print(f"[red]✗ Failed to list configurations: {e}[/red]")
+        sys.exit(1)
+
+
+@cli.command(name="config-revisions")
+@click.option(
+    "--stack-name",
+    required=True,
+    help="CloudFormation stack name",
+)
+@click.option(
+    "--config-profile",
+    "--config-version",
+    "config_version",
+    required=True,
+    help="Configuration profile whose revision history to list; --config-version is the former name and still works",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit JSON instead of a table (for scripting)",
+)
+@click.option("--region", help="AWS region (optional)")
+def config_revisions(
+    stack_name: str,
+    config_version: str,
+    as_json: bool,
+    region: Optional[str] = None,
+):
+    """
+    List the revision history of a Configuration Profile
+
+    Every save of a profile cuts an immutable revision. This shows the ones still
+    retained: the last 20, plus anything labeled, pinned by a test run, or
+    currently in use.
+
+    Pair it with `config-download --config-revision` to fetch an earlier
+    configuration, and with `--config-revision` on `process` / `run-inference` to
+    process under an exact revision. Together those let an automated tuning loop
+    keep ONE profile and track its iterations as revisions, instead of minting a
+    new named profile per iteration.
+
+    Examples:
+
+      # Revision history of a profile
+      idp-cli config-revisions --stack-name my-stack --config-profile lending
+
+      # Machine-readable, e.g. to pick the newest revision
+      idp-cli config-revisions --stack-name my-stack --config-profile lending --json
+    """
+    try:
+        from idp_sdk import IDPClient
+
+        client = IDPClient(stack_name=stack_name, region=region)
+        result = client.config.revisions(config_profile=config_version)
+
+        if as_json:
+            console.print_json(result.model_dump_json())
+            return
+
+        console.print(
+            f"[bold blue]Revision history of configuration profile "
+            f"'{result.profile}' in stack: {stack_name}[/bold blue]"
+        )
+
+        if not result.revisions:
+            # Distinguish "no history" from "profile does not exist" — the first is
+            # normal on a profile untouched since the stack was upgraded.
+            console.print(
+                "\n[yellow]No revisions recorded for this profile.[/yellow] "
+                "A profile has no history until it is saved on a release that "
+                "records revisions."
+            )
+            return
+
+        console.print(f"\n[bold]{result.count} revision(s) retained:[/bold]\n")
+
+        table = Table(show_header=True, header_style="bold blue")
+        table.add_column("Rev", justify="right", style="cyan")
+        table.add_column("Current", justify="center")
+        table.add_column("Created", style="dim")
+        table.add_column("By")
+        table.add_column("Label")
+        table.add_column("Notes", style="green")
+        table.add_column("Keep", justify="center")
+
+        for revision in result.revisions:
+            created = (
+                revision.created_at.replace("T", " ").replace("Z", "")
+                if revision.created_at
+                else ""
+            )
+            # "Keep" is why a revision survives pruning; without it a user cannot
+            # tell which of their revisions the retention cap will drop next.
+            keep = []
+            if revision.label:
+                keep.append("labeled")
+            if revision.pinned:
+                keep.append("test run")
+            table.add_row(
+                f"r{revision.revision}",
+                "[bold green]←[/bold green]" if revision.published else "",
+                created,
+                revision.created_by or "",
+                revision.label or "",
+                revision.notes or "",
+                ", ".join(keep),
+            )
+
+        console.print(table)
+        console.print(
+            f"\n[dim]Download one: idp-cli config-download --stack-name {stack_name} "
+            f"--config-profile {result.profile} --config-revision <n>[/dim]"
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing config revisions: {e}", exc_info=True)
+        console.print(f"[red]✗ Failed to list revisions: {e}[/red]")
         sys.exit(1)
 
 

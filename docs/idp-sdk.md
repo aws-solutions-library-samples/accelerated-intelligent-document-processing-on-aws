@@ -136,6 +136,7 @@ client.config.validate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
+client.config.revisions(...)
 client.config.activate(...)
 client.config.delete(...)
 client.config.sync_bda(...)
@@ -1402,8 +1403,15 @@ Upload configuration to a deployed stack.
 - `validate` (bool, optional): Validate configuration before uploading (default: `True`)
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
 - `description` (str, optional): Description for the configuration version
+- `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 
-**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
+
+`revision` is the revision number this upload produced — pass it as
+`config_revision=` to pin processing to exactly what was just uploaded. It is
+`None` when the stack has no revision history. A save that changed nothing cuts
+no new revision, so `revision` is then the one already current, which is still
+the right value to pin.
 
 ```python
 # Upload to the default version
@@ -1428,6 +1436,18 @@ if result.success:
         print(f"New version created: {result.version}")
     else:
         print(f"Version updated: {result.version}")
+
+# Score exactly what was uploaded, rather than "whatever that profile holds now"
+result = client.config.upload(
+    config_file="./attempt.yaml",
+    config_profile="tuning-run-42",
+    description="raised topK to 20",
+)
+client.batch.process(
+    directory="./docs/",
+    config_profile="tuning-run-42",
+    config_revision=result.revision,
+)
 ```
 
 ### config.download()
@@ -1440,8 +1460,14 @@ Download configuration from a deployed stack.
 - `format` (str, optional): Format type — `"full"` or `"minimal"` (default: `"full"`)
 - `pattern` (str, optional): Pattern override (auto-detected if not provided)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active version)
+- `config_revision` (int, optional): Download an exact **revision** of that profile instead of its current configuration
 
-**Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, and `output_path`
+**Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
+
+**Raises:** `IDPResourceNotFoundError` if the requested revision is no longer
+retained. It does not fall back to the profile's current configuration — that
+would hand back a *different* configuration under the name you asked for, and it
+would look like a success.
 
 ```python
 result = client.config.download(
@@ -1450,6 +1476,9 @@ result = client.config.download(
 )
 
 print(result.yaml_content)
+
+# Retrieve exactly what an earlier run used
+earlier = client.config.download(config_profile="lending", config_revision=7)
 ```
 
 ### config.list()
@@ -1461,16 +1490,60 @@ List all configuration versions in a deployed stack.
 
 **Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`) and `count`
 
-**ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`
+**ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`, `latest_revision`, `published_revision`
+
+`published_revision` is the revision each profile's configuration currently
+reflects — the one to pin. It equals `latest_revision` except while a restore is in
+flight. Both are `None` for a profile with no history.
 
 ```python
 result = client.config.list()
 
-print(f"Found {result.count} versions:")
+print(f"Found {result.count} profiles:")
 for version in result.versions:
     status = " (ACTIVE)" if version.is_active else ""
-    print(f"  - {version.version_name}{status}")
+    at = f" @r{version.published_revision}" if version.published_revision else ""
+    print(f"  - {version.version_name}{status}{at}")
 ```
+
+### config.revisions()
+
+Revision history of one Configuration Profile, newest first.
+
+Every save of a profile cuts an immutable revision. This returns the ones still
+retained — the last 20, plus anything labeled, pinned by a test run, or currently
+in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+**Parameters:**
+- `config_profile` (alias: `config_version`) (str, required): Profile whose history to list
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `ConfigRevisionListResult` with `profile`, `revisions` (list of `ConfigRevisionInfo`), and `count`
+
+**ConfigRevisionInfo fields:** `revision`, `created_at`, `created_by`, `label`, `notes`, `size_bytes`, `published`, `pinned`, `class_fingerprint`
+
+`published` marks the revision the profile currently reflects. `pinned` means a
+test run scored against it, which exempts it from retention pruning. Two revisions
+with the same `class_fingerprint` extract the same fields, so their accuracy
+numbers are directly comparable.
+
+```python
+history = client.config.revisions(config_profile="lending")
+
+for rev in history.revisions:
+    marker = " <- current" if rev.published else ""
+    print(f"  r{rev.revision} by {rev.created_by}: {rev.notes or ''}{marker}")
+
+# An empty list means no history: an older deployment, or a profile untouched
+# since the stack was upgraded.
+```
+
+**Iterating on one profile instead of many.** `upload()` returning `revision`,
+`revisions()`, and `config_revision=` on `download()` / `batch.process()` together
+let an automated tuning loop keep **one** profile and track its attempts as
+revisions. Naming a new profile per attempt also works, but every one of them then
+appears in the profile pickers and access-control scope lists of the whole
+deployment.
 
 ### config.activate()
 
