@@ -28,6 +28,12 @@ configuration it replaced.
 > spellings set the same value; "version" is kept for backward compatibility and
 > is not going away, but "profile" is the name to use in new scripts.
 
+
+
+https://github.com/user-attachments/assets/c67e38ad-4fe1-49ec-91ff-229787e43766
+
+
+
 ## Terminology: which word means what
 
 Four things in this product keep a history, and they do not all use the same word.
