@@ -176,13 +176,17 @@ Clears the cached pricing data to force reload from configuration.
 reporter.clear_pricing_cache()
 ```
 
-#### `_create_or_update_metering_glue_table(schema: pa.Schema) -> bool`
-Creates or updates the AWS Glue table for metering data with the enhanced schema including cost fields.
-
-**Parameters**:
-- `schema`: PyArrow schema including unit_cost and estimated_cost columns
-
-**Returns**: True if table was created or updated, False otherwise
+> **Glue table lifecycle**: the `metering` Glue table is now managed
+> declaratively by CloudFormation (`AWS::Glue::Table` in `template.yaml`)
+> with a `date`+`hour` partition-projection over
+> `s3://<reporting-bucket>/metering/date=YYYY-MM-DD/hour=HH/`. The
+> previously-documented in-code `_create_or_update_metering_glue_table`
+> helper has been removed — `SaveReportingData` writes parquet under
+> that same layout and the table becomes queryable in Athena
+> automatically. For any additional custom tables (e.g. document-section
+> tables, rule-validation tables) the class still creates Glue entries
+> on-demand via `_create_or_update_glue_table` and
+> `_create_or_update_rule_validation_glue_table`.
 
 ### Cost Analysis Examples
 
@@ -249,6 +253,37 @@ The module supports saving document processing metering data for cost tracking a
 # Save metering data for a document
 result = reporter.save_metering_data(document)
 ```
+
+**Partitioning:** `save_metering_data` partitions rows by **write time**
+(= document completion time, since the writer runs at workflow end) —
+NOT by queue time. Every metering row lands under
+`metering/date=<YYYY-MM-DD>/hour=<HH>/` reflecting the completion
+timestamp.
+
+**Columns:** `document_id`, `context`, `service_api`, `unit`, `value`,
+`number_of_pages`, `unit_cost`, `estimated_cost`, `timestamp` (completion
+time — same as partition), `initial_event_time` (original queue time,
+preserved for consumers who need queue-time semantics), `config_version`.
+
+**Semantic note for consumers of raw `metering`:** `WHERE date = 'X'`
+means "docs completed on X", NOT "docs queued on X". Filter on
+`initial_event_time` explicitly when you need queue-time semantics.
+
+**Rollup tables (populated by the scheduled `DataMartRollupFunction`,
+main stack):** for aggregate cost/volume queries over wide date ranges,
+consumers should read from the pre-aggregated Athena tables rather
+than raw metering:
+
+- `metering_hourly` — hourly cost rollup, hour × config_version × service_api × unit (`sum_value`, `sum_cost`)
+- `metering_daily` — daily cost rollup, day × config_version × service_api × unit (`sum_value`, `sum_cost`)
+- `metering_docs_hourly` — hourly doc/pages rollup, hour × config_version (`n_docs`, `sum_pages`), aggregated via MAX-per-doc to avoid fanning `number_of_pages` out by service/unit rows
+- `metering_docs_daily` — daily doc/pages rollup, day × config_version (`n_docs`, `sum_pages`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
+- `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
+
+See [`docs/reporting-sql-layer.md`](../../../../../docs/reporting-sql-layer.md)
+for the tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
+the tagging model, and the migration path for the new `hour` partition
+key.
 
 ### Document Sections
 
@@ -346,8 +381,27 @@ reporting-bucket/
 │           └── another-doc-id_20240115_144001_789_results.parquet
 ├── metering/
 │   └── date=YYYY-MM-DD/
-│       ├── doc-id_20240115_143052_123_results.parquet
-│       └── another-doc-id_20240115_144001_789_results.parquet
+│       └── hour=HH/
+│           ├── doc-id_20240115_143052_123_results.parquet
+│           └── another-doc-id_20240115_144001_789_results.parquet
+├── metering_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── <athena INSERT output>.parquet
+├── metering_daily/
+│   └── date=YYYY-MM-DD/
+│       └── <athena INSERT output>.parquet
+├── metering_docs_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── <athena INSERT output>.parquet
+├── metering_docs_daily/
+│   └── date=YYYY-MM-DD/
+│       └── <athena INSERT output>.parquet
+├── control_plane_hourly/
+│   └── date=YYYY-MM-DD/
+│       └── hour=HH/
+│           └── data.parquet
 └── document_sections/
     ├── invoice/
     │   └── date=YYYY-MM-DD/

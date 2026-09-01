@@ -539,6 +539,12 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
     # The embedded YYYYMMDD is still parsed out for partition pruning.
+    # Round-25 revert: pre-Phase-1 bounded 2-day window
+    # ``date IN (run_date, run_date+1)``. The round-7 unbounded upper
+    # edge broke Test Studio's cost section at scale (S3 throttling +
+    # poll timeout), and even the round-24 date-BETWEEN-today window
+    # still scanned days of raw metering for any older run. HITL
+    # long-tail completions past run_date+1 are Phase-2 work.
     assert "date IN ('2026-08-13', '2026-08-14')" in captured[0]
 
 

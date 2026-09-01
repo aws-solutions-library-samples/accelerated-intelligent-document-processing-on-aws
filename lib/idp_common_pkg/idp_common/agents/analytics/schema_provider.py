@@ -53,10 +53,17 @@ def get_metering_table_description() -> str:
 - `number_of_pages` (int): Number of pages in the document (replicated across all rows for same document)
 - `unit_cost` (double): Cost per unit in USD
 - `estimated_cost` (double): Calculated total cost (value × unit_cost)
-- `timestamp` (timestamp): When the operation was performed
+- `timestamp` (timestamp): Document COMPLETION time — i.e., when the workflow ended and
+  the row was written to metering. Not queue time.
+- `initial_event_time` (timestamp): Original queue time — when the document was first
+  enqueued. Populated on every row for consumers who need queue-time semantics.
 - `config_version` (string): Configuration version used for processing (defaults to "default" if not specified)
 
-**Partitioned by**: date (YYYY-MM-DD format)
+**Partitioned by**: date + hour (both string, `YYYY-MM-DD` / `HH`). Partition
+values reflect COMPLETION time (write time), not queue time. `WHERE date = 'X'`
+means "docs completed on X", not "docs queued on X" — filter on
+`initial_event_time` for queue-time semantics. Add `AND hour = 'HH'` to
+partition-prune tail queries scoped to a specific hour.
 
 ### Critical Aggregation Patterns:
 - **For document page counts**: Use `MAX("number_of_pages")` per document (NOT SUM, as this value is replicated)
@@ -73,39 +80,100 @@ def get_metering_table_description() -> str:
 
 ### Sample Queries:
 ```sql
--- Total documents processed
+-- Total documents processed (last 24 h — MUST filter on date to prune)
 SELECT COUNT(DISTINCT "document_id") FROM metering
+WHERE date >= date_format(current_date - interval '1' day, '%Y-%m-%d')
 
--- Total pages processed (correct aggregation)
+-- Total pages processed (correct aggregation — bound with date filter)
 SELECT SUM(max_pages) FROM (
-  SELECT "document_id", MAX("number_of_pages") as max_pages 
-  FROM metering 
+  SELECT "document_id", MAX("number_of_pages") as max_pages
+  FROM metering
+  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
   GROUP BY "document_id"
 )
 
--- Cost breakdown by processing context
+-- Cost breakdown by processing context (bounded)
 SELECT "context", SUM("estimated_cost") as total_cost
-FROM metering 
+FROM metering
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "context"
 ORDER BY total_cost DESC
 
--- Token usage by model
+-- Token usage by model (bounded)
 SELECT "service_api",
        SUM(CASE WHEN "unit" = 'inputTokens' THEN "value" ELSE 0 END) as input_tokens,
        SUM(CASE WHEN "unit" = 'outputTokens' THEN "value" ELSE 0 END) as output_tokens
 FROM metering
 WHERE "unit" IN ('inputTokens', 'outputTokens')
+  AND date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "service_api"
 
--- Cost by configuration version
+-- Cost by configuration version (bounded)
 SELECT "config_version",
        SUM("estimated_cost") as total_cost,
        COUNT(DISTINCT "document_id") as document_count,
        SUM("estimated_cost") / COUNT(DISTINCT "document_id") as avg_cost_per_doc
 FROM metering
+WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
 GROUP BY "config_version"
 ORDER BY total_cost DESC
 ```
+
+### Prefer Rollup Tables for Wide Time Ranges
+
+For queries spanning **> 2 hours** of history, prefer the reporting rollup
+tables — they aggregate the raw `metering` table hourly/daily so a
+question like "cost this month" scans a few hundred rows instead of
+millions. See `docs/reporting-sql-layer.md`.
+
+- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`
+  (TIMESTAMP), `config_version`, `service_api`, `unit`. Aggregate
+  columns: `sum_value` (a **quantity** — tokens / pages / seconds;
+  the denominator is `unit`) and `sum_cost` (USD). ⚠️ **`sum_value`
+  is NOT a cost — do not sum it as dollars.** Use `sum_cost` for
+  $ questions. **NEVER SELECT `n_docs` or `sum_pages` from this
+  table** — those live on `metering_docs_hourly` (the Phase-1
+  doc-vs-cost split — see `docs/reporting-sql-layer.md`).
+  Partitioned by `date` + `hour`.
+- **`metering_daily`** — daily grain of the same aggregates as
+  `metering_hourly`. Keyed on **`day` (DATE)** instead of
+  `hour_ts` (do NOT `SELECT hour_ts FROM metering_daily` — it
+  doesn't exist), plus `config_version`, `service_api`, `unit`.
+  Same `sum_value` (quantity) and `sum_cost` (USD) columns.
+  Partitioned by `date`.
+- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain
+  volume (`n_docs`, `sum_pages`) per `config_version`. Use these
+  for "how many docs / pages did config X process?" rollup
+  questions. Partitioned by `date` (+ `hour` on the hourly table).
+
+Query patterns:
+```sql
+-- Cost this week by service (fast — scans ~7 daily rows per service)
+SELECT service_api, SUM(sum_cost) AS total_cost
+FROM metering_daily
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY service_api
+ORDER BY total_cost DESC
+
+-- Docs processed by config version, last 30 days
+SELECT config_version, SUM(n_docs) AS docs, SUM(sum_pages) AS pages
+FROM metering_docs_daily
+WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+GROUP BY config_version
+ORDER BY docs DESC
+
+-- Hour-of-day cost pattern for the last 7 days
+SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
+FROM metering_hourly
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY hour(hour_ts)
+ORDER BY hod
+```
+
+**Fallback rule**: for the *current* hour (before the hourly rollup
+fires) OR when the question needs `document_id`-grain detail (per-doc
+cost, join to sections/evaluations), you MUST query raw `metering`
+with a partition filter.
 """
 
 
@@ -223,11 +291,24 @@ WHERE "confidence" IS NOT NULL
 GROUP BY confidence_band
 
 -- Cost per accuracy point by document type
+-- ⚠️ Cross-table date semantics: `metering.date` is COMPLETION time
+-- (Phase-1 change); `section_evaluations.date` is QUEUE time. Joining
+-- on `document_id` is safe, but do NOT filter both by the same `date`
+-- literal — a doc queued at 23:59Z on day D and completed at 00:01Z
+-- on D+1 lands in DIFFERENT date partitions on the two tables. If you
+-- need a date filter, apply it on ONE side only (usually
+-- `section_evaluations` since it's queue-time and matches the user's
+-- intuition about "docs from yesterday"), or accept under-reporting
+-- of cross-midnight docs.
+-- Note the date filter is on ONE side (`se`) only — filtering `m.date`
+-- too would drop cross-midnight docs due to the completion-vs-queue
+-- time difference documented above.
 SELECT se."section_type",
        AVG(se."accuracy") as avg_accuracy,
        SUM(m."estimated_cost") / COUNT(DISTINCT m."document_id") as avg_cost_per_doc
 FROM section_evaluations se
 JOIN metering m ON se."document_id" = m."document_id"
+WHERE se."date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY se."section_type"
 
 -- Filter by config_version (available directly in evaluation tables)
@@ -451,7 +532,10 @@ def get_dynamic_document_sections_description(
 - **Dot notation columns**: Names like `document_class.type` are SINGLE column names with dots inside quotes
 - **List data is stored as JSON strings** - use JSON parsing functions to extract array elements
 - **Case sensitivity**: Column names are lowercase, use LOWER() for string comparisons
-- **Partitioning**: All tables partitioned by `date` in YYYY-MM-DD format
+- **Partitioning**: `document_sections_*` tables partitioned by `date` (YYYY-MM-DD).
+  The `metering` table is partitioned by `date` + `hour` (YYYY-MM-DD / HH) reflecting
+  completion time — `WHERE "date" = 'X'` means "docs completed on X", not "queued on X";
+  filter on `initial_event_time` for queue-time semantics.
 
 ### Sample Queries:
 ```sql
@@ -657,15 +741,35 @@ def get_database_overview(config: Optional[IDPConfig] = None) -> str:
 
         overview = """# Database Overview - Available Tables
 
-### Usage metering and cost
+### Usage metering and cost (data plane — per-document API spend)
 Table name: `metering`
-**Purpose**: Usage metrics, costs, and consumption data  
-**Use for**: Document volume, processing costs, token usage, model performance
-**Key columns**: `document_id`, `context`, `service_api`, `estimated_cost`, `date`
+**Purpose**: Per-doc row-level usage — one row per (document, context, service_api, unit)
+**Use for**: Individual doc drilldown, doc-grain joins, current-hour queries before hourly rollup fires
+**Key columns**: `document_id`, `context`, `service_api`, `estimated_cost`, `date`, `hour`
+
+Table name: `metering_hourly` / `metering_daily`
+**Purpose**: Pre-aggregated per-hour / per-day cost, one row per (hour|day, config_version, service_api, unit).
+**Use for**: Any wide time-range cost query (>2h) — scans 100× fewer rows than raw metering. Columns: `sum_value` (quantity — tokens/pages/seconds, NOT USD), `sum_cost` (USD).
+**Key columns differ per table**: `metering_hourly` uses `hour_ts` (TIMESTAMP); `metering_daily` uses `day` (DATE, NOT `hour_ts` — `hour_ts` does not exist on the daily rollup). See detail section for the full anti-pattern list.
+
+Table name: `metering_docs_hourly` / `metering_docs_daily`
+**Purpose**: Doc-grain volume and pages per hour/day, one row per (hour|day, config_version).
+**Use for**: "How many docs processed?", "How many pages?" Columns: `n_docs`, `sum_pages`.
+**Note**: These doc-grain tables OMIT `service_api` and `unit` — those live only on `metering_hourly` / `metering_daily`. Do NOT `GROUP BY service_api` or `unit` on the docs tables (COLUMN_NOT_FOUND).
+
+### Operational cost (Lambda compute, control-plane vs data-plane)
+Table name: `control_plane_hourly`
+**Purpose**: Per-hour compute + service cost for CONTROL-PLANE Lambdas (rollup Lambda, resolvers, agents).
+**Key columns**: `function_name`, `component`, `bedrock_model`, `duration_ms_sum`, `athena_bytes_sum`, `bedrock_tokens_in/out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`. Partition: `date`, `hour`.
+
+Table name: `data_plane_lambda_hourly`
+**Purpose**: Per-hour Lambda compute cost for DATA-PLANE pipeline Lambdas (OCR, Classification, Extraction, Assessment, Summarization, Evaluation, etc. — anything tagged `idp:plane=data`). Bedrock/Textract API cost for these Lambdas is already in `metering_hourly` (per-doc). This table adds ONLY Lambda compute (Duration × arch-price + invocations × request-price) so total-compute queries work across both planes.
+**Key columns**: `function_name`, `component`, `invocations`, `duration_ms_sum`, `est_lambda_cost`. Partition: `date`, `hour`.
+**Total-compute query**: SUM(est_lambda_cost) across `control_plane_hourly` + `data_plane_lambda_hourly` gives full Lambda spend.
 
 ### Accuracy evaluations
 Table name: `document_evaluations` - Overall document accuracy scores
-Table name: `section_evaluations` - Section-level accuracy by document type  
+Table name: `section_evaluations` - Section-level accuracy by document type
 Table name: `attribute_evaluations` - Detailed attribute-level comparisons
 **Use for**: Accuracy analysis, precision/recall metrics
 

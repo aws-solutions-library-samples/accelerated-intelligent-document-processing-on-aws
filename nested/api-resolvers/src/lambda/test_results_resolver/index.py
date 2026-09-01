@@ -1413,13 +1413,20 @@ def _execute_athena_query(query, database):
 
         query_execution_id = response["QueryExecutionId"]
 
-        # Wait for query to complete
+        # Wait for query to complete. Round-25: with the 2-day bounded
+        # date window on the cost query (see _get_cost_data_from_athena),
+        # queries complete in seconds. 60s poll timeout is generous.
+        # (Round-24 briefly widened this to 180s to compensate for the
+        # round-7 unbounded date filter; the date-filter revert makes
+        # that unnecessary.)
         max_attempts = 30
+        final_result = None
         for attempt in range(max_attempts):
             result = athena.get_query_execution(QueryExecutionId=query_execution_id)
             status = result["QueryExecution"]["Status"]["State"]
 
             if status == "SUCCEEDED":
+                final_result = result
                 break
             elif status in ["FAILED", "CANCELLED"]:
                 error = result["QueryExecution"]["Status"].get(
@@ -1430,8 +1437,50 @@ def _execute_athena_query(query, database):
 
             time.sleep(2)
         else:
-            logger.error(f"Athena query timed out after {max_attempts * 2} seconds")
+            # Round-23 review fix (#1416): stop the orphan Athena query
+            # before returning — otherwise it keeps scanning bytes and
+            # billing indefinitely (up to the workgroup DML timeout,
+            # typically 30 min for Athena engine v2/v3). Best-effort;
+            # never raise from this fallback path.
+            try:
+                athena.stop_query_execution(QueryExecutionId=query_execution_id)
+                logger.warning(
+                    f"Athena query {query_execution_id} timed out after "
+                    f"{max_attempts * 2} seconds — stop_query_execution issued."
+                )
+            except Exception as stop_err:
+                logger.warning(
+                    f"stop_query_execution({query_execution_id}) failed: {stop_err}"
+                )
             return []
+
+        # Round-21 review fix: emit the AthenaBytesScanned control-plane
+        # cost metric so this resolver's Athena spend shows up in
+        # ``control_plane_hourly`` under component=``test-results``.
+        # Before this, the 149 daily invocations of this resolver ran
+        # queries whose DataScannedInBytes was NEVER published to
+        # CloudWatch — the rollup Lambda saw invocations+duration but
+        # ``est_athena_cost=0``. Matches the pattern the analytics-agent
+        # ``athena_tool.py`` uses (round-5 review fix wired it there).
+        try:
+            bytes_scanned = (
+                (final_result or {})
+                .get("QueryExecution", {})
+                .get("Statistics", {})
+                .get("DataScannedInBytes")
+            )
+            if bytes_scanned is not None:
+                from idp_common.metrics import emit_control_plane_cost_metric
+
+                emit_control_plane_cost_metric(
+                    component="test-results",
+                    athena_bytes=int(bytes_scanned),
+                )
+        except Exception as e:  # nosec — telemetry must not break the resolver
+            # WARN, not silent, so a future packaging/import regression is
+            # visible in the log instead of returning invisible zeros in
+            # control_plane_hourly.
+            logger.warning(f"Failed to emit test-results Athena cost metric: {e!r}")
 
         # Get query results
         results = []
@@ -1574,10 +1623,23 @@ def _get_cost_data_from_athena(test_run_id):
     like_prefix = _sql_like_prefix(test_run_id, "test_run_id")
     _validate_sql_input(database, "database")
 
-    # Extract date from test_run_id (format: name-YYYYMMDD-HHMMSS)
-    # Convert to date partition format: YYYY-MM-DD
-    # NOTE: Test runs spanning midnight UTC may have documents in next day's partition.
-    # We query both run_date and run_date+1 to catch cross-midnight documents.
+    # Date filter: partition-prune metering to a TIGHT window around
+    # run_date. Round-25 revert: go back to the pre-Phase-1 bounded
+    # 2-day window (run_date, run_date+1). The round-7 review fix
+    # opened this up to an unbounded upper edge to catch HITL
+    # long-tail completions, but at scale that scanned 3-4 days of
+    # raw ``metering`` parquet, hit ``HIVE_S3_THROTTLING``, and
+    # timed out the resolver's poll loop — leaving Test Studio's
+    # "Estimated cost" section empty for every run.
+    #
+    # As of Phase 1, ``metering.date`` is COMPLETION time. A doc
+    # queued at 23:59 UTC on run_date and completed at 00:01 UTC
+    # lands in run_date+1's partition — that's what the second date
+    # covers. Docs delayed >24h by HITL will NOT appear in this
+    # bounded window; that's a Phase-2 refinement (either a wider
+    # on-demand "refresh cost" affordance, or migrating this query
+    # to hit ``metering_hourly`` once that table gains a
+    # per-doc-id-prefix filterable column).
     date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
     date_filter = ""
     if date_match:
@@ -1585,12 +1647,14 @@ def _get_cost_data_from_athena(test_run_id):
 
         year, month, day = date_match.groups()
         run_date = datetime(int(year), int(month), int(day))
-        next_date = run_date + timedelta(days=1)
-        date_str = run_date.strftime("%Y-%m-%d")
-        next_date_str = next_date.strftime("%Y-%m-%d")
-        date_filter = f"AND date IN ('{date_str}', '{next_date_str}')"
+        run_date_str = run_date.strftime("%Y-%m-%d")
+        next_date_str = (run_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        date_filter = f"AND date IN ('{run_date_str}', '{next_date_str}')"
         logger.info(
-            f"Using date filter for cost query: date IN ('{date_str}', '{next_date_str}')"
+            f"Using date filter for cost query: date IN "
+            f"('{run_date_str}', '{next_date_str}') — bounded 2-day "
+            f"window prevents raw-metering S3 throttling; HITL "
+            f"long-tail completions are a Phase-2 refinement"
         )
 
     query = f"""
