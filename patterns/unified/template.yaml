@@ -3798,6 +3798,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -3819,7 +3822,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -3867,6 +3878,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -3913,7 +3927,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -3996,6 +4018,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -4013,7 +4038,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action: 
               - states:SendTaskSuccess
@@ -4238,6 +4271,11 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
+        # The rollup Lambda discovers stack membership via the native
+        # aws:cloudformation:stack-name tag; no idp:stack tag needed here.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4295,6 +4333,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4409,6 +4455,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4461,6 +4510,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4568,6 +4625,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4621,6 +4681,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4734,6 +4802,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4791,6 +4862,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4880,6 +4959,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4927,6 +5009,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5027,6 +5117,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc pipeline result stitching. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5073,6 +5166,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5122,6 +5223,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5179,6 +5283,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5349,6 +5461,10 @@ Resources:
       Timeout: 900
       MemorySize: 256
       Tracing: Active
+      Tags:
+        # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
+        # See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Role: !GetAtt PipelineHooksDispatcherFunctionRole.Arn
       Environment:
         Variables:
@@ -5403,6 +5519,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5459,6 +5578,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5541,6 +5668,13 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # any future emit from imported evaluation modules matches the
+          # PutMetricData IAM Condition below. Round-27 review fix
+          # (adversarial pass): this function's condition was in place
+          # but the env var was missing — currently latent (no put_metric
+          # call today) but a future addition would silently AccessDenied.
+          METRIC_NAMESPACE: !Ref StackName
           TRACKING_TABLE: !Ref TrackingTable
           OUTPUT_BUCKET: !Ref OutputBucket
       LoggingConfig:
@@ -5560,7 +5694,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Decrypt
@@ -5607,6 +5749,10 @@ Resources:
           - "index.handler"
       Timeout: 300
       MemorySize: 1024
+      Tags:
+        # Data plane — per-doc policy classification for rule validation.
+        # See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -5646,6 +5792,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5705,6 +5859,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule validation. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5762,6 +5919,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5849,6 +6014,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule-validation orchestration. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5908,6 +6076,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -6027,6 +6203,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - sagemaker-mlflow:*

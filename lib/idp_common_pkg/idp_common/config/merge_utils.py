@@ -745,14 +745,40 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if not model_id:
             continue
 
-        if resolve_model_id_from_arn(model_id) in valid_models:
+        resolved = resolve_model_id_from_arn(model_id)
+        if resolved in valid_models:
             continue
 
         if model_id.startswith("arn:"):
+            # Distinguish an unverifiable opaque resource (a legitimate
+            # application-inference-profile UUID / provisioned-throughput ARN
+            # whose underlying model can only be known via a Bedrock API call)
+            # from a probably-typo'd ARN whose resource DOES look like a
+            # model ID but doesn't match anything in valid_models. Round-7
+            # review fix; round-9 cleanup: dropped dead
+            # ``resolved.startswith("application-inference-profile/")`` and
+            # ``"provisioned-model/"`` guards — ``resolve_model_id_from_arn``
+            # strips those type prefixes, so ``resolved`` never carries
+            # them. UUIDs (which lack dots) fall through to the warning
+            # path naturally via the ``"." in resolved`` check.
+            _looks_like_model_id_shape = "." in resolved and not _looks_like_uuid(
+                resolved
+            )
+            if _looks_like_model_id_shape:
+                # The ARN resolved to a string that looks like a model ID
+                # (has family.name shape) but doesn't match — treat as a typo.
+                result["valid"] = False
+                result["errors"].append(
+                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"model ID ({resolved!r}) is not a known Bedrock model. This is "
+                    f"most likely a typo in the ARN's resource-id, partition, or "
+                    f"account. Full ARN: {model_id}"
+                )
+                continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN that does not resolve to a "
-                f"known model ID: {model_id}. Cost reporting needs a matching entry in "
-                f"the pricing configuration (config_library/pricing.yaml)."
+                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"model can't be determined offline: {model_id}. Cost reporting "
+                f"needs a matching entry in config_library/pricing.yaml."
             )
             continue
 
@@ -762,6 +788,20 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """Heuristic — reject values that look like a UUID (opaque application
+    inference profile IDs) from being treated as typo'd model IDs."""
+    import re
+
+    return bool(
+        re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            value,
+            re.I,
+        )
+    )
 
 
 def _validate_agentic_openai(
@@ -832,8 +872,16 @@ def _validate_discovery_openai(
     # Sub-sections that carry a per-section model: model_id for the class/auto
     # discovery sections, model for rules discovery.
     checks = [
-        ("discovery.without_ground_truth.model_id", discovery.get("without_ground_truth", {}), "model_id"),
-        ("discovery.with_ground_truth.model_id", discovery.get("with_ground_truth", {}), "model_id"),
+        (
+            "discovery.without_ground_truth.model_id",
+            discovery.get("without_ground_truth", {}),
+            "model_id",
+        ),
+        (
+            "discovery.with_ground_truth.model_id",
+            discovery.get("with_ground_truth", {}),
+            "model_id",
+        ),
         ("discovery.auto_split.model_id", discovery.get("auto_split", {}), "model_id"),
         ("discovery.rules.model", discovery.get("rules", {}), "model"),
     ]
