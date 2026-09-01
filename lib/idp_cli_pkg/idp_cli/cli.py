@@ -4872,6 +4872,23 @@ def config_revisions(
         sys.exit(1)
 
 
+def _profile_is_managed(client, profile: str) -> bool:
+    """
+    Whether `profile` is stack-managed, best effort.
+
+    Only consulted on the interactive path, so the extra listing costs nothing in
+    scripts. A failure here must never block a delete — the answer is advisory.
+    """
+    try:
+        return any(
+            v.version_name == profile and v.managed
+            for v in client.config.list().versions
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Could not determine whether {profile} is managed: {e}")
+        return False
+
+
 @cli.command(name="config-delete")
 @click.option(
     "--stack-name",
@@ -4900,8 +4917,13 @@ def config_delete(
     """
     Delete a configuration version from a deployed IDP stack
 
-    Removes the specified configuration version from DynamoDB.
-    Cannot delete the 'default' version or currently active versions.
+    Removes the specified configuration profile, and its revision history, from
+    the stack. Cannot delete the 'default' profile or the currently active one.
+
+    Unlike the Web UI, this can delete a **stack-managed** profile. That is
+    deliberate: an extension that installed profiles and was then uninstalled can
+    leave managed profiles behind, and the UI refuses them because normally the
+    owning stack would recreate them. You are warned before confirming.
 
     Examples:
       # Delete a version with confirmation
@@ -4918,15 +4940,27 @@ def config_delete(
         )
         console.print(f"Version: {config_version}")
 
+        client = IDPClient(stack_name=stack_name, region=region)
+
         # Confirmation prompt
         if not force:
+            # A stack-managed profile is the interesting case: the Web UI refuses to
+            # delete one, so anyone here is probably cleaning up after an extension
+            # that installed profiles and left them behind. Say which it is rather
+            # than deleting a built-in preset the next stack update would restore.
+            if _profile_is_managed(client, config_version):
+                console.print(
+                    f"[yellow]⚠ '{config_version}' is a stack-managed profile.[/yellow] "
+                    "If its owning stack (an extension, or this stack's built-in "
+                    "presets) is still installed, it will be recreated on the next "
+                    "update. Deleting is the right move only when that stack is gone."
+                )
             if not click.confirm(
-                f"Are you sure you want to delete configuration version '{config_version}'?"
+                f"Are you sure you want to delete configuration profile '{config_version}'?"
             ):
                 console.print("[yellow]Deletion cancelled[/yellow]")
                 return
 
-        client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.delete(config_version=config_version)
 
         if not result.success:

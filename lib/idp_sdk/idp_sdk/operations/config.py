@@ -558,6 +558,9 @@ class ConfigOperation:
                     if isinstance(v, dict)
                     else None,
                     description=v.get("description") if isinstance(v, dict) else None,
+                    managed=bool(v.get("managed") or False)
+                    if isinstance(v, dict)
+                    else False,
                     latest_revision=v.get("latestRevision")
                     if isinstance(v, dict)
                     else None,
