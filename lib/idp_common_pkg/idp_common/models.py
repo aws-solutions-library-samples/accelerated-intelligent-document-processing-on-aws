@@ -74,6 +74,21 @@ class Page:
     tables: List[Dict[str, Any]] = field(default_factory=list)
     forms: Dict[str, str] = field(default_factory=dict)
 
+    document_boundary: Optional[str] = None
+    """The classifier's per-page boundary signal: ``"start"`` (this page begins a
+    new document) or ``"continue"``. ``None`` means no signal was produced — the
+    model omitted it, or the code path never asked for one.
+
+    This is what ``sectionSplitting: llm_determined`` splits on, and it used to
+    be discarded immediately after use. That made an unexpected section merge
+    effectively un-auditable: section spans alone cannot distinguish "the model
+    said continue" from "the model said nothing" from "the code never asked",
+    and diagnosing GitHub #565 required re-deriving it from Lambda logs.
+    Persisting it keeps the decision inspectable after the fact.
+
+    ``None`` is not serialized, so documents written by older code — and page
+    records that never had a boundary — round-trip unchanged."""
+
 
 @dataclass
 class ProcessingIssue:
@@ -164,6 +179,22 @@ class Section:
     """Optional category (e.g., "instructions", "legal") carried over from
     the class configuration for UI/report display."""
 
+    instance_count: int = 0
+    """How many separate documents (instances) of this section's class the
+    extraction found in this section.
+
+    ``0`` means "not determined" — the default, so sections written by older
+    code (or whose extraction failed before producing a result) read back
+    unchanged. ``1`` is the normal case. ``> 1`` means the section spans
+    several distinct documents of the same class, which classification did not
+    split apart; the UI surfaces this so a multi-document section is visible at
+    a glance instead of silently collapsing to its first record.
+
+    Populated by ``ExtractionService`` from whichever of these applies:
+    the length of a class's declared instance array, or the number of records
+    recovered when the model returned a JSON array for a single-object schema.
+    """
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Section":
         """Create a Section from a dictionary representation."""
@@ -185,6 +216,7 @@ class Section:
             ],
             excluded=bool(data.get("excluded", False)),
             exclusion_reason=data.get("exclusion_reason"),
+            instance_count=int(data.get("instance_count") or 0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -205,6 +237,8 @@ class Section:
             result["processing_issues"] = [
                 pi.to_dict() for pi in self.processing_issues
             ]
+        if self.instance_count:
+            result["instance_count"] = self.instance_count
         return result
 
 
@@ -492,6 +526,10 @@ class Document:
                 "tables": page.tables,
                 "forms": page.forms,
             }
+            # Omitted when absent so payloads from before this existed — and
+            # pages that genuinely produced no boundary signal — are unchanged.
+            if page.document_boundary:
+                result["pages"][page_id]["document_boundary"] = page.document_boundary
 
         # Convert sections
         result["sections"] = []
@@ -516,6 +554,10 @@ class Document:
                 section_dict["excluded"] = True
                 if section.exclusion_reason:
                     section_dict["exclusion_reason"] = section.exclusion_reason
+            # Same convention: omit when undetermined (0) so existing payloads
+            # are byte-identical.
+            if section.instance_count:
+                section_dict["instance_count"] = section.instance_count
             result["sections"].append(section_dict)
 
         # Add rule_validation_result if present (optional)
@@ -598,6 +640,7 @@ class Document:
                 confidence=page_data.get("confidence", 0.0),
                 tables=page_data.get("tables", []),
                 forms=page_data.get("forms", {}),
+                document_boundary=page_data.get("document_boundary"),
             )
 
         # Convert sections
@@ -621,6 +664,7 @@ class Document:
                     ],
                     excluded=bool(section_data.get("excluded", False)),
                     exclusion_reason=section_data.get("exclusion_reason"),
+                    instance_count=int(section_data.get("instance_count") or 0),
                 )
             )
 

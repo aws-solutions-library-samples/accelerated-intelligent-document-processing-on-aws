@@ -159,7 +159,10 @@ classes:
           DateOfBirth:
             type: string
             format: date
-            description: Parent's date of birth (mm/dd/yyyy).
+            description: >-
+              Parent's date of birth. The form prints it as mm/dd/yyyy; return
+              it in ISO-8601 (YYYY-MM-DD) to match this field's declared date
+              format.
             x-aws-idp-evaluation-method: DATE
           PlaceOfBirth:
             type: string
@@ -182,7 +185,10 @@ classes:
       DateOfBirth:
         type: string
         format: date
-        description: Applicant's date of birth in mm/dd/yyyy (field 2).
+        description: >-
+          Applicant's date of birth (field 2). The form prints it as mm/dd/yyyy;
+          return it in ISO-8601 (YYYY-MM-DD) to match this field's declared date
+          format.
         x-aws-idp-evaluation-method: DATE
       Sex:
         type: string

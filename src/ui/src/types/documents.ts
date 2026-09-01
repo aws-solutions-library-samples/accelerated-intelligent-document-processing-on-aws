@@ -22,6 +22,13 @@ export interface Section {
   OutputJSONUri: string;
   ConfidenceThresholdAlerts: ConfidenceThresholdAlert[];
   ProcessingIssues?: ProcessingIssue[];
+  /**
+   * How many separate documents (instances) of this section's Class extraction
+   * found in it. Absent/0 = undetermined (older documents, or extraction that
+   * failed before producing a result), 1 = normal, >1 = the section spans
+   * several distinct documents classification did not split apart.
+   */
+  InstanceCount?: number | null;
 }
 
 export interface Page {

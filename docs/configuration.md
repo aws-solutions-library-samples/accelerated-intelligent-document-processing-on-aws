@@ -889,26 +889,29 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
-### Tiered Models for Agentic Extraction (Validation + Escalation)
+### Tiered Models (Validation + Escalation)
 
-Agentic extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.agentic.validation`:
+Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.validation`:
 
 ```yaml
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
-  agentic:
-    enabled: true
-    validation:
-      enabled: true
-      fail_action: escalate
-      escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
+  validation:
+    enabled: true                          # on by default since v0.7
+    fail_action: escalate                  # default is 'warn' (free); escalate costs money
+    escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> `extraction.validation` because Simple extraction runs the same validate-and-retry
+> path, so the setting is no longer agentic-only. Stored configurations are migrated
+> automatically on read — no action is required.
 
 When validation fails, only the failing top-level fields are re-extracted with `escalation_model` (a per-class `x-aws-idp-extraction-escalation-model` override takes precedence) and merged back — typically a small fraction of documents, so the stronger model's cost is incurred only where it's needed. See [Schema validation and model escalation](extraction-and-confidence.md#schema-validation-and-model-escalation) for the full feature, including the deterministic table-parsing tool, the completeness heuristic, and sharding for large documents.
 
-> The agentic options (validation, table parsing, sharding, escalation) are editable in the Web UI under **Configuration → Extraction → Agentic Extraction**, where sub-options are progressively revealed as you enable each feature.
+> Validation and escalation are editable in the Web UI under **Configuration → Extraction → Schema Validation & Escalation**; the Advanced-mode options (table parsing, sharding) are under **Advanced extraction settings**. Sub-options are progressively revealed as you enable each feature.
 
-> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `validation` + `escalation_model` above instead.
+> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `extraction.validation` + `escalation_model` above instead.
 
 ## Cost Tracking and Optimization
 

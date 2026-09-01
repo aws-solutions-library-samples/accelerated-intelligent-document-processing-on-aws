@@ -86,6 +86,12 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # checks behave the same as on the live document.
             "ConfidenceThresholdAlerts": s.get("ConfidenceThresholdAlerts") or [],
             "ProcessingIssues": _shape_processing_issues(s),
+            # Multi-instance count, snapshotted by create_document_run. This
+            # allow-list is explicit, so a key omitted here is silently dropped
+            # from every historical view — the same way the confidence alerts
+            # were once lost (see CHANGELOG). Runs recorded before this existed
+            # have no such key; 0 means "undetermined", matching the live doc.
+            "InstanceCount": int(s.get("InstanceCount") or 0),
         }
         for s in item.get("Sections", []) or []
     ]
@@ -96,6 +102,10 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "ImageUri": p.get("ImageUri"),
             "TextUri": p.get("TextUri"),
             "OcrPageDataUri": p.get("OcrPageDataUri"),
+            # Boundary signal snapshotted by create_document_run. Like the
+            # section allow-list above, an omitted key here is silently dropped
+            # from every historical view.
+            "Boundary": p.get("Boundary") or None,
         }
         for p in item.get("Pages", []) or []
     ]

@@ -483,6 +483,122 @@ extraction stub is authoritative). See the demo at
 
 ---
 
+## 2b. Output Correctness: Coercion, Validation & Multi-Document Sections
+
+Three things happen to an extraction result after the model returns it and before
+it is stored. All are configurable under **Configuration → Extraction** in the Web
+UI, so any of them can be turned off without a redeploy if it causes trouble.
+
+### Value coercion (`extraction.coercion`)
+
+Repairs type/format mismatches deterministically — **no model call, no cost**:
+
+| Input | Field type | Becomes |
+|-------|-----------|---------|
+| `"$1,234.00"` | `number` | `1234.0` |
+| `"1.234,56"` (European) | `number` | `1234.56` |
+| `"12.5%"` | `number` | `12.5` (magnitude preserved, **not** divided by 100) |
+| `"03/15/2024"` | `string` + `format: date` | `"2024-03-15"` |
+| `"March 15, 1980"` | `string` + `format: date` | `"1980-03-15"` |
+| `"Yes"` | `boolean` | `true` |
+
+Every change is recorded in the section's `metadata.coercion`, so nothing is
+silently rewritten and you can audit exactly what was changed and why.
+
+**What it refuses to do.** Anything genuinely ambiguous is left untouched and
+recorded as a refusal rather than guessed:
+
+- `"01/02/2024"` — January 2nd or February 1st? (`ambiguous_date`)
+- `"03/15/24"` — a 2-digit year cannot be assigned a century (1924 or 2024 matters
+  for a date of birth)
+- `"2024-03-15T09:00:00Z"` into a `date` field — dropping a time component is data loss
+- `"1,234.56"` into an `integer` field — rounding would discard data
+- Anything across a type family — never string→object, never a scalar wrapped in an array
+
+If your corpus has a known day/month convention, `date_order: MDY` or `DMY`
+resolves the all-numeric ambiguous case. It **never** overrides a value that is
+already unambiguous (a `15` cannot be a month whatever you set).
+
+> **How much does coercion actually change?** Measured on a live stack: modern
+> models (Claude Sonnet 4.6, Nova Lite) already return correctly-typed values for
+> scalar fields, so coercion often fires **zero** times and changes nothing. It
+> fires substantially on **long repetitive list rows** (81 coercions across
+> 100-row transaction lists in one benchmark), where model output drifts. Treat it
+> as a **safety net for messy output and non-format-tolerant consumers** — Athena
+> column typing, rule validation, API clients — rather than as an accuracy
+> improver. It did not move evaluation accuracy in either A/B we ran.
+
+### Schema validation (`extraction.validation`)
+
+Validates the result against the **full class JSON Schema** — most importantly the
+`format` keywords (`date`, `email`, `uri`, `uuid`) that type validation alone does
+not enforce. Runs on both Simple and Advanced extraction.
+
+`fail_action` decides what happens when validation fails:
+
+| `fail_action` | Behaviour | Extra inference? |
+|---|---|---|
+| `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
+| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
+| `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
+
+Validation is **on by default** precisely because the default action is free: it
+turns an otherwise-silent schema violation into something visible at no cost —
+the issue reaches the document list's **Processing Issues** column and the
+**Processing Report** tab, naming the failing fields and the first few concrete
+violations, so you do not have to open the section result JSON.
+`escalate` is the opt-in that spends money. Only the failing fields are
+re-extracted and only those are merged back, so an over-eager escalation cannot
+overwrite fields that already validated; if escalation fails, the original
+extraction is kept unchanged.
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
+> configurations are migrated automatically on read — no action required.
+
+### Multi-document sections (`instance_count`)
+
+Classification splits sections by document *type*. When a packet concatenates
+several records of the **same** type with no separator, there is no type change to
+split on, so they land in one section — and extraction, whose class schema
+describes one document, may return only the first record.
+
+Each section now reports an **instance count**, shown in the Sections panel:
+
+- blank (`-`) — not determined
+- `1` — the normal case
+- **`> 1`** — the section spans several distinct documents; hover for detail
+
+If a class's schema is **already modelled as a packet of records** (one top-level
+array, one element per record), name that array so the count can be derived:
+
+```yaml
+classes:
+  - $id: patient_packet
+    type: object
+    x-aws-idp-instance-array: records   # each element is one document
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+          properties:
+            patient_name: { type: string }
+```
+
+This changes nothing about extraction output — it only tells the pipeline which
+existing array is the instance axis — so it is safe to add to a working config.
+
+If the model returns a JSON **array** for a single-document schema, every record is
+now preserved (the first becomes the section result, the rest are recorded in
+`metadata.recovered_instances`) and the section is flagged for review rather than
+failed.
+
+> **Known limitation.** If the model returns a single object for a
+> several-document section, only that one record exists in the response and
+> nothing can recover the others. Use `x-aws-idp-instance-array` with a
+> packet-shaped class for those packets. Automatic list-schema synthesis is
+> tracked separately.
+
 ## 3. Confidence Assessment
 
 Confidence assessment produces a per-field confidence score (0.0–1.0) and an
@@ -1288,6 +1404,13 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
 
+A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+rather than the completeness checks:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
+
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:
 
@@ -1314,10 +1437,12 @@ list is populated, the check stays quiet — the detected tables plausibly belon
 that one, and an empty sibling may be genuinely absent.
 
 **This check needs no configuration.** It runs on every Advanced-mode section, and
-in particular it is *not* behind `extraction.agentic.validation.enabled` (which is
-off by default) — a guard against silent data loss that has to be switched on
-protects nobody who did not already know to look. Its only effect is one more agent
-turn; it can never fail a document.
+in particular it is *not* behind `extraction.validation.enabled` — a guard against
+silent data loss that has to be switched on protects nobody who did not already
+know to look. (That argument is also why `extraction.validation.enabled` itself now
+defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+turning validation off does not also disable a check that costs nothing.) Its only
+effect is one more agent turn; it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as
