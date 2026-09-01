@@ -87,11 +87,17 @@ s3_presign_client = boto3.client(
 # stock timeouts and this change is a no-op there rather than a new way to fail.
 #
 # botocore reads max_attempts as a RETRY count, so this is 2 total attempts:
-# worst case 2 x (3s connect + 8s read) = 22s, leaving room inside the budget for
-# the response to be built, with one retry kept for genuinely transient S3 errors
-# (503 SlowDown). read_timeout is per socket read rather than per operation, so 8s
-# of silence mid-transfer is far outside normal for the small LIST/GET responses
-# this resolver makes — S3 answers these in tens of milliseconds.
+# worst case 2 x (3s connect + 8s read) = 22s for a SINGLE call, plus standard-mode
+# backoff sleeps (rand(0,1) x min(2^i, 20)s), which are not in that 22s. This does
+# NOT bound the operation: getTestSets lists the bucket and makes ~4 more calls per
+# prefix, so a whole-operation bound would have to be a multiple of this. It is a
+# per-call guard against an unreachable endpoint stalling indefinitely, not a proof
+# the operation fits the 29s budget — that is the dispatcher's read bound
+# (_RESOLVER_READ_TIMEOUT_SECONDS), which returns a labelled 504 regardless of how
+# many calls this resolver makes. One retry is kept for genuinely transient S3
+# errors (503 SlowDown). read_timeout is per socket read rather than per operation,
+# so 8s of silence mid-transfer is far outside normal for the small LIST/GET
+# responses this resolver makes — S3 answers these in tens of milliseconds.
 _S3_DATAPLANE_BOUNDS = (
     {
         "connect_timeout": 3,

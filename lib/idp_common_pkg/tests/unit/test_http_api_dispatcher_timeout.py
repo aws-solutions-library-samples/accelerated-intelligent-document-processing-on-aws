@@ -14,11 +14,15 @@ So the resolver invoke is bounded just under the gateway budget. When it trips,
 the dispatcher owns the response: a 504 whose body names the field and the
 timeout, and a log line naming the resolver ARN.
 
-Retries are off on that client on purpose — botocore retries read timeouts, and a
-second full-length attempt cannot fit in the remaining budget (for a mutation it
-would also risk running the operation twice). Invoke-level throttling, the one
-retry worth keeping, is handled explicitly. These tests pin all of it, plus the
-template numbers the code assumes.
+Retries are off on that client on purpose, and that is asserted on the RESOLVED
+botocore config rather than on a stub — ``retries={"max_attempts": 1}`` means
+*two* attempts, not one, so a test that only exercises a monkeypatched client
+cannot tell the intended configuration from its opposite. botocore classifies a
+read timeout as transient, so a second attempt would both outlive the function's
+own Timeout (killing the labelled 504 before it can be returned) and run a
+concurrent duplicate of the resolver. Invoke-level throttling, the one retry worth
+keeping, is handled explicitly. These tests pin all of it, plus the template
+numbers the code assumes.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 
 pytestmark = pytest.mark.unit
 
@@ -58,15 +62,57 @@ def _load_module(name: str, path: Path):
 
 @pytest.fixture
 def idx(monkeypatch):
-    """The dispatcher module, with boto3 clients stubbed so import needs no AWS."""
+    """The dispatcher module, with boto3 clients stubbed so import needs no AWS.
+
+    The stub records the kwargs each ``boto3.client`` call was made with, so the
+    tests can assert on the *real* ``BotoConfig`` the module builds. Without that
+    record there is nothing to assert against: the stub replaces the client
+    wholesale, so ``idx._lambda`` has no ``.meta.config`` and the retry
+    configuration — the thing that decides whether the labelled 504 can ever be
+    returned — would be entirely untested.
+    """
     import boto3
 
-    monkeypatch.setattr(boto3, "client", lambda *a, **k: object())
+    created = {}
+
+    def _fake_client(service, *args, **kwargs):
+        created[service] = kwargs
+        return object()
+
+    monkeypatch.setattr(boto3, "client", _fake_client)
     if str(_DISPATCHER_DIR) not in sys.path:
         sys.path.insert(0, str(_DISPATCHER_DIR))
     _load_module("ddb_direct", _DISPATCHER_DIR / "ddb_direct.py")
     _load_module("validation", _DISPATCHER_DIR / "validation.py")
-    return _load_module("index", _DISPATCHER_DIR / "index.py")
+    mod = _load_module("index", _DISPATCHER_DIR / "index.py")
+    mod._test_client_kwargs = created
+    return mod
+
+
+def _resolved_lambda_config(idx):
+    """The dispatcher's own BotoConfig, resolved the way botocore resolves it.
+
+    ``retries`` is asserted on the RESOLVED config rather than the literal dict,
+    because botocore rewrites it: ``max_attempts`` is a RETRY count and becomes
+    ``total_max_attempts = N + 1``. Reading the literal would let
+    ``max_attempts: 1`` (two attempts) pass as "no retries". Building a real
+    client performs no network I/O; credentials and region are supplied so it
+    cannot depend on the environment.
+    """
+    import boto3
+
+    config = idx._test_client_kwargs["lambda"]["config"]
+    session = boto3.Session(
+        region_name="us-east-1",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+    return session.client("lambda", config=config).meta.config
+
+
+def _total_attempts(config) -> int:
+    retries = config.retries or {}
+    return retries.get("total_max_attempts") or retries["max_attempts"] + 1
 
 
 class _FakeLambda:
@@ -86,6 +132,10 @@ class _FakeLambda:
 
 def _read_timeout():
     return ReadTimeoutError(endpoint_url="https://lambda.us-east-1.amazonaws.com")
+
+
+def _connect_timeout():
+    return ConnectTimeoutError(endpoint_url="https://lambda.us-east-1.amazonaws.com")
 
 
 def _throttle():
@@ -156,6 +206,95 @@ class TestResolverTimeout:
             "if the invoke bound is not strictly under the 29s REST API Gateway "
             "integration timeout, API Gateway wins the race and the browser gets "
             "a bodiless 504 again"
+        )
+
+
+class TestConnectTimeout:
+    """A connect timeout must not read as an internal error.
+
+    connect_timeout raises ConnectTimeoutError, which is NOT a ReadTimeoutError,
+    so without its own branch it reaches the generic handler and the browser gets
+    500 InternalError for what is a timeout.
+    """
+
+    def test_connect_timeout_becomes_resolver_timeout(self, idx, monkeypatch):
+        monkeypatch.setattr(idx, "_lambda", _FakeLambda(_connect_timeout()))
+        with pytest.raises(idx.ResolverTimeout):
+            idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})
+
+    def test_connect_timeout_is_not_retried(self, idx, monkeypatch):
+        """The fault is persistent (networking), and a retry costs budget."""
+        fake = _FakeLambda(_connect_timeout())
+        monkeypatch.setattr(idx, "_lambda", fake)
+        with pytest.raises(idx.ResolverTimeout):
+            idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})
+        assert fake.calls == 1
+
+    def test_connect_timeout_does_not_blame_the_resolver(self, idx, monkeypatch):
+        """The resolver never started, so the message must not say it was slow."""
+        monkeypatch.setattr(idx, "_lambda", _FakeLambda(_connect_timeout()))
+        with pytest.raises(idx.ResolverTimeout) as excinfo:
+            idx._invoke_resolver(ARN, {"info": {"fieldName": "getTestSets"}})
+        assert "did not respond within" not in str(excinfo.value)
+
+    def test_handler_maps_it_to_504_not_500(self, idx, monkeypatch):
+        monkeypatch.setattr(idx, "_lambda", _FakeLambda(_connect_timeout()))
+        idx.FIELD_FUNCTION_MAP["addDocumentsToTestSet"] = ARN
+
+        resp = idx.handler(_http_event("getTestSets", {}))
+
+        assert resp["statusCode"] == 504
+        assert json.loads(resp["body"])["errors"][0]["errorType"] == "Timeout"
+
+
+class TestTheClientConfigItself:
+    """Asserted on the resolved config, not on a stub.
+
+    Every other test here monkeypatches ``idx._lambda``, which replaces the
+    botocore client wholesale and therefore bypasses the retry layer entirely.
+    Those tests prove the explicit loop behaves, but they pass identically whether
+    the client allows one attempt or ten — so the configuration that decides
+    whether the labelled 504 is reachable at all needs its own assertion here.
+    """
+
+    def test_exactly_one_attempt(self, idx):
+        config = _resolved_lambda_config(idx)
+        assert _total_attempts(config) == 1, (
+            "the resolver invoke must make exactly ONE attempt. botocore reads "
+            "`max_attempts` as a RETRY count and normalizes it to "
+            "`total_max_attempts = N + 1`, so `max_attempts: 1` silently means "
+            "two attempts: the second starts after the read bound has already "
+            "elapsed and is killed by the function Timeout before the "
+            "ReadTimeoutError handler can return the labelled 504, AND it runs a "
+            "concurrent duplicate of the resolver (a duplicate mutation for "
+            "copyToBaseline, startTestRun, deleteTests, ...). Write "
+            "`total_max_attempts: 1`."
+        )
+
+    def test_the_timeouts_are_the_ones_the_code_reasons_about(self, idx):
+        config = _resolved_lambda_config(idx)
+        assert config.read_timeout == idx._RESOLVER_READ_TIMEOUT_SECONDS
+        assert config.connect_timeout == idx._RESOLVER_CONNECT_TIMEOUT_SECONDS
+
+    def test_worst_case_leaves_room_for_cold_start_and_response(self, idx, resources):
+        """The bound is on OUR clock; API Gateway's 29s started before init.
+
+        Init is not free here (the idp_common layer, plus an SSM get_parameter for
+        FIELD_FUNCTION_MAP at import), and it is billed against API Gateway's
+        budget but not against this function's. So the invoke worst case must
+        leave slack, not merely fit.
+        """
+        config = _resolved_lambda_config(idx)
+        worst_case = _total_attempts(config) * (
+            config.connect_timeout + config.read_timeout
+        )
+        timeout = resources["HttpApiDispatcherFunction"]["Properties"]["Timeout"]
+
+        assert worst_case <= timeout - 5, (
+            f"worst-case invoke is {worst_case}s against a {timeout}s function "
+            "Timeout, leaving under 5s for cold-start init plus building the "
+            "response. On a cold start the labelled 504 then loses the race to "
+            "API Gateway in exactly the situation it exists for."
         )
 
 
@@ -240,28 +379,31 @@ class TestTransientInvokeErrorsAreRetried:
         assert fake.calls == 1
 
 
+@pytest.fixture(scope="module")
+def resources() -> dict:
+    """Resources from the nested api-resolvers template."""
+
+    class _CFNLoader(yaml.SafeLoader):
+        pass
+
+    def _cfn(loader, tag_suffix, node):
+        tag = "!" + tag_suffix
+        if isinstance(node, yaml.ScalarNode):
+            return {tag: loader.construct_scalar(node)}
+        if isinstance(node, yaml.SequenceNode):
+            return {tag: loader.construct_sequence(node)}
+        return {tag: loader.construct_mapping(node)}
+
+    _CFNLoader.add_multi_constructor("!", _cfn)
+    with open(_API_RESOLVERS / "template.yaml", "r", encoding="utf-8") as f:
+        # nosec B506 - _CFNLoader subclasses yaml.SafeLoader and only adds a
+        # no-op constructor for CFN intrinsic tags; input is this repo's own
+        # committed template.
+        return yaml.load(f, Loader=_CFNLoader)["Resources"]  # nosec B506
+
+
 class TestTemplateAgreesWithTheCode:
     """The code's assumptions are template numbers; drift breaks the guarantee."""
-
-    @pytest.fixture(scope="class")
-    def resources(self) -> dict:
-        class _CFNLoader(yaml.SafeLoader):
-            pass
-
-        def _cfn(loader, tag_suffix, node):
-            tag = "!" + tag_suffix
-            if isinstance(node, yaml.ScalarNode):
-                return {tag: loader.construct_scalar(node)}
-            if isinstance(node, yaml.SequenceNode):
-                return {tag: loader.construct_sequence(node)}
-            return {tag: loader.construct_mapping(node)}
-
-        _CFNLoader.add_multi_constructor("!", _cfn)
-        with open(_API_RESOLVERS / "template.yaml", "r", encoding="utf-8") as f:
-            # nosec B506 - _CFNLoader subclasses yaml.SafeLoader and only adds a
-            # no-op constructor for CFN intrinsic tags; input is this repo's own
-            # committed template.
-            return yaml.load(f, Loader=_CFNLoader)["Resources"]  # nosec B506
 
     def test_integration_timeout_is_explicit(self, resources):
         integration = resources["HttpApiMethod"]["Properties"]["Integration"]

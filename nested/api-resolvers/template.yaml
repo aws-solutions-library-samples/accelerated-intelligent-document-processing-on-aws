@@ -2790,9 +2790,11 @@ Resources:
       # exceeding it. A 60s timeout here bought nothing: API Gateway had already
       # abandoned the integration and answered the browser 504 at 29s, so the
       # remaining 31s was billed compute producing a response nobody could
-      # receive. The resolver invoke is bounded at 26s (see
+      # receive. The resolver invoke is bounded at 20s (see
       # _RESOLVER_READ_TIMEOUT_SECONDS in index.py) so the dispatcher returns a
-      # 504 *with a body* naming the slow field before either ceiling is hit.
+      # 504 *with a body* naming the slow field before either ceiling is hit —
+      # with headroom for cold-start init, which happens on API Gateway's clock
+      # but not on this function's.
       Timeout: 29
       Layers:
         - !Ref IDPCommonBaseLayerArn

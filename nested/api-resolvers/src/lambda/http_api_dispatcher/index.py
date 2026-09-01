@@ -34,7 +34,7 @@ from typing import Any, Dict
 import boto3
 import ddb_direct
 from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from validation import validate_arguments
 
 from idp_common.api_adapter import _http_response, normalize_event
@@ -49,26 +49,46 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # hung S3 data-plane call in the test-set resolver read as "Test Studio is
 # broken" with nothing to go on.
 #
-# Bounding the invoke just under the gateway budget lets US lose the race
-# instead: the resolver read times out at 26s, this Lambda returns a labelled
-# 504 naming the field, and the UI has something to show. The function's own
-# Timeout is 29s (see the nested template) so a slower path cannot outrun it
-# either way.
-_RESOLVER_READ_TIMEOUT_SECONDS = 26
+# Bounding the invoke under the gateway budget lets US lose the race instead: the
+# resolver read times out first, this Lambda returns a labelled 504 naming the
+# field, and the UI has something to show.
+#
+# 20s, not 26s. API Gateway's 29s clock starts when it dispatches the
+# integration, which is BEFORE this function's init — and init here is not free
+# (the idp_common base layer, plus an SSM get_parameter for FIELD_FUNCTION_MAP at
+# module import). On a cold start, init + the invoke bound + building the response
+# all have to fit in 29s, so a 26s bound leaves ~3s for all of it and the labelled
+# 504 loses the race in exactly the situation it exists for. 20s leaves real
+# headroom on the one clock we do not control.
+_RESOLVER_READ_TIMEOUT_SECONDS = 20
 
-# max_attempts=1 (no automatic retry) is deliberate. botocore retries a read
-# timeout, and a second 26s attempt cannot fit inside the 29s budget — it would
-# just replace the labelled 504 with a dead Lambda, and for a mutation it would
-# risk running the operation twice. The retries that DID matter — transient
-# invoke-level failures, which cost milliseconds rather than a full attempt — are
-# reissued explicitly in _invoke_resolver below, so turning botocore's retries
-# off does not make a healthy deployment more fragile.
+# Reaching the Lambda control plane is fast or not happening; a connect timeout
+# here means a networking fault (or a missing VPC endpoint), not a busy resolver.
+_RESOLVER_CONNECT_TIMEOUT_SECONDS = 3
+
+# total_max_attempts=1 means ONE attempt. This must not be written as
+# `max_attempts: 1` — botocore reads max_attempts as a RETRY count and normalizes
+# it to `total_max_attempts: 2`, i.e. the opposite of what is wanted here. (The
+# S3 clients in test_set_resolver/upload_resolver use `max_attempts` deliberately
+# and do want 2 attempts; this client does not.)
+#
+# One attempt is required, not merely preferred. botocore classifies
+# ReadTimeoutError as transient (it subclasses HTTPClientError), so a second
+# attempt would (a) start after the first 20s window plus jitter and be killed by
+# the 29s function Timeout before the ReadTimeoutError handler below could return
+# the labelled 504, and (b) run a second concurrent copy of the resolver — a
+# duplicate mutation for the long-running fields (copyToBaseline, startTestRun,
+# syncBdaIdp, deleteTests, addDocumentsToTestSet, …) whose own Timeout exceeds
+# this bound. The retries that DO matter — invoke-level failures that never ran
+# the resolver, costing milliseconds rather than a full attempt — are reissued
+# explicitly in _invoke_resolver below, so turning botocore's retries off does not
+# make a healthy deployment more fragile.
 _lambda = boto3.client(
     "lambda",
     config=BotoConfig(
-        connect_timeout=3,
+        connect_timeout=_RESOLVER_CONNECT_TIMEOUT_SECONDS,
         read_timeout=_RESOLVER_READ_TIMEOUT_SECONDS,
-        retries={"mode": "standard", "max_attempts": 1},
+        retries={"mode": "standard", "total_max_attempts": 1},
     ),
 )
 _ssm = boto3.client("ssm")
@@ -244,6 +264,27 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
             )
             raise ResolverTimeout(
                 f"resolver did not respond within {_RESOLVER_READ_TIMEOUT_SECONDS}s"
+            ) from e
+        except ConnectTimeoutError as e:
+            # We never reached the Lambda service, so the resolver did NOT run.
+            # This is still a gateway-timeout condition rather than an internal
+            # error, so report 504 — with a message that does not blame the
+            # resolver, which never started — instead of letting it fall through
+            # to the generic 500 handler.
+            #
+            # Deliberately NOT retried, even though reissuing would be safe here:
+            # a connect timeout to the Lambda control plane means a networking
+            # fault (missing VPC endpoint, security-group ingress), which is
+            # persistent, so a second attempt almost never succeeds and would add
+            # its 3s to a budget the read timeout below already spends 20s of.
+            logger.error(
+                "Could not connect to the Lambda service to invoke %s within %ss; "
+                "returning 504",
+                function_arn,
+                _RESOLVER_CONNECT_TIMEOUT_SECONDS,
+            )
+            raise ResolverTimeout(
+                "could not reach the Lambda service to start the resolver"
             ) from e
         except ClientError as e:
             if attempt == 2 or not _is_retryable_invoke_error(e):
