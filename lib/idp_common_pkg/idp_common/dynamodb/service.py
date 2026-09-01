@@ -1124,6 +1124,12 @@ class DocumentDynamoDBService:
         # (patterns/unified/src/extraction_function/index.py:367), so without
         # this the section status icon stayed blank until the collate step
         # rewrote the full document.
+        #
+        # The truthiness guard is what CLEARS the attribute when a re-run resolved
+        # every issue: the caller already replaced its own stage's issues (see
+        # ExtractionService._save_results), so an empty list here means "nothing to
+        # report", and a full-map replace with the key omitted deletes the stale
+        # value. Do not "fix" this into an unconditional write of `[]`.
         if section.processing_issues:
             section_data["ProcessingIssues"] = serialize_processing_issues(section)
 

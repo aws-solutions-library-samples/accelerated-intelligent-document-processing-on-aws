@@ -25,7 +25,12 @@ classes:
         properties:
           Date:
             format: date
-            description: Transaction date (MM/DD/YYYY)
+            # `format: date` means ISO-8601, so the description must ask for
+            # ISO-8601. It used to ask for MM/DD/YYYY, which contradicted the
+            # schema: with coercion on, unambiguous rows were rewritten to ISO
+            # and ambiguous ones (day <= 12) were left alone, so a single column
+            # ended up holding both conventions.
+            description: Transaction date in ISO-8601 format (YYYY-MM-DD)
             x-aws-idp-confidence-threshold: "0.9"
             type: string
             x-aws-idp-evaluation-method: DATE

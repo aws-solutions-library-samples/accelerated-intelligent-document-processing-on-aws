@@ -382,3 +382,80 @@ class TestNewerStampIsNotDowngraded:
     def test_unparseable_stamp_is_treated_as_predating_versioning(self):
         out = migrate_config({"config_format_version": "not-a-version"})
         assert out["config_format_version"] == TARGET_VERSION
+
+
+class TestVersionComparatorIsShared:
+    """One ordering rule, one implementation.
+
+    Rollback detection in ``src/lambda/update_configuration`` and the
+    never-downgrade guard in the migrations must agree about which stamp is
+    newer. Two copies of that rule is how they stop agreeing — the repo already
+    learned this with the config-scope matcher (one module + a drift test).
+    """
+
+    def test_update_configuration_delegates_to_the_shared_parser(self):
+        import importlib.util
+        import pathlib
+
+        from idp_common.config.migrations._version import parse_version
+
+        # tests/unit/config -> tests/unit -> tests -> idp_common_pkg -> lib -> repo
+        repo = pathlib.Path(__file__).resolve().parents[5]
+        path = repo / "src/lambda/update_configuration/index.py"
+        if not path.exists():  # pragma: no cover - packaged install, not a checkout
+            pytest.skip(f"{path} not present in this layout")
+        source = path.read_text()
+        assert "from idp_common.config.migrations._version import parse_version" in (
+            source
+        ), "update_configuration must not re-implement the version comparison"
+
+        spec = importlib.util.spec_from_file_location("_uc_index", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        for stamp in ("0.6", "0.7", "0.10", "1.0", "0.7.1"):
+            assert mod._parse_format_version(stamp) == parse_version(stamp), stamp
+        # The adapter's only difference: unknown reads as the oldest format.
+        for blank in (None, "", "nonsense"):
+            assert mod._parse_format_version(blank) == (0,), blank
+            assert parse_version(blank) is None, blank
+
+
+class TestFloatStampIsNotGuessedAt:
+    """An unquoted YAML stamp has already lost its trailing zero.
+
+    ``config_format_version: 0.10`` parses to the float ``0.1`` before any of
+    this code runs, so `0.10` and `0.1` are indistinguishable here. Reading it
+    anyway would silently mis-order every minor version >= 10; treating it as
+    unversioned makes the next write normalize it to a proper string.
+    """
+
+    def test_float_stamp_parses_to_none(self):
+        from idp_common.config.migrations._version import parse_version
+
+        assert parse_version(0.10) is None
+        assert parse_version(0.7) is None
+
+    def test_string_and_int_stamps_still_parse(self):
+        from idp_common.config.migrations._version import parse_version
+
+        assert parse_version("0.10") == (0, 10)
+        assert parse_version("0.7") == (0, 7)
+        assert parse_version(1) == (1,)
+
+    def test_bool_is_not_read_as_an_int(self):
+        from idp_common.config.migrations._version import parse_version
+
+        assert parse_version(True) is None
+
+    def test_a_float_stamped_config_is_normalized_to_a_string(self):
+        out = migrate_config({"config_format_version": 0.10})
+        assert out["config_format_version"] == TARGET_VERSION
+        assert isinstance(out["config_format_version"], str)
+
+    def test_ten_is_ordered_above_seven_when_quoted(self):
+        from idp_common.config.migrations._version import is_newer_than
+
+        assert is_newer_than("0.10", "0.7") is True
+        assert is_newer_than("0.7", "0.10") is False

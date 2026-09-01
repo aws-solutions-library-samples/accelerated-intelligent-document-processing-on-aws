@@ -2308,6 +2308,69 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     details={"short_lists": short_lists, "agentic": is_agentic},
                 )
             )
+
+        # 5) The extraction result still violates the class JSON Schema.
+        #
+        # This is what makes `fail_action: warn` — the default, and the whole
+        # justification for turning validation ON by default — actually deliver
+        # something. Without it the outcome landed only in
+        # `metadata.validation` inside the section result JSON: no section status
+        # icon, nothing in the document list's Processing Issues column, nothing
+        # in the Processing Report. "Free and makes an otherwise-silent violation
+        # visible" was only half true; the violation was still silent.
+        #
+        # Applies to BOTH modes (agentic writes the same metadata block). Severity
+        # follows fail_action, because that is what the deployment decided the
+        # outcome MEANS: `reject` already failed the section, so `error`; `warn`
+        # and `escalate` leave the data in place, so `warning`.
+        validation = metadata.get("validation")
+        if isinstance(validation, dict) and validation.get("valid") is False:
+            failed = [str(f) for f in (validation.get("failed_fields") or [])]
+            error_count = int(validation.get("error_count") or 0)
+            fail_action = str(validation.get("fail_action") or "warn")
+            escalated = bool(validation.get("escalated"))
+            named = ", ".join(failed[:8]) or "unnamed fields"
+            if len(failed) > 8:
+                named += f", +{len(failed) - 8} more"
+            if fail_action == "reject":
+                consequence = (
+                    " The section is marked FAILED because Fail Action is 'reject'."
+                )
+            elif escalated:
+                consequence = (
+                    " Re-extraction with the escalation model did not resolve it;"
+                    " the values are stored as extracted."
+                )
+            else:
+                consequence = " The values are stored as extracted."
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="error" if fail_action == "reject" else "warning",
+                    code="extraction_validation_failed",
+                    message=(
+                        f"{error_count} schema violation(s) remain after "
+                        f"extraction, affecting: {named}.{consequence}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"full-schema validation failed (fail_action={fail_action})"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "failed_fields": failed[:20],
+                        "error_count": error_count,
+                        "fail_action": fail_action,
+                        "escalated": escalated,
+                        # The first few concrete messages, so the issue is
+                        # actionable without opening the section result JSON.
+                        "errors": (validation.get("errors") or [])[:5],
+                        "agentic": is_agentic,
+                    },
+                )
+            )
         return issues
 
     def _build_processing_flow(
@@ -3068,6 +3131,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 logger.warning(
                     "Escalation response was not a usable object; keeping the "
                     "original extraction"
+                )
+                return extracted_fields, report, response.get("metering", {})
+
+            # In integrated (1S-TopK) confidence mode the original content carries
+            # the top-K task prompt, so the escalation model may answer in the
+            # {"G1": ..., "P1": ...} candidate shape even though the corrective
+            # instruction asked for plain values. Merging that in would write a
+            # candidate object over an already-resolved value, and the confidence
+            # split has already run — so resolve_candidates would never unwrap it
+            # and the field would reach storage as an object. Keep the original.
+            if is_topk_response(corrected):
+                logger.warning(
+                    "Escalation answered in the top-K candidate shape rather than "
+                    "plain values; keeping the original extraction"
                 )
                 return extracted_fields, report, response.get("metering", {})
 
@@ -3912,11 +3989,37 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if parsing_succeeded and isinstance(extracted_fields, dict):
                 extracted_fields = self._filter_extracted_to_schema(extracted_fields)
 
+            # Non-agentic INTEGRATED confidence: the single extraction inference
+            # was asked (via the 1S-TopK prompt) to return, per field, its top-K
+            # guesses with probabilities (G1/P1 … GK/PK). Split it so
+            # inference_result holds only the values (G1) and the confidence (P1)
+            # rides in metering under the same marker the agentic path uses
+            # (lifted in _save_results). This lets the standalone Assessment step
+            # be skipped (no 2nd pass); a flat response with no candidates passes
+            # through untouched so the standalone step runs as the fallback.
+            if self._integrated_assessment_enabled() and isinstance(
+                extracted_fields, dict
+            ):
+                extracted_fields = self._split_inline_confidence(
+                    extracted_fields, metering
+                )
+
             # Deterministic type/format repair, then full-schema validation.
-            # Order matters: coercion first, so validation only reports what could
-            # NOT be fixed for free. Both run before the integrated-confidence
-            # split below, which reshapes the dict into values + candidates and
-            # would no longer match the class schema.
+            #
+            # Order matters twice over. Coercion before validation, so validation
+            # only reports what could NOT be fixed for free. And BOTH after the
+            # integrated-confidence split above: before it, a 1S-TopK response is
+            # {field: {"G1": ..., "P1": ...}} — candidate objects, not values — so
+            # coercion would refuse every field as a type-family mismatch (a
+            # silent no-op) and validation would report every field as failing.
+            # At the shipped default (validation on, fail_action=warn) that is
+            # 100% false failures on every section, which buries the real
+            # violations this exists to surface; under `reject` every section
+            # fails; under `escalate` every field of every section is re-extracted
+            # with the stronger model, and the plain value merged back would
+            # corrupt the candidate shape resolve_candidates reads. The split
+            # leaves resolved values that match the class schema, which is exactly
+            # what both steps expect.
             if parsing_succeeded and isinstance(extracted_fields, dict):
                 extracted_fields, coercion_metadata = self._coerce_simple_result(
                     extracted_fields
@@ -3939,21 +4042,6 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
                 if validation_metadata is not None:
                     self._pending_validation_metadata = validation_metadata
-
-            # Non-agentic INTEGRATED confidence: the single extraction inference
-            # was asked (via the 1S-TopK prompt) to return, per field, its top-K
-            # guesses with probabilities (G1/P1 … GK/PK). Split it so
-            # inference_result holds only the values (G1) and the confidence (P1)
-            # rides in metering under the same marker the agentic path uses
-            # (lifted in _save_results). This lets the standalone Assessment step
-            # be skipped (no 2nd pass); a flat response with no candidates passes
-            # through untouched so the standalone step runs as the fallback.
-            if self._integrated_assessment_enabled() and isinstance(
-                extracted_fields, dict
-            ):
-                extracted_fields = self._split_inline_confidence(
-                    extracted_fields, metering
-                )
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for extraction: {total_duration:.2f} seconds")
@@ -4700,9 +4788,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             section_id=section_id,
         )
 
-        if section_issues:
-            section.processing_issues = section_issues
-            metadata["processing_issues"] = [pi.to_dict() for pi in section_issues]
+        # Replace the issues THIS step owns, unconditionally — including with an
+        # empty list. A re-extraction starts from the restored section, which still
+        # carries the previous run's warnings, so a guarded write left a stale
+        # "list came back empty" on a section this run extracted correctly. Issues
+        # from other stages (OCR, classification) are preserved: the DynamoDB
+        # writer replaces the whole section map, so dropping them here would
+        # delete them.
+        owned_stages = {"extraction", "assessment"}
+        preserved = [
+            issue
+            for issue in (section.processing_issues or [])
+            if getattr(issue, "stage", None) not in owned_stages
+        ]
+        section.processing_issues = preserved + section_issues
+        if section.processing_issues:
+            metadata["processing_issues"] = [
+                pi.to_dict() for pi in section.processing_issues
+            ]
+        else:
+            metadata.pop("processing_issues", None)
 
         # Normalized processing-flow summary: ONE object capturing every stage
         # decision so the report (text + UI graph) depicts the whole path

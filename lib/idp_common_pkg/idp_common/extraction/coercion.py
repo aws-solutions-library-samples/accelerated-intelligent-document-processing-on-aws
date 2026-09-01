@@ -324,6 +324,26 @@ def _valid_grouping(digits: str, sep: str) -> bool:
 _MAX_NUMERIC_DIGITS = 4000
 
 
+def _finite_float(
+    int_part: str, frac_part: str, notes: list[str]
+) -> tuple[float | None, str]:
+    """Build a float from an integer/fraction pair, refusing a non-finite result.
+
+    Every ``float()`` in this module goes through here. The digit cap is ~4000 but
+    a float overflows to ``inf`` above ~309 digits, and ``inf`` is not
+    JSON-serializable (``json.dumps`` emits the bare token ``Infinity``, which
+    ``JSON.parse`` rejects) nor convertible to a DynamoDB ``Decimal`` — so a
+    coercion that produced one would break the write instead of repairing a value.
+    """
+    parsed = float(int_part + "." + frac_part)
+    if not math.isfinite(parsed):
+        return None, (
+            "value overflows a float — refusing rather than storing a "
+            "non-serializable infinity"
+        )
+    return parsed, "; ".join(notes)
+
+
 def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
     """Parse a sign-free, symbol-free numeric body into an ``int``/``float``.
 
@@ -384,7 +404,7 @@ def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
             f"'{group_sep}' read as thousands separator, "
             f"'{decimal_sep}' as decimal separator"
         )
-        return float(head.replace(group_sep, "") + "." + tail), "; ".join(notes)
+        return _finite_float(head.replace(group_sep, ""), tail, notes)
 
     for sep in (",", "."):
         if sep not in body:
@@ -414,10 +434,7 @@ def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
             )
             return int(head + tail), "; ".join(notes)
         notes.append(f"'{sep}' read as decimal separator")
-        parsed = float(head + "." + tail)
-        if not math.isfinite(parsed):
-            return None, "value overflows a float"
-        return parsed, "; ".join(notes)
+        return _finite_float(head, tail, notes)
 
     if not body.isdigit():
         return None, "not a plain decimal number"

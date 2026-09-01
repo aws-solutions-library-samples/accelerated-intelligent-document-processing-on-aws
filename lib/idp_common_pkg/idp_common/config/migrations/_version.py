@@ -12,7 +12,10 @@ version rather than a hypothetical.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def parse_version(value: Any) -> Tuple[int, ...] | None:
@@ -21,8 +24,24 @@ def parse_version(value: Any) -> Tuple[int, ...] | None:
     Returns ``None`` for an absent, blank or unparseable stamp — which callers
     treat as "predates versioning", the correct reading for a config written
     before the field existed.
+
+    A **float** is rejected rather than read. The stamp is a string everywhere in
+    this codebase and every committed config quotes it, but unquoted YAML would
+    parse ``0.10`` to the float ``0.1`` *before* this function ever sees it — the
+    trailing zero is already gone, so ``0.10`` and ``0.1`` are indistinguishable
+    here. Guessing would silently mis-order minor versions ≥ 10; treating it as
+    unparseable makes the next write normalize it to a proper string.
     """
-    if value is None:
+    if value is None or isinstance(value, bool) or isinstance(value, float):
+        if isinstance(value, float):
+            logger.warning(
+                "config_format_version %r is a float, not a string — an unquoted "
+                "YAML stamp loses its trailing zero, so it cannot be ordered "
+                "reliably. Treating it as unversioned; quote the value.",
+                value,
+            )
+        return None
+    if not isinstance(value, (str, int)):
         return None
     text = str(value).strip()
     if not text:

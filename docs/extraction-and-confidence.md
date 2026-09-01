@@ -538,12 +538,15 @@ not enforce. Runs on both Simple and Advanced extraction.
 
 | `fail_action` | Behaviour | Extra inference? |
 |---|---|---|
-| `warn` (default) | Records the outcome and raises a section warning; the data is kept | **No — free** |
-| `reject` | Same, plus marks the section failed so downstream/HITL can act | **No — free** |
+| `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
+| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
 | `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
 
 Validation is **on by default** precisely because the default action is free: it
-turns an otherwise-silent schema violation into something visible at no cost.
+turns an otherwise-silent schema violation into something visible at no cost —
+the issue reaches the document list's **Processing Issues** column and the
+**Processing Report** tab, naming the failing fields and the first few concrete
+violations, so you do not have to open the section result JSON.
 `escalate` is the opt-in that spends money. Only the failing fields are
 re-extracted and only those are merged back, so an over-eager escalation cannot
 overwrite fields that already validated; if escalation fails, the original
@@ -1400,6 +1403,13 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+
+A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+rather than the completeness checks:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
 
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:

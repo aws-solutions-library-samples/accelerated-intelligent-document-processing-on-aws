@@ -106,3 +106,84 @@ def test_multiple_classes_only_the_bad_one_fails():
     with pytest.raises(ValidationError) as exc:
         IDPConfig(classes=[good, bad])
     assert "other_packet" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# $ref-declared record lists
+#
+# Found in review of #694: the validator type-checked the raw property node, so a
+# record list declared as {"$ref": "#/$defs/RecordList"} — the idiom the UI schema
+# editor and several shipped presets use for a reusable record type — was
+# rejected outright. The runtime resolver does not care about the schema shape at
+# all (it reads the extracted list's length), so this was a false rejection, and
+# a HARD config-load failure at that: worse than the silent no-op the validator
+# exists to prevent.
+# --------------------------------------------------------------------------
+
+_RECORD = {"type": "object", "properties": {"patient_name": {"type": "string"}}}
+
+
+def test_ref_declared_array_is_accepted():
+    cfg = IDPConfig(
+        classes=[
+            {
+                "$id": "patient_packet",
+                "type": "object",
+                KEY: "records",
+                "$defs": {"RecordList": {"type": "array", "items": _RECORD}},
+                "properties": {"records": {"$ref": "#/$defs/RecordList"}},
+            }
+        ]
+    )
+    assert cfg.classes[0][KEY] == "records"
+
+
+def test_ref_chain_is_followed():
+    cfg = IDPConfig(
+        classes=[
+            {
+                "$id": "patient_packet",
+                "type": "object",
+                KEY: "records",
+                "$defs": {
+                    "Outer": {"$ref": "#/$defs/RecordList"},
+                    "RecordList": {"type": "array", "items": _RECORD},
+                },
+                "properties": {"records": {"$ref": "#/$defs/Outer"}},
+            }
+        ]
+    )
+    assert cfg.classes[0][KEY] == "records"
+
+
+def test_ref_to_a_non_array_is_still_rejected():
+    """Dereferencing must not weaken the check into a rubber stamp."""
+    with pytest.raises(ValidationError) as exc:
+        IDPConfig(
+            classes=[
+                {
+                    "$id": "patient_packet",
+                    "type": "object",
+                    KEY: "records",
+                    "$defs": {"NotAList": {"type": "string"}},
+                    "properties": {"records": {"$ref": "#/$defs/NotAList"}},
+                }
+            ]
+        )
+    assert "it must be an array" in str(exc.value)
+
+
+def test_unresolvable_ref_falls_back_to_checking_the_node_itself():
+    """A dangling $ref cannot be proven to be an array, so it is still rejected."""
+    with pytest.raises(ValidationError) as exc:
+        IDPConfig(
+            classes=[
+                {
+                    "$id": "patient_packet",
+                    "type": "object",
+                    KEY: "records",
+                    "properties": {"records": {"$ref": "#/$defs/Missing"}},
+                }
+            ]
+        )
+    assert "it must be an array" in str(exc.value)

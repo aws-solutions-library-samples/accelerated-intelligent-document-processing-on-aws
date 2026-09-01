@@ -2772,6 +2772,7 @@ class IDPConfig(BaseModel):
             X_AWS_IDP_DOCUMENT_TYPE,
             X_AWS_IDP_INSTANCE_ARRAY,
         )
+        from idp_common.config.schema_utils import deref_schema
 
         for doc_class in v:
             if not isinstance(doc_class, dict):
@@ -2801,6 +2802,16 @@ class IDPConfig(BaseModel):
                     f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
                     f"'{prop_name}', whose schema is not an object"
                 )
+            # Resolve a local $ref first. Declaring the record list as
+            # {"$ref": "#/$defs/RecordList"} is the idiom the UI schema editor and
+            # several shipped presets use for a reusable record type, and the
+            # runtime resolver does not care (it just reads the extracted list's
+            # length). Type-checking the un-dereferenced node would reject a
+            # perfectly valid schema — and reject it as a HARD config-load
+            # failure, which is worse than the silent no-op this validator exists
+            # to prevent. deref_schema returns the node as-is when the $ref cannot
+            # be resolved, so an unresolvable ref is still type-checked.
+            prop_schema = deref_schema(prop_schema, doc_class)
             if prop_schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
                 raise ValueError(
                     f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
