@@ -8194,6 +8194,11 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -8647,6 +8652,11 @@ Resources:
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: "8080"
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           # --- Shared / doc-chat processor env (mirrors ChatWithDocumentProcessorFunction) ---
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -11114,6 +11124,11 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           DISCOVERY_BUCKET: !Ref DiscoveryBucket
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -11376,6 +11391,14 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # future Bedrock emits from idp_common.bedrock.client match
+          # the PutMetricData IAM Condition below. BlueprintOptimization
+          # currently only calls BDA APIs (which don't emit via
+          # _put_metric), but any future call through the Bedrock
+          # client would silently AccessDenied without this pin
+          # (round-27 review fix, defensive alignment).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           APPSYNC_API_URL: ""
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           STACK_NAME: !Ref AWS::StackName

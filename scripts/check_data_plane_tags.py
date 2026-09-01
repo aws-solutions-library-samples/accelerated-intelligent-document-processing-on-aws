@@ -24,8 +24,9 @@ Exit code:
 from __future__ import annotations
 
 import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 try:
     import yaml
@@ -178,12 +179,28 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+@lru_cache(maxsize=None)
+def _load_template_resources(path: Path) -> Dict[str, Any]:
+    """Parse a CloudFormation template once and cache the Resources map.
+
+    Both `_check_allowlisted_lambda` (called ~23× per invocation, one
+    per DATA_PLANE_ALLOWLIST entry) and `_check_inverse_drift` used to
+    call `yaml.load(path.read_text())` on the same 12k-line
+    `template.yaml` — parsing it dozens of times. The linter runs on
+    every push in CI, so the caching cuts fastlint runtime measurably
+    while keeping the exact same behavior.
+    """
+    if not path.exists():
+        return {}
+    template = yaml.load(path.read_text(), Loader=_cfn_tag_loader())
+    return (template or {}).get("Resources", {}) or {}
+
+
 def _check_allowlisted_lambda(path: Path, logical_id: str) -> List[str]:
     """Ensure an allowlisted data-plane Lambda exists AND carries the tag."""
     if not path.exists():
         return [f"{_display_path(path)}: template file not found"]
-    template = yaml.load(path.read_text(), Loader=_cfn_tag_loader())
-    resources = (template or {}).get("Resources", {}) or {}
+    resources = _load_template_resources(path)
     resource = resources.get(logical_id)
     if resource is None:
         return [
@@ -213,8 +230,7 @@ def _check_inverse_drift() -> List[str]:
     for template_path in {MAIN_TEMPLATE, UNIFIED_TEMPLATE}:
         if not template_path.exists():
             continue
-        template = yaml.load(template_path.read_text(), Loader=_cfn_tag_loader())
-        resources = (template or {}).get("Resources", {}) or {}
+        resources = _load_template_resources(template_path)
         expected = allowlisted_by_template.get(template_path, set())
         for logical_id, resource in resources.items():
             if not isinstance(resource, dict):

@@ -1424,9 +1424,17 @@ def _get_cw_metrics_for_function(
     is the sole emitter, so the dimension shape is contractual.
 
     Transient CloudWatch errors (Throttling, ServiceUnavailable) are
-    re-raised so the caller can abort the whole rollup and let Lambda's
-    async retry replay the hour — dropping a Lambda's row silently would
-    hide the outage forever behind the per-partition idempotency skip.
+    re-raised from this helper; the caller (`_rollup_control_plane_hourly`)
+    catches per-function exceptions and drops that Lambda's rows from the
+    hour rather than aborting the whole rollup — round-13 review fix,
+    per-function isolation so one throttled Lambda doesn't hide the
+    entire fleet's hour. Per-function failures are logged as
+    ``logger.warning`` (log-only, no custom metric). The DLQ signal
+    fires ONLY when *every* function fails AND zero rows are produced
+    (see the ``RuntimeError`` raise in ``_rollup_control_plane_hourly``
+    below) — Lambda's async retry then delivers to the rollup DLQ,
+    so a full CloudWatch outage doesn't hide silently behind the
+    per-partition idempotency skip.
     """
     query = [
         {

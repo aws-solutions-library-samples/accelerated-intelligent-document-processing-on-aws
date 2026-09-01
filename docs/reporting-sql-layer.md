@@ -77,7 +77,7 @@ error text, and wall-clock duration are in the tracking DynamoDB
 table, not in Athena. A future `document_lifecycle` table (Phase 2)
 would move these into the SQL layer for KPI queries.
 
-**All five tables are append-only.** A partition is written once and
+**All six tables are append-only.** A partition is written once and
 never rewritten. The write-time partitioning of `metering` (see §2.3)
 means metering rows never land in past partitions, so no
 `INSERT OVERWRITE` / trailing-window / Iceberg complexity is needed.
@@ -231,9 +231,16 @@ pure overhead.
 **Population — same rollup Lambda that writes the metering rollups.**
 Every hour, for the sealed hour N-1:
 
-1. Discover control-plane Lambda ARNs via
-   `resourcegroupstaggingapi:GetResources` — every Lambda in the
-   stack that does *not* carry `idp:plane=data` (see §10.3).
+1. Discover control-plane Lambda ARNs via a two-stage walk:
+   first `cloudformation:ListStackResources` on the root stack and
+   its nested-stack children (`_enumerate_stack_tree` — needed
+   because nested-stack Lambdas carry the nested stack's
+   `aws:cloudformation:stack-name` tag, not the root's, and a
+   pure-tag query on the root name would miss most of the fleet),
+   then `resourcegroupstaggingapi:GetResources` filtered on the
+   discovered stack names (`_get_resources_by_tag`). Every Lambda
+   in the stack tree that does *not* carry `idp:plane=data` (see
+   §10.3) is treated as control-plane.
 2. For each ARN, call CloudWatch `GetMetricData`:
    - `AWS/Lambda/Duration` and `Invocations` (native, all Lambdas)
    - `IDPControlPlane/AthenaBytesScanned` (custom, emitted by

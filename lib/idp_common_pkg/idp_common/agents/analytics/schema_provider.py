@@ -127,12 +127,17 @@ question like "cost this month" scans a few hundred rows instead of
 millions. See `docs/reporting-sql-layer.md`.
 
 - **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`,
-  `config_version`, `service_api`, `unit`. Columns: `sum_value`,
-  `sum_cost`, `n_docs`, `sum_pages`. Partitioned by `date`.
-- **`metering_daily`** — same shape, aggregated to the day grain.
-- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain volume
-  (`n_docs`, `sum_pages`) per `config_version`. Use these for
-  "how many docs / pages did config X process?" rollup questions.
+  `config_version`, `service_api`, `unit`. Cost columns only:
+  `sum_value`, `sum_cost`. **NEVER SELECT `n_docs` or `sum_pages`
+  from this table** — those live on `metering_docs_hourly` (the
+  Phase-1 doc-vs-cost split — see `docs/reporting-sql-layer.md`).
+  Partitioned by `date` + `hour`.
+- **`metering_daily`** — same shape as `metering_hourly`, aggregated
+  to the day grain. Cost columns only. Partitioned by `date`.
+- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain
+  volume (`n_docs`, `sum_pages`) per `config_version`. Use these
+  for "how many docs / pages did config X process?" rollup
+  questions. Partitioned by `date` (+ `hour` on the hourly table).
 
 Query patterns:
 ```sql
@@ -279,6 +284,15 @@ WHERE "confidence" IS NOT NULL
 GROUP BY confidence_band
 
 -- Cost per accuracy point by document type
+-- ⚠️ Cross-table date semantics: `metering.date` is COMPLETION time
+-- (Phase-1 change); `section_evaluations.date` is QUEUE time. Joining
+-- on `document_id` is safe, but do NOT filter both by the same `date`
+-- literal — a doc queued at 23:59Z on day D and completed at 00:01Z
+-- on D+1 lands in DIFFERENT date partitions on the two tables. If you
+-- need a date filter, apply it on ONE side only (usually
+-- `section_evaluations` since it's queue-time and matches the user's
+-- intuition about "docs from yesterday"), or accept under-reporting
+-- of cross-midnight docs.
 SELECT se."section_type",
        AVG(se."accuracy") as avg_accuracy,
        SUM(m."estimated_cost") / COUNT(DISTINCT m."document_id") as avg_cost_per_doc

@@ -170,6 +170,7 @@ metering is ~10× more expensive than the equivalent daily rollup query:
 | `metering_docs_hourly` | hour × config_version | Hourly rollup Lambda, alongside `metering_hourly` | Ranges of `2h` to `24h` — doc counts and pages |
 | `metering_docs_daily` | day × config_version | Daily rollup Lambda, alongside `metering_daily` | Ranges of `> 24h` — doc counts and pages |
 | `control_plane_hourly` | hour × function_name × component × bedrock_model | Same rollup Lambda, from CloudWatch metrics | Per-Lambda control-plane cost attribution |
+| `data_plane_lambda_hourly` | hour × function_name × component | Same rollup Lambda, from CloudWatch `AWS/Lambda` metrics for `idp:plane=data` Lambdas | Per-Lambda data-plane compute cost — Lambda GB-seconds only (Bedrock/Textract API costs are already in `metering_hourly` per-doc, omitted here to avoid double-count) |
 
 Aggregate columns on `metering_hourly` / `metering_daily` (cost per
 service/unit): `sum_value, sum_cost`.

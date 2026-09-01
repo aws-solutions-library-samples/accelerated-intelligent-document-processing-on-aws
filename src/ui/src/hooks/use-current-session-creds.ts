@@ -55,16 +55,18 @@ const useCurrentSessionCreds = ({
   // clearInterval never had a handle to clear — leaking one 15-minute timer per
   // authStatus transition, each fetching forever.
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Guards against a late response from a previous auth state overwriting the
-  // current one after sign-out. Flipped false on both component UNMOUNT and
-  // authStatus flipping to 'unauthenticated' — round-7 review fix: unmount
-  // alone left a signed-out user racing with a still-in-flight
-  // fetchSharedAuthSession that would overwrite the just-cleared state,
-  // and its retry loop would keep hitting Cognito after signout.
+  // Set false on component UNMOUNT to guard synchronous state writes from
+  // in-flight promises. Sign-out is handled instead by the cycleRef bump
+  // below — flipping mountedRef on 'unauthenticated' would break the
+  // subsequent authenticated remount (mountedRef stays false).
   const mountedRef = useRef(true);
-  // Bumps on every fresh authenticated cycle; the refresh loop captures
-  // its start value and bails when the ref moves — same pattern React
-  // Query uses for cancellation.
+  // Bumps on every fresh authenticated cycle AND on authStatus flipping
+  // to 'unauthenticated' — the refresh loop captures its start value
+  // and bails when the ref moves. Same pattern React Query uses for
+  // cancellation. Round-7 review fix: unmount alone left a signed-out
+  // user racing with a still-in-flight fetchSharedAuthSession that
+  // would overwrite the just-cleared state, and its retry loop would
+  // keep hitting Cognito after signout.
   const cycleRef = useRef(0);
 
   const refreshCredentials = useCallback(async (): Promise<void> => {

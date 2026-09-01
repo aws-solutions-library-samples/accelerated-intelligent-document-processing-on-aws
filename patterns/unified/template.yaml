@@ -5668,6 +5668,13 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # any future emit from imported evaluation modules matches the
+          # PutMetricData IAM Condition below. Round-27 review fix
+          # (adversarial pass): this function's condition was in place
+          # but the env var was missing — currently latent (no put_metric
+          # call today) but a future addition would silently AccessDenied.
+          METRIC_NAMESPACE: !Ref StackName
           TRACKING_TABLE: !Ref TrackingTable
           OUTPUT_BUCKET: !Ref OutputBucket
       LoggingConfig:

@@ -64,7 +64,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
-| **AWS Glue** | Data Catalog (database + tables) and crawler for evaluation/reporting metrics, including the `metering_hourly`, `metering_daily`, and `control_plane_hourly` rollup tables added by the Reporting SQL Layer | ✓ | ✓ |
+| **AWS Glue** | Data Catalog (database + tables) and crawler for evaluation/reporting metrics, including the `metering_hourly`, `metering_daily`, `metering_docs_hourly`, `metering_docs_daily`, `control_plane_hourly`, and `data_plane_lambda_hourly` rollup tables added by the Reporting SQL Layer | ✓ | ✓ |
 | **Amazon Athena** | Queries evaluation/metering/rollup tables for analytics; scheduled `DataMartRollupFunction` writes `INSERT INTO` the rollup tables hourly + daily | ✓ | ✓ |
 | **AWS Resource Groups Tagging API** | The `DataMartRollupFunction` uses `tag:GetResources` to discover Lambdas in this stack's tree (root + nested) for control-plane cost attribution | | ✓ |
 | **Amazon OpenSearch Serverless** | Optional vector store for the Bedrock Knowledge Base (the default vector store is S3 Vectors; `KnowledgeBaseVectorStore: OPENSEARCH_SERVERLESS` selects this instead) | ✓ | ✓ |
