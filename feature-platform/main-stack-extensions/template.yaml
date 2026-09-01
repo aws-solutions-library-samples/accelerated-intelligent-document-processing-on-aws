@@ -314,7 +314,12 @@ Globals:
     Timeout: 30
     MemorySize: 256
     Tracing: Active
-    Architectures: [arm64]
+    # Architectures is deliberately NOT global here. SAM COMBINES a Globals list
+    # with a function's own rather than overriding it, so a function that needs a
+    # different architecture cannot override this — `sam build` fails with
+    # "property Architectures should be a list of length 1". Every function below
+    # therefore states its own: arm64 as the feature-platform convention, except
+    # ApplyFeatureConfigPresetFunction, which must match the x86_64 IDPCommon layer.
 
 Resources:
 
@@ -500,6 +505,7 @@ Resources:
   ListInstalledFeaturesFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/list_installed_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -518,6 +524,7 @@ Resources:
   ListCatalogFeaturesFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/list_catalog_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -530,6 +537,7 @@ Resources:
   RegisterFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/register_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -541,6 +549,7 @@ Resources:
   GetFeatureLaunchUrlFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/get_feature_launch_url/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -563,6 +572,7 @@ Resources:
   CheckFeatureEntitlementFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/check_feature_entitlement/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -614,6 +624,7 @@ Resources:
   SubscribeFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/subscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -637,6 +648,7 @@ Resources:
   UnsubscribeFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/unsubscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -662,6 +674,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: HasConfigurationTable
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/register_feature_hooks/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -688,6 +701,14 @@ Resources:
       # not fit the 3s default. Install-time only, so the headroom is free.
       Timeout: 120
       MemorySize: 1024
+      # MUST match the architecture the IDPCommon layer was built for. This
+      # template's Globals default every function to arm64, but the layer is built
+      # x86_64 (it declares no CompatibleArchitectures, which means x86_64) along
+      # with the rest of the main stack. An arm64 function with that layer attached
+      # deploys fine and then fails at import with
+      # `No module named 'pydantic_core._pydantic_core'` — pydantic_core is a
+      # compiled extension. Found by invoking the deployed function.
+      Architectures: [x86_64]
       Layers: !If
         - HasIDPCommonBaseLayer
         - [!Ref IDPCommonBaseLayerArn]

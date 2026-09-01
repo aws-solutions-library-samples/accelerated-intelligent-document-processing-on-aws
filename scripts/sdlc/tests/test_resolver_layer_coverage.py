@@ -74,6 +74,11 @@ def _intrinsic(loader, tag_suffix, node):
 _Loader.add_multi_constructor("!", _intrinsic)
 
 
+def _parsed(template_path: Path) -> dict:
+    with template_path.open() as handle:
+        return yaml.load(handle, Loader=_Loader) or {}
+
+
 def _functions(template_path: Path) -> dict[str, dict]:
     with template_path.open() as handle:
         loader = _Loader(handle)
@@ -115,6 +120,19 @@ def _has_layer(body: dict) -> bool:
         return False
     rendered = str(layers)
     return any(ref in rendered for ref in LAYER_REFS)
+
+
+# The idp_common layers are built on the x86_64 build host and declare no
+# CompatibleArchitectures, which Lambda reads as x86_64-only.
+LAYER_ARCH = "x86_64"
+
+
+def _globals_architectures(template: dict) -> list:
+    """Default architectures a template's Globals apply to every function."""
+    return (
+        ((template.get("Globals") or {}).get("Function") or {}).get("Architectures")
+        or []
+    )
 
 
 def _cases():
@@ -166,3 +184,35 @@ def test_the_layer_free_resolvers_only_use_vendored_modules():
             assert (code_dir / f"{module}.py").is_file(), (
                 f"{name} is missing its vendored {module}.py"
             )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "template_path,name,body,code_dir",
+    list(_cases()),
+    ids=lambda v: v.name if isinstance(v, Path) else (v if isinstance(v, str) else ""),
+)
+def test_a_function_with_an_idp_common_layer_matches_the_layer_architecture(
+    template_path, name, body, code_dir
+):
+    """
+    A layer built for one architecture on a function of another deploys CLEANLY and
+    then fails at import: `No module named 'pydantic_core._pydantic_core'`, because
+    pydantic_core is a compiled extension. Nothing in CloudFormation or cfn-lint
+    objects — the layer declares no CompatibleArchitectures, so Lambda accepts the
+    attachment and the mismatch only shows up at runtime.
+
+    Found live: the feature-platform template's Globals default every function to
+    arm64, and applyFeatureConfigPreset inherited that while carrying the x86_64
+    base layer. The preset applied but its revision was silently not recorded.
+    """
+    if not _has_layer(body):
+        return
+    declared = (body.get("Properties") or {}).get("Architectures")
+    effective = declared or _globals_architectures(_parsed(template_path)) or [LAYER_ARCH]
+    assert effective == [LAYER_ARCH], (
+        f"{name} ({template_path.relative_to(REPO_ROOT)}) attaches an idp_common "
+        f"layer but runs on {effective}; the layers are built {LAYER_ARCH}. Pin "
+        f"`Architectures: [{LAYER_ARCH}]` on the function — it will otherwise "
+        f"deploy and then fail at import."
+    )
