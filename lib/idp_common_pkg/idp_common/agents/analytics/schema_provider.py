@@ -126,14 +126,21 @@ tables — they aggregate the raw `metering` table hourly/daily so a
 question like "cost this month" scans a few hundred rows instead of
 millions. See `docs/reporting-sql-layer.md`.
 
-- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`,
-  `config_version`, `service_api`, `unit`. Cost columns only:
-  `sum_value`, `sum_cost`. **NEVER SELECT `n_docs` or `sum_pages`
-  from this table** — those live on `metering_docs_hourly` (the
-  Phase-1 doc-vs-cost split — see `docs/reporting-sql-layer.md`).
+- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`
+  (TIMESTAMP), `config_version`, `service_api`, `unit`. Aggregate
+  columns: `sum_value` (a **quantity** — tokens / pages / seconds;
+  the denominator is `unit`) and `sum_cost` (USD). ⚠️ **`sum_value`
+  is NOT a cost — do not sum it as dollars.** Use `sum_cost` for
+  $ questions. **NEVER SELECT `n_docs` or `sum_pages` from this
+  table** — those live on `metering_docs_hourly` (the Phase-1
+  doc-vs-cost split — see `docs/reporting-sql-layer.md`).
   Partitioned by `date` + `hour`.
-- **`metering_daily`** — same shape as `metering_hourly`, aggregated
-  to the day grain. Cost columns only. Partitioned by `date`.
+- **`metering_daily`** — daily grain of the same aggregates as
+  `metering_hourly`. Keyed on **`day` (DATE)** instead of
+  `hour_ts` (do NOT `SELECT hour_ts FROM metering_daily` — it
+  doesn't exist), plus `config_version`, `service_api`, `unit`.
+  Same `sum_value` (quantity) and `sum_cost` (USD) columns.
+  Partitioned by `date`.
 - **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain
   volume (`n_docs`, `sum_pages`) per `config_version`. Use these
   for "how many docs / pages did config X process?" rollup
@@ -293,11 +300,15 @@ GROUP BY confidence_band
 -- `section_evaluations` since it's queue-time and matches the user's
 -- intuition about "docs from yesterday"), or accept under-reporting
 -- of cross-midnight docs.
+-- Note the date filter is on ONE side (`se`) only — filtering `m.date`
+-- too would drop cross-midnight docs due to the completion-vs-queue
+-- time difference documented above.
 SELECT se."section_type",
        AVG(se."accuracy") as avg_accuracy,
        SUM(m."estimated_cost") / COUNT(DISTINCT m."document_id") as avg_cost_per_doc
 FROM section_evaluations se
 JOIN metering m ON se."document_id" = m."document_id"
+WHERE se."date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY se."section_type"
 
 -- Filter by config_version (available directly in evaluation tables)

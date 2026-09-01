@@ -116,16 +116,27 @@ def infer_hour_from_parquet(s3, bucket: str, key: str) -> Optional[str]:
 
     ROW_SCAN_CAP = 128  # noqa: N806
     rows_scanned = 0
+    # Round-28 review fix: iterate ROW-first, then column-per-row (mirrors
+    # the Lambda's ``_infer_hour`` at metering_hour_migration/index.py
+    # after round-20's #1948 fix). The previous column-first loop
+    # exhausted rows_scanned scanning column-A's nulls before ever looking
+    # at column-B — so on null-heavy files with one populated column, the
+    # rescue script would give up at ROW_SCAN_CAP/2 effective rows and
+    # return None for a file the Lambda would have succeeded on. Since the
+    # whole point of this script is to rescue rows the Lambda flagged as
+    # `hour_fallbacks`, that gap defeated the rescue.
     try:
         for batch in pf.iter_batches(batch_size=16, columns=wanted):
-            for candidate in wanted:
-                col = batch.column(candidate)
-                for row_idx in range(len(col)):
-                    rows_scanned += 1
+            cols = {c: batch.column(c) for c in wanted}
+            batch_len = max((len(cols[c]) for c in wanted), default=0)
+            for row_idx in range(batch_len):
+                rows_scanned += 1
+                for candidate in wanted:
+                    col = cols[candidate]
+                    if row_idx >= len(col):
+                        continue
                     ts = col[row_idx].as_py()
                     if ts is None:
-                        if rows_scanned >= ROW_SCAN_CAP:
-                            break
                         continue
                     ts_utc = ts if ts.tzinfo is None else ts.astimezone(_tz.utc)
                     return ts_utc.strftime("%H")

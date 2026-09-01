@@ -120,8 +120,19 @@ def _find_namespace_scoped_lambdas(
                 for key, value in se.items():
                     if key != "cloudwatch:namespace":
                         continue
-                    if isinstance(value, dict) and value.get("!Ref") == stackname_ref:
-                        hits.append(logical_id)
+                    # `value` can be a scalar Ref (`!Ref AWS::StackName`
+                    # → dict) OR a list mixing Refs and literal
+                    # namespace strings (`[!Ref …, "IDPControlPlane"]`
+                    # → list). We consider the Lambda "stack-scoped"
+                    # if the stack-name Ref appears in either form.
+                    candidates: List[Any] = value if isinstance(value, list) else [value]
+                    for candidate in candidates:
+                        if (
+                            isinstance(candidate, dict)
+                            and candidate.get("!Ref") == stackname_ref
+                        ):
+                            hits.append(logical_id)
+                            break
     return hits
 
 

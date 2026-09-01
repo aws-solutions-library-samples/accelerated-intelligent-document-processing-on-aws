@@ -27,21 +27,24 @@ class TestMeteringHourlyColumnsInPrompt:
     ``COLUMN_NOT_FOUND``.
     """
 
-    def test_metering_hourly_positive_columns_list_has_only_cost_cols(self):
+    def test_metering_hourly_positive_columns_are_sum_value_and_sum_cost(self):
         """The columns list positively attributed to ``metering_hourly``
-        must be cost-only (``sum_value``, ``sum_cost``). ``n_docs`` and
+        must be ``sum_value`` and ``sum_cost`` only. ``n_docs`` and
         ``sum_pages`` may only appear in NEGATIVE context (a "NEVER
-        SELECT" warning), never in the positive-claim list."""
+        SELECT" warning), never in the positive-claim list. Round-27
+        blocker regression pin. Round-28 update: sum_value is a
+        quantity (not a cost) — see
+        ``test_sum_value_labeled_as_quantity_not_cost`` for that pin."""
         prompt = get_metering_table_description()
         idx = prompt.find("**`metering_hourly`**")
         assert idx > -1, "metering_hourly section not found"
-        # The positive claim is "Cost columns only: `sum_value`, `sum_cost`"
-        assert "Cost columns only" in prompt[idx : idx + 500], (
-            "metering_hourly bullet must positively declare 'Cost columns "
-            "only' so the LLM doesn't infer n_docs/sum_pages from context"
+        section = prompt[idx : idx + 800]
+        assert "sum_value" in section and "sum_cost" in section, (
+            "metering_hourly bullet must name both sum_value and sum_cost "
+            "as its aggregate columns."
         )
-        # And the NEVER SELECT anti-pattern warning must be present
-        assert "NEVER SELECT" in prompt[idx : idx + 500], (
+        # The NEVER SELECT anti-pattern warning must be present
+        assert "NEVER SELECT" in section, (
             "metering_hourly bullet must call out the n_docs/sum_pages "
             "anti-pattern explicitly — a positive-only claim was the "
             "round-27 blocker."
@@ -112,9 +115,54 @@ class TestMeteringHourlyColumnsInPrompt:
         of a positive claim."""
         prompt = get_metering_table_description()
         idx = prompt.find("**`metering_hourly`**")
-        section = prompt[idx : idx + 500]
+        section = prompt[idx : idx + 800]
         assert "NEVER SELECT" in section and "metering_docs_hourly" in section, (
             "The metering_hourly bullet must include a NEVER SELECT "
             "anti-pattern pointing at metering_docs_hourly as the "
             "correct home for n_docs / sum_pages."
+        )
+
+    def test_sum_value_labeled_as_quantity_not_cost(self):
+        """Round-28 review blocker: `sum_value` = SUM(value) where
+        `value` is a quantity (tokens/pages/seconds), NOT a cost.
+        Only `sum_cost` is USD. The round-27 fix mis-labeled the
+        two together as "Cost columns only", which would have made
+        the LLM sum tokens as dollars. Regression pin."""
+        prompt = get_metering_table_description()
+        idx = prompt.find("**`metering_hourly`**")
+        section = prompt[idx : idx + 800]
+        # The docstring MUST NOT describe sum_value as a cost.
+        assert "Cost columns only: `sum_value`" not in section, (
+            "sum_value must not be labeled as cost — it's a quantity."
+        )
+        # It MUST positively describe sum_value as a quantity.
+        assert "sum_value" in section and "quantity" in section, (
+            "metering_hourly bullet must explicitly describe sum_value "
+            "as a quantity (tokens/pages/seconds) so the LLM doesn't "
+            "sum it as dollars."
+        )
+
+    def test_metering_daily_bullet_names_day_not_hour_ts(self):
+        """Round-28 review blocker: `metering_daily` has a `day` DATE
+        column, NOT `hour_ts`. The round-27 "same shape as metering_hourly"
+        wording would have led the LLM to emit
+        ``SELECT hour_ts FROM metering_daily`` → COLUMN_NOT_FOUND.
+        Regression pin — the daily bullet MUST name the correct key
+        column and MUST explicitly disclaim hour_ts."""
+        prompt = get_metering_table_description()
+        idx = prompt.find("**`metering_daily`**")
+        assert idx > -1, "metering_daily bullet not found"
+        end = prompt.find("- **`metering_docs_hourly`", idx)
+        section = prompt[idx:end]
+        assert "`day`" in section, (
+            "metering_daily bullet must explicitly name `day` as the key "
+            "column (it's a DATE, not the metering_hourly `hour_ts`)."
+        )
+        # The old "same shape as metering_hourly" wording without the
+        # day-vs-hour_ts distinction is what caused the confusion.
+        # The corrected bullet either avoids that phrase entirely OR
+        # calls out that hour_ts does NOT exist on metering_daily.
+        assert "hour_ts" in section, (
+            "metering_daily bullet must explicitly disclaim hour_ts so "
+            "the LLM knows it doesn't exist on the daily rollup."
         )
