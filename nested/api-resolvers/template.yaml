@@ -2786,7 +2786,16 @@ Resources:
       CodeUri: ./src/lambda/http_api_dispatcher
       Description: HTTP API dispatcher — replaces AppSync for UI queries/mutations
       MemorySize: 512
-      Timeout: 60
+      # 29s, matching the REST API integration ceiling below rather than
+      # exceeding it. A 60s timeout here bought nothing: API Gateway had already
+      # abandoned the integration and answered the browser 504 at 29s, so the
+      # remaining 31s was billed compute producing a response nobody could
+      # receive. The resolver invoke is bounded at 20s (see
+      # _RESOLVER_READ_TIMEOUT_SECONDS in index.py) so the dispatcher returns a
+      # 504 *with a body* naming the slow field before either ceiling is hit —
+      # with headroom for cold-start init, which happens on API Gateway's clock
+      # but not on this function's.
+      Timeout: 29
       Layers:
         - !Ref IDPCommonBaseLayerArn
       Environment:
@@ -2918,6 +2927,13 @@ Resources:
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
+        # Explicit rather than implicit. 29000ms is the REST API default (and,
+        # without an account quota increase, the maximum): every operation the
+        # UI reaches through POST /op/{field} must answer inside it or the
+        # browser gets a bodiless 504. Stated here so the constraint is visible
+        # to anyone adding a slow field — long-running work belongs behind a
+        # start/poll pair (see startTestRun), not behind a longer timeout.
+        TimeoutInMillis: 29000
         Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HttpApiDispatcherFunction.Arn}/invocations"
 
   # CORS preflight. Browsers send an unauthenticated OPTIONS request before each
