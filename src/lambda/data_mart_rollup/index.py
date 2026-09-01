@@ -2099,13 +2099,39 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     # was misleading. CFN names for these look like
     # ``PATTERNSTACK-2UBGW8A18HIT-OCRFunction-xxxx`` etc. Match on the
     # bare stage name embedded in the middle of the CFN-generated ID.
+    #
+    # BDA rules come FIRST among the data-plane stages, and name each BDA
+    # Lambda explicitly. Two bugs in the round-24 version, both fixed here:
+    #
+    # 1. The rule was ``(^|[^a-z])bda`` — a boundary guard so ``lambda``
+    #    (``GetDomainLambda`` etc.) wouldn't match. But it ALSO failed on
+    #    ``InvokeBDAFunction``: lowercased, ``invoke*bda*function`` has the
+    #    letter ``e`` before ``bda``, so the BDA-mode invoke Lambda — the
+    #    most expensive one on that path — silently fell through to
+    #    ``other-control``.
+    # 2. The rule sat BELOW ``processresultsfunction``, so
+    #    ``BDAProcessResultsFunction`` was claimed by the pipeline
+    #    ``process-results`` rule instead.
+    #
+    # An explicit list fixes both without a boundary guard, and can't
+    # false-positive on a CFN random suffix that happens to contain
+    # ``bda``. These four are the only BDA-named Lambdas in any template
+    # (the first three are data plane; BDAOCRProject is a control-plane
+    # CFN custom resource that still belongs in the ``bda`` bucket).
+    (
+        re.compile(r"invokebda|bdaprocessresults|bdacompletion|bdaocrproject"),
+        "bda",
+    ),
+    # ``rulevalidation`` must precede ``classificationfunction``:
+    # ``RuleValidationPolicyClassificationFunction`` contains
+    # ``classificationfunction`` and was being labelled ``classification``.
+    (re.compile(r"rulevalidation"), "rule-validation"),
     (re.compile(r"ocrfunction"), "ocr"),
     (re.compile(r"classificationfunction"), "classification"),
     (re.compile(r"extractionfunction"), "extraction"),
     (re.compile(r"assessmentfunction"), "assessment"),
     (re.compile(r"summarizationfunction"), "summarization"),
     (re.compile(r"evaluationfunction"), "evaluation"),
-    (re.compile(r"rulevalidation"), "rule-validation"),
     (re.compile(r"processresultsfunction"), "process-results"),
     (re.compile(r"shardruntimefunction"), "shard-runtime"),
     (re.compile(r"savereportingdata"), "save-reporting"),
@@ -2113,12 +2139,16 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"queueprocessor"), "queue-processor"),
     (re.compile(r"queuesender"), "queue-sender"),
     (re.compile(r"pipelinehooks"), "pipeline-hooks"),
-    # Round-24 fix: careful with ``bda`` — a bare substring match would
-    # false-positive on ``lambda`` (contains ``bda`` at chars 3-5).
-    # Require the BDA marker to appear at a word boundary / after a
-    # non-alphanum character so ``LamBda`` doesn't match but
-    # ``BDAOCRProjectFunction`` and ``bda_invoke`` do.
-    (re.compile(r"(^|[^a-z])bda"), "bda"),
+    # The remaining four data-plane Lambdas on DATA_PLANE_ALLOWLIST. Round-24
+    # added rules for the pipeline stages but missed these, so their
+    # ``data_plane_lambda_hourly`` rows carried ``component='other-control'``
+    # — a label whose name says "control" appearing in the data-plane table.
+    # ``scripts/tests/test_data_plane_component_labels.py`` now pins the
+    # allowlist ↔ label mapping so a future addition can't be forgotten.
+    (re.compile(r"batchpreprocessor"), "batch-ingest"),
+    (re.compile(r"jobtracker"), "job-tracker"),
+    (re.compile(r"postprocessingdecompressor"), "post-processing"),
+    (re.compile(r"completesectionreview"), "hitl-review"),
 ]
 
 
@@ -2248,9 +2278,7 @@ def _query_wrote_manifest(query_id: str) -> bool:
         s3_client.head_object(Bucket=bucket, Key=key)
         return True
     except Exception as e:  # nosec — best-effort positive signal only
-        logger.info(
-            f"S3 manifest probe for {query_id} did not confirm success: {e}"
-        )
+        logger.info(f"S3 manifest probe for {query_id} did not confirm success: {e}")
         return False
 
 
@@ -2399,6 +2427,22 @@ def _run_athena(
             # that two concurrent retries of THIS invocation share it
             # (dedup wins), but every subsequent async-retry gets a
             # different one (breaks lock).
+            #
+            # This is the ONE window ``ClientRequestToken`` can't close, and
+            # it's why ``DataMartRollupFunction`` sets
+            # ``ReservedConcurrentExecutions: 1`` in template.yaml — do not
+            # remove that property. Two concurrent restarts of the same
+            # partition landing in DIFFERENT wall-clock seconds get different
+            # tokens and would both INSERT.
+            #
+            # The salt can't be derived from the event anchor time instead:
+            # the anchor is identical across async retries by design (that's
+            # what makes retries target the right partition), so an
+            # anchor-derived salt would be stable across retries and
+            # reinstate exactly the cached-failure lock this branch exists to
+            # break. The two requirements — differ across sequential retries,
+            # match across concurrent duplicates — have no single-token
+            # solution, hence the concurrency pin.
             fresh_salt = str(int(time.time()))
             # Round-23 (#2208): input token was truncated to 116 chars
             # above so the "-r<10-digit-timestamp>" suffix (12 chars)

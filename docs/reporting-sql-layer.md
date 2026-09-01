@@ -149,6 +149,44 @@ programmatically, look at the earliest `hour_ts` in
 `metering_hourly` — that's the point new-semantic rows start
 appearing.
 
+**Upgrade ordering — why the writer updates first.** The migration takes a
+one-shot snapshot of the old-layout key list. Anything written at
+`metering/date=X/*.parquet` *after* that listing but *before* the writer starts
+emitting the new layout is unreachable by the new `date=X/hour=HH/` projection
+— not an error, just silently absent from `metering` and every rollup built on
+it. `SaveReportingDataFunctionV2` is the sole writer of `metering/` parquet, so
+`MeteringHourMigrationCustomResource` declares
+`DependsOn: SaveReportingDataFunctionV2` and the full ordering is:
+
+```
+SaveReportingDataFunctionV2  →  migration custom resource  →  MeteringTable
+       (new layout live)            (relocates history)       (new projection)
+```
+
+**Residual window, and what to do about it.** Lambda finishes in-flight
+invocations on the *previous* code version, so a container that started just
+before the writer updated can still emit one old-layout file after the
+migration listed. That shrinks the exposure from the whole stack update (tens
+of minutes) to roughly one invocation duration — but it is not zero. If your
+deployment ingests continuously and you care about complete cost history:
+
+1. Quiesce ingestion for the update (stop uploading to the input bucket), **or**
+2. after `UPDATE_COMPLETE`, re-run the standalone migration, which is
+   idempotent and picks up exactly these stragglers:
+
+```bash
+python scripts/migrate_metering_hour_partition.py --bucket <reporting-bucket> --dry-run
+python scripts/migrate_metering_hour_partition.py --bucket <reporting-bucket>
+```
+
+To check whether any straggler exists at all, list for old-layout keys — a
+metering parquet whose path has no `hour=` segment:
+
+```bash
+aws s3 ls s3://<reporting-bucket>/metering/ --recursive \
+  | grep '\.parquet$' | grep -v '/hour='
+```
+
 ---
 
 ## Rollup Lambda
@@ -299,11 +337,26 @@ the CFN-generated Lambda ID):
 | `queue-sender` | S3-event → SQS forwarder |
 | `pipeline-hooks` | Pipeline-hooks dispatcher |
 | `bda` | Bedrock Data Automation invocation, completion, project-setup |
+| `batch-ingest` | Jobs API batch ingest (zip extract → input bucket) |
+| `job-tracker` | Per-doc status-change events on the Jobs API path |
+| `post-processing` | Dispatcher for the user-supplied custom post-processor |
+| `hitl-review` | HITL section-review completion callback |
 
 The mapping is heuristic (substring match on function name) in
 `_component_for_function()`. Anything unmatched lands under
-`other-control` — that's a signal to either extend the mapping or
-recognize a new category.
+`other-control`.
+
+For a **data-plane** row, `other-control` is always a bug — the Lambda carries
+`idp:plane=data`, so a label saying "control" contradicts the table it sits in.
+`scripts/tests/test_data_plane_component_labels.py` pins the mapping against
+`DATA_PLANE_ALLOWLIST` (see the Component column in §10.4) so a new pipeline
+stage cannot be added without a label, and a rule reordering cannot silently
+move a stage between buckets. Rule **order** matters — first match wins, so a
+broader pattern placed above a narrower one steals the label; the BDA and
+`rule-validation` rules sit above the pipeline stages for exactly that reason
+(`BDAProcessResultsFunction` contains `processresultsfunction`, and
+`RuleValidationPolicyClassificationFunction` contains
+`classificationfunction`).
 
 ### 10.3 Tagging convention + controls
 
@@ -344,33 +397,37 @@ Lambda slips through without a tag, its cost is *misattributed* to
 Applied classifier: *what triggered the invocation*. If cost scales
 with production doc arrival, it's data plane.
 
-**Data-plane Lambdas** (all in `DATA_PLANE_ALLOWLIST`):
+**Data-plane Lambdas** (all in `DATA_PLANE_ALLOWLIST`). The **Component**
+column is the `component` value its `data_plane_lambda_hourly` rows carry;
+`scripts/tests/test_data_plane_component_labels.py` asserts this table's
+mapping against `_component_for_function`, so all three — the allowlist, the
+rules, and this table — must be updated together:
 
-| Lambda | Template | Trigger |
-|---|---|---|
-| `OCRFunction` | `patterns/unified/template.yaml` | Doc arrival (Step Functions) |
-| `ClassificationFunction` | `patterns/unified/template.yaml` | Doc arrival |
-| `ExtractionFunction` | `patterns/unified/template.yaml` | Doc arrival |
-| `AssessmentFunction` | `patterns/unified/template.yaml` | Doc arrival |
-| `SummarizationFunction` | `patterns/unified/template.yaml` | Doc arrival |
-| `EvaluationFunction` | `patterns/unified/template.yaml` | Doc arrival |
-| `ProcessResultsFunction` | `patterns/unified/template.yaml` | Per-doc pipeline result stitching |
-| `PipelineHooksDispatcherFunction` | `patterns/unified/template.yaml` | Sync-invoked per doc (PII, etc.) |
-| `ShardRuntimeFunction` | `patterns/unified/template.yaml` | Per-doc/per-shard Bedrock batch runtime |
-| `InvokeBDAFunction` | `patterns/unified/template.yaml` | Per-doc BDA invocation (BDA mode) |
-| `BDAProcessResultsFunction` | `patterns/unified/template.yaml` | Per-doc BDA result parsing |
-| `BDACompletionFunction` | `patterns/unified/template.yaml` | Per-doc BDA completion |
-| `RuleValidationFunction` | `patterns/unified/template.yaml` | Per-doc rule validation |
-| `RuleValidationOrchestrationFunction` | `patterns/unified/template.yaml` | Per-doc orchestration |
-| `RuleValidationPolicyClassificationFunction` | `patterns/unified/template.yaml` | Per-doc policy classification |
-| `WorkflowTracker` | `template.yaml` | SF state change per doc |
-| `QueueSender` | `template.yaml` | S3 upload event per doc |
-| `QueueProcessor` | `template.yaml` | SQS batch trigger from doc queue |
-| `BatchPreProcessorFunction` | `template.yaml` | Jobs API batch ingest |
-| `JobTracker` | `template.yaml` | SQS per-doc status-change events |
-| `SaveReportingDataFunctionV2` | `template.yaml` | Async per doc (Evaluation / RuleValidation) |
-| `PostProcessingDecompressor` | `template.yaml` | SQS per-doc custom post-processor dispatcher |
-| `CompleteSectionReviewFunction` | `template.yaml` | HITL callback — resumes paused Step Function once per doc that needs review |
+| Lambda | Template | Component | Trigger |
+|---|---|---|---|
+| `OCRFunction` | `patterns/unified/template.yaml` | `ocr` | Doc arrival (Step Functions) |
+| `ClassificationFunction` | `patterns/unified/template.yaml` | `classification` | Doc arrival |
+| `ExtractionFunction` | `patterns/unified/template.yaml` | `extraction` | Doc arrival |
+| `AssessmentFunction` | `patterns/unified/template.yaml` | `assessment` | Doc arrival |
+| `SummarizationFunction` | `patterns/unified/template.yaml` | `summarization` | Doc arrival |
+| `EvaluationFunction` | `patterns/unified/template.yaml` | `evaluation` | Doc arrival |
+| `ProcessResultsFunction` | `patterns/unified/template.yaml` | `process-results` | Per-doc pipeline result stitching |
+| `PipelineHooksDispatcherFunction` | `patterns/unified/template.yaml` | `pipeline-hooks` | Sync-invoked per doc (PII, etc.) |
+| `ShardRuntimeFunction` | `patterns/unified/template.yaml` | `shard-runtime` | Per-doc/per-shard Bedrock batch runtime |
+| `InvokeBDAFunction` | `patterns/unified/template.yaml` | `bda` | Per-doc BDA invocation (BDA mode) |
+| `BDAProcessResultsFunction` | `patterns/unified/template.yaml` | `bda` | Per-doc BDA result parsing |
+| `BDACompletionFunction` | `patterns/unified/template.yaml` | `bda` | Per-doc BDA completion |
+| `RuleValidationFunction` | `patterns/unified/template.yaml` | `rule-validation` | Per-doc rule validation |
+| `RuleValidationOrchestrationFunction` | `patterns/unified/template.yaml` | `rule-validation` | Per-doc orchestration |
+| `RuleValidationPolicyClassificationFunction` | `patterns/unified/template.yaml` | `rule-validation` | Per-doc policy classification |
+| `WorkflowTracker` | `template.yaml` | `workflow-tracker` | SF state change per doc |
+| `QueueSender` | `template.yaml` | `queue-sender` | S3 upload event per doc |
+| `QueueProcessor` | `template.yaml` | `queue-processor` | SQS batch trigger from doc queue |
+| `BatchPreProcessorFunction` | `template.yaml` | `batch-ingest` | Jobs API batch ingest |
+| `JobTracker` | `template.yaml` | `job-tracker` | SQS per-doc status-change events |
+| `SaveReportingDataFunctionV2` | `template.yaml` | `save-reporting` | Async per doc (Evaluation / RuleValidation) |
+| `PostProcessingDecompressor` | `template.yaml` | `post-processing` | SQS per-doc custom post-processor dispatcher |
+| `CompleteSectionReviewFunction` | `template.yaml` | `hitl-review` | HITL callback — resumes paused Step Function once per doc that needs review |
 
 **Explicitly NOT data plane (in the same templates):**
 `TestExecutionAggregationFunction` (post-run orchestration),

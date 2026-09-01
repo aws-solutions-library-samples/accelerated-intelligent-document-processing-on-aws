@@ -5209,6 +5209,28 @@ Resources:
 
   MeteringHourMigrationCustomResource:
     Type: Custom::MeteringHourMigration
+    # DependsOn the metering WRITER, not just the reader. The migration takes a
+    # one-shot snapshot of the old-layout key list; any metering row written
+    # AFTER that listing but BEFORE the writer is upgraded lands at
+    # `metering/date=X/*.parquet` (old layout) and is then unreachable by the
+    # new `date=X/hour=HH/` projection — a silent, permanent hole in cost and
+    # volume data for every document processed during the update.
+    #
+    # `SaveReportingDataFunctionV2` is the SOLE writer of `metering/` parquet
+    # (`idp_common.reporting.save_reporting_data.save_metering_data` has exactly
+    # one caller), and CFN gave it no ordering relationship to this resource, so
+    # that window was the whole stack update — tens of minutes on this stack.
+    # Forcing the writer to update first makes the new layout live before the
+    # snapshot is taken. Full ordering is now:
+    #   SaveReportingDataFunctionV2 → this migration → MeteringTable projection
+    #
+    # Residual window: Lambda finishes in-flight invocations on the PREVIOUS
+    # code version, so a container that started just before the update can
+    # still emit one old-layout file (seconds to minutes, not the whole
+    # update). A deployment that ingests continuously should re-run
+    # `scripts/migrate_metering_hour_partition.py` once the update completes —
+    # it is idempotent. See docs/reporting-sql-layer.md §2.3.
+    DependsOn: SaveReportingDataFunctionV2
     Properties:
       ServiceToken: !GetAtt MeteringHourMigrationFunction.Arn
       # Match the Lambda's own Timeout (900s) — the CFN default is 3600s,
@@ -5289,6 +5311,35 @@ Resources:
       # Pin to 1 concurrent execution so a scheduled invocation racing with
       # an async retry cannot both pass the pre-INSERT idempotency check
       # (SELECT ... LIMIT 1) and double-write metering_hourly rows.
+      #
+      # This is LOAD-BEARING, not belt-and-braces — do not remove it without
+      # replacing the guarantee. Reserved concurrency itself is free (only
+      # PROVISIONED concurrency is billed), so there is no cost argument for
+      # dropping it. What it covers that nothing else does:
+      #
+      # 1. The Athena `ClientRequestToken` dedup in `_run_athena` protects the
+      #    four INSERT-INTO tables, EXCEPT on the cached-failure restart path,
+      #    which appends a wall-clock-second salt (`-r<unix seconds>`). Two
+      #    concurrent restarts landing in different seconds get different
+      #    tokens and would both write. The salt cannot be made
+      #    invocation-stable: it must DIFFER across sequential retries (that is
+      #    what breaks Athena's cached-failure lock) while being the SAME for
+      #    concurrent duplicates of one attempt. See the `fresh_salt` comment
+      #    in src/lambda/data_mart_rollup/index.py.
+      # 2. It serializes the 00:05 hourly against the 00:15 daily. The hourly's
+      #    900s timeout makes that overlap reachable, and a daily reading a
+      #    half-written hour 23 trips `_require_hourly_matches_raw_metering`.
+      #
+      # (The two parquet tables can't double-count regardless — both write a
+      # fixed `data.parquet` key per partition, so a second writer overwrites
+      # rather than appending.)
+      #
+      # Deploy-time caveat: Lambda rejects a reservation that would drop the
+      # ACCOUNT's unreserved concurrency below 100, so on an account already
+      # carrying heavy reservations this makes stack update fail with
+      # "decreases account's UnreservedConcurrentExecution below its minimum
+      # value of [100]". Raise the account concurrency limit rather than
+      # removing this property.
       ReservedConcurrentExecutions: 1
       # Async failures (Athena down for all 3 async retries) land in the
       # DLQ so an operator sees the data-hole instead of the hour silently

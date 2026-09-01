@@ -1017,20 +1017,82 @@ class TestComponentMapping:
         )
 
     def test_data_plane_bda_labeled_correctly(self, rollup):
-        """Word-boundary check: ``BDAOCRProjectFunction`` labels as
-        ``bda`` but a bare ``Lambda`` (which contains substring ``bda``)
-        must NOT match, else every unlabeled function would be misclassified.
+        """Every BDA Lambda labels as ``bda``, and a function whose name merely
+        contains the substring ``bda`` (as ``lambda`` does) must NOT.
+
+        The rules name each BDA Lambda explicitly rather than relying on a
+        ``(^|[^a-z])bda`` word boundary. That boundary was added in round-24 to
+        stop ``lambda`` matching, but it also rejected ``InvokeBDAFunction`` —
+        lowercased, ``invoke*bda*function`` has the letter ``e`` before ``bda``
+        — so the BDA-mode invoke Lambda fell through to ``other-control``.
         """
-        assert (
-            rollup._component_for_function(
-                "idp-dev-qs1-PATTERNSTACK-2UB-BDAOCRProjectFunction-oMD38Jhsv6C0"
-            )
-            == "bda"
-        )
+        for logical_id in (
+            "InvokeBDAFunction",
+            "BDAProcessResultsFunction",
+            "BDACompletionFunction",
+            "BDAOCRProjectFunction",
+        ):
+            name = f"idp-dev-qs1-PATTERNSTACK-2UB-{logical_id}-oMD38Jhsv6C0"
+            assert rollup._component_for_function(name) == "bda", logical_id
         # Regression pin for the failed round-24 attempt where a bare
         # ``bda`` substring matched ``lambda`` and everything unlabeled
         # got labeled as "bda".
         assert rollup._component_for_function("SomeNewFeatureLambda") != "bda"
+        assert rollup._component_for_function("idp-dev-qs1-GetDomainLambda-x") != "bda"
+
+    def test_bda_process_results_beats_the_process_results_stage_rule(self, rollup):
+        """``BDAProcessResultsFunction`` contains ``processresultsfunction``, so
+        the pipeline ``process-results`` rule would claim it if it were ordered
+        first. BDA rules are placed above the pipeline stages for this reason."""
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-BDAProcessResultsFunction-oMD38J"
+            )
+            == "bda"
+        )
+        # …while the genuine pipeline stage still resolves to process-results.
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-ProcessResultsFunction-oMD38J"
+            )
+            == "process-results"
+        )
+
+    def test_rule_validation_beats_the_classification_stage_rule(self, rollup):
+        """``RuleValidationPolicyClassificationFunction`` contains
+        ``classificationfunction`` — the ``rulevalidation`` rule must be ordered
+        above ``classificationfunction`` or it is labelled ``classification``."""
+        for logical_id in (
+            "RuleValidationFunction",
+            "RuleValidationOrchestrationFunction",
+            "RuleValidationPolicyClassificationFunction",
+        ):
+            name = f"idp-dev-qs1-PATTERNSTACK-2UB-{logical_id}-oMD38Jhsv6C0"
+            assert rollup._component_for_function(name) == "rule-validation", logical_id
+        # …while the genuine classification stage is unaffected.
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-ClassificationFunction-oMD38J"
+            )
+            == "classification"
+        )
+
+    def test_remaining_ingest_lambdas_are_labeled(self, rollup):
+        """The four data-plane Lambdas round-24 missed. Their
+        ``data_plane_lambda_hourly`` rows used to carry
+        ``component='other-control'`` — a label saying "control" inside the
+        data-plane table. See
+        ``scripts/tests/test_data_plane_component_labels.py`` for the full
+        allowlist ↔ label invariant."""
+        expected = {
+            "BatchPreProcessorFunction": "batch-ingest",
+            "JobTracker": "job-tracker",
+            "PostProcessingDecompressor": "post-processing",
+            "CompleteSectionReviewFunction": "hitl-review",
+        }
+        for logical_id, component in expected.items():
+            name = f"idp-dev-qs1-{logical_id}-jZQqRb0JT5pj"
+            assert rollup._component_for_function(name) == component, logical_id
 
 
 @pytest.mark.unit
