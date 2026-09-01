@@ -563,9 +563,49 @@ class ClassificationService:
             "after_images": after_images,
         }
 
-    def _classify_pages_multimodal(self, document: Document) -> Document:
+    def _pin_page_class(
+        self, page_result: PageClassification, class_name: str
+    ) -> PageClassification:
+        """Overwrite a page result's class with a class already known to be right.
+
+        Used when the document's name matched a class's
+        ``x-aws-idp-document-name-regex`` but the model still had to run for the
+        per-page ``document_boundary`` signal (GitHub issue #705). The regex match
+        is a deterministic assertion by the operator, so it wins over the model's
+        class guess and carries confidence 1.0 — the same class/confidence the
+        zero-inference short-circuit assigns.
+
+        Pinning happens *before* section splitting so boundaries are derived from
+        the boundary signal alone. Otherwise ``_create_llm_determined_sections``
+        would also split on class flips that are about to be overwritten anyway.
+
+        Error results are pinned too: ``metadata["error"]`` is left intact, so the
+        page's failure is still collected into ``document.errors``.
+        """
+        if page_result.classification.doc_type != class_name:
+            logger.debug(
+                "Pinning page %s class '%s' -> '%s' (document name regex match)",
+                page_result.page_id,
+                page_result.classification.doc_type,
+                class_name,
+            )
+        page_result.classification.doc_type = class_name
+        page_result.classification.confidence = 1.0
+        return page_result
+
+    def _classify_pages_multimodal(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
         """
         Classify pages using multimodal page-level classification.
+
+        Args:
+            document: Document object to classify
+            forced_class: When set, every page result's class is overwritten with
+                this value before sections are built. Set by the
+                document-name-regex path, where the name determines the class but
+                the per-page boundary signal still has to come from the model
+                (GitHub issue #705). See ``_pin_page_class``.
         """
         # Page-level classification with document boundary detection
         t0 = time.time()
@@ -581,6 +621,12 @@ class ClassificationService:
                 document
             )
             all_page_results = list(cached_page_classifications.values())
+            if forced_class:
+                # Cached results were produced by an earlier attempt that may not
+                # have had the pin applied; pin them too so every result in the
+                # list agrees.
+                for cached_result in all_page_results:
+                    self._pin_page_class(cached_result, forced_class)
             combined_metering = {}
             errors_lock = threading.Lock()  # Thread safety for error collection
             failed_page_exceptions = {}  # Store original exceptions for failed pages
@@ -670,6 +716,8 @@ class ClassificationService:
                         page_id = futures[future]
                         try:
                             page_result = future.result()
+                            if forced_class:
+                                self._pin_page_class(page_result, forced_class)
                             all_page_results.append(page_result)
 
                             # Check if there was an error in the classification
@@ -2273,6 +2321,15 @@ class ClassificationService:
         document. See ``_can_skip_backend_for_single_class`` and
         ``_create_single_class_sections``.
 
+        A document whose *name* matches a class's
+        ``x-aws-idp-document-name-regex`` follows the same three-way rule
+        (GitHub issue #705): ``disabled`` / ``page`` / a single-page document need
+        no model call, while multi-page ``llm_determined`` runs classification for
+        the per-page boundary signal with the class pinned to the regex-matched
+        one. Knowing *what* a packet contains says nothing about *where* each
+        record starts, so the name match cannot substitute for boundary
+        detection. See ``_can_skip_backend_for_regex_match``.
+
         Args:
             document: Document object to classify and update
 
@@ -2287,42 +2344,32 @@ class ClassificationService:
                 error_message="Document has no pages to classify",
             )
 
-        # Check for document name regex match (single-class configurations only)
+        # Check for a document-name regex match. The document's NAME asserts its
+        # class, so no inference is needed for the class decision — but section
+        # boundaries are a separate question, and skipping them along with the
+        # class hard-coded ONE all-pages section regardless of sectionSplitting
+        # (GitHub issue #705, the #686 defect reached by a different trigger).
+        forced_class: Optional[str] = None
         regex_matched_class = self._check_document_name_regex(document)
         if regex_matched_class:
-            logger.info(
-                f"Classifying all pages as '{regex_matched_class}' based on document name regex match. Skipping LLM classification."
-            )
+            if self._can_skip_backend_for_regex_match(document, regex_matched_class):
+                logger.info(
+                    f"Classifying all pages as '{regex_matched_class}' based on "
+                    f"document name regex match, and sectionSplitting needs no "
+                    f"boundary detection. Skipping LLM classification."
+                )
+                document = self._create_single_class_sections(
+                    document, class_name=regex_matched_class
+                )
+                document = self._update_document_status(document)
+                return document
 
-            # Set all pages to the regex-matched class
-            for page_id, page in document.pages.items():
-                page.classification = regex_matched_class
-                page.confidence = 1.0
-
-            # Create a single section containing all pages
-            page_ids = list(document.pages.keys())
-            section = self._create_section(
-                section_id="1",
-                doc_type=regex_matched_class,
-                pages=page_ids,
-                confidence=1.0,
-            )
-
-            if isinstance(section, Section):
-                document.sections = [section]
-            else:
-                document.sections = [
-                    Section(
-                        section_id=section.section_id,
-                        classification=section.classification.doc_type,
-                        page_ids=[page.page_id for page in section.pages],
-                    )
-                ]
-
-            # Update document status
-            document = self._update_document_status(document)
-
-            return document
+            # Multi-page `llm_determined`: the class stays the regex-matched one,
+            # but the per-page document_boundary signal it needs only exists if
+            # the model runs. Fall through to the normal path with the class
+            # pinned, so the boundaries are real and the regex stays
+            # authoritative over the class (which is what the feature promises).
+            forced_class = regex_matched_class
 
         # If there's only one document class defined, the class decision is
         # predetermined — but only skip the backend when the configured
@@ -2358,17 +2405,22 @@ class ClassificationService:
             limited_document = self._limit_pages_for_classification(document)
 
             if limited_document.id != document.id:  # Pages were actually limited
-                # Classify the limited document
+                # Classify the limited document.
+                # NOTE: _apply_limited_classification_to_all_pages collapses the
+                # result into one all-pages section for every config, so
+                # maxPagesForClassification still overrides sectionSplitting here
+                # — a pre-existing limitation of that setting, not specific to the
+                # regex path.
                 if self.classification_method == self.TEXTBASED_HOLISTIC:
                     logger.info(
                         f"Classifying limited document with {len(limited_document.pages)} pages using holistic packet method"
                     )
                     classified_limited = self.holistic_classify_document(
-                        limited_document
+                        limited_document, forced_class=forced_class
                     )
                 else:
                     classified_limited = self._classify_pages_multimodal(
-                        limited_document
+                        limited_document, forced_class=forced_class
                     )
 
                 # Apply results to all pages in original document
@@ -2382,9 +2434,9 @@ class ClassificationService:
             logger.info(
                 f"Classifying document with {len(document.pages)} pages using holistic packet method"
             )
-            return self.holistic_classify_document(document)
+            return self.holistic_classify_document(document, forced_class=forced_class)
 
-        return self._classify_pages_multimodal(document)
+        return self._classify_pages_multimodal(document, forced_class=forced_class)
 
     def classify_pages(self, pages: Dict[str, Dict[str, Any]]) -> ClassificationResult:
         """
@@ -2453,6 +2505,77 @@ class ClassificationService:
         else:  # llm_determined (default)
             return self._create_llm_determined_sections(document, page_results)
 
+    def _needs_boundary_detection(self, document: Document) -> bool:
+        """True when the configured ``sectionSplitting`` needs a model signal.
+
+        Shared by both short-circuits — the single-class one (GitHub issue #686)
+        and the document-name-regex one (GitHub issue #705). Both predetermine
+        the *class*, and neither predetermines the section *boundaries*:
+
+        - ``disabled`` — one section over all pages. Nothing to detect.
+        - ``page`` — one section per page. Nothing to detect.
+        - **single-page document, any strategy** — one page cannot be split, so
+          the result is identical either way and inference would be pure waste.
+
+        ``llm_determined`` on a multi-page document does need the model: that is
+        where boundaries come from. It is also the config *default*, so treating
+        it as "nothing to detect" is what collapses every multi-document packet
+        into one section by construction — the bug both issues report.
+        """
+        strategy = self.config.classification.sectionSplitting.lower()
+        if strategy in ("disabled", "page"):
+            return False
+
+        # One page cannot be split, whatever the strategy says.
+        return len(document.pages) > 1
+
+    def _can_skip_backend_for_regex_match(
+        self, document: Document, class_name: str
+    ) -> bool:
+        """True when a document-name-regex match needs no backend call at all.
+
+        ``x-aws-idp-document-name-regex`` derives the *class* from the document's
+        name, so no inference is needed to make that decision. Section
+        boundaries, however, are a separate question — and this path used to skip
+        them along with the class, hard-coding ONE section spanning every page
+        regardless of ``sectionSplitting`` (GitHub issue #705). A packet holding
+        several separate documents of the matched class therefore collapsed into
+        a single section and extraction returned only the first record;
+        ``sectionSplitting: page`` was silently ignored.
+
+        The same three-way rule as the single-class short-circuit applies (see
+        ``_needs_boundary_detection``). Note that "the class came from the
+        filename" does not make boundary detection unnecessary: knowing *what* a
+        packet contains says nothing about *where* one record ends and the next
+        begins. So for a multi-page ``llm_determined`` document this returns
+        False and classification runs — with the class pinned to the
+        regex-matched one (``forced_class``), so the model's contribution is the
+        per-page ``document_boundary`` signal and the regex stays authoritative
+        over the class, exactly as the feature documents.
+
+        BEHAVIOUR AND COST CHANGE, deliberate: ``llm_determined`` is the
+        *default*, so a regex-matched **multi-page** document now incurs
+        classification inference where it previously incurred none — the
+        performance shortcut no longer skips the model for those. Single-page
+        matches (the common "name the file and skip the LLM" case) keep the
+        zero-inference path, and ``sectionSplitting: disabled`` is the explicit
+        opt-out for multi-page files that are always one document.
+        """
+        if self._needs_boundary_detection(document):
+            logger.info(
+                "Document name regex matched class '%s' but sectionSplitting='%s' "
+                "needs boundary detection across %d pages: running classification "
+                "for the per-page boundary signal with the class pinned to '%s'. "
+                "Set sectionSplitting: disabled (or page) to skip inference "
+                "entirely.",
+                class_name,
+                self.config.classification.sectionSplitting.lower(),
+                len(document.pages),
+                class_name,
+            )
+            return False
+        return True
+
     def _can_skip_backend_for_single_class(self, document: Document) -> bool:
         """True when a single-class config needs no backend call at all.
 
@@ -2487,12 +2610,7 @@ class ClassificationService:
         if not self.has_single_class:
             return False
 
-        strategy = self.config.classification.sectionSplitting.lower()
-        if strategy in ("disabled", "page"):
-            return True
-
-        # One page cannot be split, whatever the strategy says.
-        if len(document.pages) <= 1:
+        if not self._needs_boundary_detection(document):
             return True
 
         logger.info(
@@ -2501,28 +2619,39 @@ class ClassificationService:
             "sectionSplitting: disabled to skip it when one file is always one "
             "document.",
             self.single_class_name,
-            strategy,
+            self.config.classification.sectionSplitting.lower(),
             len(document.pages),
         )
         return False
 
-    def _create_single_class_sections(self, document: Document) -> Document:
+    def _create_single_class_sections(
+        self, document: Document, class_name: Optional[str] = None
+    ) -> Document:
         """
-        Assign every page to the sole configured class and split into sections
-        according to the configured ``sectionSplitting`` strategy.
+        Assign every page to one known class and split into sections according to
+        the configured ``sectionSplitting`` strategy.
 
-        This is the "single-class short-circuit": when the configuration defines
-        exactly one document class the *class decision* is predetermined, so no
-        backend call is needed to make it. Boundary detection is a separate
-        question, though, and used to be skipped along with it — every packet
-        collapsed into one section spanning all pages regardless of
-        ``sectionSplitting`` (GitHub issue #686). For a "one record type per
-        packet" configuration that silently merged every record in the packet
-        into a single section, and extraction then returned only the first one.
+        This serves both zero-inference short-circuits, which differ only in how
+        the class was determined:
 
-        Only reached when ``_can_skip_backend_for_single_class`` says the backend
-        is genuinely unnecessary, so the strategies handled here are the ones that
-        need no model output:
+        - the configuration defines exactly one document class (GitHub issue
+          #686) — ``class_name`` omitted, ``self.single_class_name`` is used;
+        - the document's name matched a class's
+          ``x-aws-idp-document-name-regex`` (GitHub issue #705) — the matched
+          class is passed in as ``class_name``.
+
+        In both cases the *class decision* is predetermined, so no backend call
+        is needed to make it. Boundary detection is a separate question, though,
+        and used to be skipped along with it — every packet collapsed into one
+        section spanning all pages regardless of ``sectionSplitting``. For a "one
+        record type per packet" configuration that silently merged every record
+        in the packet into a single section, and extraction then returned only
+        the first one.
+
+        Only reached when ``_can_skip_backend_for_single_class`` /
+        ``_can_skip_backend_for_regex_match`` say the backend is genuinely
+        unnecessary, so the strategies handled here are the ones that need no
+        model output:
 
         - ``disabled`` — one section over all pages.
         - ``page`` — one section per page. This is the documented escape hatch
@@ -2535,13 +2664,15 @@ class ClassificationService:
         model and a knob that asks for boundary detection has to perform it.
 
         Args:
-            document: Document whose pages should all be classified as the single
-                configured class
+            document: Document whose pages should all be classified as
+                ``class_name``
+            class_name: The predetermined class. Defaults to the sole configured
+                class; the document-name-regex path passes the matched class.
 
         Returns:
             Document with pages classified and sections created per strategy
         """
-        class_name = self.single_class_name or "undefined"
+        class_name = class_name or self.single_class_name or "undefined"
 
         # Synthesize the page-result list the shared section builders expect, so
         # `disabled` and `page` reuse exactly the same code (and the same page
@@ -3072,7 +3203,9 @@ class ClassificationService:
 
         return pages_content
 
-    def holistic_classify_document(self, document: Document) -> Document:
+    def holistic_classify_document(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
         """
         Classify a document using holistic packet classification.
 
@@ -3087,6 +3220,10 @@ class ClassificationService:
 
         Args:
             document: Document object to classify
+            forced_class: When set, every returned segment's type is overwritten
+                with this value, so the model's contribution is the segment
+                *ranges* only. Set by the document-name-regex path in
+                ``classify_document`` (GitHub issue #705).
 
         Returns:
             Document: Updated Document object with classifications and sections
@@ -3195,6 +3332,16 @@ class ClassificationService:
 
                 if not segments:
                     raise ValueError("No segments found in the classification result")
+
+                if forced_class:
+                    # The document's NAME already asserts the class; the model was
+                    # invoked only for the segment RANGES (GitHub issue #705).
+                    # Setting the key unconditionally also rescues a segment whose
+                    # type the model omitted, which the validation below would
+                    # otherwise drop along with its boundary.
+                    for segment in segments:
+                        if isinstance(segment, dict):
+                            segment["type"] = forced_class
 
                 # Update page classifications based on segments
                 for i, segment in enumerate(segments):
