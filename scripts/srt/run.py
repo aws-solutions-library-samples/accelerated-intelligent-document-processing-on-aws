@@ -6,6 +6,39 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from ci_paths import is_gating_status, partition_by_ci_visibility  # noqa: E402
+
+
+def print_issue_table(title, issues):
+    """Print a numbered table of findings under a banner."""
+    separator = "=" * 120
+    divider = "-" * 120
+
+    print(f"\n{separator}")
+    print(f"{title} - TOTAL: {len(issues)}")
+    print(separator)
+    print(
+        f"{'#':<4} {'SEVERITY':<10} {'SOURCE':<12} {'CHECK ID':<20} {'FILE':<50} {'LINE':<6}"
+    )
+    print(divider)
+
+    for idx, issue in enumerate(issues, 1):
+        priority = issue.get("priority") or "UNKNOWN"
+        source = issue.get("source") or "Unknown"
+        check_id = (issue.get("check_id") or "")[:19]  # Truncate long check IDs
+        path = issue.get("path") or "Unknown"
+        # Truncate long paths for readability
+        if len(path) > 48:
+            path = "..." + path[-45:]
+        line = str(issue.get("line", "?"))
+
+        print(
+            f"{idx:<4} {priority:<10} {source:<12} {check_id:<20} {path:<50} {line:<6}"
+        )
+
+    print(separator)
+
 
 def run_command(cmd: str, cwd=None, capture_output=False):
     """Run shell command and return result."""
@@ -86,22 +119,13 @@ def main():
             with open(issues_json_path, encoding="utf-8") as f:
                 issues = json.load(f)
             # Filter only HIGH priority issues that are not dispositioned.
-            # Medium/Low issues don't block CI.
-            #
-            # 'reopened' counts as blocking: SRT assigns it when a finding it
-            # previously recorded as resolved/suppressed is detected again, and
-            # its own status line reports "Open: N / Reopened: M ... N+M issues
-            # need attention". Gating on 'Open' alone let a re-detected HIGH
-            # through silently (observed on 0.6.5: LAMBDA-012 in
-            # nested/bedrockkb/template.yaml and the semgrep npm
-            # minimum-release-age finding in src/ui/.npmrc, both carrying a
-            # non-sticky "resolved" disposition). Only 'suppressed'/'resolved'
-            # are accepted dispositions.
+            # Medium/Low issues don't block CI. See GATING_STATUSES in
+            # ci_paths.py for why 'reopened' counts as undispositioned.
             high_open_issues = [
                 issue
                 for issue in issues
                 if (issue.get("priority") or "").upper() == "HIGH"
-                and (issue.get("status") or "").lower() in ("open", "reopened")
+                and is_gating_status(issue.get("status"))
             ]
         except (json.JSONDecodeError, UnicodeDecodeError, IOError) as e:
             print(f"⚠️  Warning: Could not parse issues.json: {e}")
@@ -110,35 +134,34 @@ def main():
                 # Create a dummy issue to indicate problems exist
                 high_open_issues = [{"issue": "Unknown - check SRT output"}]
 
-    if high_open_issues:
-        total = len(high_open_issues)
-        separator = "=" * 120
-        divider = "-" * 120
+    # Only findings in files CI actually checks out can gate. A local working
+    # tree that has been built carries gitignored SAM artifacts
+    # (.aws-sam/packaged.yaml, .aws-sam/idp-main.yaml) and vendored third-party
+    # trees that srt assess scans but CI never sees — reporting those as
+    # blocking produced phantom "regressions" after every publish.py run, and
+    # invited artifact-path suppressions into the committed baseline. See
+    # ci_paths.py for the full rationale.
+    gating_issues, local_only_issues = partition_by_ci_visibility(
+        high_open_issues, project_root
+    )
 
-        print(f"\n{separator}")
-        print(f"🔴 OPEN HIGH PRIORITY SECURITY ISSUES - TOTAL: {total}")
-        print(separator)
-        print(
-            f"{'#':<4} {'SEVERITY':<10} {'SOURCE':<12} {'CHECK ID':<20} {'FILE':<50} {'LINE':<6}"
+    if gating_issues:
+        print_issue_table("🔴 OPEN HIGH PRIORITY SECURITY ISSUES", gating_issues)
+
+    if local_only_issues:
+        print_issue_table(
+            "ℹ️  LOCAL-ONLY FINDINGS (gitignored files - NOT in CI, non-blocking)",
+            local_only_issues,
         )
-        print(divider)
+        print(
+            "These files are gitignored (build artifacts, vendored deps, scratch),\n"
+            "so CI's clean checkout cannot see them and they do NOT gate the build.\n"
+            "Do NOT suppress them in scripts/srt/issues.json — the suppression key\n"
+            "includes the path, so it would never match the real source template.\n"
+            "Run 'make srt-clean' to remove them and match CI exactly."
+        )
 
-        for idx, issue in enumerate(high_open_issues, 1):
-            priority = issue.get("priority") or "UNKNOWN"
-            source = issue.get("source") or "Unknown"
-            check_id = (issue.get("check_id") or "")[:19]  # Truncate long check IDs
-            path = issue.get("path") or "Unknown"
-            # Truncate long paths for readability
-            if len(path) > 48:
-                path = "..." + path[-45:]
-            line = str(issue.get("line", "?"))
-
-            print(
-                f"{idx:<4} {priority:<10} {source:<12} {check_id:<20} {path:<50} {line:<6}"
-            )
-
-        print(separator)
-
+    if gating_issues:
         if is_ci:
             # In CI/CD: fail the build
             sys.exit(1)
