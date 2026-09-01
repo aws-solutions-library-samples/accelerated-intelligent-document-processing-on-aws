@@ -2744,7 +2744,26 @@ class ClassificationService:
             )
             for r in sorted_results
         }
-        logger.info(f"Page document_boundary signals: {boundary_map}")
+        # Capped: a 500-page packet would otherwise put every page's signal in one
+        # log record. The pages that matter for diagnosing a merge are the ones
+        # that said "start" plus the ones where the field was absent, so those are
+        # always named; the rest are counted. The full per-page value is persisted
+        # on the page record anyway (Page.document_boundary).
+        _notable = {
+            page_id: signal
+            for page_id, signal in boundary_map.items()
+            if signal != "continue"
+        }
+        if len(boundary_map) <= 50:
+            logger.info(f"Page document_boundary signals: {boundary_map}")
+        else:
+            logger.info(
+                "Page document_boundary signals over %d pages: %d 'continue', "
+                "notable (start/absent): %s",
+                len(boundary_map),
+                len(boundary_map) - len(_notable),
+                dict(list(_notable.items())[:50]),
+            )
 
         current_group = 1
         current_type = sorted_results[0].classification.doc_type

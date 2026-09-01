@@ -291,7 +291,7 @@ Resources:
             description: Use Bedrock Data Automation (BDA) for OCR, classification, extraction, and assessment
             default: false
           enable_blueprint_optimization:
-            order: 2
+            order: 1.5
             type: boolean
             description: Automatically optimize BDA blueprints using ground truth data during discovery to improve extraction accuracy
             default: false
@@ -1083,7 +1083,7 @@ Resources:
                     "multimodalPageLevelClassification",
                     "textbasedHolisticClassification",
                   ]
-                order: 2
+                order: 3.5
               maxPagesForClassification:
                 type: string
                 title: Pages to classify
@@ -1429,7 +1429,7 @@ Resources:
                 type: object
                 sectionLabel: Image Processing Settings
                 description: Configure image resolution and processing options for image attachments in extraction
-                order: 15
+                order: 8
                 properties:
                   target_width:
                     type: number
