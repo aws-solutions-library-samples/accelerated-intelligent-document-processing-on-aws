@@ -511,6 +511,23 @@ class Document:
                 pi.to_dict() for pi in self.processing_issues
             ]
 
+        # Free-form per-document metadata. Written by producers that expect a
+        # LATER stage to read it — classification stores
+        # metadata["failed_page_exceptions"] there — so leaving it out of the
+        # dict meant it never survived a Step Functions hop and the reader saw
+        # nothing (GitHub #706).
+        #
+        # Round-tripped through json with default=str because callers also stash
+        # live objects here (metadata["primary_exception"] holds an Exception
+        # instance for in-process re-raise). serialize_document's uncompressed
+        # branch returns to_dict() straight to Lambda, whose response serializer
+        # has no default=str and would fail on such a value.
+        #
+        # Omitted when empty so payloads stay byte-identical to what older code
+        # wrote.
+        if self.metadata:
+            result["metadata"] = json.loads(json.dumps(self.metadata, default=str))
+
         # Convert pages
         result["pages"] = {}
         for page_id, page in self.pages.items():
@@ -610,6 +627,9 @@ class Document:
             evaluation_results_uri=data.get("evaluation_results_uri"),
             summary_report_uri=data.get("summary_report_uri"),
             metering=data.get("metering", {}),
+            # `or {}` so an absent key and an explicit null both read back as the
+            # empty dict the field defaults to.
+            metadata=data.get("metadata") or {},
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
             config_revision=coerce_revision(data.get("config_revision")),
