@@ -240,7 +240,14 @@ class SaveReportingData:
         for record in records:
             all_fields.update(record.keys())
 
-        # Create schema with conservative typing
+        # Create schema with conservative typing. Schema stays naive
+        # ``pa.timestamp("ms")`` because ``_convert_schema_to_glue_columns``
+        # maps that exact type to Glue Hive ``timestamp``; a tz-aware
+        # variant would fall through the mapping and become
+        # ``string``, breaking Athena time-range queries on
+        # dynamically-created document-sections tables. The sanitizer
+        # below coerces tz-aware datetimes to naive UTC to keep pyarrow
+        # happy while preserving the wall-clock semantics.
         schema_fields = []
         for field_name in sorted(all_fields):  # Sort for consistent ordering
             if field_name in TIMESTAMP_FIELDS:
@@ -283,22 +290,30 @@ class SaveReportingData:
                     # Convert all values to strings for string fields
                     sanitized_record[field_name] = self._convert_value_to_string(value)
                 elif field.type == pa.timestamp("ms"):
-                    # Handle timestamp fields
+                    # Handle timestamp fields.
+                    # Round-13 review fix: pyarrow rejects tz-AWARE
+                    # datetimes against a NAIVE column; ``datetime.now()``
+                    # historically returned naive so this worked, but any
+                    # caller (e.g. an updated save_rule_validation) now
+                    # passing ``datetime.now(timezone.utc)`` would raise
+                    # ``TypeError: Cannot use naive schema for a tz-aware
+                    # datetime`` at pa.Table.from_pylist. Normalize to
+                    # naive UTC before write so both shapes survive.
+                    parsed: Optional[datetime.datetime] = None
                     if isinstance(value, datetime.datetime):
-                        sanitized_record[field_name] = value
-                    else:
-                        # Try to parse string timestamps
+                        parsed = value
+                    elif isinstance(value, str):
                         try:
-                            if isinstance(value, str):
-                                sanitized_record[field_name] = (
-                                    datetime.datetime.fromisoformat(
-                                        value.replace("Z", "+00:00")
-                                    )
-                                )
-                            else:
-                                sanitized_record[field_name] = None
+                            parsed = datetime.datetime.fromisoformat(
+                                value.replace("Z", "+00:00")
+                            )
                         except (ValueError, TypeError):
-                            sanitized_record[field_name] = None
+                            parsed = None
+                    if parsed is not None and parsed.tzinfo is not None:
+                        parsed = parsed.astimezone(datetime.timezone.utc).replace(
+                            tzinfo=None
+                        )
+                    sanitized_record[field_name] = parsed
                 else:
                     # For any other types, convert to string as fallback
                     sanitized_record[field_name] = self._convert_value_to_string(value)
@@ -339,7 +354,14 @@ class SaveReportingData:
                 glue_type = "double"
             elif field.type == pa.float32():
                 glue_type = "float"
-            elif field.type == pa.timestamp("ms"):
+            elif field.type == pa.timestamp("ms") or field.type == pa.timestamp(
+                "ms", tz="UTC"
+            ):
+                # Round-19 review fix (#357): also match the tz-aware
+                # timestamp variant. Previously ONLY naive
+                # ``pa.timestamp("ms")`` mapped to Glue "timestamp";
+                # tz-aware fell through to "string" and Athena time-range
+                # queries silently returned nothing for those columns.
                 glue_type = "timestamp"
             else:
                 # Default to string for unknown types
@@ -902,134 +924,19 @@ class SaveReportingData:
         self._pricing_cache = pricing_map
         return pricing_map
 
-    def _create_or_update_metering_glue_table(self, schema: pa.Schema) -> bool:
-        """
-        Create or update a Glue table specifically for metering data.
-
-        Args:
-            schema: PyArrow schema for the metering table
-
-        Returns:
-            True if table was created or updated, False otherwise
-        """
-        if not self.glue_client or not self.database_name:
-            logger.debug(
-                "Glue client or database name not configured, skipping table creation"
-            )
-            return False
-
-        table_name = "metering"
-
-        # Convert schema to Glue columns
-        columns = self._convert_schema_to_glue_columns(schema)
-
-        # Table input for create/update
-        table_input = {
-            "Name": table_name,
-            "Description": "Metering data table for document processing costs and usage",
-            "StorageDescriptor": {
-                "Columns": columns,
-                "Location": f"s3://{self.reporting_bucket}/metering/",
-                "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
-                "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
-                "Compressed": True,
-                "SerdeInfo": {
-                    "SerializationLibrary": "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
-                },
-            },
-            "PartitionKeys": [{"Name": "date", "Type": "string"}],
-            "TableType": "EXTERNAL_TABLE",
-            "Parameters": {
-                "projection.enabled": "true",
-                "projection.date.type": "date",
-                "projection.date.format": "yyyy-MM-dd",
-                "projection.date.range": "2020-01-01,NOW",
-                "projection.date.interval": "1",
-                "projection.date.interval.unit": "DAYS",
-                "storage.location.template": f"s3://{self.reporting_bucket}/metering/date=${{date}}/",
-            },
-        }
-
-        try:
-            # Check if table exists
-            existing_table_response = self.glue_client.get_table(
-                DatabaseName=self.database_name, Name=table_name
-            )
-
-            # Table exists, check if we need to update it
-            existing_table = existing_table_response["Table"]
-            existing_columns = existing_table["StorageDescriptor"]["Columns"]
-
-            # Check if new columns need to be added
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
-
-            # Check if location has changed
-            existing_location = existing_table["StorageDescriptor"].get("Location", "")
-            new_location = table_input["StorageDescriptor"]["Location"]
-
-            # Check if columns or location have changed
-            columns_changed = not new_column_names.issubset(existing_column_names)
-            location_changed = existing_location != new_location
-
-            if columns_changed or location_changed:
-                if columns_changed:
-                    logger.info(f"Updating Glue table {table_name} with new columns")
-                if location_changed:
-                    logger.info(
-                        f"Updating Glue table {table_name} with new location: {existing_location} -> {new_location}"
-                    )
-
-                self.glue_client.update_table(
-                    DatabaseName=self.database_name, TableInput=table_input
-                )
-                logger.info(f"Successfully updated Glue table {table_name}")
-                return True
-            else:
-                logger.debug(f"Glue table {table_name} already up to date")
-                return True
-
-        except Exception as e:
-            if "EntityNotFoundException" in str(e):
-                # Table doesn't exist, create it
-                logger.info(f"Creating new Glue table {table_name} for metering data")
-                try:
-                    self.glue_client.create_table(
-                        DatabaseName=self.database_name, TableInput=table_input
-                    )
-                    logger.info(f"Successfully created Glue table {table_name}")
-                    return True
-                except Exception as create_error:
-                    if "AlreadyExistsException" in str(create_error):
-                        # Race condition - table was created by another process
-                        logger.info(
-                            f"Glue table {table_name} already exists (created by another process)"
-                        )
-                        return True
-                    else:
-                        logger.error(
-                            f"Error creating Glue table {table_name}: {str(create_error)}"
-                        )
-                        return False
-            else:
-                logger.error(
-                    f"Error checking/updating Glue table {table_name}: {str(e)}"
-                )
-                return False
-
     def _get_unit_cost(self, service_api: str, unit: str) -> float:
         """
-        Get the unit cost for a specific service API and unit using the configuration dictionary
-        (same source as the UI).
+        Get the unit cost for a specific service API and unit using the
+        configuration dictionary (same source as the UI).
 
         Args:
-            service_api: The AWS service API (e.g., 'bedrock/model-id', 'textract/operation')
+            service_api: The AWS service API (e.g., 'bedrock/model-id',
+                'textract/operation')
             unit: The unit of measurement (e.g., 'inputTokens', 'pages')
 
         Returns:
             Unit cost in USD, or 0.0 if not found
         """
-        # Get pricing from configuration dictionary
         pricing_map = self._get_pricing_from_config()
 
         # Try exact match first
@@ -1054,13 +961,14 @@ class SaveReportingData:
                         or unit_lower in unit_key_lower
                     ):
                         logger.info(
-                            f"Using partial match for {service_api}/{unit}: {service_key}/{unit_key} = ${cost}"
+                            f"Using partial match for {service_api}/{unit}: "
+                            f"{service_key}/{unit_key} = ${cost}"
                         )
                         return cost
 
-        # Log when no cost mapping is found
         logger.warning(
-            f"No unit cost mapping found for service_api='{service_api}', unit='{unit}'. Using $0.0"
+            f"No unit cost mapping found for service_api='{service_api}', "
+            f"unit='{unit}'. Using $0.0"
         )
         return 0.0
 
@@ -1087,7 +995,12 @@ class SaveReportingData:
             logger.warning(warning_msg)
             return None
 
-        # Define schema for metering data with new cost fields
+        # Define schema for metering data with new cost fields.
+        # ``timestamp`` is the write time (= doc completion time, since this
+        # runs at end of workflow). ``initial_event_time`` preserves the
+        # queue time for consumers that need queue-time semantics. See
+        # docs/reporting-sql-layer.md §2.3 for the partitioning
+        # rationale.
         metering_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -1098,35 +1011,64 @@ class SaveReportingData:
                 ("number_of_pages", pa.int32()),
                 ("unit_cost", pa.float64()),
                 ("estimated_cost", pa.float64()),
-                ("timestamp", pa.timestamp("ms")),
+                # Explicit UTC tz — round-8 review fix. Values are
+                # written from tz-aware datetimes (datetime.now(UTC),
+                # fromisoformat with '+00:00'), so declaring the pyarrow
+                # schema as tz="UTC" preserves the tz metadata in the
+                # parquet file instead of silently stripping it. Athena
+                # treats both forms as UTC on read, but readers outside
+                # Athena (Pandas, DuckDB) now see the correct tz too.
+                ("timestamp", pa.timestamp("ms", tz="UTC")),
+                ("initial_event_time", pa.timestamp("ms", tz="UTC")),
                 ("config_version", pa.string()),
             ]
         )
 
-        # Use document.initial_event_time if available, otherwise use current time
+        # Partition by WRITE TIME (= completion time). Every metering row
+        # lands in the current partition — no time-travel into past
+        # partitions, so rollup rows are trivially append-only. The
+        # ``initial_event_time`` column preserves queue-time semantics for
+        # any consumer that needs them.
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+        date_partition = timestamp.strftime("%Y-%m-%d")
+        hour_partition = timestamp.strftime("%H")
+
+        # Parse initial_event_time for the column value (best-effort — falls
+        # back to timestamp if parsing fails or the field is missing).
+        # Round-9 review fix: the metering parquet schema now declares
+        # ``tz="UTC"``, which requires timezone-AWARE datetimes. A naive
+        # ISO string like ``"2026-08-27T12:34:56"`` (no Z, no offset)
+        # parses to a naive datetime; the previous None-fallback didn't
+        # catch it. Force UTC on any naive result so pyarrow doesn't
+        # raise ArrowInvalid at write.
+        initial_event_time: Optional[datetime.datetime] = None
         if document.initial_event_time:
             try:
-                # Try to parse the initial_event_time string into a datetime object
-                doc_time = datetime.datetime.fromisoformat(
+                initial_event_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
-                )
-                timestamp = doc_time
-                date_partition = doc_time.strftime("%Y-%m-%d")
-                logger.info(
-                    f"Using document initial_event_time: {document.initial_event_time} for partitioning"
                 )
             except (ValueError, TypeError) as e:
                 logger.warning(
-                    f"Could not parse document.initial_event_time: {document.initial_event_time}, using current time instead. Error: {str(e)}"
+                    f"Could not parse document.initial_event_time: "
+                    f"{document.initial_event_time}. Error: {str(e)}"
                 )
-                timestamp = datetime.datetime.now()
-                date_partition = timestamp.strftime("%Y-%m-%d")
-        else:
+        if initial_event_time is None:
+            # Log the fallback — downstream queue-latency computations
+            # (initial_event_time → timestamp) would otherwise silently
+            # read as 0 duration, indistinguishable from truly-instant
+            # processing. Round-11 review fix.
             logger.warning(
-                "Document initial_event_time not available, using current time instead"
+                f"Document {document.id!r} has no initial_event_time; "
+                f"falling back to completion timestamp {timestamp.isoformat()}. "
+                f"Queue-latency metrics for this doc will read as 0."
             )
-            timestamp = datetime.datetime.now()
-            date_partition = timestamp.strftime("%Y-%m-%d")
+            initial_event_time = timestamp
+        elif initial_event_time.tzinfo is None:
+            # Naive datetime — assume UTC (matches the queue-time
+            # convention used everywhere else in the pipeline).
+            initial_event_time = initial_event_time.replace(
+                tzinfo=datetime.timezone.utc
+            )
 
         # Escape document ID by replacing slashes with underscores
         document_id = document.id or document.input_key or "unknown"
@@ -1178,13 +1120,19 @@ class SaveReportingData:
                     "unit_cost": unit_cost,
                     "estimated_cost": estimated_cost,
                     "timestamp": timestamp,
+                    "initial_event_time": initial_event_time,
                     "config_version": document.config_version or "default",
                 }
                 metering_records.append(metering_record)
 
-        # Save metering data in Parquet format
+        # Save metering data in Parquet format. Path is date+hour partitioned
+        # so the tier picker's <2h tail query can prune to the current hour
+        # instead of scanning the whole day (see docs/reporting-sql-layer.md §2).
         if metering_records:
-            metering_key = f"metering/date={date_partition}/{escaped_doc_id}_{timestamp_str}_results.parquet"
+            metering_key = (
+                f"metering/date={date_partition}/hour={hour_partition}/"
+                f"{escaped_doc_id}_{timestamp_str}_results.parquet"
+            )
             self._save_records_as_parquet(
                 metering_records, metering_key, metering_schema
             )
@@ -1216,13 +1164,25 @@ class SaveReportingData:
             logger.warning(warning_msg)
             return None
 
-        # Use document.initial_event_time if available, otherwise use current time
+        # Use document.initial_event_time if available, otherwise use current time.
+        # Round-20 review fix (#1183): the fallback paths used naive
+        # ``datetime.now()`` (system local time) so the section-parquet
+        # date partition and timestamp column diverged from every other
+        # reporting-table writer (which round-13 migrated to UTC).
+        # Non-UTC hosts (unit tests, local reproducers) landed section
+        # rows in the wrong date partition. Fix: use UTC everywhere and
+        # strip tz to match the naive schema (section tables use naive
+        # timestamp; Athena reads naive as UTC).
         if document.initial_event_time:
             try:
                 # Try to parse the initial_event_time string into a datetime object
                 doc_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
                 )
+                if doc_time.tzinfo is not None:
+                    doc_time = doc_time.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
                 timestamp = doc_time
                 date_partition = doc_time.strftime("%Y-%m-%d")
                 logger.info(
@@ -1232,14 +1192,18 @@ class SaveReportingData:
                 logger.warning(
                     f"Could not parse document.initial_event_time: {document.initial_event_time}, using current time instead. Error: {str(e)}"
                 )
-                current_time = datetime.datetime.now()
+                current_time = datetime.datetime.now(datetime.timezone.utc).replace(
+                    tzinfo=None
+                )
                 timestamp = current_time
                 date_partition = current_time.strftime("%Y-%m-%d")
         else:
             logger.warning(
                 "Document initial_event_time not available, using current time instead"
             )
-            current_time = datetime.datetime.now()
+            current_time = datetime.datetime.now(datetime.timezone.utc).replace(
+                tzinfo=None
+            )
             timestamp = current_time
             date_partition = current_time.strftime("%Y-%m-%d")
 
@@ -1574,7 +1538,11 @@ class SaveReportingData:
             logger.error(error_msg)
             return {"statusCode": 500, "body": error_msg}
 
-        # Define schemas
+        # Define schemas. Schema stays naive to keep the Glue column
+        # mapping stable (naive pa.timestamp("ms") → Hive "timestamp"; the
+        # tz-aware variant maps to a different type Athena would see as
+        # ``timestamp with time zone`` and existing Glue tables were
+        # created without tz). Round-13 review fix strips tz on write below.
         document_summary_schema = pa.schema(
             [
                 ("document_id", pa.string()),
@@ -1601,22 +1569,45 @@ class SaveReportingData:
             ]
         )
 
-        # Get timestamp
+        # Get timestamp. Round-13 review fix: compute UTC deliberately
+        # (datetime.now(timezone.utc)) so the wall-clock is unambiguous —
+        # datetime.now() previously returned the container's local time,
+        # which on non-Lambda hosts (unit tests, local reproducers) drifts
+        # from UTC. Then STRIP tz to match the naive parquet schema —
+        # changing the schema to tz-aware would flip Glue's column type
+        # to ``timestamp with time zone`` and break already-existing
+        # rule_validation Glue tables. UTC-then-strip keeps semantics
+        # correct and Athena reads the naive timestamp back as UTC.
         if document.initial_event_time:
             try:
                 doc_time = datetime.datetime.fromisoformat(
                     document.initial_event_time.replace("Z", "+00:00")
                 )
+                if doc_time.tzinfo is not None:
+                    doc_time = doc_time.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
                 validation_date = doc_time
                 date_partition = doc_time.strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                validation_date = datetime.datetime.now()
+                validation_date = datetime.datetime.now(datetime.timezone.utc).replace(
+                    tzinfo=None
+                )
                 date_partition = validation_date.strftime("%Y-%m-%d")
         else:
-            validation_date = datetime.datetime.now()
+            validation_date = datetime.datetime.now(datetime.timezone.utc).replace(
+                tzinfo=None
+            )
             date_partition = validation_date.strftime("%Y-%m-%d")
 
-        document_id = rule_validation_data.get("document_id", document.id)
+        # Round-12 review fix: dict.get() only returns the default when the
+        # KEY is absent; if the JSON payload has ``"document_id": null``,
+        # dict.get returns None even with a fallback. And document.id itself
+        # can be None. Coalesce explicitly so re.sub() below doesn't
+        # TypeError on None and abort rule-validation saving for the doc.
+        document_id = (
+            rule_validation_data.get("document_id") or document.id or "unknown"
+        )
         escaped_doc_id = re.sub(r"[/\\]", "_", document_id)
 
         # Prepare document summary

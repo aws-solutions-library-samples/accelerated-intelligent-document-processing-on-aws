@@ -2285,7 +2285,8 @@ idp-cli config-upload [OPTIONS]
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
 - `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically.
-- `--version-description`: Description for the configuration version (used when creating new versions)
+- `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
+- `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
 
 **Examples:**

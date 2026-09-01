@@ -207,6 +207,7 @@ automated loop keep **one** profile and track its attempts as revisions:
 | Task | CLI | SDK |
 |---|---|---|
 | Save, and learn which revision it became | `config-upload` prints `Revision: r7` | `upload()` returns `revision` |
+| Say what the change was | `config-upload --revision-notes "raised topK to 20"` | `upload(revision_notes=...)` |
 | See a profile's history | `config-revisions --config-profile lending` (`--json` for scripting) | `revisions(config_profile=...)` |
 | See each profile's current revision | `config-list` (`Rev` column) | `list()` → `published_revision` |
 | Fetch what an earlier run used | `config-download --config-profile lending --config-revision 7` | `download(config_profile=..., config_revision=7)` |

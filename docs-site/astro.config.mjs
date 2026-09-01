@@ -235,6 +235,7 @@ export default defineConfig({
           items: [
             { label: "Monitoring", slug: "monitoring" },
             { label: "Reporting Database", slug: "reporting-database" },
+            { label: "Reporting SQL Layer", slug: "reporting-sql-layer" },
             { label: "Capacity Planning", slug: "capacity-planning" },
             { label: "Cost Calculator", slug: "cost-calculator" },
             { label: "Circuit Breaker", slug: "circuit-breaker" },

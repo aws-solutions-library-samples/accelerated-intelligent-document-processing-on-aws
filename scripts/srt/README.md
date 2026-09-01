@@ -102,8 +102,12 @@ SRT tracks issue suppressions and resolutions in `issues.json`. To persist suppr
 
 **Workflow:**
 1. **Setup** (`make srt-setup`) - Copies `scripts/srt/issues.json` → `.srt/issues.json` (restore suppressions)
-2. **Fix** (`make srt-fix`) - Copies `.srt/issues.json` → `scripts/srt/issues.json` (save suppressions)
+2. **Fix** (`make srt-fix`) - Copies `.srt/issues.json` → `scripts/srt/issues.json` (save suppressions), keeping only HIGH non-`Open` findings **on git-tracked paths** (see "CI sees only tracked files" below)
 3. **Commit** - After fixing/suppressing issues, commit updated `scripts/srt/issues.json` to git
+
+Only mark a finding `suppressed` (with a `suppressionReason`) if you intend it to
+stay quiet. `resolved` is **not** sticky — SRT flips a re-detected `resolved`
+finding to `reopened`, which gates the build.
 
 This ensures suppressions persist across:
 - Local development (between runs)
@@ -120,35 +124,52 @@ This ensures suppressions persist across:
   - Assessment results and reports
 - `scripts/srt/issues.json` - **Committed to git** (suppression database)
 
-## GitLab CI Stage Details
+## GitLab CI Job Details
 
-The `security_review` stage in `.gitlab-ci.yml`:
+The `srt_security_review` job in `.gitlab-ci.yml`:
 
 ```yaml
 srt_security_review:
-  stage: security_review
+  stage: fast_checks
+  timeout: 50m
   rules:
-    - if: $CI_COMMIT_BRANCH == "develop"
-      when: on_success
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+  needs: []          # no build stage precedes it — see "CI sees only tracked files"
   script:
     - make srt-setup
     - make srt-scan
 ```
 
-### Why only on MRs to `develop`?
+### Why on every push, not just MRs to `develop`?
 
-Running automated security scans only on merge requests targeting `develop` provides the right balance:
+The job needs no AWS and runs in **parallel** with `code_checks` (`needs: []`), so
+it adds no wall-clock to the fast gate while still gating the expensive deploy
+stages. Running it on every push surfaces security regressions early on any
+branch, and GitLab emails the committer on failure.
 
-✅ **Pros:**
-- Catches security issues before merging to `develop`
-- Provides clear security gate before code reaches `develop`
-- Doesn't slow down feature branch pushes
-- Reduces CI/CD queue time for work-in-progress branches
+### CI sees only tracked files
 
-❌ **Running on every feature branch push would:**
-- Slow down developer iteration
-- Create noise with frequent updates
-- Block early commits for security issues that may be fixed during development
+Because `needs: []` means no build stage runs first, the CI checkout contains
+**tracked files only** — no `.aws-sam/` build output, no vendored
+`layer/python/` trees, no `scratch/`. A local working tree usually does have
+those, and `srt assess` has no `--exclude` option, so it scans and flags them.
+
+`ci_paths.py` classifies every finding by whether its path is git-tracked:
+
+- `run.py` gates only on tracked-file findings and prints gitignored ones in a
+  separate non-blocking `ℹ️ LOCAL-ONLY FINDINGS` table.
+- `fix.py` drops gitignored-path findings before writing the committed baseline,
+  so `make srt-fix` cannot pollute it with artifact-path entries.
+- Classification **fails closed**: if `git ls-files` cannot be run, every finding
+  gates.
+
+Never suppress an `.aws-sam/` finding. SRT keys suppressions on
+`(path, resourceType, resourceName, check_id)`, so an artifact-path entry cannot
+cover the same resource in the source `template.yaml` — and `srt fix` writes it
+back as `resolved`, which is not sticky, so the next scan re-detects it as
+`reopened` and *that* gates. Use `make srt-clean` to match CI exactly.
+`scripts/srt/tests/test_ci_paths.py` enforces this on the committed baseline.
 
 ## Best Practices
 
