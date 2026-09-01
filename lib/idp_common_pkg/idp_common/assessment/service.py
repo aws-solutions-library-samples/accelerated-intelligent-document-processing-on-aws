@@ -1507,10 +1507,22 @@ class AssessmentService:
                 )
                 + audit_issues
             )
-            if processing_issues:
-                extraction_data["metadata"]["processing_issues"] = [
-                    pi.to_dict() for pi in processing_issues
-                ]
+            # MERGE, do not replace. Extraction already wrote its own issues here
+            # (extraction_incomplete, extraction_validation_failed, ...); this step
+            # owns only the assessment-stage ones. Replacing the list dropped
+            # everything extraction had reported — which mattered most for the
+            # on-by-default validation issue, because `separate` (the recommended
+            # confidence mode) is exactly the mode where this step runs.
+            _inherited = [
+                pi
+                for pi in (
+                    extraction_data.get("metadata", {}).get("processing_issues") or []
+                )
+                if isinstance(pi, dict) and pi.get("stage") != "assessment"
+            ]
+            _merged = _inherited + [pi.to_dict() for pi in processing_issues]
+            if _merged:
+                extraction_data["metadata"]["processing_issues"] = _merged
                 # Append a Processing Issues block to the (extraction-generated)
                 # processing report so the human-readable report on the simple/
                 # separate path also surfaces the root cause — the extraction
@@ -1542,7 +1554,20 @@ class AssessmentService:
                     doc_section.confidence_threshold_alerts = (
                         confidence_threshold_alerts
                     )
-                    doc_section.processing_issues = processing_issues
+                    # Replace only the assessment-stage issues, keep the rest.
+                    # The section write that follows in the assessment Lambda
+                    # REPLACES the whole section map, so an unconditional
+                    # `= processing_issues` did not merely skip extraction's
+                    # issues — it deleted them from DynamoDB. Verified live: with
+                    # `confidence.mode: separate` a section whose extraction had
+                    # raised extraction_validation_failed came back with
+                    # ProcessingIssues absent, while the same run under
+                    # `integrated` (no standalone assessment step) kept it.
+                    doc_section.processing_issues = [
+                        pi
+                        for pi in (doc_section.processing_issues or [])
+                        if getattr(pi, "stage", None) != "assessment"
+                    ] + processing_issues
                     break
 
             # Update document with metering data
