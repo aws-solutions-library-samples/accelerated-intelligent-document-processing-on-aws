@@ -139,6 +139,80 @@ class TestNumberCoercion:
     @pytest.mark.parametrize(
         "raw",
         [
+            # A leading zero rules out the thousands reading -- no convention
+            # writes 1 as "0,001" -- but the decimal reading is only an
+            # assumption too, so the shape is ambiguous and must be refused.
+            "0,001",
+            "0,000",
+            "00,001",
+            "0,001.50",
+            "$0,001",
+            "(0,001)",
+            "0.001,50",
+            "0'001",
+            "0 001",
+        ],
+    )
+    def test_leading_zero_grouping_is_refused_not_silently_rescaled(self, raw: str):
+        """Regression: '0,001' was rewritten to 1 -- a 1000x error.
+
+        Worse than a wrong number, it was recorded as a *successful* coercion
+        whose reason claimed the comma was a thousands separator, so nothing
+        downstream (validation, confidence, the audit trail) had any signal that
+        the stored value had been invented. Refusing leaves the raw string in
+        place for the validator and a human to see.
+        """
+        value, coercions, refusals = _coerce_one(NUMBER, raw)
+        assert value == raw, f"{raw!r} was rewritten to {value!r}"
+        assert coercions == []
+        assert len(refusals) == 1
+        assert refusals[0].code == CODE_UNPARSEABLE_NUMBER
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A single leading zero before a genuine decimal point is normal.
+            ("0.001", 0.001),
+            ("0.5", 0.5),
+            ("-0.25", -0.25),
+            # ... and a zero *inside* a group is fine; only the first group's
+            # leading zero is diagnostic.
+            ("1,001", 1001),
+            ("10,001", 10001),
+            ("1,000,001", 1000001),
+        ],
+    )
+    def test_ordinary_zeros_still_coerce(self, raw: str, expected: Any):
+        value, _, refusals = _coerce_one(NUMBER, raw)
+        assert value == expected
+        assert refusals == []
+
+    def test_absurd_digit_run_is_refused_without_raising(self):
+        """A barcode, a MICR line or a model repetition loop must not throw.
+
+        Python refuses ``int()`` above 4300 digits (CVE-2020-10735) and a float
+        that long overflows to ``inf``. Either would propagate out of the walk,
+        and the caller disables coercion for the WHOLE section on any exception
+        -- so one degenerate field would silently switch the feature off for
+        every other field in the document.
+        """
+        value, coercions, refusals = _coerce_one(NUMBER, "1" * 5000)
+        assert value == "1" * 5000
+        assert coercions == []
+        assert len(refusals) == 1
+        assert refusals[0].code == CODE_UNPARSEABLE_NUMBER
+
+    def test_overflowing_decimal_is_refused_rather_than_stored_as_infinity(self):
+        """``float('1e400')`` is ``inf``, which is not JSON-serializable."""
+        raw = "1" * 400 + ".5"
+        value, coercions, refusals = _coerce_one(NUMBER, raw)
+        assert value == raw
+        assert coercions == []
+        assert len(refusals) == 1
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
             "N/A",
             "none",
             "abc",

@@ -4456,10 +4456,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             instance_count = designated
             instance_source = "declared"
 
+        # Assigned unconditionally, including 0. A re-extraction (reprocess, or a
+        # reclassify that reuses the section) starts from the RESTORED section,
+        # which still carries the previous run's count — so a guarded write would
+        # leave a stale "3 documents" badge on a section this run found one
+        # document in, or failed on entirely. 0 renders as "-" (undetermined),
+        # which is the honest reading of a run that determined nothing.
+        section.instance_count = instance_count
         if instance_count:
             metadata["instance_count"] = instance_count
             metadata["instance_source"] = instance_source
-            section.instance_count = instance_count
         if result.recovered_instances:
             metadata["recovered_instances"] = result.recovered_instances
             # Surface on the dashboard so multi-document sections are visible

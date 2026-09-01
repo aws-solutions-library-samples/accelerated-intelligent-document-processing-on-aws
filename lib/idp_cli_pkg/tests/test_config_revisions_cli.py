@@ -20,7 +20,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
+from idp_cli import cli as cli_module
 from idp_cli.cli import cli
 from idp_sdk.models import (
     ConfigDownloadResult,
@@ -116,10 +118,14 @@ def test_config_revisions_command_exists():
 
 @pytest.mark.unit
 def test_config_revisions_lists_history(monkeypatch):
-    # Rich sizes tables to the terminal; in a captured run that is 80 columns and
-    # the Notes column gets ellipsized. Widen it so the assertions below are about
-    # the table's CONTENT rather than the harness's window.
-    monkeypatch.setenv("COLUMNS", "200")
+    # Rich sizes tables to the console width, and at 80 columns the Notes column
+    # is ellipsized -- so the assertions below would be about the harness's
+    # window rather than the table's CONTENT. Setting COLUMNS is not enough: the
+    # width that wins depends on whether stdout looks like a terminal, which
+    # differs between a plain run and a pytest-xdist worker (this test passed
+    # serially and failed under `-n auto` for exactly that reason). Replace the
+    # module-level console with one pinned to an explicit width instead.
+    monkeypatch.setattr(cli_module, "console", Console(width=200))
     patcher, client = _client()
     try:
         client.config.revisions.return_value = ConfigRevisionListResult(

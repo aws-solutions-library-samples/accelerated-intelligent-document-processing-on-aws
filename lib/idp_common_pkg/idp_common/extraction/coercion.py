@@ -55,6 +55,7 @@ from __future__ import annotations
 import copy
 import datetime
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -307,7 +308,20 @@ def _valid_grouping(digits: str, sep: str) -> bool:
         return False
     if not (1 <= len(groups[0]) <= 3) or not groups[0].isdigit():
         return False
+    # A real thousands-grouped number never has a redundant leading zero in its
+    # first group: "0,001" and "00,001" are not 1 under any convention. Without
+    # this, "0,001" was rewritten to 1 — a 1000x error, recorded with a reason
+    # claiming the comma was a thousands separator.
+    if groups[0].startswith("0"):
+        return False
     return all(len(g) == 3 and g.isdigit() for g in groups[1:])
+
+
+# Python refuses int(str) above 4300 digits (CVE-2020-10735 mitigation), and a
+# float that long overflows to inf. A degenerate OCR digit-run — a barcode, a MICR
+# line, a model repetition loop — must not raise, because the caller disables
+# coercion for the ENTIRE section on any exception.
+_MAX_NUMERIC_DIGITS = 4000
 
 
 def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
@@ -331,6 +345,12 @@ def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
 
     Anything whose grouping does not check out is refused rather than guessed at.
     """
+    if sum(c.isdigit() for c in body) > _MAX_NUMERIC_DIGITS:
+        return None, (
+            f"more than {_MAX_NUMERIC_DIGITS} digits — refusing rather than "
+            "risking an overflow or a conversion error"
+        )
+
     notes: list[str] = []
 
     for ch in _APOSTROPHES:
@@ -379,12 +399,25 @@ def _parse_grouped_digits(body: str) -> tuple[int | float | None, str]:
         if not head.isdigit() or not tail.isdigit():
             return None, "not a plain decimal number"
         if sep == "," and len(tail) == 3:
+            # Same leading-zero rule as _valid_grouping: "0,001" cannot mean 1.
+            # A leading zero means the comma is a DECIMAL separator, and since
+            # that reading is itself only an assumption for a 3-digit tail, this
+            # shape is ambiguous — refuse rather than pick one.
+            if head == "0" or (len(head) > 1 and head[0] == "0"):
+                return None, (
+                    f"'{head},{tail}' has a leading zero, so ',' cannot be a "
+                    "thousands separator; the intended decimal convention is "
+                    "ambiguous"
+                )
             notes.append(
                 "single ',' with three trailing digits read as a thousands separator"
             )
             return int(head + tail), "; ".join(notes)
         notes.append(f"'{sep}' read as decimal separator")
-        return float(head + "." + tail), "; ".join(notes)
+        parsed = float(head + "." + tail)
+        if not math.isfinite(parsed):
+            return None, "value overflows a float"
+        return parsed, "; ".join(notes)
 
     if not body.isdigit():
         return None, "not a plain decimal number"
@@ -879,7 +912,11 @@ def _walk(
             CODE_MAX_DEPTH_EXCEEDED,
             f"nesting deeper than {_MAX_DEPTH} levels was left untouched",
         )
-        return copy.deepcopy(value)
+        # NOT copy.deepcopy: that recurses over the entire remaining subtree,
+        # so the depth bound it is meant to enforce would blow the stack anyway.
+        # Past the bound we hand back the value as-is; it is left uncoerced,
+        # which is exactly what the refusal says.
+        return value
 
     resolved = _effective_node(node, root) if isinstance(node, dict) else {}
     types = _types_of(resolved)

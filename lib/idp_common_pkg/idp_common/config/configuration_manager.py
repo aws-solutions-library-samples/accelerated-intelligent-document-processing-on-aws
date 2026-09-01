@@ -264,9 +264,17 @@ class ConfigurationManager:
             # after the v0.7 move: the editor reported validation enabled/warn on
             # profiles the pipeline was running disabled/escalate, and a save from
             # that panel would have persisted the wrong value.
-            from .migrations import migrate_config
+            #
+            # Only for CONFIG_TYPE_CONFIG. The migrations describe the IDP config
+            # shape; the other record types in this table (Schema, pricing, model
+            # limits) are unrelated documents. Their key paths would never match,
+            # but the chain unconditionally stamps `config_format_version`, so
+            # running it would inject a meaningless key into a pricing or schema
+            # record — which a subsequent save would then persist.
+            if config_type == CONFIG_TYPE_CONFIG:
+                from .migrations import migrate_config
 
-            config_data = migrate_config(config_data)
+                config_data = migrate_config(config_data)
 
             logger.info(
                 f"Retrieved raw configuration for {config_type}, version: {version}"

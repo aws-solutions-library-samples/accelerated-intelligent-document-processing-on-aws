@@ -26,6 +26,8 @@ import copy
 import logging
 from typing import Any, Dict
 
+from ._version import is_at_or_after, is_newer_than
+
 logger = logging.getLogger(__name__)
 
 TARGET_VERSION = "0.7"
@@ -50,7 +52,7 @@ def _has_legacy_markers(config: Dict[str, Any]) -> bool:
 
 def _needs_migration(config: Dict[str, Any]) -> bool:
     """True when the config predates v0.7 or still carries the legacy location."""
-    if str(config.get("config_format_version", "")) != TARGET_VERSION:
+    if not is_at_or_after(config.get("config_format_version"), TARGET_VERSION):
         return True
     return _has_legacy_markers(config)
 
@@ -99,5 +101,11 @@ def migrate_v06_to_v07(config: Dict[str, Any]) -> Dict[str, Any]:
                 extraction.pop("agentic", None)
             result["extraction"] = extraction
 
-    result["config_format_version"] = TARGET_VERSION
+    # Never DOWNGRADE the stamp. Reaching here with a newer stamp means an older
+    # release is reading a configuration written by a newer one (a rollback), and
+    # only the legacy-marker check brought us in. Rewriting "0.8" to "0.7" would
+    # erase the one record that this config came from a newer format, so a later
+    # roll-forward would skip the migration it actually needs.
+    if not is_newer_than(result.get("config_format_version"), TARGET_VERSION):
+        result["config_format_version"] = TARGET_VERSION
     return result

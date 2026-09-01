@@ -1297,7 +1297,11 @@ Resources:
                 type: object
                 sectionLabel: Value Coercion
                 description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction; Advanced already coerces through its generated model."
-                order: 5
+                # Fractional slots keep these two next to the other
+                # result-handling groups (confidence 3, geometry 4) without
+                # colliding with model (5) / model_lambda_hook_arn (6), whose
+                # integer slots are already taken.
+                order: 4.1
                 properties:
                   enabled:
                     type: boolean
@@ -1315,11 +1319,11 @@ Resources:
                 type: object
                 sectionLabel: Schema Validation & Escalation
                 description: "Validates the extraction result against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce), and optionally escalates failing fields to a stronger model. Applies to BOTH Simple and Advanced extraction. On by default at Fail Action 'warn', which adds no inference cost."
-                order: 6
+                order: 4.2
                 properties:
                   enabled:
                     type: boolean
-                    description: "Enable full JSON-Schema validation of the extraction result. Violations are fed back to the model for self-correction; remaining failures are handled per Fail Action below. On by default: at Fail Action 'warn' this is free and only makes an otherwise-silent schema violation visible."
+                    description: "Enable full JSON-Schema validation of the extraction result. In Advanced (agentic) extraction violations are fed back to the agent for self-correction first; Simple extraction has no such loop (re-asking the same model with the same prompt mostly buys another invalid answer at full cost), so it goes straight to Fail Action. Remaining failures are handled per Fail Action below. On by default: at Fail Action 'warn' this is free and only makes an otherwise-silent schema violation visible."
                     order: 0
                     default: true
                   check_formats:
@@ -1330,7 +1334,7 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
                   fail_action:
                     type: string
-                    description: "What to do when validation still fails after the agent's own retries. 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
                     order: 2
                     default: "warn"

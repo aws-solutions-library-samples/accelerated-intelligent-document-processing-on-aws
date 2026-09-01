@@ -2265,10 +2265,13 @@ class ClassificationService:
         Single-class configurations short-circuit the class decision (no backend
         call) but still honor ``sectionSplitting``: ``disabled`` yields one
         all-pages section and ``page`` yields one section per page.
-        ``llm_determined`` degrades to ``disabled`` with a warning, because
-        boundary detection requires the per-page inference call the
-        short-circuit exists to avoid. See ``_create_single_class_sections``
-        and GitHub issue #686.
+        ``llm_determined`` runs the normal backend so boundary detection really
+        happens — it is the default, and silently degrading it would collapse
+        every multi-document packet by construction, which is the #686 bug
+        itself. The zero-inference short-circuit therefore applies only when no
+        boundary decision is needed: ``disabled``, ``page``, or a single-page
+        document. See ``_can_skip_backend_for_single_class`` and
+        ``_create_single_class_sections``.
 
         Args:
             document: Document object to classify and update

@@ -13,6 +13,8 @@ pins for the v0.5 -> v0.6 hop. The same shape is pinned here.
 
 from __future__ import annotations
 
+import pytest
+
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.migrations import migrate_config
 from idp_common.config.migrations.v06_to_v07 import (
@@ -182,6 +184,24 @@ class TestThroughIDPConfig:
         assert cfg.extraction.validation.enabled is True
         assert cfg.extraction.validation.fail_action == "warn"
 
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_blank_fail_action_resolves_to_the_field_default(self, blank):
+        """An absent/blank action must mean ``warn``, not ``escalate``.
+
+        The coercing validator predates the default flip and still returned
+        ``escalate`` for a null, so any stored config, hand-written YAML or CLI
+        payload carrying a null would have paid for a stronger-model
+        re-extraction on every validation failure -- with validation now ON by
+        default. A persisted null is not hypothetical: the config editor has
+        stored nulls for scalar fields before (the ``int(None)`` rollback bug).
+        """
+        cfg = IDPConfig(**{"extraction": {"validation": {"fail_action": blank}}})
+        assert cfg.extraction.validation.fail_action == "warn"
+        assert (
+            cfg.extraction.validation.fail_action
+            == IDPConfig().extraction.validation.fail_action
+        )
+
 
 class TestMergeOrder:
     def test_legacy_delta_pinned_to_non_default_values_survives_the_merge(self):
@@ -287,4 +307,78 @@ class TestRawConfigurationIsMigrated:
     def test_metadata_fields_are_still_stripped(self):
         mgr = self._manager_with(self.LEGACY)
         raw = mgr.get_raw_configuration("Config", "legacy-profile")
+        assert raw is not None
         assert "Configuration" not in raw
+
+    @pytest.mark.parametrize(
+        "config_type",
+        ["Schema", "DefaultPricing", "CustomPricing", "CustomModelConfigLimits"],
+    )
+    def test_other_record_types_are_not_stamped(self, config_type):
+        """The chain describes the IDP config shape only.
+
+        Pricing, model limits and the Schema live in the same table but are
+        unrelated documents. Their key paths would never match a migration, but
+        the chain stamps ``config_format_version`` unconditionally — so running
+        it here would inject a meaningless key that a subsequent save persists.
+        """
+        stored = {
+            "Configuration": f"{config_type}#x",
+            "units": {"tokens": 1000},
+        }
+        mgr = self._manager_with(stored)
+        raw = mgr.get_raw_configuration(config_type, "x")
+        assert raw is not None
+        assert raw == {"units": {"tokens": 1000}}
+        assert "config_format_version" not in raw
+
+
+class TestNewerStampIsNotDowngraded:
+    """A migration must never rewrite a stamp BACKWARDS.
+
+    This is the rollback direction: an older release reads a configuration a
+    newer one wrote. The migration's transform is a no-op there (the keys it
+    relocates are long gone), but it used to stamp its own TARGET_VERSION
+    unconditionally — so reading a v0.8 config on a v0.7 release relabelled it
+    v0.7, and the roll-forward that followed would then skip the v0.7 -> v0.8
+    migration the config actually needed. Silent, and only visible as wrong
+    behaviour several releases later.
+    """
+
+    def test_newer_stamp_survives_a_pure_read(self):
+        cfg = {"config_format_version": "0.9", "extraction": {"mode": "simple"}}
+        out = migrate_config(cfg)
+        assert out["config_format_version"] == "0.9"
+
+    def test_newer_stamp_survives_even_when_legacy_markers_force_a_run(self):
+        """The hybrid case: current-stamped dict carrying a legacy delta."""
+        cfg = {
+            "config_format_version": "0.9",
+            "extraction": {"agentic": {"validation": {"fail_action": "reject"}}},
+        }
+        out = migrate_config(cfg)
+        # The relocation still happens -- that is what the marker check is for.
+        assert out["extraction"]["validation"] == {"fail_action": "reject"}
+        # ...but the stamp is left alone.
+        assert out["config_format_version"] == "0.9"
+
+    def test_older_stamp_is_still_advanced(self):
+        for stamp in ("0.5", "0.6"):
+            out = migrate_config({"config_format_version": stamp})
+            assert out["config_format_version"] == TARGET_VERSION, stamp
+
+    def test_absent_stamp_is_still_advanced(self):
+        out = migrate_config({"extraction": {"mode": "simple"}})
+        assert out["config_format_version"] == TARGET_VERSION
+
+    def test_two_digit_minor_is_ordered_numerically_not_lexically(self):
+        """'0.10' > '0.7' numerically but '0.10' < '0.7' as strings.
+
+        A string compare would treat every 0.10+ config as older and reshape it.
+        """
+        out = migrate_config({"config_format_version": "0.10"})
+        assert out["config_format_version"] == "0.10"
+
+    def test_unparseable_stamp_is_treated_as_predating_versioning(self):
+        out = migrate_config({"config_format_version": "not-a-version"})
+        assert out["config_format_version"] == TARGET_VERSION

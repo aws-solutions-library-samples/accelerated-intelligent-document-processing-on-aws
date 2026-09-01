@@ -276,9 +276,19 @@ class ValidationConfig(BaseModel):
     @field_validator("fail_action", mode="before")
     @classmethod
     def validate_fail_action(cls, v: Any) -> str:
-        """Reject unknown actions early so misconfiguration fails fast."""
+        """Reject unknown actions early so misconfiguration fails fast.
+
+        An absent/blank value resolves to ``warn`` — the same as the field
+        default. It previously resolved to ``escalate``, which was left behind
+        when the default was changed and quietly defeated the whole cost-safety
+        argument for enabling validation by default: any stored config,
+        hand-written YAML or CLI path carrying a null/blank ``fail_action`` would
+        have paid for a stronger-model re-extraction on every validation failure.
+        A null here is not hypothetical — the config editor has persisted nulls
+        for scalar fields before (the ``int(None)`` upgrade-rollback bug).
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
-            return "escalate"
+            return "warn"
         v_str = str(v).lower()
         if v_str not in ("warn", "escalate", "reject"):
             raise ValueError(
