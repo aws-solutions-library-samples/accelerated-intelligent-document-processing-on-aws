@@ -10,9 +10,9 @@ docs:
   series: null
 - id: small_narrow
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf
   rows: 100
   pages: 3
   tag: size=small
@@ -37,9 +37,9 @@ docs:
   series: null
 - id: kv_form
   gen: kv_form
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf
   fields: 25
   tag: doc_type=keyvalue
   series: null
@@ -150,4 +150,13 @@ docs:
   rows: 400
   pages: 9
   tag: shape=noisy
+  series: null
+- id: valuenoise_100
+  gen: bank_statement
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf
+  rows: 100
+  pages: 3
+  tag: shape=valuenoise
   series: null
