@@ -19,9 +19,20 @@ configuration it replaced.
 > [Terminology](#terminology-which-word-means-what) for the vocabulary that
 > replaced it.
 >
-> API, CLI, and stored field names are unchanged for compatibility —
-> `getConfigVersions`, `versionName`, `--config-version`, `ConfigVersion`, and
+> API and stored field names are unchanged for compatibility —
+> `getConfigVersions`, `versionName`, `ConfigVersion`, and
 > `allowedConfigVersions` all still refer to **profiles**.
+>
+> The CLI and SDK now accept the new name as well: `--config-profile` /
+> `config_profile=` alongside `--config-version` / `config_version=`. Both
+> spellings set the same value; "version" is kept for backward compatibility and
+> is not going away, but "profile" is the name to use in new scripts.
+
+
+
+https://github.com/user-attachments/assets/c67e38ad-4fe1-49ec-91ff-229787e43766
+
+
 
 ## Terminology: which word means what
 
@@ -183,10 +194,42 @@ profile is chosen you can instead pin an earlier one:
 | **Upload Documents** | Pin a revision for the documents being uploaded. |
 | **Reprocess Document** | Pin a revision to reproduce what an earlier run produced. |
 | **Generate draft labels** | Pin the revision that drafts the labels. |
-| **CLI** | `--config-revision 7` alongside `--config-version` on `process` / `run-inference`. |
+| **CLI / SDK** | `--config-revision 7` alongside `--config-profile` on `process` / `run-inference` (`config_revision=` on `batch.process`). |
 
 The revision picker appears only when the profile actually has history — a
 dropdown whose only entry is "Current" is noise rather than a choice.
+
+### Revisions from the CLI and SDK
+
+Everything above is also reachable programmatically, which is what lets an
+automated loop keep **one** profile and track its attempts as revisions:
+
+| Task | CLI | SDK |
+|---|---|---|
+| Save, and learn which revision it became | `config-upload` prints `Revision: r7` | `upload()` returns `revision` |
+| See a profile's history | `config-revisions --config-profile lending` (`--json` for scripting) | `revisions(config_profile=...)` |
+| See each profile's current revision | `config-list` (`Rev` column) | `list()` → `published_revision` |
+| Fetch what an earlier run used | `config-download --config-profile lending --config-revision 7` | `download(config_profile=..., config_revision=7)` |
+| Process / score under an exact revision | `--config-revision 7` on `process` / `run-inference` | `config_revision=7` on `batch.process` |
+
+```bash
+# Upload attempt N, capture the revision it became, and score exactly that
+rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
+        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+      | sed -n 's/^Revision: r//p')
+
+idp-cli run-inference --stack-name my-stack --test-set my-tests \
+    --config-profile tuning-run-42 --config-revision "$rev" --monitor
+```
+
+Requesting a revision that retention has already pruned **fails** rather than
+falling back to the profile's current configuration: substituting a different
+configuration under the name you asked for would look like a success, and its
+numbers would go into a comparison. Label or pin the revisions you need to keep.
+
+Naming a new profile per attempt also works and predates revisions, but every one
+of those profiles then appears in the profile pickers and `allowedConfigVersions`
+scope lists of the whole deployment.
 
 **Every document is pinned, whether or not you chose a revision.** The queue
 processor stamps the profile's current revision onto the document as it starts. So
@@ -344,7 +387,7 @@ The IDP CLI supports full configuration version management. See [idp-cli.md](idp
 idp-cli config-download --stack-name my-stack --output config.yaml
 
 # Download a specific version
-idp-cli config-download --stack-name my-stack --config-version Production --output config.yaml
+idp-cli config-download --stack-name my-stack --config-profile Production --output config.yaml
 ```
 
 ### Upload / Create a Version
@@ -355,11 +398,11 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml
 
 # Update an existing version
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
-    --config-version Production
+    --config-profile Production
 
 # Create a new version with description
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
-    --config-version Experiment-A \
+    --config-profile Experiment-A \
     --version-description "Testing nova-2-lite for extraction"
 ```
 
@@ -368,20 +411,21 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 ```bash
 # Process with a specific configuration profile
 idp-cli run-inference --stack-name my-stack --dir ./documents/ \
-    --config-version Production --monitor
+    --config-profile Production --monitor
 
 # Pin an exact revision of that profile (reproduces what r7 recorded)
 idp-cli process --stack-name my-stack --dir ./documents/ \
-    --config-version Production --config-revision 7 --monitor
+    --config-profile Production --config-revision 7 --monitor
 
 # Process test set with version and context
 idp-cli run-inference --stack-name my-stack --test-set fcc-example-test \
-    --config-version Experiment-A \
+    --config-profile Experiment-A \
     --context "Testing nova-2-lite extraction prompts" \
     --monitor
 ```
 
-The `--config-version` parameter:
+The `--config-profile` parameter (`--config-version` is the former name and
+still works):
 1. Validates the profile exists before starting processing
 2. Stores the profile name as S3 object metadata (`config-version`) on uploaded documents
 3. The processing pipeline reads and uses the specified profile's configuration
