@@ -749,11 +749,13 @@ Table name: `metering`
 
 Table name: `metering_hourly` / `metering_daily`
 **Purpose**: Pre-aggregated per-hour / per-day cost, one row per (hour|day, config_version, service_api, unit).
-**Use for**: Any wide time-range cost query (>2h) — scans 100× fewer rows than raw metering. Columns: `sum_value`, `sum_cost`.
+**Use for**: Any wide time-range cost query (>2h) — scans 100× fewer rows than raw metering. Columns: `sum_value` (quantity — tokens/pages/seconds, NOT USD), `sum_cost` (USD).
+**Key columns differ per table**: `metering_hourly` uses `hour_ts` (TIMESTAMP); `metering_daily` uses `day` (DATE, NOT `hour_ts` — `hour_ts` does not exist on the daily rollup). See detail section for the full anti-pattern list.
 
 Table name: `metering_docs_hourly` / `metering_docs_daily`
 **Purpose**: Doc-grain volume and pages per hour/day, one row per (hour|day, config_version).
 **Use for**: "How many docs processed?", "How many pages?" Columns: `n_docs`, `sum_pages`.
+**Note**: These doc-grain tables OMIT `service_api` and `unit` — those live only on `metering_hourly` / `metering_daily`. Do NOT `GROUP BY service_api` or `unit` on the docs tables (COLUMN_NOT_FOUND).
 
 ### Operational cost (Lambda compute, control-plane vs data-plane)
 Table name: `control_plane_hourly`

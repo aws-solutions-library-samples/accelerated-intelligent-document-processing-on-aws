@@ -13,6 +13,7 @@ drift out of sync with the actual Glue table shapes.
 import pytest
 
 from idp_common.agents.analytics.schema_provider import (
+    get_database_overview,
     get_metering_table_description,
 )
 
@@ -165,4 +166,70 @@ class TestMeteringHourlyColumnsInPrompt:
         assert "hour_ts" in section, (
             "metering_daily bullet must explicitly disclaim hour_ts so "
             "the LLM knows it doesn't exist on the daily rollup."
+        )
+
+
+@pytest.fixture
+def stub_config():
+    """Minimal IDPConfig stub so ``get_database_overview()`` doesn't
+    try to load the real Configuration table from DDB. Only the
+    metering-block wording is under test here, and that block is a
+    static string literal in the function, so no real config data
+    is needed."""
+    from unittest.mock import MagicMock
+
+    cfg = MagicMock()
+    cfg.classes = []  # no document classes → dynamic sections stay empty
+    return cfg
+
+
+@pytest.mark.unit
+class TestDatabaseOverviewMirrorsDetail:
+    """Round-29 review: the DETAIL section (get_metering_table_description)
+    has all the disclaimers, but the OVERVIEW blurb (get_database_overview)
+    was thinner and would let an LLM that reads only the overview
+    generalize wrong. Same class as round-27's real blockers. These tests
+    pin the specific overview claims that must not drift again."""
+
+    def test_overview_names_metering_daily_day_column(self, stub_config):
+        """The overview blurb MUST tell the agent that `metering_daily`
+        uses `day` (DATE), not `hour_ts` — otherwise the LLM
+        generalizes from `metering_hourly` and emits SELECT hour_ts
+        FROM metering_daily → COLUMN_NOT_FOUND. Round-29 finding #13."""
+        overview = get_database_overview(config=stub_config)
+        idx = overview.find("metering_hourly` / `metering_daily`")
+        assert idx > -1, "overview does not have the metering_hourly/daily block"
+        block = overview[idx : idx + 600]
+        assert "day" in block and "DATE" in block, (
+            "overview block for metering_hourly/daily must name `day` (DATE) "
+            "as the daily rollup's key column"
+        )
+        # Must also disclaim hour_ts on the daily side, so the LLM doesn't
+        # blindly copy the hourly pattern.
+        assert "hour_ts" in block, (
+            "overview block must explicitly mention hour_ts (and disclaim "
+            "it for the daily table) — otherwise the LLM emits "
+            "SELECT hour_ts FROM metering_daily → COLUMN_NOT_FOUND"
+        )
+
+    def test_overview_warns_docs_tables_omit_service_api_and_unit(self, stub_config):
+        """The overview blurb MUST tell the agent that
+        `metering_docs_hourly` / `metering_docs_daily` OMIT the
+        `service_api` and `unit` columns. Without this, an LLM that
+        joins/groups by service_api on the docs table gets
+        COLUMN_NOT_FOUND. Round-29 finding #14."""
+        overview = get_database_overview(config=stub_config)
+        idx = overview.find("metering_docs_hourly` / `metering_docs_daily`")
+        assert idx > -1, "overview does not have the metering_docs block"
+        block = overview[idx : idx + 600]
+        assert "service_api" in block and "unit" in block, (
+            "overview block for metering_docs_* must name service_api "
+            "and unit as absent columns"
+        )
+        # The disclaimer must be negative (OMIT / not / do NOT), not just
+        # a positive mention (which would confuse the LLM further).
+        assert "OMIT" in block or "do NOT" in block or "not exist" in block, (
+            "overview block must NEGATIVELY disclaim service_api / unit "
+            "on the docs tables — a positive mention alone can be "
+            "misread as 'these columns exist here'"
         )
