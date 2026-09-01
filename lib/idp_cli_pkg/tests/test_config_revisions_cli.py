@@ -358,3 +358,73 @@ def test_force_delete_skips_the_managed_lookup_entirely():
         assert not client.config.list.called
     finally:
         patcher.stop()
+
+
+@pytest.mark.unit
+def test_upload_passes_revision_notes_through():
+    """
+    Without notes, an ordinary edit records a revision with a timestamp and an
+    author but no statement of what changed — which makes the history of a profile
+    an automated loop writes to unreadable.
+    """
+    patcher, client = _client()
+    try:
+        client.config.upload.return_value = ConfigUploadResult(
+            success=True, version="lending", revision=4
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            with open("c.yaml", "w") as f:
+                f.write("classes: []\n")
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    "s",
+                    "--config-file",
+                    "c.yaml",
+                    "--config-profile",
+                    "lending",
+                    "--revision-notes",
+                    "raised topK to 20",
+                    "--version-description",
+                    "Production tuning",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.config.upload.call_args.kwargs
+        assert kwargs["revision_notes"] == "raised topK to 20"
+        # The two must not be conflated: description is the PROFILE's and is
+        # overwritten by every save; notes are per-revision and immutable.
+        assert kwargs["description"] == "Production tuning"
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_upload_without_notes_sends_none_rather_than_a_placeholder():
+    patcher, client = _client()
+    try:
+        client.config.upload.return_value = ConfigUploadResult(
+            success=True, version="lending", revision=4
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            with open("c.yaml", "w") as f:
+                f.write("classes: []\n")
+            runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    "s",
+                    "--config-file",
+                    "c.yaml",
+                    "--config-profile",
+                    "lending",
+                ],
+            )
+        assert client.config.upload.call_args.kwargs["revision_notes"] is None
+    finally:
+        patcher.stop()

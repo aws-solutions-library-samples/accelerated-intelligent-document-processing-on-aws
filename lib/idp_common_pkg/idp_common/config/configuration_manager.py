@@ -1127,6 +1127,7 @@ class ConfigurationManager:
         version: Optional[str] = None,
         description: Optional[str] = None,
         created_by: Optional[str] = None,
+        revision_notes: Optional[str] = None,
     ) -> bool:
         """
         Handle the updateConfiguration GraphQL mutation.
@@ -1148,6 +1149,14 @@ class ConfigurationManager:
             description: Optional description
             created_by: Email of the user making the change, recorded on the
                 revision this save cuts
+            revision_notes: What this change was, recorded on the revision — e.g.
+                "raised topK to 20". Without it an ordinary edit records a revision
+                with a timestamp and an author but nothing about the intent, which
+                makes a profile's history unreadable for an automated loop that
+                cuts many revisions. Applied to the normal-update and
+                profile-created paths; the operation-specific notes ("Reset to
+                default", "Saved as default", "Promoted from profile ...") are
+                left as they are, since those describe what the operation WAS.
 
         Returns:
             True on success
@@ -1259,7 +1268,7 @@ class ConfigurationManager:
                     version=version,
                     description=description,
                     created_by=created_by,
-                    revision_notes="Profile created",
+                    revision_notes=revision_notes or "Profile created",
                 )
                 logger.info(f"Saved new version: {version} with full configuration")
             else:
@@ -1271,7 +1280,7 @@ class ConfigurationManager:
                     version=version,
                     description=description,
                     created_by=created_by,
-                    revision_notes="Profile created",
+                    revision_notes=revision_notes or "Profile created",
                 )
                 logger.info(f"Saved new version: {version} (no default to merge with)")
             return True
@@ -1310,6 +1319,7 @@ class ConfigurationManager:
             version=version,
             description=description,
             created_by=created_by,
+            revision_notes=revision_notes,
         )
         logger.info(f"Updated version {version} configuration (full config saved)")
 
