@@ -95,18 +95,17 @@ def _resolved_lambda_config(idx):
     ``retries`` is asserted on the RESOLVED config rather than the literal dict,
     because botocore rewrites it: ``max_attempts`` is a RETRY count and becomes
     ``total_max_attempts = N + 1``. Reading the literal would let
-    ``max_attempts: 1`` (two attempts) pass as "no retries". Building a real
-    client performs no network I/O; credentials and region are supplied so it
-    cannot depend on the environment.
+    ``max_attempts: 1`` (two attempts) pass as "no retries".
+
+    Creating the client performs no network I/O and needs no credentials —
+    botocore resolves those lazily, at request time — so this neither reaches AWS
+    nor depends on the environment. ``region_name`` is passed explicitly so a
+    runner with no configured region cannot raise ``NoRegionError``.
     """
     import boto3
 
     config = idx._test_client_kwargs["lambda"]["config"]
-    session = boto3.Session(
-        region_name="us-east-1",
-        aws_access_key_id="testing",
-        aws_secret_access_key="testing",
-    )
+    session = boto3.Session(region_name="us-east-1")
     return session.client("lambda", config=config).meta.config
 
 
