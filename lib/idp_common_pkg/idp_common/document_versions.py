@@ -41,6 +41,46 @@ def runs_prefix(input_key: str) -> str:
     return f"{input_key}/{RUNS_PREFIX_SEGMENT}/"
 
 
+def delete_current_output_objects(s3_client, output_bucket: str, input_key: str) -> int:
+    """
+    Delete the current output objects for a document, preserving run manifests.
+
+    Used to defeat the OCR function's retry-safe recovery
+    (``discover_existing_ocr_pages``) when a document key is being processed
+    again — either via the explicit "Reprocess" resolver, or when an S3 upload
+    reuses an existing filename. Without this cleanup the OCR service reads
+    stale ``pages/*`` artefacts from the previous document, skips OCR, and
+    downstream classification/extraction consume text from the OLD document.
+
+    Preserves ``{input_key}/runs/`` (per-run manifests plus the noncurrent
+    object versions they pin) so document version history survives. On a
+    versioned bucket, ``delete_objects`` without VersionId writes delete
+    markers, so the underlying bytes remain retrievable via the manifests.
+
+    Returns:
+        Number of objects deleted (0 if the prefix was empty).
+    """
+    prefix = f"{input_key}/"
+    preserved_prefix = runs_prefix(input_key)
+    deleted = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
+        objects = [
+            obj
+            for obj in page.get("Contents", [])
+            if not obj["Key"].startswith(preserved_prefix)
+        ]
+        if not objects:
+            continue
+        for i in range(0, len(objects), 1000):
+            batch = [{"Key": obj["Key"]} for obj in objects[i : i + 1000]]
+            s3_client.delete_objects(
+                Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
+            )
+            deleted += len(batch)
+    return deleted
+
+
 def build_run_id(completion_time: str, workflow_execution_arn: Optional[str]) -> str:
     """
     Build a stable, human-sortable run id from the completion timestamp and the

@@ -6609,6 +6609,11 @@ Resources:
             TableName: !Ref ConfigurationTable
         - S3ReadPolicy:
             BucketName: !Ref InputBucket
+        # Issue #719: purge stale output from a prior upload of the same key
+        # before the pipeline runs (defeats OCR retry-safe recovery on
+        # re-upload). Preserves `<key>/runs/` version-history manifests.
+        - S3CrudPolicy:
+            BucketName: !Ref OutputBucket
         - Statement:
             - Effect: Allow
               Action:

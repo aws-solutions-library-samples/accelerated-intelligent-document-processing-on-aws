@@ -11,6 +11,7 @@ import pytest
 
 from idp_common.document_versions import (
     build_run_id,
+    delete_current_output_objects,
     delete_run_artifacts,
     list_current_output_versions,
     load_run_manifest,
@@ -137,6 +138,93 @@ class TestSnapshot:
 
     def test_runs_prefix(self):
         assert runs_prefix("batch/doc.pdf") == "batch/doc.pdf/runs/"
+
+
+@pytest.mark.unit
+class TestDeleteCurrentOutputObjects:
+    """delete_current_output_objects: defeats OCR retry-safe recovery on
+    re-upload (issue #719) and full reprocess. Must preserve the reserved
+    runs/ prefix (version-history manifests)."""
+
+    def test_deletes_current_objects_but_preserves_runs_prefix(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [
+                {
+                    "Contents": [
+                        {"Key": "doc.pdf/pages/1/rawText.json"},
+                        {"Key": "doc.pdf/pages/1/result.json"},
+                        {"Key": "doc.pdf/sections/1/result.json"},
+                        # runs/ prefix must be preserved
+                        {"Key": "doc.pdf/runs/r1/manifest.json"},
+                    ]
+                }
+            ]
+        )
+        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        assert deleted == 3
+
+        call = s3.delete_objects.call_args.kwargs
+        assert call["Bucket"] == "out-bucket"
+        keys = [o["Key"] for o in call["Delete"]["Objects"]]
+        assert "doc.pdf/pages/1/rawText.json" in keys
+        assert "doc.pdf/pages/1/result.json" in keys
+        assert "doc.pdf/sections/1/result.json" in keys
+        # The version-history manifest must survive the purge.
+        assert "doc.pdf/runs/r1/manifest.json" not in keys
+
+    def test_empty_prefix_is_noop(self):
+        """First-time upload: nothing to delete, and no delete_objects call."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        deleted = delete_current_output_objects(s3, "out-bucket", "fresh.pdf")
+        assert deleted == 0
+        s3.delete_objects.assert_not_called()
+
+    def test_batches_over_1000_keys(self):
+        s3 = MagicMock()
+        contents = [{"Key": f"doc.pdf/pages/{i}/rawText.json"} for i in range(2500)]
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": contents}])
+        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        assert deleted == 2500
+        # 2500 objects -> 3 batches of 1000/1000/500
+        assert s3.delete_objects.call_count == 3
+        sizes = [
+            len(c.kwargs["Delete"]["Objects"]) for c in s3.delete_objects.call_args_list
+        ]
+        assert sizes == [1000, 1000, 500]
+
+    def test_iterates_multi_page_pagination(self):
+        """S3 list_objects_v2 returns pages of 1000; the helper must iterate all."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [
+                {"Contents": [{"Key": "doc.pdf/pages/1/rawText.json"}]},
+                {"Contents": [{"Key": "doc.pdf/pages/2/rawText.json"}]},
+                {"Contents": [{"Key": "doc.pdf/runs/r1/manifest.json"}]},  # preserved
+                {"Contents": [{"Key": "doc.pdf/sections/1/result.json"}]},
+            ]
+        )
+        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        # 3 non-runs objects across 4 pages
+        assert deleted == 3
+        # runs/ page yields no objects -> skipped; delete called for 3 pages
+        assert s3.delete_objects.call_count == 3
+        all_deleted_keys = [
+            o["Key"]
+            for c in s3.delete_objects.call_args_list
+            for o in c.kwargs["Delete"]["Objects"]
+        ]
+        assert "doc.pdf/runs/r1/manifest.json" not in all_deleted_keys
+
+    def test_uses_trailing_slash_prefix_to_avoid_sibling_key_collisions(self):
+        """Prefix must be '<key>/' so 'doc.pdf' does not match 'doc.pdf.bak/*'."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="doc.pdf/"
+        )
 
 
 @pytest.mark.unit

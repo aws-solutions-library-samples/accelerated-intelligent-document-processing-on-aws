@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.document_versions import delete_current_output_objects
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 # Patch AWS SDK calls for X-Ray tracing
@@ -24,6 +25,7 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 
 # Initialize clients
 sqs = boto3.client("sqs")
+s3 = boto3.client("s3")
 document_service = create_document_service()
 queue_url = os.environ["QUEUE_URL"]
 retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
@@ -98,6 +100,26 @@ def handler(event, context):
     output_bucket = os.environ.get("OUTPUT_BUCKET", "")
     if output_bucket == "":
         raise Exception("OUTPUT_BUCKET environment variable not set")
+
+    # Purge any output data left in S3 from a previous upload of this same key.
+    # Without this, a re-upload that reuses an existing filename (e.g. replacing
+    # a W2 with a W3 under `test.pdf`) would let the OCR function's retry-safe
+    # recovery mechanism (`discover_existing_ocr_pages`) resurrect the previous
+    # document's OCR results, so classification/extraction would consume text
+    # from the OLD document and the UI would show stale extraction. Issue #719.
+    # No-op on a fresh key. Preserves `<key>/runs/` (version-history manifests).
+    try:
+        deleted = delete_current_output_objects(s3, output_bucket, object_key)
+        if deleted:
+            logger.info(
+                f"Purged {deleted} stale output objects for re-uploaded key "
+                f"s3://{output_bucket}/{object_key}/"
+            )
+    except Exception as e:
+        # Non-fatal: OCR will still run but may recover stale partial data.
+        logger.warning(
+            f"Failed to purge previous output data for {object_key}: {e}"
+        )
 
     # Create document object - config version will be read from S3 metadata automatically
     current_time = datetime.now(timezone.utc).isoformat()
