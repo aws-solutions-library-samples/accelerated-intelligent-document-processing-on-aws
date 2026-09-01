@@ -128,8 +128,30 @@ classes:
 **How it works:**
 - Works with any number of document classes defined in configuration
 - When document ID matches the regex pattern, all pages are classified as that class
-- Skips all LLM processing for massive performance gains
+- Skips the LLM *class* decision entirely — the name is authoritative, and it stays authoritative even when the model does run (see below)
 - Provides info-level logging when matches occur
+
+#### …and `sectionSplitting` still applies
+
+A filename tells you **what** the packet holds; it never tells you **where** one record ends and the next begins. So the name match short-circuits the class decision only — section boundaries follow `sectionSplitting`, exactly as for [single-class configurations](#single-class-configurations) (GitHub issue [#705](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/705) — previously this path hard-coded one all-pages section and `sectionSplitting` was silently ignored, the same defect as [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) reached through a different trigger):
+
+| `sectionSplitting` | Name-matched behavior | Backend call? |
+|--------------------|-----------------------|---------------|
+| `disabled` | One section over all pages | No |
+| `page` | One section per page | No |
+| `llm_determined`, single-page document | One section | No — one page cannot be split |
+| `llm_determined`, multi-page document | Real boundary detection, class pinned to the matched class | **Yes** |
+
+In the last row the model is invoked for the per-page `document_boundary` signal (or, under holistic classification, for the segment *ranges*) and its class output is discarded in favour of the regex match — so a packet of five payslips becomes five sections, all classified `Payslip`.
+
+**Cost note.** `llm_determined` is the *default*, so a name-matched **multi-page** document now performs classification inference where it previously performed none: for those documents the regex is no longer a "skip the LLM" shortcut. Single-page matches are unaffected and keep the zero-inference path. To keep multi-page files at zero cost when one file is always one document, set it explicitly:
+
+```yaml
+classification:
+  sectionSplitting: disabled   # one file is always one document
+```
+
+`page` also stays inference-free when you want one section per page.
 
 ### Page Content Regex Classification
 
