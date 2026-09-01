@@ -382,6 +382,7 @@ class ConfigOperation:
         *,
         config_profile: Optional[str] = None,
         created_by: Optional[str] = None,
+        revision_notes: Optional[str] = None,
         **kwargs,
     ) -> ConfigUploadResult:
         """Upload a configuration file to a deployed IDP stack.
@@ -397,6 +398,12 @@ class ConfigOperation:
             validate: Validate before uploading
             pattern: Pattern for validation
             description: Description for the configuration version
+            revision_notes: What this upload changed, recorded on the revision and
+                shown as "Notes" in the revision history — e.g. "raised topK to 20".
+                Distinct from `description`, which sets the PROFILE's description and
+                is overwritten by every save; this is per-revision and immutable.
+                Without it a profile edited programmatically has a history of
+                timestamps with no statement of intent.
             created_by: Recorded as the author of the revision this save cuts, and
                 shown as "By" in the revision history. The API path derives it from
                 the caller's Cognito identity; an SDK caller has no such identity,
@@ -483,6 +490,7 @@ class ConfigOperation:
                 version=config_version,
                 description=description,
                 created_by=created_by,
+                revision_notes=revision_notes,
             )
 
             # Report the revision this upload produced. Without it a caller can

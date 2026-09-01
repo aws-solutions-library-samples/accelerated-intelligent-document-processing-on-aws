@@ -4398,6 +4398,15 @@ def config_validate(
     "--version-description",
     help="Description for the configuration version (used when creating new versions)",
 )
+@click.option(
+    "--revision-notes",
+    help=(
+        "What this upload changed, recorded on the revision it cuts and shown as "
+        "Notes in the revision history (e.g. 'raised topK to 20'). Distinct from "
+        "--version-description, which sets the profile's description and is "
+        "overwritten by every save."
+    ),
+)
 @click.option("--region", help="AWS region (optional)")
 def config_upload(
     stack_name: str,
@@ -4405,6 +4414,7 @@ def config_upload(
     validate: bool,
     config_version: Optional[str],
     version_description: Optional[str],
+    revision_notes: Optional[str],
     region: Optional[str],
 ):
     """
@@ -4451,6 +4461,7 @@ def config_upload(
             validate=validate,
             config_version=config_version,
             description=version_description,
+            revision_notes=revision_notes,
         )
 
         if not result.success:

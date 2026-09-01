@@ -124,6 +124,56 @@ class TestCutOnSave:
         )
         assert manager.list_revisions("p")[0]["createdBy"] == "author@example.com"
 
+    def test_notes_from_an_ordinary_update_reach_the_revision(self, monkeypatch):
+        """
+        `handle_update_custom_configuration` — the path the Web UI, the CLI and the
+        SDK all take for an ordinary edit — accepted no notes, so every such
+        revision recorded an author and a timestamp but nothing about the intent.
+        A history of anonymous timestamps is unusable for an automated loop that
+        cuts one revision per attempt.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        manager.handle_update_custom_configuration(
+            {"notes": "b"},
+            version="p",
+            created_by="author@example.com",
+            revision_notes="raised topK to 20",
+        )
+        newest = manager.list_revisions("p")[0]
+        assert newest["notes"] == "raised topK to 20"
+        assert newest["createdBy"] == "author@example.com"
+
+    def test_a_new_profile_prefers_the_callers_notes_over_the_generic_default(
+        self, monkeypatch
+    ):
+        """
+        Creating a profile records "Profile created" when the caller says nothing.
+        A caller who did say something is more specific, so it wins — but the
+        operation-specific notes ("Reset to default", "Saved as default") are left
+        alone, because those describe what the operation WAS rather than why.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.handle_update_custom_configuration(
+            {"notes": "a", "saveAsVersion": True},
+            version="fresh",
+            revision_notes="initial import from the tuning loop",
+        )
+        assert (
+            manager.list_revisions("fresh")[0]["notes"]
+            == "initial import from the tuning loop"
+        )
+
+    def test_a_new_profile_without_notes_still_says_profile_created(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.handle_update_custom_configuration(
+            {"notes": "a", "saveAsVersion": True}, version="fresh"
+        )
+        assert manager.list_revisions("fresh")[0]["notes"] == "Profile created"
+
     def test_an_unchanged_save_records_nothing(self, monkeypatch):
         """
         Every stack deployment re-saves default and each managed profile. If a

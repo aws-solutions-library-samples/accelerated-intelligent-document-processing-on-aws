@@ -401,3 +401,66 @@ class TestListRevisions:
         client = IDPClient(stack_name="test-stack")
         with pytest.raises(ValueError):
             client.config.revisions()
+
+
+@pytest.mark.unit
+@pytest.mark.config
+class TestRevisionNotes:
+    """
+    `handle_update_custom_configuration` accepted no notes at all, so EVERY
+    ordinary edit — Web UI saves included — recorded a revision with an author and
+    a timestamp but no statement of what changed. Only the special operations
+    ("Reset to default", "Profile created", "Restored from r3") had any.
+    """
+
+    @patch("boto3.client")
+    @patch("idp_common.config.configuration_manager.ConfigurationManager")
+    def test_notes_reach_the_configuration_manager(
+        self, mock_manager_class, mock_boto3, tmp_path
+    ):
+        _wire_stack(mock_boto3)
+        manager = mock_manager_class.return_value
+        manager.get_configuration.return_value = {"version": "lending"}
+        manager.handle_update_custom_configuration.return_value = True
+        manager.resolve_published_revision.return_value = 4
+
+        config_file = tmp_path / "c.yaml"
+        config_file.write_text("classes: []\n")
+
+        client = IDPClient(stack_name="test-stack")
+        client.config.upload(
+            config_file=str(config_file),
+            config_profile="lending",
+            validate=False,
+            description="Production tuning",
+            revision_notes="raised topK to 20",
+        )
+
+        kwargs = manager.handle_update_custom_configuration.call_args.kwargs
+        assert kwargs["revision_notes"] == "raised topK to 20"
+        # Distinct fields: description belongs to the PROFILE and is overwritten by
+        # every save; notes belong to the revision and are immutable.
+        assert kwargs["description"] == "Production tuning"
+
+    @patch("boto3.client")
+    @patch("idp_common.config.configuration_manager.ConfigurationManager")
+    def test_notes_are_optional(self, mock_manager_class, mock_boto3, tmp_path):
+        _wire_stack(mock_boto3)
+        manager = mock_manager_class.return_value
+        manager.get_configuration.return_value = {"version": "lending"}
+        manager.handle_update_custom_configuration.return_value = True
+
+        config_file = tmp_path / "c.yaml"
+        config_file.write_text("classes: []\n")
+
+        client = IDPClient(stack_name="test-stack")
+        client.config.upload(
+            config_file=str(config_file), config_profile="lending", validate=False
+        )
+
+        assert (
+            manager.handle_update_custom_configuration.call_args.kwargs[
+                "revision_notes"
+            ]
+            is None
+        )
