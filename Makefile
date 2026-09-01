@@ -325,6 +325,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
 	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
+	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
+	$(PYTHON) -m pytest scripts/srt/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests

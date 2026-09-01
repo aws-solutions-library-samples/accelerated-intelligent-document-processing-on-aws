@@ -213,8 +213,11 @@ findings that **do not exist in CI**:
   gitignored; full of third-party code (botocore, aiohttp, sympy, …) that trips
   bandit B105/B106/B324/B602 by the hundred
 
-**Before triaging, reconcile your finding list against CI by dropping anything
-gitignored.** A finding only matters if its file is tracked:
+**Since 0.6.7 `run.py` does this reconciliation for you** — gitignored findings
+are split into a separate non-blocking `ℹ️ LOCAL-ONLY FINDINGS` table and
+excluded from the exit code (see "Never suppress an `.aws-sam/` finding" below).
+To reconcile by hand, drop anything gitignored: a finding only matters if its
+file is tracked:
 
 ```bash
 # For each open-HIGH path, is it actually in the CI checkout?
@@ -398,5 +401,41 @@ These are accepted and living in `scripts/srt/issues.json` — don't "re-fix":
   `npm ci` + committed lockfile resolves nothing from the registry, and the
   mitigation (`min-release-age = 7`) needs npm ≥ 11.10, newer than the build
   toolchain. Revisit when the build npm reaches 11.10.
-- Various **DDB-002 / S3-008 / KMS-007 / EC2-002 / LAMBDA-*** in built
-  `.aws-sam/*.yaml` and the bastion/KB stacks — reviewed accepted risks.
+- Various **DDB-002 / S3-008 / KMS-007 / EC2-002 / LAMBDA-*** on the
+  bastion/KB/feature-platform **source** templates — reviewed accepted risks.
+
+> ⚠️ The baseline used to also carry 17 entries on `.aws-sam/*.yaml` paths.
+> Those were **deleted** (along with 2 on the removed `nested/alb-hosting` and
+> `nested/appsync` templates) — they were local-scan pollution, not accepted
+> risks. Never add one back; see the next section for why.
+
+## Never suppress an `.aws-sam/` finding — clean it instead
+
+If a scan reports a pile of HIGH findings in `.aws-sam/packaged.yaml` /
+`.aws-sam/idp-main.yaml`, **you ran a scan over a built tree**. It is not a
+regression, and the fix is `make srt-clean`, never a suppression:
+
+- SRT keys suppressions on `(path, resourceType, resourceName, check_id)`, so an
+  artifact-path entry **cannot** cover the same resource in the source
+  `template.yaml`. It suppresses only the copy CI never sees.
+- Worse, `srt fix` writes those entries back as `resolved`, which is **not
+  sticky** — the next local scan re-detects them as `reopened`, which *does*
+  gate. That is a self-inflicted, recurring CI break.
+
+Since 0.6.7 the tooling enforces this so you don't have to remember:
+
+- `scripts/srt/ci_paths.py` classifies each finding by whether its path is
+  git-tracked (= present in CI's checkout; the `srt_security_review` job has
+  `needs: []`, so no build precedes it). It **fails closed** — if `git ls-files`
+  can't be run, everything gates.
+- `scripts/srt/run.py` prints two tables: the gating `🔴 OPEN HIGH PRIORITY
+  SECURITY ISSUES` (tracked files only) and a non-blocking `ℹ️ LOCAL-ONLY
+  FINDINGS (gitignored files - NOT in CI)`. Only the first affects the exit code.
+- `scripts/srt/fix.py` drops gitignored-path findings before writing the
+  committed baseline, so `make srt-fix` can no longer re-pollute it.
+- `scripts/srt/tests/test_ci_paths.py` fails if any entry on an untracked path
+  lands in `scripts/srt/issues.json`, or if a `suppressed` entry lacks a
+  `suppressionReason`. Runs in CI via `make test-packages-cicd`.
+
+So a local table showing only LOCAL-ONLY findings is a **pass**. `make srt-clean`
+still makes the tree match CI exactly if you want a clean run.
