@@ -207,10 +207,6 @@ export default defineConfig({
                   label: "Sample: Health Insurance Review",
                   slug: "extensions/sample-health-insurance-review",
                 },
-                {
-                  label: "Migration: External Feature for AppSync Removal",
-                  slug: "extensions/migration-prompt-appsync-removal",
-                },
               ],
             },
             {
