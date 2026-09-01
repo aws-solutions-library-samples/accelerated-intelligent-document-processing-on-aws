@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from idp_cli import cli as cli_module
 from idp_cli.cli import cli
 from idp_sdk.models import (
     ConfigDownloadResult,
@@ -30,6 +31,20 @@ from idp_sdk.models import (
     ConfigUploadResult,
     ConfigVersionInfo,
 )
+
+
+@pytest.fixture
+def wide_console(monkeypatch):
+    """
+    Pin the CLI's Rich console width so table assertions are about CONTENT.
+
+    Setting COLUMNS is not enough: Rich only consults the environment on some
+    paths, and under pytest-xdist (`make test` runs `-n auto`) there is no TTY, so
+    the console falls back to a narrow default and ellipsizes the wider columns —
+    the test then passes standalone and fails in the suite (issue 714). Assigning
+    `console.width` overrides detection outright.
+    """
+    monkeypatch.setattr(cli_module.console, "width", 200)
 
 
 def _client(monkey_target="idp_sdk.IDPClient"):
@@ -115,11 +130,7 @@ def test_config_revisions_command_exists():
 
 
 @pytest.mark.unit
-def test_config_revisions_lists_history(monkeypatch):
-    # Rich sizes tables to the terminal; in a captured run that is 80 columns and
-    # the Notes column gets ellipsized. Widen it so the assertions below are about
-    # the table's CONTENT rather than the harness's window.
-    monkeypatch.setenv("COLUMNS", "200")
+def test_config_revisions_lists_history(wide_console):
     patcher, client = _client()
     try:
         client.config.revisions.return_value = ConfigRevisionListResult(
@@ -244,8 +255,7 @@ def test_download_rejects_a_revision_without_a_profile():
 
 
 @pytest.mark.unit
-def test_config_list_shows_the_current_revision(monkeypatch):
-    monkeypatch.setenv("COLUMNS", "200")
+def test_config_list_shows_the_current_revision(wide_console):
     patcher, client = _client()
     try:
         client.config.list.return_value = ConfigListResult(
@@ -269,5 +279,82 @@ def test_config_list_shows_the_current_revision(monkeypatch):
         # A profile with no history shows nothing rather than "r0", which would
         # read as a real revision.
         assert "r0" not in result.output
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_delete_warns_before_removing_a_stack_managed_profile():
+    """
+    The UI refuses to delete a managed profile, so the CLI is the only route for
+    cleaning up profiles an uninstalled extension left behind. It must say what it
+    is about to delete: the same flag also protects the built-in config_library
+    presets, which the next stack update would simply restore.
+    """
+    patcher, client = _client()
+    try:
+        client.config.list.return_value = ConfigListResult(
+            count=1,
+            versions=[
+                ConfigVersionInfo(version_name="claims-pack-v0.2.0", managed=True)
+            ],
+        )
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "config-delete",
+                "--stack-name",
+                "s",
+                "--config-profile",
+                "claims-pack-v0.2.0",
+            ],
+            input="y\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "stack-managed" in result.output
+        assert client.config.delete.called
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_delete_does_not_warn_for_an_ordinary_profile():
+    patcher, client = _client()
+    try:
+        client.config.list.return_value = ConfigListResult(
+            count=1, versions=[ConfigVersionInfo(version_name="lending", managed=False)]
+        )
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            ["config-delete", "--stack-name", "s", "--config-profile", "lending"],
+            input="y\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "stack-managed" not in result.output
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.unit
+def test_force_delete_skips_the_managed_lookup_entirely():
+    """A script passing --force must not pay for a table scan, or depend on one."""
+    patcher, client = _client()
+    try:
+        client.config.delete.return_value = MagicMock(success=True, error=None)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "config-delete",
+                "--stack-name",
+                "s",
+                "--config-profile",
+                "claims-pack-v0.2.0",
+                "--force",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert not client.config.list.called
     finally:
         patcher.stop()

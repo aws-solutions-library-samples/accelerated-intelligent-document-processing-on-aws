@@ -36,11 +36,12 @@ import {
 } from './api';
 import type { FeatureContext } from './types';
 
-/** Config version the extension's install created — shown so the admin knows
- *  which configuration to select in Test Studio. See the ui-deployer's
- *  "Config-version naming and Test Studio" note for why this isn't automatic. */
-const configVersionName = (installedVersion: string) =>
-  `confbench-testset-v${installedVersion}`;
+/** Configuration Profile the extension's install created — shown so the admin
+ *  knows which configuration to select in Test Studio. See the ui-deployer's
+ *  "Config-version naming and Test Studio" note for why this isn't automatic.
+ *  One profile per feature: an upgrade cuts a revision of it rather than creating
+ *  `confbench-testset-v<version>` afresh, so this no longer varies by version. */
+const configProfileName = () => 'confbench-testset';
 
 const TERMINAL = new Set(['COMPLETED', 'FAILED']);
 
@@ -51,7 +52,7 @@ const statusIndicator = (status: string) => {
   return <StatusIndicator type="pending">{status}</StatusIndicator>;
 };
 
-const App: React.FC<FeatureContext> = ({ featureApiEndpoint, getAuthToken, installedVersion }) => {
+const App: React.FC<FeatureContext> = ({ featureApiEndpoint, getAuthToken }) => {
   const [catalog, setCatalog] = useState<VariantCatalog | null>(null);
   const [jobs, setJobs] = useState<IngestJob[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -442,7 +443,7 @@ const App: React.FC<FeatureContext> = ({ featureApiEndpoint, getAuthToken, insta
           <Box variant="p">
             Once a job completes, open <b>Test Studio</b> and select the test set (for example{' '}
             <Box variant="code">confbench-representative</Box>). The <b>Configuration version</b> is
-            preselected to <Box variant="code">{configVersionName(installedVersion)}</Box> — the
+            preselected to <Box variant="code">{configProfileName()}</Box> — the
             Invoice extraction schema this extension installed — because each ConfBench test set
             records that configuration on itself.
           </Box>
