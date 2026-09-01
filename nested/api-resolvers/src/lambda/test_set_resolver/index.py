@@ -1126,8 +1126,16 @@ def _validate_regrouping(sections, previously_labelled_pages):
         )
 
     seen = {}
+    section_ids = set()
     for section in sections:
         section_id = str(section.get("sectionId") or "")
+        # Sections are keyed by id when the existing baselines are looked up, so a
+        # repeated id would write the same baseline content into two section files and
+        # renumber around a group that no longer exists. The page-level checks below
+        # cannot catch it: both groups' pages are legitimately accounted for.
+        if section_id in section_ids:
+            raise Exception(f"Section '{section_id}' appears more than once")
+        section_ids.add(section_id)
         indices = section.get("pageIndices")
         if not isinstance(indices, list) or not indices:
             raise Exception(f"Section '{section_id}' has no pages")
@@ -3438,17 +3446,17 @@ def _attach_label_metadata(test_set_bucket, documents):
         for doc, section, result in results:
             if not result:
                 continue
-            # The section's page grouping, so the page-regrouping editor can show every
-            # section at once instead of fetching each result.json again. Free: this
-            # file is already open for label state and class, same as `classes` below.
-            # Left absent rather than empty when unreadable — an empty grouping would
-            # read as "this section has no pages", which is a different claim.
             # The section's OWN class, distinct from the document-level
             # `documentClasses` badge list: the regrouping board shows a class per
             # section, and the editor only ever loads the section being viewed.
             section_class = (result.get("document_class") or {}).get("type")
             if section_class:
                 section["documentClass"] = str(section_class)
+            # The section's page grouping, so the page-regrouping editor can show every
+            # section at once instead of fetching each result.json again. Free: this
+            # file is already open for label state and class, same as `classes` below.
+            # Left absent rather than empty when unreadable — an empty grouping would
+            # read as "this section has no pages", which is a different claim.
             indices = (result.get("split_document") or {}).get("page_indices")
             if isinstance(indices, list):
                 section["pageIndices"] = [
@@ -3484,7 +3492,7 @@ def _attach_label_metadata(test_set_bucket, documents):
             if alerts is not None:
                 bucket_for_doc["alerts"].append(alerts)
                 bucket_for_doc["fields"].append(fields)
-            section_class = (result.get("document_class") or {}).get("type")
+            # Reusing section_class from above — same `result`, same iteration.
             if section_class:
                 bucket_for_doc["classes"].append(str(section_class))
 

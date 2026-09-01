@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -115,13 +116,101 @@ class TestTheAppClientIsNeverWidened:
             patch.object(module, "resolve_stack", return_value=ctx),
             patch.object(module, "delete_cognito_user") as delete,
         ):
+            # stale=None explicitly: MagicMock auto-creates a truthy attribute
+            # otherwise, which would send this down the sweep branch instead.
             args = MagicMock(
-                stack="s", email="ux-test-1@example.invalid", region="us-east-1"
+                stack="s",
+                email="ux-test-1@example.invalid",
+                stale=None,
+                region="us-east-1",
             )
             rc = module.cmd_teardown(args)
 
         assert rc == 0
         delete.assert_called_once()
+
+    def test_teardown_still_needs_an_email_when_not_sweeping(self):
+        # --email stopped being argparse-required once --stale existed, so the
+        # either-or has to be enforced in the command itself.
+        module = _load_module()
+        with patch.object(module, "resolve_stack", return_value={}):
+            args = MagicMock(stack="s", email=None, stale=None, region="us-east-1")
+            with pytest.raises(SystemExit, match="--email"):
+                module.cmd_teardown(args)
+
+
+class TestStaleSweep:
+    """Sweeping abandoned sessions, and never anything else.
+
+    setup and teardown are separate invocations with an open-ended session between
+    them, so an abandoned run leaves a real Cognito account — permanent password,
+    Admin by default — in a live pool with nothing to expire it. The sweep closes
+    that, which means it deletes users; the property worth pinning is therefore what
+    it refuses to touch.
+    """
+
+    @staticmethod
+    def _ctx():
+        return {"user_pool": "pool", "region": "us-east-1"}
+
+    def test_only_ux_test_users_on_the_reserved_domain_are_selected(self):
+        module = _load_module()
+        users = {
+            "Users": [
+                # Real operators, in every shape that might fool a prefix-only match.
+                {
+                    "Username": "jeremykf@amazon.com",
+                    "UserCreateDate": "2020-01-01T00:00:00Z",
+                },
+                {
+                    "Username": "ux-test-lead@amazon.com",
+                    "UserCreateDate": "2020-01-01T00:00:00Z",
+                },
+                {
+                    "Username": "admin@example.invalid",
+                    "UserCreateDate": "2020-01-01T00:00:00Z",
+                },
+                # A genuine abandoned session.
+                {
+                    "Username": "ux-test-abcd1234@example.invalid",
+                    "UserCreateDate": "2020-01-01T00:00:00Z",
+                },
+            ]
+        }
+        with patch.object(module, "aws", return_value=users):
+            stale = module._stale_ux_users(self._ctx(), older_than_hours=1)
+
+        assert stale == ["ux-test-abcd1234@example.invalid"]
+
+    def test_a_session_younger_than_the_cutoff_is_left_alone(self):
+        # Otherwise a sweep run during someone else's review would delete the account
+        # out from under them.
+        module = _load_module()
+        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+        users = {
+            "Users": [
+                {
+                    "Username": "ux-test-inuse01@example.invalid",
+                    "UserCreateDate": recent.isoformat().replace("+00:00", "Z"),
+                }
+            ]
+        }
+        with patch.object(module, "aws", return_value=users):
+            assert module._stale_ux_users(self._ctx(), older_than_hours=12) == []
+
+    def test_sweeping_deletes_every_stale_user_it_found(self):
+        module = _load_module()
+        stale = ["ux-test-a@example.invalid", "ux-test-b@example.invalid"]
+        with (
+            patch.object(module, "resolve_stack", return_value=self._ctx()),
+            patch.object(module, "_stale_ux_users", return_value=stale),
+            patch.object(module, "delete_cognito_user") as delete,
+        ):
+            args = MagicMock(stack="s", email=None, stale=12.0, region="us-east-1")
+            rc = module.cmd_teardown(args)
+
+        assert rc == 0
+        assert [c.args[1] for c in delete.call_args_list] == stale
 
     def test_setup_reports_its_own_teardown_command(self, capsys):
         """The user must not have to reconstruct it — an unrun teardown is the

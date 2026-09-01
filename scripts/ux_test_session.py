@@ -46,6 +46,7 @@ import json
 import secrets
 import string
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -197,8 +198,61 @@ def cmd_url(args: argparse.Namespace) -> int:
     return 0
 
 
+UX_TEST_PREFIX = "ux-test-"
+
+
+def _stale_ux_users(ctx, older_than_hours: float) -> list:
+    """UX-test users in the pool older than `older_than_hours`.
+
+    Matched on the ``ux-test-`` prefix *and* the reserved ``@example.invalid``
+    domain, so a real operator account can never be selected however it is named.
+    """
+    result = aws(
+        "cognito-idp",
+        "list-users",
+        "--user-pool-id",
+        ctx["user_pool"],
+        "--region",
+        ctx["region"],
+        region=ctx["region"],
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    stale = []
+    for user in result.get("Users", []):
+        name = user.get("Username", "")
+        if not (name.startswith(UX_TEST_PREFIX) and name.endswith("@example.invalid")):
+            continue
+        created = user.get("UserCreateDate")
+        if isinstance(created, str):
+            created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if created is None or created <= cutoff:
+            stale.append(name)
+    return stale
+
+
 def cmd_teardown(args: argparse.Namespace) -> int:
     ctx = _resolve_or_explain(args.stack, args.region)
+
+    # --stale exists because the weak point of this script is structural, not a
+    # missing feature: setup and teardown are two separate invocations with an
+    # open-ended agent session between them, so an abandoned session leaves a real
+    # Cognito account — permanent password, Admin group by default — in a live pool
+    # with nothing to expire it. A printed reminder is not a control. This gives the
+    # next run a way to close the previous one's leak.
+    if args.stale is not None:
+        stale = _stale_ux_users(ctx, args.stale)
+        if not stale:
+            print(f"No ux-test users older than {args.stale}h in {args.stack}.")
+            return 0
+        for email in stale:
+            delete_cognito_user(ctx, email)
+            print(f"Deleted stale {email}.")
+        print(f"Swept {len(stale)} stale ux-test user(s).")
+        return 0
+
+    if not args.email:
+        raise SystemExit("teardown needs --email, or --stale to sweep abandoned users")
+
     delete_cognito_user(ctx, args.email)
     # Nothing to restore: setup never widened the client.
     print(f"Deleted {args.email}.")
@@ -222,7 +276,21 @@ def main() -> int:
 
     teardown = sub.add_parser("teardown", help="Delete the throwaway user")
     teardown.add_argument("stack")
-    teardown.add_argument("--email", required=True)
+    # Not required, because --stale is the other way to call this.
+    teardown.add_argument("--email")
+    teardown.add_argument(
+        "--stale",
+        nargs="?",
+        type=float,
+        const=12.0,
+        default=None,
+        metavar="HOURS",
+        help=(
+            "Instead of one user, delete every ux-test-*@example.invalid user in the "
+            "pool older than HOURS (default 12) — sweeps sessions whose teardown was "
+            "never run"
+        ),
+    )
     teardown.add_argument("--region", default="us-east-1")
     teardown.set_defaults(func=cmd_teardown)
 

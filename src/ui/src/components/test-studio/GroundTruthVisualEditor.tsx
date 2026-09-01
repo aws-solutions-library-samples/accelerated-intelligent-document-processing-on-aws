@@ -340,17 +340,23 @@ const GroundTruthVisualEditor = ({
   /**
    * True when the class list could not be read, as opposed to being genuinely empty.
    *
-   * `getConfigVersion` is `Admin, Author, Viewer` (schema.graphql:1557-1558) and
-   * excludes **Annotator** — the role this screen exists for. So an annotator's
-   * config fetch is denied, `classOptions` comes back empty, and the editor used to
-   * fall through to its free-text branch: the one role most in need of a constrained
-   * vocabulary got an unconstrained box, and the only visible difference was three
-   * words dropping out of the description.
+   * `getConfigVersion` now grants **Annotator** alongside `Admin, Author, Viewer`, and
+   * a caller with no other entitlement receives only the class vocabulary — the
+   * resolver reduces the payload (`_class_vocabulary_only` in
+   * `configuration_resolver/index.py`, whose `_FULL_CONFIG_GROUPS` is the boundary).
+   * Do not "tidy" either half: the grant exists *because* of that reduction, and
+   * dropping the reduction would hand prompts and model ids to the lowest-privilege
+   * role. Annotator was excluded here originally, which is what this flag was written
+   * for — an annotator's fetch was denied, `classOptions` came back empty, and the
+   * editor fell through to free text: the one role most needing a constrained
+   * vocabulary got an unconstrained box, with three words dropping out of a
+   * description as the only visible sign.
    *
-   * That matters more since the class became editable for annotators: a typed class
-   * that no config defines produces a section with no schema, which extracts nothing.
-   * The resolver bounds the characters but deliberately not the membership, because
-   * it has no config-table grant either.
+   * The flag stays because a denied or failed fetch is still reachable — a role
+   * outside all four groups, or a config error — and it must not be mistaken for a
+   * config that genuinely defines no classes. A typed class no config defines produces
+   * a section with no schema, which extracts nothing. The resolver bounds the
+   * characters but deliberately not the membership, having no config-table grant.
    */
   const classListUnavailable = classOptions.length === 0 && (Boolean(configError) || configLoading);
   // A class the config no longer lists stays selectable; otherwise a document whose

@@ -3110,6 +3110,47 @@ class TestTestSetResolver:
         assert after["1"]["labelSource"] == "reviewed-human"
         assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
 
+    def test_a_repeated_section_id_is_refused(self, labeling_env):
+        """Sections are keyed by id when the existing baselines are looked up, so a
+        repeated id writes the same baseline content into two section files and
+        renumbers around a group that no longer exists. The page-level checks cannot
+        catch it: both groups' pages are legitimately accounted for."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2])})
+
+        with pytest.raises(Exception, match="more than once"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "FieldTicket",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Invoice",
+                                "pageIndices": [1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Invoice",
+                                "pageIndices": [2],
+                            },
+                        ],
+                    }
+                }
+            )
+
+        # Nothing written: the refusal happens in validation, before any put_object.
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [0, 1]
+        assert after["2"]["split_document"]["page_indices"] == [2]
+
     def test_a_custom_page_order_survives_the_save(self, labeling_env):
         """The defect this pair of tests exists for.
 

@@ -117,9 +117,12 @@ AWS_PROFILE=default ./scripts/ux_test_session.py setup <STACK> \
 # ... review, then run the teardown command it prints
 ```
 
-This temporarily widens the app client's auth flows to set a known password, so
-**always run the teardown it prints**. For every other persona, skip this
-entirely — the reviewer's own account is fine on a disposable stack.
+This creates a real Cognito user with a known password in a live pool, so
+**always run the teardown it prints** — nothing else expires that account. The
+stack's app client is *not* modified: `admin-set-user-password --permanent` is a
+user-pool admin API and ignores the client's `ExplicitAuthFlows`, and the browser
+signs in over SRP, which the UI client already allows. For every other persona,
+skip this entirely — the reviewer's own account is fine on a disposable stack.
 
 ---
 

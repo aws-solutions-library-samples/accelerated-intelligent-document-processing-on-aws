@@ -208,23 +208,124 @@ class TestUpdateDocumentSections:
         assert getattr(added, "extraction_result_uri", None) is None
         assert added.classification == "W2"
 
-    def test_a_document_in_flight_is_refused(self, resolver):
+    def test_every_non_terminal_status_is_refused(self, resolver):
         """The one hazard a direct write introduces.
 
         processChanges is safe to call mid-run because it never writes — it hands the
         document to SQS. This would race the pipeline's own save.
+
+        Enumerated from the Status enum rather than spot-checked. The first version of
+        this test looped over QUEUED and RUNNING only, matching a guard that listed the
+        same two — so the 14 statuses the pipeline actually spends its time in (OCR,
+        CLASSIFYING, EXTRACTING, ASSESSING, SUMMARIZING, RULE_VALIDATION*, …) passed
+        the check and got a read-modify-write underneath the running workflow. Driving
+        the test off the enum means a new pipeline stage cannot reopen the hole
+        unnoticed: it fails here until it is classified as terminal or not.
         """
-        for status in ("QUEUED", "RUNNING"):
+        from idp_common.models import Status
+
+        terminal = {
+            Status.COMPLETED,
+            Status.FAILED,
+            Status.ABORTED,
+            Status.REDACTED_SUPERSEDED,
+        }
+        non_terminal = [s for s in Status if s not in terminal]
+        assert len(non_terminal) >= 14, "enum shrank; re-check the allow-list"
+
+        for status in non_terminal:
             document = _document(
-                resolver, [_section(resolver, "1", [1], "Invoice")], status=status
+                resolver,
+                [_section(resolver, "1", [1], "Invoice")],
+                status=status.value,
             )
             event = _event(sections=[{"sectionId": "1", "pageIds": ["1"]}])
 
             result, service = _call(resolver, document, event)
 
-            assert result["success"] is False
-            assert status.lower() in result["message"].lower()
+            assert result["success"] is False, f"{status.value} was allowed through"
             service.update_document.assert_not_called()
+
+    def test_every_terminal_status_is_allowed(self, resolver):
+        """The other half: failing closed must not refuse a document nothing is writing.
+
+        A reviewer fixing the split on a FAILED or ABORTED document is a legitimate
+        thing to do, and REDACTED_SUPERSEDED is terminal too — a preprocessing hook
+        made a redacted copy that processes separately and this original is left alone.
+        """
+        from idp_common.models import Status
+
+        for status in (
+            Status.COMPLETED,
+            Status.FAILED,
+            Status.ABORTED,
+            Status.REDACTED_SUPERSEDED,
+        ):
+            document = _document(
+                resolver,
+                [_section(resolver, "1", [1], "Invoice")],
+                status=status.value,
+            )
+            event = _event(sections=[{"sectionId": "1", "pageIds": ["1"]}])
+
+            result, service = _call(resolver, document, event)
+
+            assert result["success"] is True, f"{status.value} was refused"
+            service.update_document.assert_called_once_with(document)
+
+    def test_a_repeated_section_id_is_refused(self, resolver):
+        """Otherwise it corrupts silently instead of failing.
+
+        The rebuild looks each id up in existing_by_id, so two entries sharing one id
+        resolve to the same Section object: it is appended twice and the second
+        assignment overwrites page_ids, leaving the document holding two references to
+        one section with the first group's pages in none. The page-level checks pass —
+        both groups' pages are accounted for — so nothing else catches it.
+        """
+        document = _document(
+            resolver,
+            [
+                _section(resolver, "1", [1, 2], "Invoice"),
+                _section(resolver, "2", [3], "W2"),
+            ],
+        )
+        event = _event(
+            sections=[
+                {"sectionId": "1", "pageIds": ["1"]},
+                {"sectionId": "1", "pageIds": ["2"]},
+                {"sectionId": "2", "pageIds": ["3"]},
+            ]
+        )
+
+        result, service = _call(resolver, document, event)
+
+        assert result["success"] is False
+        assert "more than once" in result["message"]
+        service.update_document.assert_not_called()
+
+    def test_a_page_the_document_does_not_have_is_refused(self, resolver):
+        """It used to be accepted into the section and then skipped by the
+        classification loop, so the grouping claimed a page that does not exist."""
+        document = _document(resolver, [_section(resolver, "1", [1, 2], "Invoice")])
+        event = _event(sections=[{"sectionId": "1", "pageIds": ["1", "2", "99"]}])
+
+        result, service = _call(resolver, document, event)
+
+        assert result["success"] is False
+        assert "99" in result["message"]
+        service.update_document.assert_not_called()
+
+    def test_a_non_numeric_page_id_is_refused_by_name(self, resolver):
+        """It reached int() in the section sort and surfaced as a generic caught
+        error, which tells a reviewer nothing about what to correct."""
+        document = _document(resolver, [_section(resolver, "1", [1], "Invoice")])
+        event = _event(sections=[{"sectionId": "1", "pageIds": ["1", "two"]}])
+
+        result, service = _call(resolver, document, event)
+
+        assert result["success"] is False
+        assert "invalid page id" in result["message"]
+        service.update_document.assert_not_called()
 
     def test_a_page_in_two_sections_is_refused(self, resolver):
         document = _document(

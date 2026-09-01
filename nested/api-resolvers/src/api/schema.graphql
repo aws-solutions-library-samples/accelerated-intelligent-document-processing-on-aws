@@ -1501,8 +1501,21 @@ type Mutation {
   # UI says while offering processChanges as the opt-in reprocess.
   #
   # Admin/Reviewer/Annotator, matching completeSectionReview — the sibling that edits a
-  # section's content — rather than processChanges' narrower pair. Refused while the
-  # document is QUEUED or RUNNING, since a direct write would race the pipeline.
+  # section's content — rather than processChanges' narrower pair.
+  #
+  # Scope, stated because it differs from the test-set side and the difference is easy
+  # to assume away: Cognito group membership is the WHOLE check here. There is no
+  # per-document scoping, so an Annotator may re-group any document in the deployment.
+  # updateTestSetDocumentSections is narrower — it also calls assert_can_access_test_set
+  # against the caller's allowedTestSets — because a test set is an assignable unit of
+  # work and a document is not. This matches completeSectionReview and is not new with
+  # this operation, but it is the kind of asymmetry a reader will otherwise take for an
+  # oversight, or "fix" by adding a scope check that has nothing to key on.
+  #
+  # Refused unless the document is in a terminal state (COMPLETED / FAILED / ABORTED /
+  # REDACTED_SUPERSEDED), since a direct write would race a run. Stated as an allow-list
+  # in the resolver: a denylist of QUEUED/RUNNING missed the 14 intermediate statuses
+  # the pipeline actually spends its time in.
   updateDocumentSections(objectKey: String!, sections: [DocumentSectionGroupingInput!]!): ProcessChangesResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document

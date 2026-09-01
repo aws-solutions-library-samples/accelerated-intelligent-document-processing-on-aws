@@ -36,7 +36,23 @@ _OPERATION_GROUPS = {
 # A document being processed must not be written underneath the pipeline. This is the
 # hazard processChanges avoids by not persisting at all (it hands the document to SQS
 # and lets the run save it); a direct write has to check for itself.
-_IN_FLIGHT_STATUSES = {"QUEUED", "RUNNING"}
+#
+# Stated as the statuses that ARE safe, not the ones that are not. The first version of
+# this was a denylist of {QUEUED, RUNNING}, which let through every intermediate status
+# the pipeline actually spends its time in — OCR, CLASSIFYING, EXTRACTING, ASSESSING,
+# SUMMARIZING, RULE_VALIDATION* and the rest — so the guard missed 14 of the 16
+# non-terminal states it existed to catch. A denylist over an enum somebody else extends
+# is the wrong shape: adding a pipeline stage to Status silently widened the hole. An
+# allow-list fails closed instead, and a new status is refused until it is considered.
+#
+# REDACTED_SUPERSEDED is terminal too: a preprocessing hook produced a redacted copy
+# that processes separately, and this original is deliberately left alone.
+_EDITABLE_STATUSES = {
+    Status.COMPLETED.value,
+    Status.FAILED.value,
+    Status.ABORTED.value,
+    Status.REDACTED_SUPERSEDED.value,
+}
 
 
 def update_document_sections(event):
@@ -85,13 +101,13 @@ def update_document_sections(event):
         }
 
     status = str(getattr(document.status, "value", document.status) or "").upper()
-    if status in _IN_FLIGHT_STATUSES:
+    if status not in _EDITABLE_STATUSES:
         return {
             "success": False,
             "message": (
-                f"{object_key} is currently {status.lower()}. Wait for processing to "
-                "finish before changing its page grouping, or the change would be "
-                "overwritten by the run."
+                f"{object_key} is currently {status.lower() or 'in an unknown state'}. "
+                "Wait for processing to finish before changing its page grouping, or "
+                "the change would be overwritten by the run."
             ),
             "processingJobId": None,
         }
@@ -100,9 +116,23 @@ def update_document_sections(event):
     # client additionally requires every page of the document to be assigned, which it
     # can check because it has the rendered page list.
     seen = {}
+    section_ids = set()
     for section in incoming:
         section_id = str(section.get("sectionId") or "")
         page_ids = section.get("pageIds") or []
+        # A repeated id corrupts silently rather than failing. The rebuild below looks
+        # each id up in existing_by_id, so two entries sharing one id resolve to the
+        # *same* Section object: it is appended twice and the second assignment
+        # overwrites page_ids, so the document ends up holding two references to one
+        # section and the first group's pages belong to none. The page-level checks
+        # cannot catch it — both groups' pages are accounted for in `seen`.
+        if section_id in section_ids:
+            return {
+                "success": False,
+                "message": f"Section '{section_id}' appears more than once",
+                "processingJobId": None,
+            }
+        section_ids.add(section_id)
         if not page_ids:
             return {
                 "success": False,
@@ -111,6 +141,29 @@ def update_document_sections(event):
             }
         for raw in page_ids:
             page_id = str(raw)
+            # Refused by name rather than left to fail later. A non-numeric id reaches
+            # int() in the sort below and surfaces as a generic caught error, and an id
+            # for a page the document does not have was simply accepted into a section
+            # and then skipped by the classification loop — a grouping claiming a page
+            # that does not exist, saved without complaint.
+            if not page_id.isdigit():
+                return {
+                    "success": False,
+                    "message": (
+                        f"Section '{section_id}' has an invalid page id {raw!r}; "
+                        "expected a page number"
+                    ),
+                    "processingJobId": None,
+                }
+            if page_id not in document.pages:
+                return {
+                    "success": False,
+                    "message": (
+                        f"Page {page_id} is not in {object_key}, so section "
+                        f"'{section_id}' cannot claim it"
+                    ),
+                    "processingJobId": None,
+                }
             if page_id in seen:
                 return {
                     "success": False,
