@@ -791,6 +791,41 @@ end-to-end demo: [`notebooks/misc/e2e-example-with-1s-topk.ipynb`](../../../../n
 
 The extraction service supports an optional **agentic extraction mode** powered by the Strands agent framework with tool-based structured output. When enabled, the extraction agent gains intelligent tools including a deterministic table parser for robust tabular data extraction.
 
+### Schema token budget: the schema is sent three times (#710)
+
+Advanced extraction transmits the class schema **three times per request**. Measured
+on `config_library/unified/lending-package-sample` -> `Payslip` at ~4 chars/token:
+
+| # | Where | Tokens |
+|---|---|---|
+| 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 |
+| 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 |
+| 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~2,595 |
+| | **total ~6,680, of which copy 2 is 38%** | |
+
+Copies 2 and 3 are **the same JSON string** — not merely equivalent; a test asserts
+the substring match. So copy 2 carries no information copy 3 does not, and
+`extraction.agentic.restate_schema_in_system_prompt: false` removes it. The agent
+can still fetch the schema on demand via `get_extraction_schema_reminder`, which is
+unaffected.
+
+**It defaults to `true`, and that is deliberate.** Restating a schema in prose often
+improves how closely a model follows it, so the duplication may be doing real work.
+Treat this as an A/B knob: the benchmark `restatement` suite runs both arms on one
+stack with identical code, and the gate is **completeness**, not token count — a
+token saving that loses list rows is a loss.
+
+Two things that make the payoff smaller and larger than it looks:
+
+- **Smaller in dollars.** All three copies sit inside the prompt-cache prefix, so on
+  a repeated-class workload they are cache reads at roughly a tenth of input price.
+- **Larger in capability.** ~2,600 redundant tokens per request consume the same
+  context budget that `context_buffer` / `shard_token_budget` manage, so removing
+  them can keep a document out of an extra shard.
+
+A fourth copy is stored in agent state for the reminder tool, but it is only
+transmitted if that tool is invoked, so it is not a per-request cost.
+
 ### Enabling Agentic Extraction
 
 Configure agentic extraction in your configuration file:
