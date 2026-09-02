@@ -341,7 +341,9 @@ class TestProcessorModelIdSuffixes:
     elsewhere in the pipeline.
     """
 
-    def _invoke_with_model(self, model_id: str) -> dict:
+    def _invoke_with_model(
+        self, model_id: str, reasoning_effort: str | None = None
+    ) -> dict:
         """Run the processor end-to-end with the given model ID and return the
         kwargs that Bedrock ``converse_stream`` was called with.
         """
@@ -385,6 +387,7 @@ class TestProcessorModelIdSuffixes:
                     "system_prompt": "sys",
                     "temperature": 0.0,
                     "max_tokens": 128,
+                    "reasoning_effort": reasoning_effort,
                 },
             ),
             patch.object(index, "STREAM_FLUSH_INTERVAL_S", 0.0),
@@ -435,6 +438,56 @@ class TestProcessorModelIdSuffixes:
         assert kwargs["inferenceConfig"].get("temperature") == 0.0
         # No 1M beta flag
         assert "additionalModelRequestFields" not in kwargs
+
+    @pytest.mark.unit
+    def test_grok_temperature_omitted(self):
+        """Grok hard-rejects `temperature` with a 400 naming the field, and
+        chat.temperature always resolves to a float (never None) — so sending it
+        would fail EVERY Grok chat turn. Regression guard for the gate having
+        been keyed on is_claude_4_7_model instead of strips_sampling_params."""
+        kwargs = self._invoke_with_model("us.xai.grok-4.6")
+        assert kwargs["modelId"] == "us.xai.grok-4.6"
+        assert "temperature" not in kwargs["inferenceConfig"]
+        assert "topP" not in kwargs["inferenceConfig"]
+
+    @pytest.mark.unit
+    def test_grok_reasoning_effort_uses_reasoning_carrier(self):
+        """Grok reads reasoning.effort; Claude's output_config.effort is silently
+        ignored by it, so the wrong carrier would lose the setting invisibly."""
+        kwargs = self._invoke_with_model("us.xai.grok-4.6", reasoning_effort="xhigh")
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert arf.get("reasoning") == {"effort": "xhigh"}
+        assert "output_config" not in arf
+
+    @pytest.mark.unit
+    def test_grok_rejects_claude_only_effort_value(self):
+        """`max` is Claude-only — Grok 400s on it, and Bedrock ignores unknown
+        additionalModelRequestFields keys, so it must be dropped not forwarded."""
+        kwargs = self._invoke_with_model("us.xai.grok-4.6", reasoning_effort="max")
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert "reasoning" not in arf
+
+    @pytest.mark.unit
+    def test_claude_reasoning_effort_uses_output_config_carrier(self):
+        """The other half of the carrier split — and proof that wiring effort on
+        this path (it was previously resolved then dropped) works for Claude."""
+        kwargs = self._invoke_with_model(
+            "us.anthropic.claude-sonnet-5", reasoning_effort="high"
+        )
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert arf.get("output_config") == {"effort": "high"}
+        assert "reasoning" not in arf
+
+    @pytest.mark.unit
+    def test_nova_gets_no_effort_field(self):
+        """Nova has no effort control; an effort value must not reach it."""
+        kwargs = self._invoke_with_model(
+            "us.amazon.nova-pro-v1:0", reasoning_effort="high"
+        )
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert "reasoning" not in arf
+        assert "output_config" not in arf
+        assert kwargs["inferenceConfig"].get("temperature") == 0.0
 
     @pytest.mark.unit
     def test_flex_suffix_stripped_and_service_tier_passed(self):

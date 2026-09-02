@@ -103,8 +103,9 @@ extraction:
 > here. (`classification` / `summarization` keep their `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`) and OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`) — `reasoning_effort` controls how much
+> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -160,6 +161,16 @@ Agentic extraction requires models with tool-use support:
 > supported for **Simple (non-agentic) extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) is served on the standard Converse
+> API and accepts a `toolConfig` with all three `toolChoice` modes, so the Strands
+> agent loop works — making it the only non-Claude/non-Nova option for Advanced
+> extraction. Its 500K context also yields a larger shard budget (~90K tokens)
+> than a 200K-context Claude model (~18K). Note that `temperature` / `top_p` are
+> rejected by Grok and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
+> [xAI Grok Models](grok-models.md).
+
 #### Cost considerations
 
 Agentic extraction may have slightly higher costs due to additional processing
@@ -171,6 +182,27 @@ over 20% in accuracy on the [getomni-ai benchmark](https://getomni.ai/blog/ocr-b
 - **100% schema compliance** vs frequent validation failures
 - **Reduced manual review** and correction efforts
 - **Automatic caching**: For supported models, prompt and tool caching is automatically enabled, reducing costs for repeated extractions with the same configuration
+
+##### Dropping the duplicated schema (`restate_schema_in_system_prompt`)
+
+Agentic extraction sends your class schema **three times** per request: as the
+tool's input schema (required by the API), restated as JSON in the system prompt,
+and again in the schema-reminder tool. Copies 2 and 3 are byte-identical, so the
+system-prompt copy is pure duplication — measured at **2,600 of 6,680 schema
+tokens (38%)** on the lending `Payslip` class.
+
+```yaml
+extraction:
+  agentic:
+    restate_schema_in_system_prompt: true   # default; false removes copy 2
+```
+
+Left **on by default** deliberately. Restating a schema in prose often improves
+adherence, so this is a token/adherence trade rather than a free saving: on a
+list-heavy document, an agent that drifts from the schema returns fewer rows. If
+you turn it off, judge the result on **completeness**, not on the token count.
+The schema-reminder tool is unaffected either way, so the agent can always ask for
+the schema again mid-run.
 
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
@@ -554,6 +586,53 @@ extraction is kept unchanged.
 
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
+
+### Forced tool use (`extraction.forced_tool`) — experimental, off by default
+
+Coercion and validation repair or report a bad result *after* the fact. Forced
+tool use tries to make one shape of bad result impossible in the first place: the
+class schema is sent to the model as a **required tool** whose input *is* your
+schema, rather than described in prose in the prompt, and the API constrains the
+reply to that shape.
+
+```yaml
+extraction:
+  forced_tool:
+    enabled: false             # experimental; measure before turning it on
+    fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
+```
+
+Applies to **Simple** extraction only — Advanced (agentic) extraction already
+sends a tool schema. Configurable under **Configuration → Extraction → Schema
+Enforcement (experimental)**.
+
+**Why it is off by default.** Forcing constrains the *structure* of the reply, not
+the *accuracy* of the values in it. A model that would have emitted a stray key
+may instead emit a worse value that fits the schema, so this is not a free
+accuracy win and it is not yet proven on real corpora. Measure completeness and
+field accuracy on your own documents before enabling it.
+
+**When it is skipped automatically.** Not every route can carry a tool
+configuration. Models reached through a custom Lambda hook and the GPT-5.x
+(Responses API) route fall back to the prompt, and the reason is recorded — so a
+before/after comparison can tell "forcing changed nothing" from "forcing never
+ran", which are very different results.
+
+**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
+`honored` (the model can accept a tool configuration and still answer in prose),
+`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
+the number to look at first: forcing that is not honored has not been tested.
+
+> **Field names with spaces are handled.** Bedrock restricts top-level tool
+> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
+> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
+> form for the request and restored to exactly what you authored in the stored
+> result — you never see the sanitized names, and no configuration change is
+> needed.
+
+`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
+instead of falling back. That loses data by design and exists only to measure how
+often forcing is actually honored; leave it on in production.
 
 ### Multi-document sections (`instance_count`)
 

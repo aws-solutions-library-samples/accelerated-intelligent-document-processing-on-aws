@@ -488,3 +488,77 @@ class TestAccumulateMetering:
         _accumulate_metering(merged, {"model": {"inputTokens": 4}})
         _accumulate_metering(merged, {"model": {"outputTokens": 2}})
         assert merged == {"model": {"inputTokens": 4, "outputTokens": 2}}
+
+
+# ---------------------------------------------------------------------------
+# xAI Grok on the agentic path
+# ---------------------------------------------------------------------------
+# Grok reaches Converse and supports tool use, so unlike GPT-5.x it IS allowed
+# for agentic extraction. But it rejects the sampling group and uses a different
+# reasoning-effort carrier than Claude, and this path builds its own request
+# params rather than going through BedrockClient.invoke_model. A live run caught
+# it forwarding `top_p` (a 400: "This model doesn't support the topP field").
+
+GROK_US = "us.xai.grok-4.6"
+GROK_GLOBAL = "global.xai.grok-4.6"
+
+
+class TestGrokAgenticPath:
+    @pytest.mark.parametrize("model_id", [GROK_US, GROK_GLOBAL])
+    def test_sampling_params_are_omitted_for_grok(self, model_id):
+        """The config default top_p=0.1 must not reach the Strands BedrockModel."""
+        assert _get_inference_params(model_id, 0.0, 0.1) == {}
+
+    def test_sampling_params_still_forwarded_for_nova(self):
+        assert _get_inference_params("us.amazon.nova-pro-v1:0", 0.0, 0.1) == {
+            "top_p": 0.1
+        }
+
+    def test_claude_4_7_still_omits_sampling_params(self):
+        assert _get_inference_params("us.anthropic.claude-opus-4-8", 0.0, 0.1) == {}
+
+    def test_grok_gets_no_tool_caching(self):
+        assert supports_tool_caching(GROK_US) is False
+
+    @pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh"])
+    def test_effort_uses_the_grok_reasoning_carrier(self, effort):
+        config = _build_model_config(
+            model_id=GROK_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort=effort,
+        )
+        arf = config.get("additional_request_fields") or {}
+        assert arf.get("reasoning") == {"effort": effort}
+        # Claude's carrier is silently ignored by Grok — it must not be used.
+        assert "output_config" not in arf
+
+    def test_effort_max_is_dropped_for_grok(self):
+        """Grok 400s on 'max', and unknown fields are silently ignored, so an
+        out-of-vocabulary value must be dropped rather than forwarded."""
+        config = _build_model_config(
+            model_id=GROK_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort="max",
+        )
+        arf = config.get("additional_request_fields") or {}
+        assert "reasoning" not in arf
+
+    def test_claude_still_uses_output_config_carrier(self):
+        """Regression guard: adding Grok must not move Claude's effort carrier."""
+        config = _build_model_config(
+            model_id="us.anthropic.claude-sonnet-5",
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort="high",
+        )
+        arf = config.get("additional_request_fields") or {}
+        assert arf.get("output_config") == {"effort": "high"}
+        assert "reasoning" not in arf

@@ -873,15 +873,15 @@ def _validate_agentic_openai(
 def _validate_discovery_openai(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
-    """Error when an OpenAI GPT-5.x model is configured for discovery.
+    """Error when a model that can't take ``document`` blocks is set for discovery.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks, which
-    the OpenAI Responses API (bedrock-mantle) does not support (text + image
-    only). Routing GPT-5.x here would silently drop the document, so reject it
-    at config time. (These models are also not offered in the discovery
+    Discovery ingests whole PDFs via Converse ``document`` content blocks. OpenAI
+    GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects them outright)
+    both accept text + image only, so routing either here would silently drop the
+    document. Reject at config time. (Neither is offered in the discovery
     picklists.)
     """
-    from idp_common.bedrock.openai_responses import is_openai_responses_model
+    from idp_common.bedrock.client import document_blocks_unsupported_reason
 
     discovery = merged_config.get("discovery", {})
     if not isinstance(discovery, dict):
@@ -907,13 +907,13 @@ def _validate_discovery_openai(
         if not isinstance(section, dict):
             continue
         model_id = section.get(field)
-        if model_id and is_openai_responses_model(model_id):
+        reason = document_blocks_unsupported_reason(model_id) if model_id else None
+        if reason:
             result["valid"] = False
             result["errors"].append(
-                f"{label} is an OpenAI Responses model ('{model_id}'), which is NOT "
-                "supported for discovery — discovery sends whole-PDF document blocks "
-                "that the bedrock-mantle Responses API cannot accept. Choose an "
-                "Anthropic or Nova model."
+                f"{label} is set to '{model_id}', which is NOT supported for "
+                f"discovery — {reason}, but discovery sends whole-PDF document "
+                "blocks. Choose an Anthropic or Nova model."
             )
 
 

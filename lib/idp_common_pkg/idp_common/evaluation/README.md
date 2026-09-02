@@ -824,17 +824,27 @@ page_level = {
             "page_index": 0,
             "ground_truth_class": "Invoice",
             "predicted_class": "Invoice",
-            "correct": True
+            "correct": True,
+            "predicted_confidence": 0.91
         },
         {
             "page_index": 5,
             "ground_truth_class": "W2",
             "predicted_class": "Receipt",
-            "correct": False
+            "correct": False,
+            "predicted_confidence": 0.48
         }
     ]
 }
 ```
+
+`predicted_confidence` is the classifier's own confidence in the class it
+predicted (`None` when the page was not scored — the default; see
+[classification confidence](../classification/README.md#classification-confidence-confidence-classification_reason)).
+Paired with `correct` on the same row it is the **calibration** measurement: if
+confident-and-wrong pages score as high as confident-and-right ones, the
+confidence carries no information and must not drive escalation. The benchmark
+harness computes exactly that separation from these rows.
 
 #### 2. Split Accuracy (Without Order)
 

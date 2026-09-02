@@ -277,3 +277,73 @@ class TestSchemaAwareEnrichment:
 
         # Falls back to flat because no string-typed schema matches
         assert enriched[0]["f"]["confidence_threshold"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Tests: process_segments — section classification confidence (GitHub #673)
+# ---------------------------------------------------------------------------
+
+
+class TestBDASectionClassConfidence:
+    """BDA's matched-blueprint confidence is the section's class confidence.
+
+    In BDA mode the matched blueprint is what decides the section's class, and
+    its confidence was already being read for the HITL decision — it was simply
+    never stored, so every section carried a hardcoded 1.0. This means BDA mode
+    is scored with no extra inference and no prompt change.
+    """
+
+    @staticmethod
+    def _document(page_ids):
+        from idp_common.models import Document, Section
+
+        doc = Document(id="pkg.pdf", input_key="pkg.pdf")
+        doc.sections = [
+            Section(section_id="1", classification="w2", page_ids=list(page_ids))
+        ]
+        return doc
+
+    def _run(self, custom_output, status="MATCH"):
+        doc = self._document(["1", "2"])
+        segment = {
+            "custom_output_status": status,
+            "custom_output_path": "s3://bda/out/custom.json",
+            "standard_output_path": "s3://bda/out/standard.json",
+        }
+        with (
+            patch.object(bda_index, "download_json", return_value=custom_output),
+            patch.object(bda_index, "download_decimal", return_value=custom_output),
+            patch.object(bda_index, "is_hitl_enabled", return_value=False),
+            patch.object(bda_index, "resolve_class_schema", return_value=None),
+            patch.dict(os.environ, {"DB_NAME": ""}, clear=False),
+            patch.object(bda_index, "boto3", MagicMock()),
+        ):
+            result, _ = bda_index.process_segments(
+                input_bucket="in",
+                output_bucket="out",
+                object_key="pkg.pdf",
+                segment_metadata=[segment],
+                confidence_threshold=0.8,
+                execution_id="exec-1",
+                document=doc,
+            )
+        return result
+
+    def test_matched_blueprint_confidence_becomes_section_confidence(self):
+        result = self._run(
+            {
+                "matched_blueprint": {"name": "w2-bp", "confidence": 0.93},
+                "split_document": {"page_indices": [0, 1]},
+                "document_class": {"type": "w2"},
+                "explainability_info": [],
+            }
+        )
+        assert result.sections[0].confidence == 0.93
+
+    def test_unmatched_segment_leaves_the_section_unscored(self):
+        """No blueprint match => no class confidence, not a presumed 1.0."""
+        result = self._run(
+            {"metadata": {"start_page_index": 0, "end_page_index": 1}},
+            status="NO_MATCH",
+        )
+        assert result.sections[0].confidence is None

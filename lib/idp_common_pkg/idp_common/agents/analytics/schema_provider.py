@@ -484,7 +484,7 @@ def get_dynamic_document_sections_description(
             description += (
                 "  - `section_classification` (string): Type/class of the section\n"
             )
-            description += "  - `section_confidence` (string): Confidence score for the section classification\n"
+            description += "  - `section_confidence` (string): Confidence in the section's classification; NULL when not scored\n"
             description += "  - `explainability_info` (string): JSON containing explanation of extraction decisions\n"
             description += (
                 "  - `timestamp` (timestamp): When the document was processed\n"
@@ -912,7 +912,7 @@ def _get_specific_document_sections_table_info(
 - `"document_id"` (string): Unique identifier for the document
 - `"section_id"` (string): Unique identifier for the section
 - `"section_classification"` (string): Type/class of the document section
-- `"section_confidence"` (string): Confidence score for classification
+- `"section_confidence"` (string): Confidence in the section's classification; NULL when not scored
 - `"explainability_info"` (string): JSON with extraction field confidence scores and geometry
 - `"timestamp"` (timestamp): When document was processed in YYYY-MM-DD hh:mm:ss.ms format
 - `"date"` (string): Partition key in YYYY-MM-DD format

@@ -350,6 +350,22 @@ class DiscoveryOperation:
 
             # Caller override wins over system default
             model_id = model_id or auto_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+
+            # Grok and GPT-5.x cannot accept the `document` content block built
+            # below (text + image input only), and would silently drop the PDF
+            # and hallucinate. The stack path is guarded by config validation and
+            # the discovery picklists; this local path takes a caller-supplied
+            # model_id, so guard it here too.
+            from idp_common.bedrock.client import document_blocks_unsupported_reason
+
+            reason = document_blocks_unsupported_reason(model_id)
+            if reason:
+                raise IDPConfigurationError(
+                    f"Model '{model_id}' is not supported for discovery: {reason}. "
+                    "Discovery sends whole-PDF document blocks. Choose an "
+                    "Anthropic or Nova model."
+                )
+
             system_prompt = auto_cfg.get(
                 "system_prompt",
                 "You are an expert document analyst. Your task is to identify "
@@ -547,6 +563,22 @@ class DiscoveryOperation:
 
             # Caller override wins over system default
             model_id = model_id or mode_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+
+            # Grok and GPT-5.x cannot accept the `document` content block built
+            # below (text + image input only), and would silently drop the PDF
+            # and hallucinate. The stack path is guarded by config validation and
+            # the discovery picklists; this local path takes a caller-supplied
+            # model_id, so guard it here too.
+            from idp_common.bedrock.client import document_blocks_unsupported_reason
+
+            reason = document_blocks_unsupported_reason(model_id)
+            if reason:
+                raise IDPConfigurationError(
+                    f"Model '{model_id}' is not supported for discovery: {reason}. "
+                    "Discovery sends whole-PDF document blocks. Choose an "
+                    "Anthropic or Nova model."
+                )
+
             system_prompt = mode_cfg.get(
                 "system_prompt",
                 "You are an expert in processing forms. Extracting data from images and documents",

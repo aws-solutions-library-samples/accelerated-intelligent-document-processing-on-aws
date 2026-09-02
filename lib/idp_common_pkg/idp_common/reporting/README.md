@@ -356,7 +356,11 @@ For the sections functionality to work, your `Document` object must have:
 - `section_id`: The unique identifier of the section
 - `document_id`: The document identifier
 - `section_classification`: The section's classification/type
-- `section_confidence`: The confidence score for the section
+- `section_confidence`: Confidence in the section's CLASSIFICATION (not its
+  extracted fields). **Null when the classifier produced no score**, which is the
+  default — see [classification confidence](../classification/README.md#classification-confidence-confidence-classification_reason).
+  It previously carried a hardcoded 1.0 for every row, so historical partitions
+  cannot be compared against new ones on this column
 - `timestamp`: The timestamp when the document was processed
 
 ## Storage Structure

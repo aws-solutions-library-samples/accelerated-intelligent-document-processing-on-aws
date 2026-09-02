@@ -153,6 +153,17 @@ let the data go (git history is the archive — cite the commit, not a path).
 accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 → flagged
 as regressions. Improvements ≥ +0.02 accuracy are also reported.
 
+Two calibration separations are tracked, on the same −0.03 threshold:
+`calibration_separation` (extracted FIELDS) and `class_calibration_separation`
+(the CLASSIFICATION, from the eval report's per-page `predicted_confidence` vs
+`correct`). Both are `mean(conf | right) − mean(conf | wrong)`; both are `None`
+when that dimension was not scored, which is the default for classification
+(`classification.confidence.mode: off`) — a `None` there means "not measured",
+not "perfect". Turn the mode on for any run whose point is to judge whether
+classification confidence is worth acting on, and report `class_accuracy` and
+`n_class_scored_pages` alongside it so a separation computed from three pages
+is not read as a result.
+
 ## Honesty
 Report failures explicitly; never average accuracy only over docs that completed
 without saying so (advanced/large runs are survivorship-sensitive). Costs are

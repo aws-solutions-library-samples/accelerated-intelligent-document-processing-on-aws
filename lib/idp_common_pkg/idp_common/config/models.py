@@ -743,7 +743,9 @@ class ConfidenceConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -998,7 +1000,9 @@ class ExtractionConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1130,6 +1134,108 @@ class ExtractionConfig(BaseModel):
         return self
 
 
+class ClassificationClassConfidenceConfig(BaseModel):
+    """How classification reports confidence in the CLASS it chose (v0.7).
+
+    Nested as ``classification.confidence``. Deliberately NOT the same thing as
+    ``extraction.confidence``: that block configures a whole confidence-scoring
+    *inference* over extracted fields, whereas this one only decides what the
+    classification prompt asks the model to return alongside the class. There is
+    no separate classification confidence pass and no separate model — a
+    confidence costs output tokens on the inference that is already happening.
+
+    Defaults to ``topk`` on measured evidence rather than on the assumption that
+    more information is better. Over 298 pages of a 13-class corpus, asking for
+    ranked candidates cost ~0.5 % of TOTAL document cost (+17 % of the
+    classification step, which is only ~3 % of the bill on the default model),
+    changed accuracy by nothing consistent, and gave a signal that caught 43 % of
+    the default model's own misclassifications from 8 % of pages. See
+    ``docs/benchmarking/classification-confidence.md``.
+
+    ⚠️ Page-level classification runs ONE INFERENCE PER PAGE, so anything added
+    here multiplies by page count — that is why ``mode: off`` exists and why the
+    cost was measured before this was turned on. And how *useful* the number is
+    depends strongly on the classification model: a small model emits a coarse
+    two-level flag, a mid-tier one a graded distribution. Measure the calibration
+    on your own documents before routing work on the score.
+
+    Independent of BDA mode, which always has a real score (BDA's matched
+    blueprint confidence) at no extra cost.
+    """
+
+    mode: str = Field(
+        default="topk",
+        description=(
+            "What the classification prompt asks for beyond the class: 'topk' "
+            "(default — ranked candidate classes with probabilities, e.g. 80% W-2 "
+            "/ 15% 1099; better calibrated, because enumerating alternatives "
+            "forces the model to distribute probability mass instead of answering "
+            "~0.95 for everything, cf. Tian et al., 'Just Ask for Calibration', "
+            "EMNLP 2023), 'verbalized' (a single self-reported 0-1 number — "
+            "cheapest, and the most overconfident), or 'off' (nothing; a page is "
+            "then scored only if a custom prompt happens to ask for "
+            "`confidence`). Costs OUTPUT TOKENS PER PAGE in every mode but 'off' "
+            "— measured at ~0.5% of total document cost for 'topk'."
+        ),
+    )
+    top_k_candidates: int = Field(
+        default=3,
+        ge=2,
+        le=10,
+        description=(
+            "How many ranked candidate classes to request in "
+            "'topk' mode. Must be at least 2 — one candidate is a verbalized "
+            "confidence with extra syntax, and the calibration benefit comes "
+            "precisely from having to rank alternatives. Capped because the "
+            "instruction is repeated per page and a document set rarely has more "
+            "than a handful of plausible confusions per page. Automatically "
+            "reduced to the number of configured classes when that is smaller."
+        ),
+    )
+
+    task_prompt_topk: str = Field(
+        default="",
+        description=(
+            "Instruction block spliced into classification.task_prompt in 'topk' "
+            "mode (populated from system defaults). Editable like every other "
+            "prompt here. `{TOP_K_CANDIDATES}` is substituted with the resolved "
+            "candidate count. Inserted BEFORE the document/cache-point marker so "
+            "it stays inside the prompt-cache prefix — which matters because "
+            "classification runs per page."
+        ),
+    )
+    task_prompt_verbalized: str = Field(
+        default="",
+        description=(
+            "Instruction block spliced into classification.task_prompt in "
+            "'verbalized' mode (populated from system defaults), on the same "
+            "splice rules as task_prompt_topk."
+        ),
+    )
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_mode(cls, v: Any) -> str:
+        """Normalize the mode; reject unknown values loudly."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "off"
+        v_str = str(v).strip().lower()
+        if v_str not in ("off", "topk", "verbalized"):
+            raise ValueError(
+                "classification.confidence.mode must be 'off', 'topk', or "
+                f"'verbalized', got {v!r}"
+            )
+        return v_str
+
+    @field_validator("top_k_candidates", mode="before")
+    @classmethod
+    def parse_top_k(cls, v: Any) -> int:
+        """Parse from a string (stored configs are string-typed) or number."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 3
+        return int(v)
+
+
 class ClassificationConfig(BaseModel):
     """Document classification configuration"""
 
@@ -1160,7 +1266,9 @@ class ClassificationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1202,6 +1310,14 @@ class ClassificationConfig(BaseModel):
         description="Class label assigned when all validation retries are exhausted. "
         "Should be one of the configured classes or the built-in 'unclassified'. "
         "Only used when enforceValidClasses is True.",
+    )
+    confidence: ClassificationClassConfidenceConfig = Field(
+        default_factory=ClassificationClassConfidenceConfig,
+        description=(
+            "Confidence in the CLASS (see ClassificationClassConfidenceConfig). "
+            "Defaults to 'topk'; unrelated to extraction.confidence, which scores "
+            "extracted fields."
+        ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
 
@@ -1324,7 +1440,9 @@ class SummarizationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1421,7 +1539,9 @@ class ChatConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1488,7 +1608,9 @@ class OCRConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -2397,7 +2519,9 @@ class EvaluationLLMMethodConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )

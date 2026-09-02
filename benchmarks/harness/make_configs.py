@@ -95,12 +95,34 @@ def _norm(v):
     return str(v)
 
 
+def _resolve_value(value):
+    """Expand an ``@file:<path>`` axis value to the file's contents.
+
+    Some knobs are whole PROMPTS, not scalars — the pre-#653 classification
+    task_prompt is one, and it is the control arm of the `boundaryctl` suite. A
+    frozen prompt pasted into this matrix would be unreadable and would silently
+    rot next to the live one, so the value names a file under
+    ``benchmarks/matrices/prompts/`` instead. Relative to that directory, so a
+    matrix entry cannot reach outside the repo.
+    """
+    if not (isinstance(value, str) and value.startswith("@file:")):
+        return value
+    name = value[len("@file:") :].strip()
+    if os.path.sep in name or ".." in name:
+        raise ValueError(f"@file: value must be a bare filename, got {name!r}")
+    path = os.path.join(BENCH, "matrices", "prompts", name)
+    if not os.path.exists(path):
+        raise SystemExit(f"axis value {value!r} names a missing file: {path}")
+    with open(path) as fh:
+        return fh.read().strip()
+
+
 def apply_axis(cfg, axes, axis_name, choice):
     # axis choice map may have bool keys (off/on) due to YAML; index tolerantly
     amap = {_norm(k): kv for k, kv in axes[axis_name].items()}
     knobs = amap[_norm(choice)]
     for dotted, value in knobs.items():
-        set_path(cfg, dotted, value)
+        set_path(cfg, dotted, _resolve_value(value))
     # derive agentic.enabled from extraction_mode
     if axis_name == "extraction_mode":
         cfg.setdefault("extraction", {}).setdefault("agentic", {})["enabled"] = (
@@ -213,7 +235,18 @@ def cells_for_suite(matrix, suite):
             for ch in choices:
                 out.append({"id": f"sweep-{axis}-{_norm(ch)}", axis: _norm(ch)})
     elif isinstance(spec, list):
-        out = [core[i] for i in spec if i in core]
+        # Fail on an unknown id rather than dropping it. Every A/B suite in this
+        # matrix is a COMPARISON, so silently discarding an arm does not shrink
+        # the run — it produces a one-armed "A/B" whose delta is undefined, and
+        # nothing downstream can tell that from a suite that was declared with
+        # one cell. A typo'd cell id is exactly how a control arm disappears.
+        missing = [i for i in spec if i not in core]
+        if missing:
+            raise SystemExit(
+                f"suite '{suite}' names cell(s) not defined in core_cells: "
+                f"{missing}. Add them to core_cells or fix the suite."
+            )
+        out = [core[i] for i in spec]
     return out
 
 

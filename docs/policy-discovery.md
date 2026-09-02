@@ -239,6 +239,13 @@ All Policy Discovery settings live under the `discovery.rules` section of the Co
 > rejected by `idp-cli config-validate` and guarded at runtime. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **⚠️ xAI Grok is NOT supported for Policy/Rule Discovery.** Unlike GPT-5.x,
+> Grok 4.6 does support the Converse-based Strands path — but rule discovery also
+> sends whole-PDF `document` blocks, which Grok rejects (*"This model doesn't
+> support documents"*). Both `us.xai.grok-4.6` and `global.xai.grok-4.6` are
+> rejected by config validation and guarded at runtime. See
+> [xAI Grok Models](grok-models.md).
+
 **Parameter Guidelines:**
 - **Temperature: `0.0`** — deterministic rule extraction; re-running on the same document should give the same rules
 - **Top P: `0.0` / Top K: `5`** — strict decoding, minimizes off-rule hallucination

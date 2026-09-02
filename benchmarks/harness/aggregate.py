@@ -10,7 +10,8 @@ Scored output goes in a <suite>/ subdirectory of the release dir; results/ keeps
 complete set per release (see results/RETENTION.md).
 
 Writes summary.json (per (cell,doc) full scores) + summary.csv (+ meta.json).
-Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration -0.03.
+Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration -0.03
+(field-level and class-level alike).
 """
 
 # ruff: noqa: E402  (local sibling imports require the sys.path bootstrap first)
@@ -91,9 +92,22 @@ CSV_COLS = [
     "sections_correct",
     "weighted_accuracy",
     "parse_failures",
+    # Audit metadata the extraction stage recorded about itself. Without these a
+    # feature A/B cannot distinguish "no effect" from "never ran" — see
+    # analyze.score_audit_metadata.
+    "forced_tool_attempted",
+    "forced_tool_honored",
+    "forced_tool_honored_rate",
+    "validation_valid_rate",
+    "validation_errors",
+    "coercions",
+    "coercion_refusals",
     "mean_confidence",
     "pct_conf_below_0.9",
     "calibration_separation",
+    "class_accuracy",
+    "class_mean_confidence",
+    "class_calibration_separation",
     "wall_s",
     "cost",
 ]
@@ -151,6 +165,16 @@ def cell_stats(rows):
             # which is the only meaningful reading of a non-deterministic failure.
             "sections_correct": _stats([r.get("sections_correct") for r in succ]),
             "weighted_accuracy": _stats([r.get("weighted_accuracy") for r in succ]),
+            # Did the feature under test actually engage? A forcing arm whose
+            # honored rate is 0 has measured nothing, and a delta of zero on an
+            # enforcement arm that coerced nothing is not evidence about coercion.
+            "forced_tool_honored_rate": _stats(
+                [r.get("forced_tool_honored_rate") for r in succ]
+            ),
+            "coercions": _stats([r.get("coercions") for r in succ]),
+            "validation_valid_rate": _stats(
+                [r.get("validation_valid_rate") for r in succ]
+            ),
             "wall_s": _stats([r.get("wall_s") for r in succ]),
         }
     return out
@@ -564,21 +588,25 @@ def compare(summary_path, baseline_path):
                         )
                     )
 
-        # Calibration
-        cb, nb = _mean(bs, "calibration_separation")
-        cc, nc = _mean(cs, "calibration_separation")
-        if cb is not None and cc is not None and cc - cb <= -0.03:
-            noise = max(
-                _spread(bs, "calibration_separation"),
-                _spread(cs, "calibration_separation"),
-            )
-            if abs(cc - cb) <= noise:
-                print(
-                    f"  ~ {k}: calibration {cc - cb:+.3f}  [within spread "
-                    f"{noise:.3f} — INCONCLUSIVE, add repeats]"
-                )
-            else:
-                regressions.append((k, f"calibration {cc - cb:+.3f}", cb, cc))
+        # Calibration — field-level, then class-level. Same -0.03 threshold and
+        # the same spread guard; a confidence that stops separating right from
+        # wrong is a regression even when accuracy is unchanged, because
+        # downstream escalation is driven by the score, not the accuracy.
+        for metric, label in (
+            ("calibration_separation", "calibration"),
+            ("class_calibration_separation", "class calibration"),
+        ):
+            cb, nb = _mean(bs, metric)
+            cc, nc = _mean(cs, metric)
+            if cb is not None and cc is not None and cc - cb <= -0.03:
+                noise = max(_spread(bs, metric), _spread(cs, metric))
+                if abs(cc - cb) <= noise:
+                    print(
+                        f"  ~ {k}: {label} {cc - cb:+.3f}  [within spread "
+                        f"{noise:.3f} — INCONCLUSIVE, add repeats]"
+                    )
+                else:
+                    regressions.append((k, f"{label} {cc - cb:+.3f}", cb, cc))
 
     print(f"\n=== REGRESSIONS ({len(regressions)}) ===")
     for k, what, was, now in regressions:

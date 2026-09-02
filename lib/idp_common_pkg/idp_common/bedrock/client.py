@@ -30,6 +30,7 @@ from .model_utils import (
     get_model_max_output_tokens,
     parse_max_tokens_limit_from_error,
     parse_model_id,
+    resolve_model_id_from_arn,
 )
 from .openai_responses import invoke_responses_api, is_openai_responses_model
 from .session import get_bedrock_session
@@ -106,9 +107,17 @@ def is_claude_4_7_model(model_id: str) -> bool:
     Args:
         model_id: Bedrock model ID (e.g., 'us.anthropic.claude-opus-4-7:1m')
 
+    Inference-profile ARNs are resolved first. Without this, a config naming
+    ``arn:...:inference-profile/us.anthropic.claude-sonnet-5`` — the form
+    docs/configuration.md recommends for cost allocation, and the only form
+    available in GovCloud — would not be recognized, so ``temperature`` would be
+    sent to a model that rejects it with a 400. Opaque
+    ``application-inference-profile`` ARNs still cannot be resolved offline.
+
     Returns:
         True if the model is a Claude 4.7+ variant
     """
+    model_id = resolve_model_id_from_arn(model_id)
     # Strip region prefix (us., eu., global.)
     parts = model_id.split(".", 1)
     if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
@@ -171,6 +180,119 @@ def is_claude_effort_model(model_id: str) -> bool:
         return False
     base = _strip_region_and_1m(model_id)
     return any(base.startswith(name) for name in _CLAUDE_EFFORT_BASE_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# xAI Grok
+# ---------------------------------------------------------------------------
+# Grok is the first non-Anthropic/non-Nova family to reach the Converse API, so
+# several assumptions that held while only Claude and Nova used this path had to
+# be generalized. Everything below was verified live against
+# ``us.xai.grok-4.6`` on bedrock-runtime Converse in us-west-2 on 2026-09-02:
+#
+#   * ``inferenceConfig.temperature`` and ``inferenceConfig.topP`` are REJECTED
+#     ("This model doesn't support the temperature field"), so Grok joins the
+#     sampling-param-stripped set — see ``strips_sampling_params``.
+#   * ``maxTokens`` must ride in ``inferenceConfig``. Claude's
+#     ``additionalModelRequestFields.max_tokens`` is accepted but SILENTLY
+#     IGNORED (a request capped at 100 there returned 135 output tokens).
+#     Unknown ``additionalModelRequestFields`` keys are silently ignored too, so
+#     the exact carrier matters and a wrong one fails open, not loudly.
+#   * Reasoning is always on. The effort carrier is
+#     ``additionalModelRequestFields.reasoning.effort``; Claude's
+#     ``output_config.effort`` is silently ignored here.
+#   * ``document`` content blocks are REJECTED ("This model doesn't support
+#     documents") — see ``document_blocks_unsupported_reason``. Images work.
+#   * ``toolConfig`` works with all three ``toolChoice`` modes and emits
+#     ``toolUse``, so agentic extraction is supported (unlike GPT-5.x).
+#   * Explicit ``cachePoint`` blocks raise AccessDeniedException, so Grok is
+#     deliberately absent from CACHEPOINT_SUPPORTED_MODELS below. The model card
+#     advertises implicit caching, but 4 back-to-back identical 20,033-token
+#     prompts all reported ``cacheReadInputTokens=0``, so no caching benefit is
+#     claimed.
+#   * Flex/Priority service tiers are REJECTED ("The provided service tier is
+#     not supported for this model") despite the model card advertising both, so
+#     no tier-suffixed Grok IDs are offered.
+_GROK_BASE_PREFIX = "xai.grok"
+
+# Effort levels accepted by Grok. NOTE this is NOT the same vocabulary as
+# CLAUDE_EFFORT_LEVELS: Grok adds "none" and REJECTS "max" ("Unsupported value:
+# 'max' is not supported with the 'us.xai.grok-4.6' model").
+GROK_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh")
+
+
+def is_grok_model(model_id: str) -> bool:
+    """True if ``model_id`` names an xAI Grok model.
+
+    Handles the ``us.``/``global.`` cross-region inference-profile prefixes.
+    Grok has no in-region form on bedrock-runtime — the bare ``xai.grok-4.6`` is
+    rejected ("Invocation of model ID xai.grok-4.6 with on-demand throughput
+    isn't supported") — but the bare name is matched anyway so the predicate is
+    about the family, not the routing.
+
+    Inference-profile **ARNs** are resolved first. This matters more here than
+    for the Claude predicates: docs/configuration.md actively recommends passing
+    an inference-profile ARN for cost-allocation tagging, and an ARN is the only
+    form available in GovCloud. Because Grok's rejections are unconditional (a
+    400 on temperature, a hard refusal of document blocks), missing the ARN form
+    would fail 100% of requests rather than degrade quietly.
+
+    LIMITATION: ``application-inference-profile/<uuid>`` ARNs are opaque — the
+    underlying foundation model cannot be determined without a
+    GetInferenceProfile call — so those still return False. A Grok application
+    inference profile will therefore bypass these gates.
+    """
+    if not model_id:
+        return False
+    resolved = resolve_model_id_from_arn(model_id)
+    return _strip_region_and_1m(resolved).startswith(_GROK_BASE_PREFIX)
+
+
+def strips_sampling_params(model_id: str) -> bool:
+    """True if the model REJECTS ``temperature`` / ``topP`` / ``top_k``.
+
+    Covers Claude 4.7+ (where these are deprecated) and xAI Grok (which returns
+    a 400 naming the offending field). Callers must omit the whole
+    ``inferenceConfig`` sampling group for these models rather than passing
+    defaults.
+    """
+    return is_claude_4_7_model(model_id) or is_grok_model(model_id)
+
+
+# Converse ``document`` content-block capability gate.
+#
+# Discovery and any other path that hands Bedrock a whole PDF relies on
+# ``document`` blocks. Two families cannot accept them and would otherwise
+# silently drop the document and hallucinate an answer, so callers fail loudly
+# instead. Kept beside ``tool_config_unsupported_reason`` (same shape) so every
+# per-model Converse capability gate lives in one place.
+DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
+    "openai-responses": (
+        "OpenAI GPT-5.x models are served by the bedrock-mantle Responses API, "
+        "which accepts only text and image input"
+    ),
+    "xai-grok": (
+        "xAI Grok models reject Converse document blocks (\"This model doesn't "
+        "support documents\"); their input modalities are text and image only"
+    ),
+}
+
+
+def document_blocks_unsupported_reason(model_id: Optional[str]) -> Optional[str]:
+    """Explain why ``model_id`` cannot accept Converse ``document`` blocks.
+
+    Returns None when the model can accept them.
+    """
+    if is_openai_responses_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["openai-responses"]
+    if model_id and is_grok_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["xai-grok"]
+    return None
+
+
+def supports_document_blocks(model_id: Optional[str]) -> bool:
+    """True if ``model_id`` can accept whole-PDF Converse ``document`` blocks."""
+    return document_blocks_unsupported_reason(model_id) is None
 
 
 # Base model names that support cachePoint (without region prefix)
@@ -933,13 +1055,14 @@ class BedrockClient:
                 )
                 temperature = 0.0
 
-        # Claude 4.7+ models don't support temperature, top_k, or top_p parameters
+        # Claude 4.7+ and xAI Grok don't support temperature, top_k, or top_p:
+        # deprecated on Claude, hard-rejected with a 400 on Grok.
         is_claude_4_7 = _is_claude_4_7_model(model_id)
-        if is_claude_4_7:
+        if strips_sampling_params(model_id):
             inference_config = {}
             logger.info(
-                f"Skipping temperature/top_p for Claude 4.7+ model: {model_id} "
-                "(these parameters are deprecated for this model)"
+                f"Skipping temperature/top_p for {model_id} "
+                "(these parameters are rejected or deprecated for this model)"
             )
         else:
             # Initialize inference config with temperature
@@ -1004,8 +1127,20 @@ class BedrockClient:
                     model_id,
                 )
 
-        # Add to inferenceConfig as maxTokens for Nova models
-        if max_tokens is not None and "amazon" in model_id.lower():
+        # Place maxTokens on the carrier the model actually honors.
+        #
+        # ``inferenceConfig.maxTokens`` is the Converse-standard field and is the
+        # DEFAULT for every family, so a newly added model caps correctly without
+        # a code change. Claude is the exception: it takes the value via
+        # ``additionalModelRequestFields.max_tokens`` (set further below), which
+        # is long-verified behavior and left untouched.
+        #
+        # Getting this wrong fails OPEN, not loudly: Grok accepts
+        # ``additionalModelRequestFields.max_tokens`` and silently ignores it
+        # (verified live 2026-09-02 — a request capped at 100 there returned 135
+        # output tokens), so an unsupported carrier means uncapped output rather
+        # than an error.
+        if max_tokens is not None and "anthropic" not in model_id.lower():
             inference_config["maxTokens"] = max_tokens
 
         # Add additional model fields if needed
@@ -1071,6 +1206,29 @@ class BedrockClient:
                 if "inferenceConfig" not in additional_model_fields:
                     additional_model_fields["inferenceConfig"] = {}
                 additional_model_fields["inferenceConfig"]["topK"] = int(top_k)
+
+        # Handle xAI Grok-specific parameters
+        elif is_grok_model(model_id):
+            # Reasoning is always on for Grok; effort rides in
+            # additionalModelRequestFields.reasoning.effort. Claude's
+            # output_config.effort is silently ignored here, and so is any other
+            # unrecognized key — so an unsupported effort value must be dropped
+            # rather than passed through, or the request quietly loses the
+            # setting instead of failing. top_k is deliberately not forwarded
+            # (Grok rejects the sampling group).
+            if reasoning_effort:
+                effort = str(reasoning_effort).lower().strip()
+                if effort in GROK_EFFORT_LEVELS:
+                    additional_model_fields["reasoning"] = {"effort": effort}
+                    logger.info("Using reasoning effort '%s' for %s", effort, model_id)
+                else:
+                    logger.warning(
+                        "Ignoring unsupported Grok reasoning effort '%s' for %s "
+                        "(valid: %s)",
+                        reasoning_effort,
+                        model_id,
+                        ", ".join(GROK_EFFORT_LEVELS),
+                    )
 
         # Add 1M context headers if needed
         use_model_id = model_id
@@ -1156,7 +1314,8 @@ class BedrockClient:
     def _apply_max_tokens_limit(converse_params: Dict[str, Any], limit: int) -> bool:
         """Clamp the request's maxTokens to `limit` in place, if it exceeds it.
 
-        Handles both carriers: Nova's ``inferenceConfig.maxTokens`` and Claude's
+        Handles both carriers: the Converse-standard ``inferenceConfig.maxTokens``
+        (Nova, xAI Grok, and any other non-Claude family) and Claude's
         ``additionalModelRequestFields.max_tokens``. Returns True if a value was
         actually lowered (so a retry is warranted), False otherwise — the False
         case prevents an infinite retry when no maxTokens was set or it's already
