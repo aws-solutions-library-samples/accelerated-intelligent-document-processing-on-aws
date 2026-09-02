@@ -50,6 +50,16 @@ dev = [
   "python-dotenv (>=1.1.0,<2.0.0)",
   "ipykernel (>=6.29.5,<7.0.0)",
   "jupyter (>=1.1.1,<2.0.0)",
+  # dep_audit HIGH gates — transitive via jupyter's toolchain (mistune
+  # ← nbconvert; tornado ← ipykernel/jupyter-client/jupyterlab). Pinning
+  # the fixed versions here forces uv.lock to pull them regardless of
+  # what the parent packages request. Dev-only surface (not in any
+  # deployed Lambda), but the audit gate treats every locked package
+  # as in-scope, so a floor pin is the cheapest close.
+  #   mistune  3.3.3: GHSA-6m44-fpc8-c3rq (DoS via emphasis markers)
+  #   tornado  6.5.8: GHSA-mpf4-983q-p7j4 (event-loop stall via URL-encoded body)
+  "mistune (>=3.3.3)",
+  "tornado (>=6.5.8)",
 ]
 
 # Image handling dependencies
