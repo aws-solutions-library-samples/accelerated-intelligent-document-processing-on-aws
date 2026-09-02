@@ -1213,6 +1213,17 @@
     "listUsers": {
       "args": []
     },
+    "openTestSetAnnotationDraft": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "OpenTestSetAnnotationDraftInput"
+        }
+      ]
+    },
     "pauseCircuitBreaker": {
       "args": [
         {
@@ -2624,6 +2635,15 @@
         "name": "isDeleted",
         "non_null": false,
         "type": "Boolean"
+      }
+    ],
+    "OpenTestSetAnnotationDraftInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
       }
     ],
     "PageInput": [

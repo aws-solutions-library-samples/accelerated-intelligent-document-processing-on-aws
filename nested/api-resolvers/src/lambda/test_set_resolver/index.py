@@ -142,6 +142,11 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # class is — and it is the correction Spencer's customer needs most. Per-set scope
     # asserted in the dispatch below.
     "updateTestSetDocumentSections",
+    # Opening the version transition annotating commits to. An annotator is the role that
+    # begins an annotation session, so refusing this would make the queue unusable for
+    # them — and it is the operation that preserves the labels being edited away from.
+    # Per-set scope asserted in the dispatch below.
+    "openTestSetAnnotationDraft",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -208,6 +213,12 @@ def handler(event, context):
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
         return generate_draft_labels(event["arguments"], event)
+    elif field_name == "openTestSetAnnotationDraft":
+        # Annotator-reachable: group membership alone would let one annotator open a
+        # version transition on a set they were never assigned.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return open_test_set_annotation_draft(event["arguments"], event)
     elif field_name == "updateTestSetDocumentSections":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
@@ -673,6 +684,10 @@ def publish_test_set_version(args, event=None):
     pointer_values = {":v": next_version}
     if set_active:
         pointer_expr += ", activeReference = :v"
+    # And the open transition has landed, so it stops being open. Leaving draftVersion
+    # set would have the annotate view reporting a transition toward a version that
+    # already exists, and would stop the next annotation session snapshotting.
+    pointer_expr += " REMOVE draftVersion"
     try:
         tracking_table.update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
@@ -699,6 +714,145 @@ def publish_test_set_version(args, event=None):
         next_version if set_active else meta.get("activeReference")
     )
     return result
+
+
+def _snapshot_baselines(test_set_bucket, test_set_id, version):
+    """Copy the live baselines to ``{id}/versions/{version}/baseline/``.
+
+    Server-side copies, paginated: a 2000-document set has thousands of baseline
+    objects, which is exactly why this runs once when a draft opens rather than on every
+    save. Returns the number of objects copied.
+
+    Idempotent by overwrite: re-copying the same keys is harmless, so a retry after a
+    partial failure converges instead of needing cleanup.
+    """
+    source_prefix = f"{test_set_id}/baseline/"
+    dest_prefix = f"{test_set_id}/versions/{int(version)}/baseline/"
+
+    copied = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=source_prefix):
+        for obj in page.get("Contents", []) or []:
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue
+            relative = key[len(source_prefix) :]
+            s3_client.copy_object(
+                Bucket=test_set_bucket,
+                CopySource={"Bucket": test_set_bucket, "Key": key},
+                Key=f"{dest_prefix}{relative}",
+            )
+            copied += 1
+
+    logger.info(
+        f"Snapshotted {copied} baseline object(s) for test set '{test_set_id}' "
+        f"as version {version}"
+    )
+    return copied
+
+
+def open_test_set_annotation_draft(args, event=None):
+    """Open the version transition that annotating a test set commits you to.
+
+    Spencer Romo, reviewing the Exxon POC build: "if we start annotations on any
+    dataset, even if we still have ground truth, we're effectively committing that we'll
+    be creating a new version of the dataset. So I think we need to hash the queue link
+    to a version that is a transition from existing state to next state."
+
+    He was right, and the problem underneath is worse than the queue link. A version was
+    a **DynamoDB row only** — ``publish_test_set_version`` records a number, a label and
+    a file count, and copies nothing. Annotation writes straight to ``{id}/baseline/``.
+    So a run stamped ``TestSetVersion = 3`` could not be reproduced against the labels it
+    actually scored: the number was immutable, its content was not.
+
+    This makes the transition explicit and preserves what it moves away from:
+
+      * ``baseVersion`` is the state being left. A set that has never been published gets
+        its arriving labels published as a version first — the "even if we still have
+        ground truth" case, and the common one for an uploaded set.
+      * that state is snapshotted to ``{id}/versions/{baseVersion}/baseline/``, so the
+        number now refers to bytes.
+      * ``draftVersion`` is ``baseVersion + 1``, recorded on the metadata row. The queue
+        link carries it, so a link says which transition it belongs to.
+
+    Idempotent: opening a draft that is already open returns it and copies nothing, which
+    matters because the annotate view calls this on entry.
+
+    Why an explicit call rather than copy-on-write: the editor saves a baseline through a
+    **presigned POST straight from the browser**, so no Lambda observes the write. There
+    is no server-side moment to hang a lazy snapshot on — and making the commitment
+    visible is what was being asked for anyway.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    existing_draft = _as_int(meta.get("draftVersion"))
+    if existing_draft:
+        # Already open. Returning it unchanged keeps the annotate view's on-entry call
+        # cheap and stops a second reviewer opening a second transition.
+        base = existing_draft - 1
+        logger.info(
+            f"Test set '{test_set_id}' already has draft version {existing_draft}; "
+            "returning it"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": base,
+            "draftVersion": existing_draft,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
+
+    base_version = _as_int(meta.get("publishedVersion"))
+    if not base_version:
+        # Never published. Publishing the arriving state first is what stops the labels
+        # a set was uploaded with from being the thing that gets overwritten with no
+        # record of what they were.
+        published = publish_test_set_version(
+            {
+                "input": {
+                    "testSetId": test_set_id,
+                    "label": "As uploaded",
+                    "notes": "Captured automatically before annotation began.",
+                    "setAsActiveReference": True,
+                }
+            },
+            event,
+        )
+        base_version = int(published["version"])
+        logger.info(
+            f"Test set '{test_set_id}' had no published version; captured its current "
+            f"labels as version {base_version} before opening a draft"
+        )
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
+
+    draft_version = base_version + 1
+    # Written after the snapshot: a failure part-way leaves no draft pointer, so the
+    # next call retries the copy rather than annotating against a version whose content
+    # was never captured.
+    db_client.update_item(
+        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+        update_expression="SET draftVersion = :d",
+        expression_attribute_values={":d": draft_version},
+    )
+
+    logger.info(
+        f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
+        f"(base {base_version}, {copied} baseline object(s) snapshotted)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "baseVersion": base_version,
+        "draftVersion": draft_version,
+        "snapshotObjectCount": copied,
+        "alreadyOpen": False,
+    }
 
 
 # ---------------------------------------------------------------------------

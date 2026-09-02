@@ -84,6 +84,9 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteTestSets": "addDocumentsToTestSet",
     "estimateReviewEffort": "addDocumentsToTestSet",
     "getAnnotationQueue": "addDocumentsToTestSet",
+    # Single hop to a real SSM map entry: HttpApiFieldFunctionMap is at its 8 KB
+    # Advanced-tier ceiling, so a new key would overflow the parameter.
+    "openTestSetAnnotationDraft": "addDocumentsToTestSet",
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
     "updateDocumentSections": "processChanges",

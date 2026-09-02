@@ -3110,6 +3110,190 @@ class TestTestSetResolver:
         assert after["1"]["labelSource"] == "reviewed-human"
         assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
 
+    # ------------------------------------------- annotation drafts and versioning
+
+    @staticmethod
+    def _baseline_keys(s3, prefix):
+        # Paginated, because this helper is used to check a >1000-object snapshot and a
+        # bare list_objects_v2 caps at 1000 — the same trap the production copy has to
+        # avoid, which this helper originally fell into and reported as a product bug.
+        keys = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket="test-set-bucket", Prefix=prefix):
+            keys.extend(o["Key"] for o in page.get("Contents", []) or [])
+        return sorted(keys)
+
+    def _seed_labelled_set(self, table, s3, test_set_id="ts1", value="original"):
+        """A set with ground truth already in place, as an uploaded one arrives."""
+        _seed_test_set(table, test_set_id, fileCount=1)
+        s3.put_object(
+            Bucket="test-set-bucket", Key=f"{test_set_id}/input/a.pdf", Body=b"x"
+        )
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key=f"{test_set_id}/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"total": value}}).encode(),
+        )
+
+    def test_opening_a_draft_preserves_the_labels_it_moves_away_from(
+        self, labeling_env
+    ):
+        """The property the whole operation exists for.
+
+        A version was a DynamoDB row that copied nothing, so annotating in place changed
+        what every recorded version number referred to and a scored run could not be
+        reproduced. Spencer: starting annotation "effectively commit[s] that we'll be
+        creating a new version" — so the state being left has to be captured.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["baseVersion"] == 1
+        assert result["draftVersion"] == 2
+        assert result["snapshotObjectCount"] == 1
+        # The bytes, not just the number.
+        snapshot = self._baseline_keys(s3, "ts1/versions/1/baseline/")
+        assert snapshot == ["ts1/versions/1/baseline/a.pdf/sections/1/result.json"]
+
+    def test_a_later_annotation_does_not_change_the_snapshot(self, labeling_env):
+        """Reproducibility, stated as a test: the snapshot must not track the live
+        labels, or the version number is decoration again."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="original")
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        # The reviewer corrects the document, exactly as the editor's presigned POST does.
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"total": "corrected"}}).encode(),
+        )
+
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "original"
+
+    def test_a_set_with_no_published_version_gets_its_arriving_labels_captured(
+        self, labeling_env
+    ):
+        """Spencer's case: "even if we still have ground truth".
+
+        An uploaded set has never been published, so without this the labels it arrived
+        with would be the ones overwritten, with nothing recording what they were.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["publishedVersion"]) == 1
+        assert result["baseVersion"] == 1
+        versions = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert [v["label"] for v in versions] == ["As uploaded"]
+
+    def test_opening_a_draft_twice_is_idempotent(self, labeling_env):
+        """The annotate view calls this on entry, so a second call must not open a
+        second transition or re-copy thousands of objects."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        first = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+        second = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert second["draftVersion"] == first["draftVersion"]
+        assert second["baseVersion"] == first["baseVersion"]
+        assert second["alreadyOpen"] is True
+        assert second["snapshotObjectCount"] == 0
+
+    def test_the_draft_is_recorded_on_the_set(self, labeling_env):
+        # The queue link is built from this, so it has to be readable afterwards.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 2
+
+    def test_publishing_closes_the_open_draft(self, labeling_env):
+        """Otherwise the view reports a transition toward a version that already exists,
+        and the next session never snapshots."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "draftVersion" not in meta
+
+    def test_a_second_session_after_publishing_snapshots_again(self, labeling_env):
+        # v2 is now published, so the next transition is 2 -> 3 and preserves v2.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert (result["baseVersion"], result["draftVersion"]) == (2, 3)
+        assert self._baseline_keys(s3, "ts1/versions/2/baseline/")
+
+    def test_the_snapshot_copies_every_object_past_a_pagination_boundary(
+        self, labeling_env
+    ):
+        """list_objects_v2 pages at 1000. A 2000-document set is real (Fake-W2), so an
+        unpaginated copy would silently preserve only the first page of a version."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        for i in range(1005):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/doc{i:04d}.pdf/sections/1/result.json",
+                Body=b"{}",
+            )
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1005
+        assert len(self._baseline_keys(s3, "ts1/versions/1/baseline/")) == 1005
+
+    def test_an_unknown_test_set_is_refused(self, labeling_env):
+        _table, _s3 = labeling_env
+
+        with pytest.raises(Exception, match="not found"):
+            test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "nope"}}
+            )
+
+    def test_the_operation_is_annotator_reachable_and_scope_checked(self, labeling_env):
+        # Both halves matter: an annotator starts the session, and group membership alone
+        # would let them open a transition on a set they were never assigned.
+        assert "openTestSetAnnotationDraft" in test_set_index.ANNOTATOR_ALLOWED_FIELDS
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        branch = source.split('elif field_name == "openTestSetAnnotationDraft":')[1]
+        branch = branch.split("elif field_name ==")[0]
+        assert "assert_can_access_test_set" in branch
+
     # ------------------------------------------------- zip upload: the set's name
 
     def test_the_supplied_name_is_used_not_the_zip_filename(self, labeling_env):

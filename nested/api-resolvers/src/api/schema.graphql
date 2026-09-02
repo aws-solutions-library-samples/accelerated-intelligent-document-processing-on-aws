@@ -889,6 +889,29 @@ type TestSetVersion @aws_cognito_user_pools @aws_iam {
   createdBy: String
 }
 
+"""
+The version transition an annotation session commits to.
+
+`baseVersion` is the state being left, snapshotted to
+`{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+to whatever the labels happen to be later. `draftVersion` is what the session is working
+toward, and what the queue link carries so a link identifies its transition.
+"""
+type TestSetAnnotationDraft @aws_cognito_user_pools @aws_iam {
+  testSetId: String!
+  baseVersion: Int!
+  draftVersion: Int!
+  # Baseline objects copied into the base version. 0 when the draft was already open.
+  snapshotObjectCount: Int
+  # True when this call found an existing draft rather than opening one, so a caller can
+  # tell "nothing happened" from "a snapshot just ran".
+  alreadyOpen: Boolean
+}
+
+input OpenTestSetAnnotationDraftInput {
+  testSetId: String!
+}
+
 input PublishTestSetVersionInput {
   testSetId: String!
   label: String
@@ -1480,6 +1503,19 @@ type Mutation {
   # inference_result, labelSource and _editHistory, so a reviewer's corrections are
   # never discarded — the fields may no longer match their pages afterwards, which is
   # what the UI warns about while offering an opt-in re-extract.
+  # Open the version transition that annotating a test set commits to, preserving the
+  # state being left. Idempotent: an already-open draft is returned unchanged.
+  #
+  # Annotating used to edit ground truth in place with nothing recording what it had
+  # been — and a version was a DynamoDB row that copied no objects, so a run stamped
+  # with a version number could not be reproduced against the labels it scored.
+  #
+  # Admin/Author/Annotator, matching the rest of the annotation queue: an annotator is
+  # the role that starts a session. Additionally scope-checked against allowedTestSets in
+  # the resolver, since group membership alone would let one annotator open a transition
+  # on a set they were never assigned.
+  openTestSetAnnotationDraft(input: OpenTestSetAnnotationDraftInput!): TestSetAnnotationDraft
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   updateTestSetDocumentSections(input: UpdateTestSetDocumentSectionsInput!): TestSetDocumentSections
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   sendTestRunToReview(testRunId: String!): SendTestRunToReviewResult

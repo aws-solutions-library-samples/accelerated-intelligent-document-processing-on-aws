@@ -800,6 +800,7 @@ export type Mutation = {
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
   labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
+  openTestSetAnnotationDraft?: Maybe<TestSetAnnotationDraft>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   processChanges: ProcessChangesResponse;
@@ -1056,6 +1057,11 @@ export type MutationLabelConfigProfileRevisionArgs = {
   notes?: InputMaybe<Scalars['String']['input']>;
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
+};
+
+
+export type MutationOpenTestSetAnnotationDraftArgs = {
+  input: OpenTestSetAnnotationDraftInput;
 };
 
 
@@ -1367,6 +1373,10 @@ export type MutationUploadSampleDocumentArgs = {
   prefix?: InputMaybe<Scalars['String']['input']>;
   sampleId: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type OpenTestSetAnnotationDraftInput = {
+  testSetId: Scalars['String']['input'];
 };
 
 export type Page = {
@@ -2053,6 +2063,22 @@ export type TestSet = {
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
 };
 
+/**
+ * The version transition an annotation session commits to.
+ *
+ * `baseVersion` is the state being left, snapshotted to
+ * `{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+ * to whatever the labels happen to be later. `draftVersion` is what the session is working
+ * toward, and what the queue link carries so a link identifies its transition.
+ */
+export type TestSetAnnotationDraft = {
+  alreadyOpen?: Maybe<Scalars['Boolean']['output']>;
+  baseVersion: Scalars['Int']['output'];
+  draftVersion: Scalars['Int']['output'];
+  snapshotObjectCount?: Maybe<Scalars['Int']['output']>;
+  testSetId: Scalars['String']['output'];
+};
+
 export type TestSetDocument = {
   alertCount?: Maybe<Scalars['Int']['output']>;
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
@@ -2462,6 +2488,13 @@ export type LabelConfigProfileRevisionMutationVariables = Exact<{
 
 
 export type LabelConfigProfileRevisionMutation = { labelConfigProfileRevision?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
+export type OpenTestSetAnnotationDraftMutationVariables = Exact<{
+  input: OpenTestSetAnnotationDraftInput;
+}>;
+
+
+export type OpenTestSetAnnotationDraftMutation = { openTestSetAnnotationDraft?: { testSetId: string, baseVersion: number, draftVersion: number, snapshotObjectCount?: number | null, alreadyOpen?: boolean | null } | null };
 
 export type PauseCircuitBreakerMutationVariables = Exact<{
   reason: Scalars['String']['input'];
