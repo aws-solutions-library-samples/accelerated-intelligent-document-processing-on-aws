@@ -183,6 +183,7 @@ class ExtractionService:
         # consumed by _save_results when building the metadata block. Reset per
         # section so a prior section's result can never leak into the next.
         self._pending_validation_metadata: dict[str, Any] | None = None
+        self._pending_forced_tool_metadata: dict[str, Any] | None = None
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
         self._pending_coercion_metadata: dict[str, Any] | None = None
@@ -3487,6 +3488,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         self._pending_validation_metadata = None
         self._pending_coercion_metadata = None
         self._pending_extraction_model = None
+        self._pending_forced_tool_metadata = None
 
         # Get extraction config — use per-class model override if specified,
         # otherwise fall back to the global extraction model.
@@ -3890,7 +3892,36 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     metering["_merged_assessment"] = inline
                     metering["_merged_assessment_alerts"] = []
         else:
-            # Standard Bedrock invocation
+            # Optionally put the class schema on the wire as a FORCED tool instead
+            # of relying on the prompt's description of it (WS-05). Off by default
+            # and gated on a measured win — forcing constrains the response shape,
+            # not the values in it. The prompt is deliberately left unchanged so
+            # the A/B measures forcing alone; dropping the prose schema is #710's
+            # separate question, and bundling the two would confound both.
+            from idp_common.extraction.forced_tool import (
+                EXTRACTION_TOOL_NAME,
+                build_extraction_tool_config,
+                forced_tool_choice,
+                restore_extracted_fields,
+                should_force_tool,
+            )
+
+            ft_cfg = self.config.extraction.forced_tool
+            force, skip_reason = should_force_tool(
+                model_id, ft_cfg.enabled, self._class_schema
+            )
+            tool_config = tool_choice = None
+            tool_name_map = None
+            if force:
+                tool_config, tool_name_map = build_extraction_tool_config(
+                    self._class_schema
+                )
+                tool_choice = forced_tool_choice()
+            elif skip_reason:
+                # Recorded, not just logged: an A/B in which "no effect" and
+                # "never ran" look identical is unreadable.
+                logger.info("Forced tool use skipped — %s", skip_reason)
+
             response_with_metering = bedrock.invoke_model(
                 model_id=model_id,
                 system_prompt=system_prompt,
@@ -3902,7 +3933,44 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 context="Extraction",
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=reasoning_effort,
+                tool_config=tool_config,
+                tool_choice=tool_choice,
             )
+
+            # A model can accept a toolConfig and still answer in prose. That is a
+            # normal outcome (stopReason end_turn rather than tool_use), so an
+            # absent toolUse block falls back to the text path unless the operator
+            # has explicitly asked for it to be a failure.
+            forced_tool_input = None
+            if force:
+                forced_tool_input = restore_extracted_fields(
+                    bedrock.extract_tool_use_from_response(
+                        dict(response_with_metering), tool_name=EXTRACTION_TOOL_NAME
+                    ),
+                    tool_name_map,
+                )
+                self._pending_forced_tool_metadata = {
+                    "requested": True,
+                    "honored": forced_tool_input is not None,
+                    "tool_name": EXTRACTION_TOOL_NAME,
+                    "renamed_properties": len(tool_name_map.renamed)
+                    if tool_name_map
+                    else 0,
+                }
+                if forced_tool_input is None:
+                    logger.warning(
+                        "Forced tool use was requested but the model answered in "
+                        "prose; %s",
+                        "falling back to text parsing"
+                        if ft_cfg.fallback_to_prompt
+                        else "treating it as a parse failure (fallback disabled)",
+                    )
+            elif skip_reason:
+                self._pending_forced_tool_metadata = {
+                    "requested": True,
+                    "honored": False,
+                    "skipped": skip_reason,
+                }
 
             extracted_text = bedrock.extract_text_from_response(
                 dict(response_with_metering)
@@ -3918,60 +3986,92 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             instance_count = 0
             recovered_instances = None
 
-            try:
-                extracted_fields = json.loads(extract_json_from_text(extracted_text))
-
-                # A top-level array means either a needlessly wrapped single
-                # object or — far more often — several documents of the same
-                # class in one section. Both are handled (and preserved) here.
+            if forced_tool_input is not None:
+                # The model called the tool, so the shape is the API's guarantee
+                # and there is no text to parse. Still run it through
+                # _normalize_list_result: a forced tool constrains the SHAPE, and a
+                # class whose schema is a packet of records can legitimately come
+                # back as a list, which is the multi-instance case (#565/#687).
                 (
                     extracted_fields,
                     parsing_succeeded,
                     instance_count,
                     recovered_instances,
-                ) = self._normalize_list_result(extracted_fields, context="parsed")
-
-            except Exception as e:
-                logger.warning(
-                    f"Error parsing LLM output - attempting JSON repair: {e}"
+                ) = self._normalize_list_result(
+                    forced_tool_input, context="forced-tool"
                 )
+            elif force and not ft_cfg.fallback_to_prompt:
+                # Explicitly configured to treat an unhonored force as a failure.
+                # Only useful for measuring how often forcing is actually honored.
+                logger.warning(
+                    "Forced tool use was not honored and fallback_to_prompt is "
+                    "off; marking the section as a parse failure"
+                )
+                extracted_fields = {
+                    "error": (
+                        "forced tool use was requested but the model answered in "
+                        "prose, and extraction.forced_tool.fallback_to_prompt is "
+                        "disabled"
+                    )
+                }
+                parsing_succeeded = False
+            else:
+                try:
+                    extracted_fields = json.loads(
+                        extract_json_from_text(extracted_text)
+                    )
 
-                # Attempt to repair truncated JSON
-                repaired_data, repair_info = repair_truncated_json(extracted_text)
-                output_truncated = repair_info.get("was_truncated", False)
-
-                if repaired_data:
-                    # Repair succeeded
-                    extracted_fields = repaired_data
-
-                    # Repaired output can be an array for the same reasons the
-                    # cleanly-parsed output can; normalize identically. A
-                    # truncated multi-instance response is exactly the case worth
-                    # salvaging — the earlier instances are complete.
+                    # A top-level array means either a needlessly wrapped single
+                    # object or — far more often — several documents of the same
+                    # class in one section. Both are handled (and preserved) here.
                     (
                         extracted_fields,
                         parsing_succeeded,
                         instance_count,
                         recovered_instances,
-                    ) = self._normalize_list_result(
-                        extracted_fields, context="repaired"
+                    ) = self._normalize_list_result(extracted_fields, context="parsed")
+
+                except Exception as e:
+                    logger.warning(
+                        f"Error parsing LLM output - attempting JSON repair: {e}"
                     )
 
-                    output_repaired = True
-                    repair_method = repair_info.get("repair_method")
-                    if parsing_succeeded:
-                        logger.info(
-                            f"JSON repair successful using '{repair_method}': "
-                            f"recovered {repair_info.get('fields_recovered', 0)} fields"
+                    # Attempt to repair truncated JSON
+                    repaired_data, repair_info = repair_truncated_json(extracted_text)
+                    output_truncated = repair_info.get("was_truncated", False)
+
+                    if repaired_data:
+                        # Repair succeeded
+                        extracted_fields = repaired_data
+
+                        # Repaired output can be an array for the same reasons the
+                        # cleanly-parsed output can; normalize identically. A
+                        # truncated multi-instance response is exactly the case worth
+                        # salvaging — the earlier instances are complete.
+                        (
+                            extracted_fields,
+                            parsing_succeeded,
+                            instance_count,
+                            recovered_instances,
+                        ) = self._normalize_list_result(
+                            extracted_fields, context="repaired"
                         )
-                else:
-                    # Repair failed - store raw output
-                    logger.error(
-                        f"JSON repair failed: {repair_info.get('error', 'unknown error')}. "
-                        f"Raw output preview: {extracted_text[:500]}..."
-                    )
-                    extracted_fields = {"raw_output": extracted_text}
-                    parsing_succeeded = False
+
+                        output_repaired = True
+                        repair_method = repair_info.get("repair_method")
+                        if parsing_succeeded:
+                            logger.info(
+                                f"JSON repair successful using '{repair_method}': "
+                                f"recovered {repair_info.get('fields_recovered', 0)} fields"
+                            )
+                    else:
+                        # Repair failed - store raw output
+                        logger.error(
+                            f"JSON repair failed: {repair_info.get('error', 'unknown error')}. "
+                            f"Raw output preview: {extracted_text[:500]}..."
+                        )
+                        extracted_fields = {"raw_output": extracted_text}
+                        parsing_succeeded = False
 
             # Schema-compliance filter (simple/traditional extraction only): drop
             # any top-level fields the model returned that the class schema does
@@ -4710,6 +4810,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # extraction.validation.enabled).
         if self._pending_validation_metadata is not None:
             metadata["validation"] = self._pending_validation_metadata
+        if self._pending_forced_tool_metadata is not None:
+            # Recorded so an A/B can tell "forcing had no effect" from "forcing
+            # never ran" — a skipped route or an unhonored force are both normal
+            # and both invisible without this.
+            metadata["forced_tool"] = self._pending_forced_tool_metadata
 
         # Deterministic type/format repairs. Recorded so a human can audit exactly
         # what was rewritten and what was refused — coercion must never silently
