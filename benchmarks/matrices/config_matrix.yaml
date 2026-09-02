@@ -159,9 +159,6 @@ core_cells:
   - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
   - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
-  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
-  # boundary claim is a measured delta rather than a single post-fix number.
-  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
   # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
   - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
   - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
@@ -175,6 +172,20 @@ core_cells:
   - {id: core-bda-simple-sep,  ocr: bda,             extraction_mode: simple,   assessment: separate}
   - {id: core-bda-adv-sep,     ocr: bda,             extraction_mode: advanced, assessment: separate}
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
+
+# -----------------------------------------------------------------------------
+# CONTROL cells — deliberately WRONG or historical configurations that exist only
+# as the control arm of a specific study. They are referenceable by name from a
+# suite, but they are NOT part of `core_cells`, because every suite that says
+# `cells: "core_cells"` (core, corefast, coresynth, full) would otherwise run them
+# as if they were a configuration a user might pick. `split-llm-legacyprompt` first
+# landed in core_cells and put a known-defective classification prompt into the
+# release regression grid.
+# -----------------------------------------------------------------------------
+control_cells:
+  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
+  # boundary claim is a measured delta rather than a single post-fix number.
+  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
 
 # -----------------------------------------------------------------------------
 # ONE-AXIS sweeps — vary a single knob, everything else = default_cell.

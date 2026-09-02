@@ -57,7 +57,10 @@ def suites(matrix):
 
 
 def _cell_ids(matrix):
-    return {c["id"] for c in matrix["core_cells"]}
+    """Every id a suite may name: the core grid plus the control arms."""
+    return {c["id"] for c in matrix["core_cells"]} | {
+        c["id"] for c in matrix.get("control_cells") or []
+    }
 
 
 def _doc_ids(docm):
@@ -124,7 +127,7 @@ def test_every_cell_uses_only_declared_axes(matrix):
     axes = set(matrix["axes"])
     bad = {
         c["id"]: [k for k in c if k != "id" and k not in axes]
-        for c in matrix["core_cells"]
+        for c in matrix["core_cells"] + (matrix.get("control_cells") or [])
     }
     bad = {k: v for k, v in bad.items() if v}
     assert not bad, f"cell(s) key on undeclared axes: {bad}"
@@ -135,7 +138,12 @@ def test_default_cell_covers_every_axis_a_cell_varies(matrix):
     """Each axis a cell sets must also have a `default_cell` value, or the
     one-axis sweeps have no control value to hold it at."""
     default = set(matrix["default_cell"])
-    used = {k for c in matrix["core_cells"] for k in c if k != "id"}
+    used = {
+        k
+        for c in matrix["core_cells"] + (matrix.get("control_cells") or [])
+        for k in c
+        if k != "id"
+    }
     assert not (used - default), (
         f"axes varied by cells but absent from default_cell: {sorted(used - default)}"
     )
@@ -279,3 +287,51 @@ def test_the_legacy_prompt_is_still_a_usable_prompt():
         "frozen prompt no longer asks for document_boundary, so it cannot be "
         "scored on boundary detection at all"
     )
+
+
+@pytest.mark.unit
+def test_control_cells_are_not_in_the_core_grid(matrix):
+    """A control arm is a deliberately WRONG configuration. If it also sits in
+    ``core_cells`` then `core`, `corefast`, `coresynth` and `full` all run it as
+    though it were a configuration a user might choose — which is how a known-
+    defective classification prompt (the pre-#653 control) ended up inside the
+    release regression grid.
+    """
+    core = {c["id"] for c in matrix["core_cells"]}
+    controls = {c["id"] for c in matrix.get("control_cells") or []}
+    overlap = core & controls
+    assert not overlap, (
+        f"cell(s) declared as BOTH a core grid cell and a control arm: {overlap}. "
+        f"A control belongs only in control_cells."
+    )
+
+
+@pytest.mark.unit
+def test_the_core_grid_expansion_excludes_controls(matrix):
+    """The expansion itself, not just the declaration: ``cells: "core_cells"``
+    must not yield any control arm."""
+    import make_configs
+
+    fake = {
+        "core_cells": matrix["core_cells"],
+        "control_cells": matrix.get("control_cells") or [],
+        "sweeps": matrix["sweeps"],
+        "suites": {"grid": {"cells": "core_cells", "docs": []}},
+    }
+    got = {c["id"] for c in make_configs.cells_for_suite(fake, "grid")}
+    controls = {c["id"] for c in fake["control_cells"]}
+    assert not (got & controls), f"core_cells expansion leaked controls: {got & controls}"
+    assert got, "expansion produced nothing; this test would be vacuous"
+
+
+@pytest.mark.unit
+def test_a_suite_may_still_name_a_control_explicitly(matrix):
+    """The control has to remain REACHABLE — `boundaryctl` is the whole reason it
+    exists. Removing it from core_cells must not make it unreferenceable."""
+    import make_configs
+
+    assert "split-llm-legacyprompt" in [
+        c["id"] for c in (matrix.get("control_cells") or [])
+    ]
+    got = make_configs.cells_for_suite(matrix, "boundaryctl")
+    assert [c["id"] for c in got] == ["split-llm-legacyprompt"]

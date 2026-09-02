@@ -222,9 +222,17 @@ def sanitize_for_v0516(node):
 
 
 def cells_for_suite(matrix, suite):
-    """Return a list of cell dicts for a suite name."""
+    """Return a list of cell dicts for a suite name.
+
+    A suite that names cells EXPLICITLY may also reference `control_cells` —
+    deliberately wrong or historical arms (e.g. the pre-#653 prompt) that exist
+    only as somebody's control. The `core_cells` / `core_cells+sweeps` expansions
+    deliberately do NOT include them, so a known-defective configuration cannot
+    end up in the release regression grid just because a study needed it once.
+    """
     spec = matrix["suites"][suite]["cells"]
     core = {c["id"]: c for c in matrix["core_cells"]}
+    controls = {c["id"]: c for c in matrix.get("control_cells") or []}
     out = []
     if spec == "core_cells":
         out = list(core.values())
@@ -240,13 +248,14 @@ def cells_for_suite(matrix, suite):
         # the run — it produces a one-armed "A/B" whose delta is undefined, and
         # nothing downstream can tell that from a suite that was declared with
         # one cell. A typo'd cell id is exactly how a control arm disappears.
-        missing = [i for i in spec if i not in core]
+        known = {**core, **controls}
+        missing = [i for i in spec if i not in known]
         if missing:
             raise SystemExit(
-                f"suite '{suite}' names cell(s) not defined in core_cells: "
-                f"{missing}. Add them to core_cells or fix the suite."
+                f"suite '{suite}' names cell(s) not defined in core_cells or "
+                f"control_cells: {missing}. Add them there or fix the suite."
             )
-        out = [core[i] for i in spec]
+        out = [known[i] for i in spec]
     return out
 
 
