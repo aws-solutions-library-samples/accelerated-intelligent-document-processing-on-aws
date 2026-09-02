@@ -38,6 +38,7 @@ import ConfigBuilder from './ConfigBuilder';
 import ConfigurationVersionsTable from './ConfigurationVersionsTable';
 import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
 import ConfigurationComparison from './ConfigurationComparison';
+import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import { deepMerge } from '../../utils/configUtils';
 import { syncBdaIdp } from '../../graphql/generated';
 import { parseConfigurationData } from '../../graphql/awsjson-parsers';
@@ -172,6 +173,8 @@ const ConfigurationLayout = (): React.JSX.Element => {
   const [versionsTableExpanded, setVersionsTableExpanded] = useState(true);
   // Configuration Profile whose revision history is open, or null.
   const [historyProfile, setHistoryProfile] = useState<string | null>(null);
+  // "Create profile" (copy an existing profile) modal, launched from the table.
+  const [showCreateProfileModal, setShowCreateProfileModal] = useState(false);
 
   // Import as new version state
   const [importedConfigForNewVersion, setImportedConfigForNewVersion] = useState<Record<string, unknown> | null>(null);
@@ -1534,6 +1537,24 @@ const ConfigurationLayout = (): React.JSX.Element => {
     }
   };
 
+  // Inline validation for the "save current edits as a new profile" name. The
+  // name is prefilled with `<profile>-copy`, which may already exist after the
+  // first copy — and saving onto an existing profile overwrites it, so the
+  // collision has to be caught before the user clicks Save, not after.
+  const saveAsVersionNameError = useMemo(() => {
+    const name = saveAsVersionName.trim();
+    if (!name) return '';
+    if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+      return 'Profile name can only contain letters, numbers, periods, hyphens, and underscores';
+    }
+    if (name.length > 50) return 'Profile name cannot exceed 50 characters';
+    if (name === 'default') return 'Cannot use "default" as a profile name — it is reserved';
+    if (versions.some((v) => v.versionName === name)) {
+      return `A configuration profile named "${name}" already exists — choose a different name`;
+    }
+    return '';
+  }, [saveAsVersionName, versions]);
+
   const handleSaveAsVersion = async () => {
     // Validate content before saving
     const currentErrors = validateCurrentContent();
@@ -1554,7 +1575,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
       const result = await saveAsNewVersion(builtObject, saveAsVersionName, saveAsVersionDescription);
 
       if (result.success) {
-        setSuccessMessage(`Saved as new version "${saveAsVersionName}".`);
+        setSuccessMessage(`Saved as new profile "${saveAsVersionName}".`);
         setShowSaveAsVersionModal(false);
         setSaveAsVersionName('');
         setSaveAsVersionDescription('');
@@ -2009,10 +2030,29 @@ const ConfigurationLayout = (): React.JSX.Element => {
           onActivateVersion={handleActivateVersion}
           onDeleteVersions={handleDeleteVersions}
           onImportAsNewVersion={handleImportAsNewVersion}
+          onCreateProfile={() => setShowCreateProfileModal(true)}
           onShowHistory={(profileName) => setHistoryProfile(profileName)}
           isAdmin={isAdmin}
         />
       </ExpandableSection>
+
+      {/* Create a new profile as a copy of an existing one. Preselects the single
+          checked row if there is exactly one, else the profile currently open in
+          the editor — the profile the user was just looking at. */}
+      <CreateConfigProfileModal
+        visible={showCreateProfileModal}
+        onDismiss={() => setShowCreateProfileModal(false)}
+        defaultSourceVersion={selectedVersionsForCompare.length === 1 ? selectedVersionsForCompare[0] : currentVersionName}
+        onCreated={async (versionName) => {
+          setShowCreateProfileModal(false);
+          setSuccessMessage(`Created configuration profile "${versionName}".`);
+          // Open the new profile in the editor — creating one is how you start
+          // editing it.
+          setSelectedVersion(versionName);
+          await fetchVersions();
+          await fetchConfiguration(versionName);
+        }}
+      />
 
       {historyProfile && (
         <ConfigRevisionHistoryPanel
@@ -2082,14 +2122,19 @@ const ConfigurationLayout = (): React.JSX.Element => {
       <Modal
         visible={showSaveAsVersionModal}
         onDismiss={() => setShowSaveAsVersionModal(false)}
-        header="Save as New Profile"
+        header="Save current edits as a new profile"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
               <Button variant="link" onClick={() => setShowSaveAsVersionModal(false)}>
                 Cancel
               </Button>
-              <Button variant="primary" onClick={handleSaveAsVersion} loading={isSaving} disabled={!saveAsVersionName.trim()}>
+              <Button
+                variant="primary"
+                onClick={handleSaveAsVersion}
+                loading={isSaving}
+                disabled={!saveAsVersionName.trim() || !!saveAsVersionNameError}
+              >
                 Save as Profile
               </Button>
             </SpaceBetween>
@@ -2102,14 +2147,15 @@ const ConfigurationLayout = (): React.JSX.Element => {
               {saveAsVersionError}
             </Alert>
           )}
+          <Alert type="info">
+            Saves the configuration <strong>as it currently stands in the editor</strong>, including unsaved edits, to a new profile.{' '}
+            <strong>{currentVersionName}</strong> itself is left unchanged. To copy a profile&apos;s last saved state instead, use{' '}
+            <strong>Create profile</strong> in the Configuration Profiles table.
+          </Alert>
           <FormField
             label="Profile Name"
             description="Enter a unique name for this configuration profile"
-            errorText={
-              saveAsVersionName && !/^[a-zA-Z0-9._-]+$/.test(saveAsVersionName)
-                ? 'Version name can only contain letters, numbers, periods, hyphens, and underscores'
-                : ''
-            }
+            errorText={saveAsVersionNameError}
           >
             <Input
               value={saveAsVersionName}
@@ -2371,7 +2417,10 @@ const ConfigurationLayout = (): React.JSX.Element => {
                       ? [
                           {
                             id: 'save-as-version',
-                            text: 'Save as Profile…',
+                            // Distinguished from the table's "Create profile", which
+                            // copies a profile's last SAVED state; this one snapshots
+                            // whatever is in the editor right now.
+                            text: 'Save current edits as new profile…',
                             disabled: validationErrors.length > 0,
                             disabledReason: 'Resolve validation errors first',
                           },
@@ -2825,7 +2874,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
                   !!(newVersionDescription && newVersionDescription.length > 200)
                 }
               >
-                Create Version
+                Create profile
               </Button>
             </SpaceBetween>
           </Box>

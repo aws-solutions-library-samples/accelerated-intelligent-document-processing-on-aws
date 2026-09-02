@@ -108,10 +108,10 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
-- **Editable copies** — use "Save as Profile" to create a custom, editable copy from any managed profile
+- **Editable copies** — use **Create profile** to create a custom, editable copy from any managed profile
 - **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
 
-> **Tip:** To customize a managed configuration, open it, then click **Save as Profile** to create an editable copy. The original managed profile remains untouched and will continue to be updated with solution upgrades.
+> **Tip:** To customize a managed configuration, click **Create profile** in the Configuration Profiles table and copy the managed profile into a new one. The original managed profile remains untouched and will continue to be updated with solution upgrades. If you have already made edits in the editor against the managed profile, use **Actions → Save current edits as new profile…** instead so those edits come along.
 
 For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions).
 
@@ -319,6 +319,7 @@ The table includes a **type filter** (All / Managed / Custom) and a **preference
 #### Available Actions
 
 - **Open/Edit**: Click a version name to open it in the configuration editor
+- **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
 - **Create (Import)**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
 - **Activate**: Set a selected version as the active version for processing
 - **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
@@ -353,6 +354,7 @@ The editor protects against accidental data loss:
 | Operation | What It Does |
 |-----------|-------------|
 | **Save changes** | Saves the current form as the full configuration for this version |
+| **Save current edits as new profile** | (Actions menu) Saves the configuration **as it currently stands in the editor**, including unsaved edits, to a new profile; the open profile is left unchanged. Use this to keep in-progress edits — including edits made to a read-only managed profile. To copy a profile's last *saved* state instead, use **Create profile** in the profiles table. |
 | **Save as Default** | Copies this version's configuration to become the new `default`, then resets the version to match |
 | **Reset to Default** | Copies the current `default` configuration into this version, replacing all customizations |
 | **Restore field** | (Per-field) Resets an individual field to its value in the `default` version |

@@ -44,7 +44,7 @@ The stack automatically deploys **managed configuration versions** for each pre-
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the Save button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
-- **Editable copies** — use "Save as Profile" to create a custom, editable copy
+- **Editable copies** — use **Create profile** in the Configuration Profiles table to create a custom, editable copy
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
 - **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
 
@@ -52,7 +52,7 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
 
 ### Configuration Management Features
 
-- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save as Profile, and BDA sync) are grouped under an **Actions** menu next to Save changes.
+- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
 - **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all versions, including the stack-managed `default`).
 - **Browser Navigation Guard**: The browser warns before leaving the page when unsaved configuration changes exist (both on browser close/refresh and SPA navigation).
 - **Save as Default**: Save your current version's configuration as the new default baseline. This replaces the existing default configuration. **Warning**: Default configurations may be overwritten during solution upgrades - export your configuration first for backup.
