@@ -160,3 +160,12 @@ docs:
   pages: 3
   tag: shape=valuenoise
   series: null
+- id: valuenoise_400
+  gen: bank_statement
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf
+  rows: 400
+  pages: 9
+  tag: shape=valuenoise
+  series: null
