@@ -43,6 +43,13 @@ axes:
     disabled:       {classification.sectionSplitting: disabled}
     page:           {classification.sectionSplitting: page}
     llm_determined: {classification.sectionSplitting: llm_determined}
+  # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
+  # Converse tool instead of describing it in the prompt. The task prompt is
+  # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
+  # are separate questions, and varying both at once would confound each.
+  forcing:
+    'off': {extraction.forced_tool.enabled: false}
+    'on':  {extraction.forced_tool.enabled: true}
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -94,6 +101,7 @@ default_cell:
   confidence_model: nova_lite
   reasoning_effort: low
   enforcement: warn
+  forcing: 'off'             # shipped default; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
 
 # -----------------------------------------------------------------------------
@@ -110,6 +118,9 @@ core_cells:
   # classification inference the #686 fix introduced.
   - {id: split-disabled,       ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: disabled}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
+  # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
+  - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
+  - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
   - {id: core-tt-simple-off,   ocr: textract_tables, extraction_mode: simple,   assessment: "off"}
@@ -126,6 +137,7 @@ core_cells:
 # Isolates each knob's marginal effect on accuracy/cost/calibration/latency.
 # -----------------------------------------------------------------------------
 sweeps:
+  forcing: ['off', 'on']
   enforcement:
   - 'off'
   - warn
@@ -198,6 +210,21 @@ suites:
     docs:
     - small_narrow
     repeats: 5
+  # WS-05: does forcing the schema as a tool actually improve extraction?
+  # The null hypothesis is live — forcing constrains the response SHAPE, not the
+  # values in it, so a model that would have emitted a stray key may instead emit
+  # a worse value that fits. Judged on cell_accuracy and typed_accuracy (values),
+  # completeness_recall (rows), and the forced_tool.honored rate in metadata, NOT
+  # on "did it parse". Docs chosen so both value fidelity and list completeness
+  # are measurable; kv_form runs separately (different class).
+  forcing:
+    cells:
+    - force-off
+    - force-on
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

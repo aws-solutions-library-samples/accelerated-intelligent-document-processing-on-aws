@@ -1293,6 +1293,23 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
+              forced_tool:
+                type: object
+                sectionLabel: Schema Enforcement (experimental)
+                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction; Advanced already sends a tool schema."
+                order: 4.05
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Require the model to answer by calling a tool whose input is your document schema. A malformed-JSON reply becomes structurally impossible for the fields the schema declares. Off by default because it is unproven — measure accuracy and completeness on your own documents before enabling it."
+                    default: false
+                    order: 0
+                  fallback_to_prompt:
+                    type: boolean
+                    description: "If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
+                    default: true
+                    order: 1
+                    dependsOn: { field: "enabled", value: true }
               coercion:
                 type: object
                 sectionLabel: Value Coercion
