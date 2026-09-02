@@ -13,6 +13,7 @@ subscription OnUpdateDocument {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
       InstanceCount
       Excluded
@@ -33,6 +34,12 @@ subscription OnUpdateDocument {
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       TextConfidenceUri

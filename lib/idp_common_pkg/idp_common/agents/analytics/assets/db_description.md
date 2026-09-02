@@ -144,7 +144,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_id | string | Unique identifier for the section |
 | document_id | string | Unique identifier for the document |
 | section_classification | string | Type/class of the section |
-| section_confidence | double | Confidence score for the section classification |
+| section_confidence | double | Confidence in the section's classification. NULL when not scored (the default); was a hardcoded 1.0 before v0.7 |
 | timestamp | timestamp | When the document was processed |
 
 **Dynamic Data Columns:**

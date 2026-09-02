@@ -72,6 +72,111 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 `(absent)` means the model omitted the field, in which case the code defaults it to `"continue"`. That is deliberately reported as distinct from an explicit `"continue"`: an omitted signal merges pages *by accident*, while an explicit `"continue"` is the model's judgement. Distinguishing the two is what makes an unexpected merge diagnosable.
 
+### Classification confidence (`confidence`, `classification_reason`)
+
+Two OPTIONAL keys in the model's response are parsed alongside `class` and
+`document_boundary` ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+Neither used to be read by anything, even though `confidence` was documented as
+supported and `classification_reason` is asked for by the **default** prompt.
+
+| Key | Lands on | Persisted as |
+|-----|----------|--------------|
+| `confidence` | `DocumentClassification.confidence` → `Page.confidence` | `ClassConfidence` (DynamoDB), `ClassConfidence` (GraphQL `Page`), `confidence` (document.json) |
+| `classification_reason` | `metadata["classification_reason"]` → `Page.classification_reason` | `ClassReason` (DynamoDB + GraphQL), `classification_reason` (document.json) |
+
+`parse_confidence` does the reading: it accepts `0.95`, `"0.95"`, `95` and
+`"95%"`, and returns `None` for anything unparseable or out of range rather than
+raising — a malformed confidence must not fail a classification that otherwise
+worked.
+
+**`None` means NOT SCORED, and is never serialized as a number.** This is the
+whole point of the change: `Page.confidence` used to default to a fabricated
+`1.0`/`0.0`, and that value flowed to the reporting lake's `section_confidence`
+column where it was indistinguishable from a real one. `1.0` now appears only
+where something genuinely asserts the class — a document-name regex match
+(`_pin_page_class`), a single-class configuration, a page-content regex match, or
+a human correction in the Web UI — and `0.0` only on an errored page.
+
+Three paths deliberately produce no score: the SageMaker/UDOP backend (the
+endpoint returns none), pages beyond `maxPagesForClassification` (their class is
+extrapolated from a sample, not predicted), and a page whose invalid class was
+replaced by `invalidClassFallback` (the stored class is no longer the model's, so
+neither its score nor its reasoning describes it — both are dropped, including
+across a validation retry).
+
+Section confidence is `aggregate_page_confidence`: the **minimum** across the
+section's pages, and `None` if any page is unscored. Min because a mean hides the
+one page the classifier was unsure about, and because a section cannot be more
+certain than its weakest page; `None`-absorbing because the min of a *scored
+subset* would present a partial aggregate as a whole-section number.
+
+⚠️ Page-level classification is one inference **per page**, so anything added to
+its output format multiplies by page count — unlike extraction's confidence, which
+is per section. That is why the default was measured before being turned on:
+`topk` costs +17 % of the classification step, which is ~3 % of total document cost
+on the default model (so ~0.5 % of the bill) and changes accuracy by nothing
+consistent. `mode: off` restores the zero-cost path exactly. See
+`docs/benchmarking/classification-confidence.md`, and note the finding that a
+*small* classifier's score is a coarse two-level flag while a mid-tier one's is
+graded — the mode being on does not make the number equally useful everywhere.
+
+`_apply_page_result` is the single place that copies a result onto the declared
+`Page` fields (class, confidence, reason, candidates, boundary), shared by the
+cache-hit and fresh-inference branches so a cache hit cannot yield a page with
+fewer signals than a miss.
+
+#### Asking for it: `classification.confidence.mode`
+
+`topk` (**default**), `verbalized`, or `off`. `class_confidence.py` owns both halves:
+
+- **Prompt assembly.** `append_class_confidence_block` splices
+  `classification.confidence.task_prompt_topk` / `task_prompt_verbalized` into
+  the task prompt **before** the first `<<CACHEPOINT>>` / `<document-ocr-data>` /
+  `{DOCUMENT_TEXT}` marker, so the static instruction stays inside the
+  prompt-cache prefix — the same rule, for the same reason, as
+  `extraction/prompt_assembly.py::_append_bbox_block`, and it matters more here
+  because classification runs per page. The splice is idempotent (a prompt that
+  already carries a `<class-confidence>` block is left alone) and composed only
+  for `multimodalPageLevelClassification`; the holistic method logs a warning and
+  is left to ask in its own prompt, because its response is a segment list rather
+  than one object per page.
+- **Resolution.** `resolve_class_and_confidence` prefers an explicit
+  `confidence`, else `confidence_from_candidates`, which returns the probability
+  of the class being **stored** — not the top of the list. Those differ when the
+  model's `class` contradicts its own ranking, and reporting the top probability
+  would then describe a class the page was never given; a stored class absent
+  from its own candidate list leaves the page unscored rather than inferring a
+  number from the leftover mass.
+
+`parse_candidates` drops out-of-vocabulary classes (a class that cannot be stored
+cannot be reported), deduplicates on the highest probability, and rescales **only
+when the probabilities sum to more than 1.0** — a distribution cannot exceed 1,
+whereas a sum below 1 legitimately means "possibly some other class" and
+inflating the top candidate to absorb it would manufacture confidence.
+
+`resolve_top_k` clamps the requested candidate count to
+`[2, len(valid_doc_types)]`: asking for more candidates than there are classes
+invites invented ones, and a single candidate is a verbalized confidence with
+extra syntax — the calibration benefit comes precisely from having to rank
+alternatives.
+
+Ranked candidates land on `Page.classification_candidates`, persist as
+`ClassCandidates` (a list of `{Class, Probability}` maps), and are exposed as
+`Page.ClassCandidates` on the API and in the UI popover.
+
+#### Measuring whether the number means anything
+
+A confidence nobody checks is worse than none. `attach_page_confidence`
+(`evaluation/stickler_backend/doc_split.py`) annotates each row of the evaluation
+report's `doc_split_metrics.page_details` with `predicted_confidence`, next to the
+`correct` flag that is already there. The benchmark harness
+(`benchmarks/harness/analyze.py::score_classification`) turns those rows into
+`class_calibration_separation` = mean(conf | correct) − mean(conf | wrong), with
+`class_accuracy` and `n_class_scored_pages` beside it, and `aggregate.py` treats a
+−0.03 move as a regression on the same footing as the field-level separation.
+Near-zero separation means the model is equally confident right and wrong — do not
+route work on it.
+
 ### Section splitting strategies
 
 `classification.sectionSplitting` controls how classified pages become sections:
@@ -529,7 +634,7 @@ def handler(event, context):
 ## Data Models
 
 - `DocumentType`: Definition of a document type with name and description
-- `DocumentClassification`: Classification result with document type and confidence
+- `DocumentClassification`: Classification result with document type and an optional confidence (`None` = not scored)
 - `PageClassification`: Classification result for a single page
 - `DocumentSection`: A section of consecutive pages with the same classification
 - `ClassificationResult`: Overall result of a classification operation
@@ -593,7 +698,7 @@ The cache uses the following DynamoDB table structure:
 {
   "PK": "classcache#doc-123#arn:aws:states:us-east-1:123456789012:execution:MyWorkflow:abc-123",
   "SK": "none",
-  "page_classifications": "{\"1\":{\"doc_type\":\"invoice\",\"confidence\":1.0,\"metadata\":{\"metering\":{...}},\"image_uri\":\"s3://...\",\"text_uri\":\"s3://...\",\"raw_text_uri\":\"s3://...\"},\"2\":{...}}",
+  "page_classifications": "{\"1\":{\"doc_type\":\"invoice\",\"confidence\":null,\"metadata\":{\"metering\":{...}},\"image_uri\":\"s3://...\",\"text_uri\":\"s3://...\",\"raw_text_uri\":\"s3://...\"},\"2\":{...}}",
   "cached_at": "1672531200",
   "document_id": "doc-123",
   "workflow_execution_arn": "arn:aws:states:us-east-1:123456789012:execution:MyWorkflow:abc-123",

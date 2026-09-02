@@ -35,6 +35,7 @@ from idp_common.evaluation.models import (
 from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
+    attach_page_confidence,
     compute_graded_packet_metrics,
     get_stickler_model,
     load_sections_for_doc_split,
@@ -1845,7 +1846,14 @@ class EvaluationService:
                     correctly_classified_pages=page_level["correct_pages"],
                     correctly_split_without_order=split_no_order["correct_sections"],
                     correctly_split_with_order=split_with_order["correct_sections"],
-                    page_details=page_level["page_details"],
+                    # Annotated with the classifier's own confidence in each
+                    # page's class, so `correct` and `predicted_confidence`
+                    # sit side by side — that pairing is the calibration
+                    # measurement (GitHub #673). Absent/None for an unscored
+                    # page, which is the default.
+                    page_details=attach_page_confidence(
+                        page_level["page_details"], actual_document
+                    ),
                     section_details_without_order=split_no_order["section_details"],
                     section_details_with_order=split_with_order["section_details"],
                     predicted_sections=doc_split_calculator.sections_pred,  # Add predicted sections for unmatched display

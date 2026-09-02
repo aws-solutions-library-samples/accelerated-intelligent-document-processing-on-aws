@@ -547,6 +547,7 @@ export const getDocument = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
         InstanceCount
         Excluded
@@ -567,6 +568,12 @@ export const getDocument = /* GraphQL */ `
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri
@@ -627,6 +634,7 @@ export const getDocumentVersion = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
         InstanceCount
         Excluded
@@ -647,6 +655,12 @@ export const getDocumentVersion = /* GraphQL */ `
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         OcrPageDataUri
@@ -1140,6 +1154,7 @@ export const listDocumentsByDateRange = /* GraphQL */ `
           Id
           PageIds
           Class
+          Confidence
           OutputJSONUri
           InstanceCount
           Excluded
@@ -1160,6 +1175,12 @@ export const listDocumentsByDateRange = /* GraphQL */ `
         Pages {
           Id
           Class
+          ClassConfidence
+          ClassReason
+          ClassCandidates {
+            Class
+            Probability
+          }
           ImageUri
           TextUri
           TextConfidenceUri
@@ -1390,6 +1411,7 @@ export const onUpdateDocument = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
         InstanceCount
         Excluded
@@ -1410,6 +1432,12 @@ export const onUpdateDocument = /* GraphQL */ `
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri

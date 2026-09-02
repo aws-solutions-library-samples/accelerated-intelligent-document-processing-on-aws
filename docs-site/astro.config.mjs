@@ -145,6 +145,10 @@ export default defineConfig({
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
             {
+              label: "Classification Confidence",
+              slug: "benchmarking/classification-confidence",
+            },
+            {
               label: "Release Audit Trail",
               // README.md is the index; per-release vX.Y.Z.md entries auto-list.
               items: [{ autogenerate: { directory: "benchmarking/releases" } }],

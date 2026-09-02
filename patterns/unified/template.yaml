@@ -1129,6 +1129,42 @@ Resources:
                 default: "unclassified"
                 order: 9
                 dependsOn: { field: "enforceValidClasses", value: true }
+              confidence:
+                type: object
+                sectionLabel: Class confidence
+                description: "How much confidence the classifier reports in the CLASS it chose (not in the extracted fields — that is Extraction > Confidence). Costs output tokens on every page, because page-level classification is one inference per page."
+                order: 10
+                properties:
+                  mode:
+                    type: string
+                    title: Class confidence mode
+                    description: "'topk' (default) asks the model for its ranked candidate classes with probabilities ('80% W-2, 15% 1099') — better calibrated than a single self-reported number, and it shows you what else the page could have been. 'verbalized' asks for one 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. Measured on a 13-class corpus, topk added ~0.5% to total document cost with no consistent accuracy change; how USEFUL the score is depends strongly on the classification model — see the Classification Confidence benchmark page."
+                    enum: ["topk", "verbalized", "off"]
+                    default: "topk"
+                    order: 0
+                  top_k_candidates:
+                    type: integer
+                    title: Candidates to request
+                    description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                    minimum: 2
+                    maximum: 10
+                    default: 3
+                    order: 1
+                    dependsOn: { field: "mode", value: "topk" }
+                  task_prompt_topk:
+                    type: string
+                    title: Top-K instruction block
+                    format: textarea
+                    description: "The instruction spliced into the classification Task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix, which matters because classification runs per page). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a Task prompt that already contains one is left alone, which is how you take over the wording completely."
+                    order: 2
+                    dependsOn: { field: "mode", value: "topk" }
+                  task_prompt_verbalized:
+                    type: string
+                    title: Verbalized instruction block
+                    format: textarea
+                    description: "The instruction spliced into the classification Task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                    order: 3
+                    dependsOn: { field: "mode", value: "verbalized" }
               system_prompt:
                 type: string
                 title: System prompt

@@ -153,6 +153,11 @@ type Section @aws_cognito_user_pools @aws_iam {
   PageIds: [Int]
   Class: String
   OutputJSONUri: String
+  # Confidence in this section's CLASS (0-1), aggregated from its pages as the
+  # minimum. Null means NOT SCORED — the classifier produced no confidence for
+  # at least one page, which is the default until the classification prompt asks
+  # for one. Unrelated to ConfidenceThresholdAlerts below, which are per-field.
+  Confidence: Float
   ConfidenceThresholdAlerts: [ConfidenceThresholdAlert]
   # Structured self-healing / quality issues detected for this section
   # (assessment incomplete, recovered-with-retries, geometry incomplete, …).
@@ -171,6 +176,11 @@ type Section @aws_cognito_user_pools @aws_iam {
   # several distinct documents that classification did not split apart. The UI
   # surfaces >1 so a multi-document section is visible at a glance.
   InstanceCount: Int
+}
+
+type ClassCandidate @aws_cognito_user_pools @aws_iam {
+  Class: String
+  Probability: Float
 }
 
 type ConfidenceThresholdAlert @aws_cognito_user_pools @aws_iam {
@@ -194,6 +204,16 @@ type Page @aws_cognito_user_pools @aws_iam {
   TextUri: String
   TextConfidenceUri: String
   OcrPageDataUri: String
+  # Confidence in this page's Class (0-1), null when NOT SCORED. Named
+  # ClassConfidence because TextConfidenceUri above is OCR confidence — a
+  # different measurement.
+  ClassConfidence: Float
+  # The model's stated evidence for this page's Class, when the classification
+  # prompt asked for one (the default prompt does). Null otherwise.
+  ClassReason: String
+  # Ranked alternative classes with probabilities ("80% W-2, 15% 1099"), from
+  # classification.confidence.mode = topk. Empty when nothing asked for them.
+  ClassCandidates: [ClassCandidate]
   # The classifier's per-page boundary signal ("start" | "continue"), which is
   # what sectionSplitting: llm_determined splits on. Null when the model
   # produced no signal. Exposed so an unexpected section merge can be audited

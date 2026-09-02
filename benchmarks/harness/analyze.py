@@ -274,6 +274,56 @@ def score_synthetic(bucket, doc_prefix, truth):
     }
 
 
+def score_classification(ev):
+    """CLASSIFICATION accuracy + confidence calibration from the stack eval.
+
+    The evaluation report's `doc_split_metrics.page_details` carries, per page,
+    the ground-truth class, the predicted class, whether it was `correct`, and
+    (since GitHub #673) the classifier's own `predicted_confidence`. That last
+    pairing is the only thing that says whether a reported classification
+    confidence means anything:
+
+      class_calibration_separation = mean(conf | correct) - mean(conf | wrong)
+
+    Near 0 (or negative) means the model is equally confident when it is right
+    and when it is wrong — the score carries no information and must not drive
+    escalation, no matter how plausible the individual numbers look. This mirrors
+    `calibration_separation`, which does the same for extracted FIELDS.
+
+    Returns Nones when classification was not scored (the default) or when the
+    run has no ground-truth classes, so an unscored run reports honestly instead
+    of scoring 0.
+    """
+    out = {
+        "class_accuracy": None,
+        "class_calibration_separation": None,
+        "class_mean_confidence": None,
+        "n_class_scored_pages": 0,
+    }
+    if not ev:
+        return out
+    ds = ev.get("doc_split_metrics") or {}
+    acc = ds.get("page_level_accuracy")
+    if isinstance(acc, (int, float)):
+        out["class_accuracy"] = round(acc, 4)
+    right, wrong = [], []
+    for row in ds.get("page_details") or []:
+        c = row.get("predicted_confidence")
+        if isinstance(c, (int, float)):
+            (right if row.get("correct") else wrong).append(c)
+    scored = right + wrong
+    out["n_class_scored_pages"] = len(scored)
+    if scored:
+        out["class_mean_confidence"] = round(sum(scored) / len(scored), 4)
+    # Needs both populations: separation is undefined when every page was right
+    # (a perfect run says nothing about calibration) or every page was wrong.
+    if right and wrong:
+        out["class_calibration_separation"] = round(
+            sum(right) / len(right) - sum(wrong) / len(wrong), 4
+        )
+    return out
+
+
 def score_reference(bucket, doc_prefix):
     """Weighted accuracy + parse failures + calibration from the stack eval."""
     ev = lib.get_json(bucket, doc_prefix + "evaluation/results.json")
@@ -303,6 +353,7 @@ def score_reference(bucket, doc_prefix):
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,
+        **score_classification(ev),
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
         "pct_conf_below_0.9": round(
             100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
