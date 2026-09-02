@@ -198,6 +198,22 @@ suites:
     docs:
     - small_narrow
     repeats: 5
+  # Boundary detection, BOTH directions (#653). The two docs pull opposite ways
+  # and a fix must satisfy both at once:
+  #   small_narrow  = ONE 3-page statement  -> must yield 1 section (over-SPLIT)
+  #   twodocs_2x20  = TWO complete statements -> must yield 2 sections (over-MERGE)
+  # `split-disabled` runs as the control: it is correct on small_narrow by
+  # construction and WRONG on twodocs_2x20 by construction (one all-pages
+  # section), which is exactly why `disabled` is not a workaround for packets.
+  # Non-deterministic, so repeats: 5 — a single passing run does not clear it.
+  boundary:
+    cells:
+    - split-llm
+    - split-disabled
+    docs:
+    - small_narrow
+    - twodocs_2x20
+    repeats: 5
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

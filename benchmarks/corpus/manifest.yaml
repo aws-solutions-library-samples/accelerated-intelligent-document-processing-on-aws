@@ -169,3 +169,13 @@ docs:
   pages: 9
   tag: shape=valuenoise
   series: null
+- id: twodocs_2x20
+  gen: bank_statement
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf
+  rows: 20
+  pages: 2
+  documents: 2
+  tag: shape=twodocs
+  series: null
