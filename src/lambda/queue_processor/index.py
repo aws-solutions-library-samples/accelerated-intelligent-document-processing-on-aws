@@ -50,6 +50,24 @@ RECONCILE_GRACE_SECONDS = int(os.environ.get("RECONCILE_GRACE_SECONDS", "300"))
 RECONCILE_SAMPLE_MAX_AGE_SECONDS = int(
     os.environ.get("RECONCILE_SAMPLE_MAX_AGE_SECONDS", str(RECONCILE_GRACE_SECONDS * 4))
 )
+# Clamp: a correction requires GRACE <= sample age <= MAX_AGE. If MAX_AGE were
+# the smaller of the two, that window is EMPTY — every sample gets discarded as
+# stale (the `age > MAX_AGE` branch) before it can ever mature past GRACE, so
+# `reconcile_counter` can never correct and a leaked counter is permanent. That
+# is precisely the un-self-healing state this whole mechanism exists to escape,
+# so a misconfiguration must not be able to reintroduce it silently.
+#
+# The default (GRACE * 4) is safe, but both are independent env vars and an
+# operator raising one without the other is an easy mistake to make.
+if RECONCILE_SAMPLE_MAX_AGE_SECONDS < RECONCILE_GRACE_SECONDS * 2:
+    _clamped = RECONCILE_GRACE_SECONDS * 2
+    logger.warning(
+        f"RECONCILE_SAMPLE_MAX_AGE_SECONDS={RECONCILE_SAMPLE_MAX_AGE_SECONDS} is "
+        f"below 2x RECONCILE_GRACE_SECONDS={RECONCILE_GRACE_SECONDS}, which would "
+        f"leave no window in which a drift sample can mature — the counter could "
+        f"never be reconciled. Clamping to {_clamped}s."
+    )
+    RECONCILE_SAMPLE_MAX_AGE_SECONDS = _clamped
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 

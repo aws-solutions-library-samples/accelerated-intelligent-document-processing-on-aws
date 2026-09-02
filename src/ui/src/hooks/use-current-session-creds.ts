@@ -30,6 +30,12 @@ const useCurrentSessionCreds = ({
   credsIntervalInMs = DEFAULT_CREDS_REFRESH_INTERVAL_IN_MS,
   // Injectable so tests can exercise the exhaust-all-retries path without
   // actually sleeping the real schedule (~4.6s per case).
+  //
+  // MUST be a stable reference — a module constant, or memoized. It lands in
+  // `refreshCredentials`' dep list, which lands in the auth effect's dep list,
+  // which bumps `cycleRef`. Pass an inline array literal and its identity
+  // changes every render: the effect re-runs, the cycle bumps, and each render
+  // cancels the fetch the previous one started, so credentials never resolve.
   retryDelaysInMs = RETRY_DELAYS_IN_MS,
 }: {
   credsIntervalInMs?: number;
