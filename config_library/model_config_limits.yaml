@@ -129,6 +129,21 @@ model_limits:
     reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html"
 
   # ---------------------------------------------------------------------------
+  # xAI Grok (Converse via cross-region inference profiles only)
+  # ---------------------------------------------------------------------------
+  # Verified live on us.xai.grok-4.6 (us-west-2 Converse, 2026-09-02): requesting
+  # more than 524288 output tokens returns "The maximum tokens you requested
+  # exceeds the model limit of 524288". The 500K input window comes from the model
+  # card. This is the first model whose output cap rivals its context window —
+  # see _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT in idp_common/bedrock/sizing.py for
+  # why the auto-sizing output reserve is capped rather than this value lowered.
+  - pattern: "xai\\.grok-4\\.6"
+    max_output_tokens: 524288
+    max_input_tokens: 500000
+    description: "xAI Grok 4.6 — 500K context, 524288 max output (CRIS-only: us./global.)"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html"
+
+  # ---------------------------------------------------------------------------
   # Amazon Nova Models (all generations)
   # ---------------------------------------------------------------------------
   # Nova Pro/Lite: 300K context; Nova Micro: 128K; Nova 2: 300K. Use the

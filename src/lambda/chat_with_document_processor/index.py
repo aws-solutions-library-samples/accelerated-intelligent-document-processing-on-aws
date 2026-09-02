@@ -35,7 +35,13 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
 
-from idp_common.bedrock.client import is_claude_4_7_model
+from idp_common.bedrock.client import (
+    CLAUDE_EFFORT_LEVELS,
+    GROK_EFFORT_LEVELS,
+    is_claude_effort_model,
+    is_grok_model,
+    strips_sampling_params,
+)
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
@@ -434,6 +440,7 @@ def _invoke_bedrock_stream_and_emit(
     user_text: str,
     temperature: float,
     max_tokens: int,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Stream a Bedrock Converse response, publishing deltas + a final event.
 
@@ -449,8 +456,14 @@ def _invoke_bedrock_stream_and_emit(
         those are separate: ``performanceConfig.latency`` only accepts
         ``optimized``/``standard``; ``serviceTier.type`` accepts
         ``priority``/``flex``/``default``.)
-      * Claude 4.7+ models → ``temperature`` / ``top_p`` are skipped (Bedrock
-        rejects them for these models).
+      * Claude 4.7+ and xAI Grok → ``temperature`` / ``top_p`` are skipped
+        (Bedrock rejects them for these models — deprecated on Claude, a hard
+        400 naming the field on Grok).
+      * Reasoning effort → routed to the carrier the model actually reads:
+        ``output_config.effort`` for effort-capable Claude, ``reasoning.effort``
+        for Grok. Values outside a model's vocabulary are dropped rather than
+        forwarded, because Bedrock silently ignores unrecognized
+        ``additionalModelRequestFields`` keys.
 
     When idp_common grows a streaming helper, this function should delegate
     to it.
@@ -459,9 +472,12 @@ def _invoke_bedrock_stream_and_emit(
     """
     client = _get_bedrock_runtime()
 
-    # Claude 4.7+ rejects temperature/top_p; everything else gets temperature.
+    # Claude 4.7+ and Grok reject temperature/top_p; everything else gets
+    # temperature. Grok returns a 400 naming the field, so this is not optional:
+    # chat.temperature always resolves to a float (never None), which means
+    # every Grok chat turn would fail without this gate.
     inference_config: dict = {"maxTokens": max_tokens}
-    if not is_claude_4_7_model(selected_model_id) and temperature is not None:
+    if not strips_sampling_params(selected_model_id) and temperature is not None:
         inference_config["temperature"] = temperature
 
     # Start with the user-supplied model ID, then peel off the service-tier
@@ -474,6 +490,27 @@ def _invoke_bedrock_stream_and_emit(
     if use_model_id.endswith(":1m"):
         use_model_id = use_model_id[:-3]
         additional_model_fields = {"anthropic_beta": ["context-1m-2025-08-07"]}
+
+    # Reasoning effort. `chat.reasoning_effort` was previously resolved from
+    # config and then dropped on this path (it only reached the OpenAI Responses
+    # branch), so the documented knob did nothing for Converse models. The two
+    # families use different carriers and different vocabularies, and Bedrock
+    # ignores unknown additionalModelRequestFields keys silently — so an
+    # out-of-vocabulary value must be dropped, not passed through.
+    if reasoning_effort:
+        effort = str(reasoning_effort).lower().strip()
+        effort_field: tuple[str, dict] | None = None
+        if is_claude_effort_model(use_model_id) and effort in CLAUDE_EFFORT_LEVELS:
+            effort_field = ("output_config", {"effort": effort})
+        elif is_grok_model(use_model_id) and effort in GROK_EFFORT_LEVELS:
+            effort_field = ("reasoning", {"effort": effort})
+        if effort_field:
+            if additional_model_fields is None:
+                additional_model_fields = {}
+            additional_model_fields[effort_field[0]] = effort_field[1]
+            logger.info(
+                "Chat using reasoning effort '%s' for %s", effort, selected_model_id
+            )
 
     # Normalize service tier for the Converse ``serviceTier`` parameter.
     # Only ``priority`` and ``flex`` are valid to send explicitly; ``standard``
@@ -730,6 +767,7 @@ def handler(event, _context):  # noqa: ANN001
                 user_text=user_text,
                 temperature=chat_settings["temperature"],
                 max_tokens=chat_settings["max_tokens"],
+                reasoning_effort=chat_settings.get("reasoning_effort"),
             )
         elapsed_s = time.time() - t_start
         cleaned = _remove_text_between_brackets(full_text).strip("\n")

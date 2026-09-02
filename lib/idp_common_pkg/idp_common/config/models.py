@@ -743,7 +743,9 @@ class ConfidenceConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -998,7 +1000,9 @@ class ExtractionConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1262,7 +1266,9 @@ class ClassificationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1434,7 +1440,9 @@ class SummarizationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1531,7 +1539,9 @@ class ChatConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1598,7 +1608,9 @@ class OCRConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -2507,7 +2519,9 @@ class EvaluationLLMMethodConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
