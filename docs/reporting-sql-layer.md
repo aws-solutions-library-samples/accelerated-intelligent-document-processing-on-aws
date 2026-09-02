@@ -398,10 +398,17 @@ Applied classifier: *what triggered the invocation*. If cost scales
 with production doc arrival, it's data plane.
 
 **Data-plane Lambdas** (all in `DATA_PLANE_ALLOWLIST`). The **Component**
-column is the `component` value its `data_plane_lambda_hourly` rows carry;
-`scripts/tests/test_data_plane_component_labels.py` asserts this table's
-mapping against `_component_for_function`, so all three — the allowlist, the
-rules, and this table — must be updated together:
+column is the `component` value its `data_plane_lambda_hourly` rows carry.
+`scripts/tests/test_data_plane_component_labels.py` enforces the allowlist ↔
+label mapping against `_component_for_function`, but it does so via its own
+`EXPECTED_COMPONENT` map — **nothing parses this table**, so keep the rules, that
+map, and this column in step by hand when adding a stage.
+
+⚠️ **Rule literals must stay at or under 24 characters.** Lambda function names
+cap at 64 chars and CloudFormation truncates the *logical-ID* segment to fit, so
+`_component_for_function` receives a prefix of the logical ID on any stack whose
+name is long enough. A longer literal matches the full logical ID — and so
+passes a naive test — while matching nothing a real deployment emits.
 
 | Lambda | Template | Component | Trigger |
 |---|---|---|---|

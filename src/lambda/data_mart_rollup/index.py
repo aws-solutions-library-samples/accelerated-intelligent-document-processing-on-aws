@@ -2155,10 +2155,13 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     #    ``process-results`` rule instead.
     #
     # An explicit list fixes both without a boundary guard, and can't
-    # false-positive on a CFN random suffix that happens to contain
-    # ``bda``. These four are the only BDA-named Lambdas in any template
-    # (the first three are data plane; BDAOCRProject is a control-plane
-    # CFN custom resource that still belongs in the ``bda`` bucket).
+    # false-positive on a CFN random suffix that happens to contain ``bda``.
+    # The first three are data plane; BDAOCRProject is a control-plane CFN
+    # custom resource that still belongs in the ``bda`` bucket. (One more
+    # BDA-ish Lambda exists — ``SyncBdaIdpResolverFunction`` in
+    # nested/api-resolvers — but it is a UI resolver for BDA *blueprint sync*,
+    # not a BDA invocation, so it stays in ``other-control`` as it was before
+    # this change.)
     (
         re.compile(r"invokebda|bdaprocessresults|bdacompletion|bdaocrproject"),
         "bda",
@@ -2186,9 +2189,21 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     # — a label whose name says "control" appearing in the data-plane table.
     # ``scripts/tests/test_data_plane_component_labels.py`` now pins the
     # allowlist ↔ label mapping so a future addition can't be forgotten.
+    #
+    # KEEP EVERY LITERAL AT OR UNDER 24 CHARACTERS. Lambda function names cap at
+    # 64 chars and CloudFormation truncates the *logical-ID* segment to fit, so
+    # what arrives here is a PREFIX of the logical ID, not the whole thing. Live
+    # examples from the deployment account, all cut to exactly 24:
+    #   IDP1-PATTERNSTACK-170UXCO-BDAProcessResultsFunctio-05Xr5A5hn8po
+    #   IDP1-PATTERNSTACK-170UXCO-RuleValidationPolicyClas-QmIjulE8f33f
+    #   IDP1-APIRESOLVERSTACK-LI3-SyncBdaIdpResolverFuncti-P3kLHJldG4DK
+    # ``postprocessingdecompressor`` (26) was over that budget and matched
+    # nothing on any stack whose name is long enough to force truncation —
+    # i.e. it silently failed to fix the very row it was added for. The
+    # truncated-name shape in the test above now covers this.
     (re.compile(r"batchpreprocessor"), "batch-ingest"),
     (re.compile(r"jobtracker"), "job-tracker"),
-    (re.compile(r"postprocessingdecompressor"), "post-processing"),
+    (re.compile(r"postprocessingdecomp"), "post-processing"),
     (re.compile(r"completesectionreview"), "hitl-review"),
 ]
 
