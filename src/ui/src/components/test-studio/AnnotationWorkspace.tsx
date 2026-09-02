@@ -60,6 +60,24 @@ import { renderAlertCount, renderLabelSource, renderQualityTier } from './TestSe
 const client = generateClient();
 const logger = new ConsoleLogger('AnnotationWorkspace');
 
+/**
+ * The document a baseline key belongs to.
+ *
+ * A key is `{setId}/baseline/{objectKey}/sections/{n}/result.json`, so the save
+ * confirmation used to take the last segment and announce "result.json is now marked
+ * reviewed" — a filename every document in every set shares, which told the reviewer
+ * nothing about what had just been saved.
+ *
+ * Derived from the key rather than from the current selection, because the queue may
+ * already have advanced by the time this renders; reading `selected` would name the
+ * next document instead of the saved one. Exported so the parsing is testable without
+ * standing up the whole workspace.
+ */
+export const documentNameFromBaselineKey = (baselineKey: string): string => {
+  const afterBaseline = baselineKey.split('/baseline/')[1];
+  return afterBaseline?.split('/')[0] || baselineKey;
+};
+
 /** One document in the queue, as returned by getAnnotationQueue. */
 export interface QueueItem {
   objectKey: string;
@@ -395,10 +413,11 @@ const AnnotationWorkspace = (): React.JSX.Element => {
 
   const handleSaved = useCallback(
     (baselineKey: string) => {
+      const documentName = documentNameFromBaselineKey(baselineKey);
       setFlashItems([
         {
           type: 'success',
-          content: `Saved. ${baselineKey.split('/').pop() ?? ''} is now marked reviewed.`,
+          content: `Saved. ${documentName} is now marked reviewed.`,
           dismissible: true,
           onDismiss: () => setFlashItems([]),
           id: 'annotation-saved',
@@ -815,9 +834,16 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                      someone edit and then lose the work to "no review record yet" on
                      save. Falling back to the editor's direct-to-S3 write is what
                      TestSetDocumentDetail already does, and it is the semantically
-                     correct path here: there is no draft to confirm, nothing to tag
-                     reviewed-human, and no confidence-curve signal to record for a
-                     label a human authored in the first place. */
+                     correct path here: there is no draft to confirm, and no
+                     confidence-curve signal to record, because there was no prediction
+                     to be right or wrong about.
+
+                     This used to say there was also "nothing to tag reviewed-human".
+                     That reasoning was the bug: a reviewer could correct every document
+                     in an authored-ground-truth set and the queue still reported 0
+                     reviewed. Who authored a label and whether *this* reviewer has now
+                     checked it are different facts, and the progress metric asks the
+                     second. The editor tags it itself on this path. */
                   onSave={selected.reviewObjectKey ? handleSave : undefined}
                   onSaved={handleSaved}
                   saveButtonText="Save & next in queue"

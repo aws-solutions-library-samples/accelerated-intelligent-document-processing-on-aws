@@ -63,6 +63,13 @@ import type { GroupedSection } from '../common/section-grouping';
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
 
+/**
+ * Must match `LABEL_SOURCE_HUMAN` in `test_set_resolver/index.py`: the server derives
+ * `reviewed` from an exact comparison against it, so a typo here would silently stop
+ * annotation progress from counting rather than fail.
+ */
+const LABEL_SOURCE_REVIEWED_HUMAN = 'reviewed-human';
+
 const REEXTRACT_POLL_MS = 3000;
 // A re-extract is a full extraction + assessment pass, so the budget is generous;
 // timing out early would report failure on a run that is about to succeed.
@@ -95,10 +102,12 @@ interface GroundTruthVisualEditorProps {
   /**
    * Optional replacement for how a save is persisted.
    *
-   * The default writes the baseline object straight to S3 via a presigned POST,
-   * which bypasses the HITL review API: no lock claim, no `reviewed-human` tag, no
-   * confidence-curve observation. Callers that need those supply this to route
-   * saves through `completeSectionReview` instead.
+   * The default writes the baseline object straight to S3 via a presigned POST, which
+   * bypasses the HITL review API: no lock claim and no confidence-curve observation.
+   * It does still tag the label `reviewed-human` — the editor writes that itself, since
+   * on this path nothing server-side will, and the annotation progress metric keys on
+   * it. Callers that want the lock and the calibration signal supply this to route
+   * saves through `completeSectionReview` instead, which tags it server-side.
    */
   onSave?: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   /** Label for the save button. */
@@ -551,6 +560,17 @@ const GroundTruthVisualEditor = ({
         source: 'test-set-ground-truth-editor',
       });
       dataToSave._editHistory = editHistory;
+      // And the label source, for the same reason: on this path there is no review API
+      // to tag it. Without this a reviewer could correct every document in an
+      // authored-ground-truth set and the queue would still report "0 of 73 reviewed",
+      // because the server derives `reviewed` from labelSource == 'reviewed-human' —
+      // while the toast said the document had been marked reviewed.
+      //
+      // Only on this branch. The onSave branch routes through completeSectionReview,
+      // which tags it server-side with token-derived identity; doing both would
+      // double-record. And this is a claim about *this* reviewer having checked the
+      // document, not about who authored the label originally.
+      dataToSave.labelSource = LABEL_SOURCE_REVIEWED_HUMAN;
       const editedContent = JSON.stringify(dataToSave, null, 2);
 
       const fileName = fullPath.split('/').pop() ?? fullPath;
