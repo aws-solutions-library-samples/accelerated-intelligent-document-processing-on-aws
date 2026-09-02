@@ -1106,7 +1106,9 @@ document's structure, not one section's values. (**Pages in this section**, in t
 list below, stays as a read-only record of which pages the open section covers.)
 
 Drag a page from one section to another, or use its **Move to section**
-menu, which is the keyboard and screen-reader route to the same operation. Select several
+menu, which is the keyboard and screen-reader route to the same operation. A page's menu
+also offers **View full page**, since a thumbnail is often too small to tell one document
+type from another and the grouping decision depends on reading the page. Select several
 pages first — shift-click extends over document order — and they move together, which
 is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
 one.

@@ -14,7 +14,13 @@
  * needing identical rules and identical UI. Validation lives in `section-grouping.ts`,
  * shared with the same two surfaces.
  *
- * ## Six decisions, each with a reason
+ * ## Seven decisions, each with a reason
+ *
+ * **A page can be opened at readable size.** Deciding which section a page belongs to
+ * means reading the page, and the card shows it at 112px — not enough to tell an invoice
+ * from a field ticket. Offered as a menu item rather than a click on the card, so it does
+ * not compete with the drag gesture, and free: pages already render at 1200px wide, so
+ * the preview shows what is in memory rather than fetching anything.
  *
  * **The dragged page rides a `DragOverlay`, not its own transform.** Each column scrolls
  * its own pages (`overflowY: auto`) inside a row that scrolls sideways (`overflowX:
@@ -164,6 +170,7 @@ const PageCard = ({
   onToggleSelect,
   onMove,
   onNudge,
+  onPreview,
 }: {
   page: GroupingPage;
   sectionId: string;
@@ -175,6 +182,7 @@ const PageCard = ({
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
   onMove: (pageId: number, toSectionId: string) => void;
   onNudge: (pageId: number, direction: -1 | 1) => void;
+  onPreview: (pageId: number) => void;
 }): React.JSX.Element => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `page-${page.id}`,
@@ -252,6 +260,12 @@ const PageCard = ({
              screen-reader user. Grouped so "earlier/later" reads as position and the
              section list reads as destination. */
           items={[
+            /* First, because deciding where a page belongs usually means reading it, and
+               a 112px thumbnail is not enough to tell an invoice from a field ticket.
+               The detail is already loaded — pages render at PDF_RENDER_WIDTH (1200px)
+               and the document view presigns the pipeline's full-size page image — so
+               this shows what is in memory rather than fetching anything. */
+            { id: '__view', text: 'View full page' },
             {
               id: '__reorder',
               text: 'Order within this section',
@@ -274,7 +288,8 @@ const PageCard = ({
               : []),
           ]}
           onItemClick={({ detail }) => {
-            if (detail.id === '__earlier') onNudge(page.id, -1);
+            if (detail.id === '__view') onPreview(page.id);
+            else if (detail.id === '__earlier') onNudge(page.id, -1);
             else if (detail.id === '__later') onNudge(page.id, 1);
             else onMove(page.id, detail.id);
           }}
@@ -298,6 +313,7 @@ const SectionColumn = ({
   onDelete,
   onMove,
   onNudge,
+  onPreview,
   onSortPages,
   onToggleSelect,
 }: {
@@ -313,6 +329,7 @@ const SectionColumn = ({
   onDelete: (sectionId: string) => void;
   onMove: (pageId: number, toSectionId: string) => void;
   onNudge: (pageId: number, direction: -1 | 1) => void;
+  onPreview: (pageId: number) => void;
   onSortPages: (sectionId: string) => void;
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
 }): React.JSX.Element => {
@@ -402,6 +419,7 @@ const SectionColumn = ({
                   isLastInSection={index === pages.length - 1}
                   otherSections={otherSections}
                   onNudge={onNudge}
+                  onPreview={onPreview}
                   onToggleSelect={onToggleSelect}
                   onMove={onMove}
                 />
@@ -442,6 +460,7 @@ const PageGroupingEditor = ({
   const [lastTouchedPageId, setLastTouchedPageId] = useState<number | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [activePageId, setActivePageId] = useState<number | null>(null);
+  const [previewPageId, setPreviewPageId] = useState<number | null>(null);
 
   // A small distance threshold so a click on the thumbnail is a click, not a 0px drag.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor));
@@ -605,6 +624,7 @@ const PageGroupingEditor = ({
               onDelete={deleteSection}
               onMove={movePages}
               onNudge={nudgePage}
+              onPreview={setPreviewPageId}
               onSortPages={sortSectionPages}
               onToggleSelect={toggleSelect}
             />
@@ -662,12 +682,50 @@ const PageGroupingEditor = ({
     </Box>
   );
 
+  /**
+   * A page at readable size, because the thumbnail is not enough to decide grouping.
+   *
+   * Rendered as a **sibling** of the expanded board rather than inside it: two Cloudscape
+   * modals stack by z-index, whereas nesting one inside another is not something the
+   * library promises to handle. So the same element serves the inline and expanded
+   * layouts, and the preview works from either.
+   *
+   * `size="max"` and an unconstrained image: the point is to see detail, and the source is
+   * already ~10x the 112px the card shows, so there is nothing to fetch and no reason to
+   * shrink it.
+   */
+  const previewPage = previewPageId === null ? undefined : pageById.get(previewPageId);
+  const preview = previewPage && (
+    <Modal
+      visible
+      size="max"
+      header={`Page ${previewPage.id}`}
+      onDismiss={() => setPreviewPageId(null)}
+      footer={
+        <Box float="right">
+          <Button onClick={() => setPreviewPageId(null)}>Close</Button>
+        </Box>
+      }
+    >
+      {previewPage.imageUri ? (
+        <img src={previewPage.imageUri} alt={`Page ${previewPage.id}`} style={{ width: '100%', height: 'auto', display: 'block' }} />
+      ) : (
+        <Box textAlign="center" padding="xl">
+          <Spinner /> This page has not finished rendering.
+        </Box>
+      )}
+    </Modal>
+  );
+
   // Same body either way, so expanding cannot drift from the inline view.
   if (isExpanded) {
     return (
-      <Modal visible size="max" header="Edit page grouping" onDismiss={() => setIsExpanded(false)} footer={footer}>
-        {body}
-      </Modal>
+      <>
+        <Modal visible size="max" header="Edit page grouping" onDismiss={() => setIsExpanded(false)} footer={footer}>
+          {body}
+        </Modal>
+        {preview}
+      </>
     );
   }
 
@@ -675,6 +733,7 @@ const PageGroupingEditor = ({
     <SpaceBetween size="m">
       {body}
       {footer}
+      {preview}
     </SpaceBetween>
   );
 };
