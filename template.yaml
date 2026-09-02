@@ -336,7 +336,6 @@ Parameters:
       - "global.amazon.nova-2-lite-v1:0:priority"
       - "global.amazon.nova-2-lite-v1:0:flex"
       - "us.anthropic.claude-3-haiku-20240307-v1:0"
-      - "us.anthropic.claude-3-5-haiku-20241022-v1:0"
       - "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
       - "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "us.anthropic.claude-sonnet-4-20250514-v1:0"

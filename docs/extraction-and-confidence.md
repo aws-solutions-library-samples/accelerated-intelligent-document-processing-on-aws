@@ -1260,10 +1260,14 @@ extraction:
 
 **Supported models** include:
 
-- `us.anthropic.claude-3-5-haiku-20241022-v1:0`
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
+
+`CACHEPOINT_SUPPORTED_MODELS` in
+[`idp_common/bedrock/client.py`](../lib/idp_common_pkg/idp_common/bedrock/client.py)
+is the authoritative list.
 
 **Optimal placement**: separate **static** content (system instructions,
 few-shot examples — cacheable) from **dynamic** content (document text — not

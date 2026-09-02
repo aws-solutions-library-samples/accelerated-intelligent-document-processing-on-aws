@@ -33,11 +33,14 @@ _PAYLOAD = "a: !!python/object/apply:os.system ['true']"
 _LOADERS = [
     ("validate_service_role_permissions", "CFNLoader"),
     ("test_iam_trust_policy_partitions", "CfnLoader"),
+    # The ConfigSchema sweeps (sibling `order` uniqueness, and the IDPConfig <->
+    # UI-schema parity gate that reuses this loader) parse both full templates.
+    ("test_config_schema_order", "_CfnSafeLoader"),
 ]
 
 
 def _loader(module_name: str, attr: str):
-    # conftest.py puts scripts/sdlc on sys.path; the tests dir is already there.
+    # conftest.py puts both scripts/sdlc and this tests directory on sys.path.
     return getattr(importlib.import_module(module_name), attr)
 
 

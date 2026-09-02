@@ -1277,6 +1277,53 @@ class TestSticklerEvaluationService:
         assert not result.metrics.get("evaluation_failed")
         assert result.document_class == "Form"
 
+    def test_single_object_property_confidence_reaches_stickler(
+        self, nested_optional_config
+    ):
+        """Regression (#713): confidence must survive to Stickler's scoring.
+
+        ``Contact`` is this class's only top-level property, so the old
+        key-count wrapper heuristic unwrapped it and the rich-value conversion
+        emitted plain values. Stickler therefore saw no confidence at all:
+        ``prediction_confidences`` was absent and every calibration metric
+        (AUROC / ECE / Brier) came back ``None`` with coverage 0.0 - an
+        unmeasurable section that looked merely uninteresting.
+        """
+        service = EvaluationService(
+            region="us-west-2", config=nested_optional_config, max_workers=1
+        )
+        section = Section(section_id="1", classification="Form", page_ids=["1"])
+
+        expected = {"Contact": {"HomePhone": "555-1", "Email": "a@b.c"}}
+        # Email is wrong and was low-confidence: a well-calibrated prediction,
+        # which is only visible if the confidence reaches Stickler.
+        actual = {"Contact": {"HomePhone": "555-1", "Email": "wrong@example.com"}}
+        confidence = {
+            "Contact": {
+                "HomePhone": {"confidence": 0.95},
+                "Email": {"confidence": 0.20},
+            }
+        }
+
+        result = service.evaluate_section(
+            section=section,
+            expected_results=expected,
+            actual_results=actual,
+            confidence_scores=confidence,
+        )
+
+        blob = result.stickler_comparison_result or {}
+        assert blob.get("prediction_confidences") == {
+            "Contact.HomePhone": 0.95,
+            "Contact.Email": 0.20,
+        }
+
+        # Calibration is computable rather than empty.
+        coverage = blob["confidence_metrics"]["coverage"]
+        assert coverage["fields_with_confidence"] == 2
+        assert coverage["ratio"] > 0
+        assert blob["confidence_metrics"]["overall"]["brier_score"]["value"] is not None
+
     def test_evaluate_section_blast_radius_limited_to_bad_field(self):
         """A single unparseable field must not zero out the whole section.
 
