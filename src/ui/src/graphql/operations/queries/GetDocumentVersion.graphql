@@ -41,6 +41,10 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
       Class
       ClassConfidence
       ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       OcrPageDataUri

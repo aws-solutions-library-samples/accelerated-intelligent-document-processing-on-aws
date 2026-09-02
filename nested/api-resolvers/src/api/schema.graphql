@@ -178,6 +178,11 @@ type Section @aws_cognito_user_pools @aws_iam {
   InstanceCount: Int
 }
 
+type ClassCandidate @aws_cognito_user_pools @aws_iam {
+  Class: String
+  Probability: Float
+}
+
 type ConfidenceThresholdAlert @aws_cognito_user_pools @aws_iam {
   attributeName: String
   confidence: Float
@@ -206,6 +211,9 @@ type Page @aws_cognito_user_pools @aws_iam {
   # The model's stated evidence for this page's Class, when the classification
   # prompt asked for one (the default prompt does). Null otherwise.
   ClassReason: String
+  # Ranked alternative classes with probabilities ("80% W-2, 15% 1099"), from
+  # classification.confidence.mode = topk. Empty when nothing asked for them.
+  ClassCandidates: [ClassCandidate]
   # The classifier's per-page boundary signal ("start" | "continue"), which is
   # what sectionSplitting: llm_determined splits on. Null when the model
   # produced no signal. Exposed so an unexpected section merge can be audited

@@ -31,6 +31,11 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common import bedrock, image, s3, utils
+from idp_common.classification.class_confidence import (
+    append_class_confidence_block,
+    resolve_class_and_confidence,
+    resolve_top_k,
+)
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
@@ -648,6 +653,9 @@ class ClassificationService:
         reason = classification.metadata.get("classification_reason")
         if reason:
             page.classification_reason = str(reason)
+        candidates = classification.metadata.get("classification_candidates")
+        if candidates:
+            page.classification_candidates = candidates
         boundary = classification.metadata.get("document_boundary")
         if boundary:
             page.document_boundary = str(boundary).lower()
@@ -1187,9 +1195,65 @@ class ClassificationService:
         task_prompt = self.config.classification.task_prompt
         if not task_prompt:
             raise ValueError("No task_prompt found in classification configuration")
-        config["task_prompt"] = task_prompt
+        config["task_prompt"] = self._compose_class_confidence_prompt(task_prompt)
 
         return config
+
+    def _compose_class_confidence_prompt(self, task_prompt: str) -> str:
+        """Splice the class-confidence instruction block in, when enabled.
+
+        No-op in the default ``off`` mode, so the shipped prompt stays exactly as
+        it was. A custom prompt that already carries a ``<class-confidence>``
+        block is left alone (the splice is idempotent), and the response parser
+        honours a ``confidence``/``candidates`` key regardless of this setting —
+        the mode composes the *instruction*, it does not gate the *parsing*.
+        """
+        confidence_cfg = self.config.classification.confidence
+        mode = confidence_cfg.mode
+        if mode == "off":
+            return task_prompt
+
+        if self.classification_method != self.MULTIMODAL_PAGE_LEVEL:
+            # The holistic prompt returns segments, not one object per page, so
+            # the page-level block would describe the wrong shape. Its per-segment
+            # `confidence` IS parsed, so a holistic deployment can still be scored
+            # by asking for it in its own prompt.
+            logger.warning(
+                "classification.confidence.mode=%s is only composed for %s; "
+                "%s prompts must request confidence themselves (a per-segment "
+                "'confidence' key is parsed if present).",
+                mode,
+                self.MULTIMODAL_PAGE_LEVEL,
+                self.classification_method,
+            )
+            return task_prompt
+
+        if mode == "topk":
+            top_k = resolve_top_k(
+                confidence_cfg.top_k_candidates, len(self.valid_doc_types)
+            )
+            block = confidence_cfg.task_prompt_topk
+        else:  # verbalized
+            top_k = None
+            block = confidence_cfg.task_prompt_verbalized
+
+        if not block:
+            logger.warning(
+                "classification.confidence.mode=%s but its prompt block is empty; "
+                "no confidence will be requested. Restore it from the system "
+                "defaults (base-classification.yaml).",
+                mode,
+            )
+            return task_prompt
+
+        composed = append_class_confidence_block(task_prompt, block, top_k)
+        if composed is not task_prompt:
+            logger.info(
+                "Requesting class confidence in %s mode%s",
+                mode,
+                f" (top {top_k} candidates)" if top_k else "",
+            )
+        return composed
 
     def _prepare_prompt_from_template(
         self,
@@ -1738,6 +1802,7 @@ class ClassificationService:
             # reported for a class we threw away does not apply to the new one.
             confidence: Optional[float] = None
             classification_reason: Optional[str] = None
+            candidates: List[Dict[str, Any]] = []
             validation_error: Optional[str] = None
 
             for attempt in range(max_retries + 1):
@@ -1780,6 +1845,7 @@ class ClassificationService:
                 # Try to extract structured data (JSON or YAML) from the response
                 confidence = None
                 classification_reason = None
+                candidates = []
                 try:
                     classification_data, detected_format = (
                         extract_structured_data_from_text(classification_text)
@@ -1789,16 +1855,20 @@ class ClassificationService:
                         document_boundary = classification_data.get(
                             "document_boundary", "continue"
                         )
-                        # Both optional. `confidence` has been a documented part
+                        # All optional. `confidence` has been a documented part
                         # of this response shape for a long time but was
-                        # discarded (GitHub #673), and `classification_reason` is
+                        # discarded (GitHub #673); `classification_reason` is
                         # asked for by the DEFAULT prompt — those output tokens
-                        # were bought on every page and dropped. Keep whatever
-                        # the model actually returned; a prompt that asks for
-                        # neither simply yields None for both.
-                        confidence = parse_confidence(
-                            classification_data.get("confidence"),
-                            context=f"page {page_id}",
+                        # were bought on every page and dropped; `candidates` is
+                        # what classification.confidence.mode=topk requests.
+                        # Parsing is NOT gated on the mode: a custom prompt that
+                        # asks for any of these is honoured, and a prompt that
+                        # asks for none simply yields None/[].
+                        confidence, candidates = resolve_class_and_confidence(
+                            reported_class=doc_type,
+                            reported_confidence=classification_data.get("confidence"),
+                            reported_candidates=classification_data.get("candidates"),
+                            valid_classes=self.valid_doc_types,
                         )
                         reason = classification_data.get("classification_reason")
                         if isinstance(reason, str) and reason.strip():
@@ -1859,9 +1929,11 @@ class ClassificationService:
                     logger.error(f"Page {page_id}: {validation_error}")
                     doc_type = fallback
                     # The class is now ours, not the model's, so neither its
-                    # confidence nor its reasoning describes the stored class.
+                    # confidence, its reasoning nor its ranked alternatives
+                    # describe the stored class.
                     confidence = None
                     classification_reason = None
+                    candidates = []
 
             t1 = time.time()
             logger.info(
@@ -1882,6 +1954,11 @@ class ClassificationService:
             # Page.classification_reason field by _classify_pages_multimodal.
             if classification_reason:
                 metadata["classification_reason"] = classification_reason
+            # The ranked runner-up classes ("80% W-2, 15% 1099"), which are the
+            # actual answer to "what else could this have been?". Travels the
+            # same way as the reason above.
+            if candidates:
+                metadata["classification_candidates"] = candidates
 
             return PageClassification(
                 page_id=page_id,

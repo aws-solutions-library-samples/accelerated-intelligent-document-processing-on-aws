@@ -570,6 +570,10 @@ export const getDocument = /* GraphQL */ `
         Class
         ClassConfidence
         ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri
@@ -653,6 +657,10 @@ export const getDocumentVersion = /* GraphQL */ `
         Class
         ClassConfidence
         ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         OcrPageDataUri
@@ -1169,6 +1177,10 @@ export const listDocumentsByDateRange = /* GraphQL */ `
           Class
           ClassConfidence
           ClassReason
+          ClassCandidates {
+            Class
+            Probability
+          }
           ImageUri
           TextUri
           TextConfidenceUri
@@ -1422,6 +1434,10 @@ export const onUpdateDocument = /* GraphQL */ `
         Class
         ClassConfidence
         ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri

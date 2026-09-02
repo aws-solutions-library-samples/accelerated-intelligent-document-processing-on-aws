@@ -195,6 +195,57 @@ class TestDynamoDBPersistence:
         )
         assert signals["ClassConfidence"] == Decimal("0.0")
 
+    def test_candidates_round_trip_through_dynamodb(self):
+        """Ranked alternatives are stored as maps, with Decimal probabilities."""
+        page = Page(
+            page_id="1",
+            classification="w2",
+            confidence=0.8,
+            classification_candidates=[
+                {"class": "w2", "probability": 0.8},
+                {"class": "1099", "probability": 0.15},
+            ],
+        )
+        signals = serialize_page_classification_signals(page)
+
+        assert signals["ClassCandidates"] == [
+            {"Class": "w2", "Probability": Decimal("0.8")},
+            {"Class": "1099", "Probability": Decimal("0.15")},
+        ]
+
+        service = DocumentDynamoDBService(dynamodb_client=Mock())
+        doc = service._dynamodb_item_to_document(
+            {
+                "PK": "doc#a.pdf",
+                "SK": "none",
+                "ObjectKey": "a.pdf",
+                "ObjectStatus": "COMPLETED",
+                "Pages": [{"Id": 1, "Class": "w2", **signals}],
+            }
+        )
+        assert doc.pages["1"].classification_candidates == [
+            {"class": "w2", "probability": 0.8},
+            {"class": "1099", "probability": 0.15},
+        ]
+
+    def test_page_without_candidates_stores_and_reads_none(self):
+        signals = serialize_page_classification_signals(
+            Page(page_id="1", classification="w2", confidence=0.8)
+        )
+        assert "ClassCandidates" not in signals
+
+        service = DocumentDynamoDBService(dynamodb_client=Mock())
+        doc = service._dynamodb_item_to_document(
+            {
+                "PK": "doc#a.pdf",
+                "SK": "none",
+                "ObjectKey": "a.pdf",
+                "ObjectStatus": "COMPLETED",
+                "Pages": [{"Id": 1, "Class": "w2"}],
+            }
+        )
+        assert doc.pages["1"].classification_candidates is None
+
     def test_item_to_document_reads_confidence_back(self):
         service = DocumentDynamoDBService(dynamodb_client=Mock())
         doc = service._dynamodb_item_to_document(

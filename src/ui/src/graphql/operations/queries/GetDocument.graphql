@@ -36,6 +36,10 @@ query GetDocument($objectKey: ID!) {
       Class
       ClassConfidence
       ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       TextConfidenceUri

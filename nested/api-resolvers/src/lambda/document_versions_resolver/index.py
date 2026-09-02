@@ -133,6 +133,13 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # from every historical view.
             "ClassConfidence": _as_float(p.get("ClassConfidence")),
             "ClassReason": p.get("ClassReason") or None,
+            "ClassCandidates": [
+                {
+                    "Class": c.get("Class"),
+                    "Probability": _as_float(c.get("Probability")),
+                }
+                for c in p.get("ClassCandidates") or []
+            ],
             "Boundary": p.get("Boundary") or None,
         }
         for p in item.get("Pages", []) or []

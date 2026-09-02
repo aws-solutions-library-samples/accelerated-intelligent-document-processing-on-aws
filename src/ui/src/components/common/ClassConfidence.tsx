@@ -5,11 +5,21 @@ import React from 'react';
 import { Box, Popover, SpaceBetween } from '@cloudscape-design/components';
 import ConfidenceDisplay from './ConfidenceDisplay';
 
+interface ClassCandidate {
+  Class?: string | null;
+  Probability?: number | null;
+}
+
 interface ClassConfidenceProps {
   /** Confidence in the class (0-1). Null/undefined means NOT SCORED. */
   confidence?: number | null;
   /** The model's stated evidence for the class, when it gave one. */
   reason?: string | null;
+  /**
+   * Ranked alternative classes with probabilities, from
+   * `classification.confidence.mode: topk`. Empty/absent in every other mode.
+   */
+  candidates?: (ClassCandidate | null)[] | null;
 }
 
 /**
@@ -28,11 +38,13 @@ interface ClassConfidenceProps {
  * judgement the system has not made. `ConfidenceDisplay` handles that by
  * rendering neutrally when no threshold is supplied.
  */
-const ClassConfidence = ({ confidence, reason }: ClassConfidenceProps): React.JSX.Element | null => {
+const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProps): React.JSX.Element | null => {
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
+  const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
+  const hasCandidates = ranked.length > 0;
 
-  if (!hasConfidence && !hasReason) {
+  if (!hasConfidence && !hasReason && !hasCandidates) {
     return null;
   }
 
@@ -40,7 +52,7 @@ const ClassConfidence = ({ confidence, reason }: ClassConfidenceProps): React.JS
     <ConfidenceDisplay confidenceInfo={{ hasConfidenceInfo: true, confidence }} variant="inline" showThreshold={false} />
   ) : null;
 
-  if (!hasReason) {
+  if (!hasReason && !hasCandidates) {
     return confidenceEl;
   }
 
@@ -53,7 +65,20 @@ const ClassConfidence = ({ confidence, reason }: ClassConfidenceProps): React.JS
       header="Why this class?"
       content={
         <SpaceBetween size="xs">
-          <Box variant="p">{reason}</Box>
+          {hasReason && <Box variant="p">{reason}</Box>}
+          {/* The ranked alternatives answer "what else could this have been?",
+              which is the question a suspicious classification actually raises. */}
+          {hasCandidates && (
+            <SpaceBetween size="xxs">
+              <Box variant="awsui-key-label">Considered</Box>
+              {ranked.map((candidate) => (
+                <Box key={candidate.Class}>
+                  {candidate.Class}
+                  {typeof candidate.Probability === 'number' && ` — ${(candidate.Probability * 100).toFixed(1)}%`}
+                </Box>
+              ))}
+            </SpaceBetween>
+          )}
           <Box variant="small" color="text-body-secondary">
             The classifier&apos;s own explanation, recorded at classification time.
           </Box>

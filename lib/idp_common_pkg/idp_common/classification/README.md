@@ -115,9 +115,61 @@ its output format multiplies by page count — unlike extraction's confidence,
 which is per section.
 
 `_apply_page_result` is the single place that copies a result onto the declared
-`Page` fields (class, confidence, reason, boundary), shared by the cache-hit and
-fresh-inference branches so a cache hit cannot yield a page with fewer signals
-than a miss.
+`Page` fields (class, confidence, reason, candidates, boundary), shared by the
+cache-hit and fresh-inference branches so a cache hit cannot yield a page with
+fewer signals than a miss.
+
+#### Asking for it: `classification.confidence.mode`
+
+`off` (default), `topk`, or `verbalized`. `class_confidence.py` owns both halves:
+
+- **Prompt assembly.** `append_class_confidence_block` splices
+  `classification.confidence.task_prompt_topk` / `task_prompt_verbalized` into
+  the task prompt **before** the first `<<CACHEPOINT>>` / `<document-ocr-data>` /
+  `{DOCUMENT_TEXT}` marker, so the static instruction stays inside the
+  prompt-cache prefix — the same rule, for the same reason, as
+  `extraction/prompt_assembly.py::_append_bbox_block`, and it matters more here
+  because classification runs per page. The splice is idempotent (a prompt that
+  already carries a `<class-confidence>` block is left alone) and composed only
+  for `multimodalPageLevelClassification`; the holistic method logs a warning and
+  is left to ask in its own prompt, because its response is a segment list rather
+  than one object per page.
+- **Resolution.** `resolve_class_and_confidence` prefers an explicit
+  `confidence`, else `confidence_from_candidates`, which returns the probability
+  of the class being **stored** — not the top of the list. Those differ when the
+  model's `class` contradicts its own ranking, and reporting the top probability
+  would then describe a class the page was never given; a stored class absent
+  from its own candidate list leaves the page unscored rather than inferring a
+  number from the leftover mass.
+
+`parse_candidates` drops out-of-vocabulary classes (a class that cannot be stored
+cannot be reported), deduplicates on the highest probability, and rescales **only
+when the probabilities sum to more than 1.0** — a distribution cannot exceed 1,
+whereas a sum below 1 legitimately means "possibly some other class" and
+inflating the top candidate to absorb it would manufacture confidence.
+
+`resolve_top_k` clamps the requested candidate count to
+`[2, len(valid_doc_types)]`: asking for more candidates than there are classes
+invites invented ones, and a single candidate is a verbalized confidence with
+extra syntax — the calibration benefit comes precisely from having to rank
+alternatives.
+
+Ranked candidates land on `Page.classification_candidates`, persist as
+`ClassCandidates` (a list of `{Class, Probability}` maps), and are exposed as
+`Page.ClassCandidates` on the API and in the UI popover.
+
+#### Measuring whether the number means anything
+
+A confidence nobody checks is worse than none. `attach_page_confidence`
+(`evaluation/stickler_backend/doc_split.py`) annotates each row of the evaluation
+report's `doc_split_metrics.page_details` with `predicted_confidence`, next to the
+`correct` flag that is already there. The benchmark harness
+(`benchmarks/harness/analyze.py::score_classification`) turns those rows into
+`class_calibration_separation` = mean(conf | correct) − mean(conf | wrong), with
+`class_accuracy` and `n_class_scored_pages` beside it, and `aggregate.py` treats a
+−0.03 move as a regression on the same footing as the field-level separation.
+Near-zero separation means the model is equally confident right and wrong — do not
+route work on it.
 
 ### Section splitting strategies
 

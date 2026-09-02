@@ -1158,8 +1158,49 @@ this one is about the *class*, not the extracted values.
 ### Where a score comes from
 
 There is no separate confidence inference for classification: the value comes
-out of the same response as the class. Ask for it in the prompt's output format
-and it is used; ask for nothing and there is no score.
+out of the same response as the class. Either switch on
+`classification.confidence.mode`, which composes the instruction into the prompt
+for you, or ask for it in your own prompt's output format — both work, because
+the response parser is not gated on the setting.
+
+```yaml
+classification:
+  confidence:
+    mode: topk           # off (default) | topk | verbalized
+    top_k_candidates: 3  # topk only
+```
+
+| Mode | What the model is asked for | Notes |
+|------|-----------------------------|-------|
+| `off` (default) | nothing extra | Costs nothing. A custom prompt that asks for `confidence` or `candidates` anyway is still honoured. |
+| `topk` | ranked candidate classes with probabilities | **Recommended.** Better calibrated, and it answers "what else could this have been?" |
+| `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+
+`topk` is the recommended mode for a reason. Asking for a single number gets
+~0.95 on everything; making the model enumerate and rank alternatives forces it
+to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
+EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
+produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
+and shown in the UI.
+
+A page is scored on the probability of the class **actually stored**, not simply
+the highest probability in the list — those differ when the model's `class`
+disagrees with its own ranking, and the top probability would then describe a
+class the page was not given. Candidate classes outside your configured
+vocabulary are dropped (they cannot be stored, so they cannot be reported), and
+probabilities are rescaled only if they sum to **more** than 1.0; mass left
+unassigned below 1.0 legitimately means "possibly some other class".
+
+The instruction block is spliced in before the document content so it stays
+inside the prompt-cache prefix, and it is skipped for a prompt that already
+carries a `<class-confidence>` block. Both blocks are editable config
+(`classification.confidence.task_prompt_topk` /
+`task_prompt_verbalized`), like every other prompt here.
+
+Writing it into your own prompt works too, and is the only option for
+`textbasedHolisticClassification` (whose response is a segment list, not one
+object per page — the setting logs a warning and composes nothing there, but a
+per-segment `confidence` key is parsed if your prompt asks for one):
 
 ```yaml
 classification:
@@ -1217,27 +1258,45 @@ be more certain than its least certain page.
 ### Where it shows up
 
 - **Web UI** — next to the class in the Pages and Sections tables. The page cell
-  is hoverable when the model gave a reason ("Why this class?"). Nothing is
-  rendered when there is no score, so an unscored run looks exactly as it did
-  before.
-- **API** — `Page.ClassConfidence`, `Page.ClassReason`, and `Section.Confidence`
-  on `getDocument`, `getDocumentVersion` and the document subscription. Named
-  `ClassConfidence` on a page because `TextConfidenceUri` there is *OCR*
-  confidence — a different measurement.
+  is hoverable ("Why this class?") when the model gave a reason or ranked
+  candidates, and the popover lists the alternatives it considered with their
+  probabilities. Nothing is rendered when there is no score, so an unscored run
+  looks exactly as it did before.
+- **API** — `Page.ClassConfidence`, `Page.ClassReason`, `Page.ClassCandidates`
+  and `Section.Confidence` on `getDocument`, `getDocumentVersion` and the
+  document subscription. Named `ClassConfidence` on a page because
+  `TextConfidenceUri` there is *OCR* confidence — a different measurement.
 - **Reporting / analytics** — the existing `section_confidence` column, which
   now carries a real value when one exists and null when it does not.
 - **Document JSON** — `pages.<id>.confidence`, `pages.<id>.classification_reason`
   and `sections[].confidence`, each omitted when absent.
 
-### Calibration: read the number critically
+### Calibration: measure it before you act on it
 
 A single self-reported confidence is usually poorly calibrated — models asked
 "how sure are you?" answer ~0.95 almost everywhere, which is worse than no score
 because it invites automated escalation on noise. Smaller models are the most
-overconfident, and the default classification model is a small one. Before wiring
-this to any automatic action, measure whether the numbers actually separate
-correct from incorrect classifications on YOUR documents: the evaluation report's
-per-page classification details give you the ground truth to do it.
+overconfident, and the default classification model is a small one. That is why
+`topk` is recommended over `verbalized`, and why the whole block is off by
+default.
+
+**You can measure this directly, and you should before wiring it to anything
+automatic.** With ground truth available, the evaluation report's per-page
+classification details now record the classifier's own confidence next to whether
+the class was correct:
+
+```json
+{"page_index": 5, "ground_truth_class": "W2", "predicted_class": "Receipt",
+ "correct": false, "predicted_confidence": 0.48}
+```
+
+The number that matters is the **separation**: mean confidence on correctly
+classified pages minus mean confidence on incorrectly classified ones. A healthy
+signal separates them clearly; near zero means the model is equally confident
+when it is right and when it is wrong, and the score should not be used to route
+work no matter how reasonable the individual values look. The benchmark harness
+reports this as `class_calibration_separation` alongside `class_accuracy` and
+`n_class_scored_pages`, and treats a drop of 0.03 as a regression.
 
 Two cheap signals are already reliable and cost nothing extra:
 

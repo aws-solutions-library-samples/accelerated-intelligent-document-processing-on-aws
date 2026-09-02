@@ -95,6 +95,19 @@ def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
         signals["ClassConfidence"] = Decimal(str(float(page.confidence)))
     if getattr(page, "classification_reason", None):
         signals["ClassReason"] = page.classification_reason
+    candidates = getattr(page, "classification_candidates", None)
+    if candidates:
+        # Ranked alternatives ("80% W-2, 15% 1099") from topk mode. Stored as a
+        # list of maps rather than a JSON string so the UI can render it without
+        # a parse step, mirroring ConfidenceThresholdAlerts.
+        signals["ClassCandidates"] = [
+            {
+                "Class": str(candidate.get("class", "")),
+                "Probability": Decimal(str(float(candidate.get("probability", 0.0)))),
+            }
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("class")
+        ]
     if page.document_boundary:
         signals["Boundary"] = page.document_boundary
     return signals
@@ -615,6 +628,16 @@ class DocumentDynamoDBService:
                         else None
                     ),
                     classification_reason=page_data.get("ClassReason") or None,
+                    classification_candidates=[
+                        {
+                            "class": candidate.get("Class"),
+                            "probability": float(candidate["Probability"])
+                            if candidate.get("Probability") is not None
+                            else None,
+                        }
+                        for candidate in page_data.get("ClassCandidates") or []
+                    ]
+                    or None,
                     document_boundary=page_data.get("Boundary") or None,
                 )
 

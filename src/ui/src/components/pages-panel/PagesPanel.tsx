@@ -37,6 +37,8 @@ interface PageItem {
   ClassConfidence?: number | null;
   /** The model's stated evidence for Class, when the prompt asked for one. */
   ClassReason?: string | null;
+  /** Ranked alternatives from classification.confidence.mode: topk. */
+  ClassCandidates?: ({ Class?: string | null; Probability?: number | null } | null)[] | null;
   ImageUri?: string;
   TextUri?: string;
   TextConfidenceUri?: string;
@@ -82,7 +84,7 @@ const ClassCell = ({
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
     <span>{item.Class || '-'}</span>
-    <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} />
+    <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -141,7 +143,7 @@ const EditableClassCell = ({
         <StatusIndicator>{item.Class}</StatusIndicator>
         {/* Shown in edit mode too: deciding whether to correct a class is
             exactly when the classifier's own confidence and reasoning matter. */}
-        <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} />
+        <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>

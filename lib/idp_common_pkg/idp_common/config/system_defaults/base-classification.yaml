@@ -16,6 +16,43 @@ classification:
   enforceValidClasses: true
   maxValidationRetries: "2"
   invalidClassFallback: unclassified
+  # HIDDEN/EXPERIMENTAL — confidence in the CLASS (GitHub #673). OFF by default:
+  # page-level classification is one inference PER PAGE, so anything added to its
+  # output format is paid for on every page of every document, and a
+  # self-reported confidence is usually badly calibrated (a model asked "how sure
+  # are you?" answers ~0.95 almost everywhere). `topk` asks for ranked
+  # alternatives instead, which forces the model to distribute probability mass
+  # (Tian et al., "Just Ask for Calibration", EMNLP 2023). Measure the
+  # calibration on your own documents before acting on the numbers.
+  # multimodalPageLevelClassification only. Unrelated to extraction.confidence,
+  # which scores extracted FIELDS. BDA mode is scored for free either way.
+  confidence:
+    mode: "off"
+    top_k_candidates: "3"
+    # Spliced in before <document-ocr-data> (inside the prompt-cache prefix) when
+    # mode is topk. {TOP_K_CANDIDATES} is substituted with the resolved count.
+    task_prompt_topk: >-
+      <class-confidence>
+      Your JSON object MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for this page, most likely first, each with the probability that it is the correct type.
+
+      "candidates": [
+        {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
+        {"class": "<next most likely type>", "probability": <number between 0.0 and 1.0>}
+      ]
+
+      Rules:
+      1. Every "class" value must be one of the types listed in <document-types>.
+      2. The first candidate must be the same type you report in "class".
+      3. The probabilities must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type".
+      4. Distribute the probability honestly. If a second type is genuinely plausible for this page, give it real probability mass instead of assigning close to 1.0 to the first — a page that is hard to classify should not look certain.
+      </class-confidence>
+    # Spliced in the same way when mode is verbalized.
+    task_prompt_verbalized: >-
+      <class-confidence>
+      Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
+
+      Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence.
+      </class-confidence>
   image:
     target_height: ""
     target_width: ""

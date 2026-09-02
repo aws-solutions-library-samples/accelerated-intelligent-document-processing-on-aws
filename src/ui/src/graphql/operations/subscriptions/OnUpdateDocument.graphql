@@ -36,6 +36,10 @@ subscription OnUpdateDocument {
       Class
       ClassConfidence
       ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       TextConfidenceUri

@@ -210,6 +210,11 @@ export type CircuitBreakerStatus = {
   state?: Maybe<Scalars['String']['output']>;
 };
 
+export type ClassCandidate = {
+  Class?: Maybe<Scalars['String']['output']>;
+  Probability?: Maybe<Scalars['Float']['output']>;
+};
+
 export type ConfidenceThresholdAlert = {
   attributeName?: Maybe<Scalars['String']['output']>;
   confidence?: Maybe<Scalars['Float']['output']>;
@@ -1351,6 +1356,7 @@ export type MutationUploadSampleDocumentArgs = {
 export type Page = {
   Boundary?: Maybe<Scalars['String']['output']>;
   Class?: Maybe<Scalars['String']['output']>;
+  ClassCandidates?: Maybe<Array<Maybe<ClassCandidate>>>;
   ClassConfidence?: Maybe<Scalars['Float']['output']>;
   ClassReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['Int']['output']>;

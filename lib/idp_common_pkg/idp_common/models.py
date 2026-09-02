@@ -107,6 +107,18 @@ class Page:
     ``None`` when the model returned no reason (or a custom prompt does not ask
     for one), and not serialized in that case."""
 
+    classification_candidates: Optional[List[Dict[str, Any]]] = None
+    """The classifier's ranked alternative classes for this page, most likely
+    first: ``[{"class": "w2", "probability": 0.8}, {"class": "1099",
+    "probability": 0.15}]``.
+
+    Produced by ``classification.confidence.mode: topk``, which asks the model to
+    enumerate and rank candidates rather than self-report one number — that is
+    both better calibrated and the direct answer to "what else could this page
+    have been?" (the question a reviewer looking at a suspicious classification
+    actually has). ``None`` when nothing asked for them, and not serialized in
+    that case."""
+
     document_boundary: Optional[str] = None
     """The classifier's per-page boundary signal: ``"start"`` (this page begins a
     new document) or ``"continue"``. ``None`` means no signal was produced — the
@@ -602,6 +614,10 @@ class Document:
                 result["pages"][page_id]["classification_reason"] = (
                     page.classification_reason
                 )
+            if page.classification_candidates:
+                result["pages"][page_id]["classification_candidates"] = (
+                    page.classification_candidates
+                )
             # Omitted when absent so payloads from before this existed — and
             # pages that genuinely produced no boundary signal — are unchanged.
             if page.document_boundary:
@@ -723,6 +739,7 @@ class Document:
                 tables=page_data.get("tables", []),
                 forms=page_data.get("forms", {}),
                 classification_reason=page_data.get("classification_reason"),
+                classification_candidates=page_data.get("classification_candidates"),
                 document_boundary=page_data.get("document_boundary"),
             )
 

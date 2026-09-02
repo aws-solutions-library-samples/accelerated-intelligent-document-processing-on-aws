@@ -45,6 +45,10 @@ query ListDocumentsByDateRange($startDateTime: AWSDateTime!, $endDateTime: AWSDa
         Class
         ClassConfidence
         ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri
