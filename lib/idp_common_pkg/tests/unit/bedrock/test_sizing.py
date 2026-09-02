@@ -101,7 +101,6 @@ def test_plan_to_dict_round_trips_key_fields():
     assert "shard_token_budget" in d and "list_batch_size" in d
 
 
-
 # ---------------------------------------------------------------------------
 # Output-reserve clamp (_MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT)
 # ---------------------------------------------------------------------------
@@ -217,6 +216,7 @@ def test_clamp_boundary_is_just_below_the_chosen_fraction():
         - 32_000,
     )
     assert grok_at_090 < _naive_and_clamped(500_000, 524_288, 0.3)[1]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
