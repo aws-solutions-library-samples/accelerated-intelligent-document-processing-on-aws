@@ -538,7 +538,12 @@ const CreateTestSetWizard = ({
           cancelButton: 'Cancel',
           previousButton: 'Previous',
           nextButton: 'Next',
-          submitButton: isGenerate ? 'Generate documents' : 'Create test set',
+          // "Create", not "Create test set": the page behind this wizard has its own
+          // "Create test set" button, so both were on screen at once reading identically.
+          // Position disambiguates them for a sighted user and nothing does for a screen
+          // reader — and it is genuinely ambiguous, since one opens the wizard and the
+          // other commits it. The wizard's own footer has all the context it needs.
+          submitButton: isGenerate ? 'Generate documents' : 'Create',
           optional: 'optional',
         }}
         steps={[
