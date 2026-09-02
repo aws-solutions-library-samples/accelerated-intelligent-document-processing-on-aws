@@ -7495,6 +7495,41 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # Issue #719: before processing an upload, the queue sender purges
+  # <key>/pages/ so OCR's retry-safe recovery cannot resurrect a PREVIOUS
+  # document's page results under a reused filename; the reprocess resolver
+  # purges more broadly for the same reason. A purge that only partly succeeds
+  # is invisible otherwise — the document processes, reports success, and
+  # silently carries text from the old document, because
+  # discover_existing_ocr_pages needs just ONE surviving complete page
+  # (rawText+result+textConfidence+image) to skip OCR for it. Both paths
+  # therefore raise on a per-key delete failure and publish this metric;
+  # ingest deliberately continues (a possibly-stale extraction beats a dropped
+  # upload), which is exactly why the operator needs an alarm and not a log
+  # line. The metric carries no dimensions and both emitters publish into the
+  # ROOT stack's namespace (the nested resolver uses the StackName parameter,
+  # not AWS::StackName), so this single alarm covers the ingest path and the
+  # reprocess path alike.
+  StaleOutputPurgeFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not purge a document's stale OCR output (<key>/pages/) before processing it — on re-upload of an existing filename, or on Reprocess. The document still processes, but OCR may reuse the PREVIOUS document's page results, so its extraction can reflect the old document (issue #719). Find the affected keys in the QueueSender logs (ingest path, 'Failed to purge previous output data') or the ReprocessDocumentResolver logs (reprocess path, 'Failed to delete previous output data'), delete s3://<OutputBucket>/<key>/pages/ manually, then re-upload or reprocess."
+      MetricName: StaleOutputPurgeFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      # Threshold 0 / GreaterThanThreshold: alarm on the FIRST failure. Unlike
+      # concurrency drift there is no self-healing path here — the stale pages
+      # sit in S3 until someone removes them, and every later upload of that
+      # key inherits the same wrong results.
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means "every purge succeeded".
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ##########################################################################
   # Circuit Breaker Resources
   ##########################################################################
@@ -8074,6 +8109,43 @@ Resources:
                       }
                     ]
                   }
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 36,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "StaleOutputPurgeFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Purges that failed (ingest + reprocess)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Stale Output Purge Failures (issue #719 — a non-zero value means a document may have been processed with a PREVIOUS document's OCR text; the paired log widget lists the affected keys on the ingest path)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "stat": "Sum"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 36,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '${QueueSenderLogGroup}' | fields @timestamp, @logStream, @message | filter @message like /Failed to purge previous output data/ | sort @timestamp desc | limit 20",
+                  "region": "${AWS::Region}",
+                  "title": "Stale Output Purge Failures — affected keys (ingest path; for the Reprocess path see the ReprocessDocumentResolver log group)",
+                  "view": "table"
                 }
               }
             ]

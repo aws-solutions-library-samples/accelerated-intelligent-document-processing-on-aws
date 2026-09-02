@@ -82,6 +82,64 @@ conditionally on the value it sampled.
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
 in flight and the Step Functions widget shows nothing starting is the leak.
 
+### Stale Output Purge on Re-upload
+
+OCR has a retry-safe recovery path: on a Step Functions retry the document is
+reloaded with `pages={}`, so before re-OCRing it scans
+`s3://<OutputBucket>/<key>/pages/` and reuses any page that already has all four
+of its files (`rawText.json`, `result.json`, `textConfidence.json`, `image.*`).
+That is what makes a throttled OCR retry cheap — and it is also why uploading a
+**different** document under an **existing** filename used to produce the
+previous document's extraction ([#719](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/719)).
+Two paths now purge before processing: the queue sender removes `<key>/pages/`
+on every upload event, and the **Reprocess** action removes everything under
+`<key>/` except `<key>/runs/` (matching its "start over" intent).
+
+This failure is quiet in the same way the concurrency leak is: if the purge only
+partly succeeds, the document processes, reports success, and silently carries
+text from the old document — recovery needs just **one** surviving complete page
+to skip OCR for it. Processing deliberately continues on a purge failure (a
+possibly-stale extraction beats a dropped upload or a refused reprocess), so the
+signal has to come from a metric rather than the document's own status.
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`StaleOutputPurgeFailed`** — published (value `1`) whenever a purge raises.
+  Both the ingest path and the reprocess path publish it, with no dimensions and
+  into the **root** stack's namespace, so one metric and one alarm cover both.
+  Published only on failure, so no data means every purge succeeded.
+
+One alarm publishes to `AlertsTopic`:
+
+- **`StaleOutputPurgeFailedAlarm`** — any occurrence within 5 minutes. Unlike
+  concurrency drift there is no self-healing path: the stale pages sit in S3
+  until someone removes them, and every later upload of that key inherits the
+  same wrong results — so this alarms on the **first** failure rather than on a
+  sustained trend.
+
+Two dashboard widgets are paired on the main dashboard: **Stale Output Purge
+Failures** (the count across both paths) and **Stale Output Purge Failures —
+affected keys** (a Logs Insights table over the Queue Sender log group).
+
+**Recovering:** identify the affected keys, then delete
+`s3://<OutputBucket>/<key>/pages/` and re-upload or reprocess the document.
+The log widget covers the ingest path; for the reprocess path, query the
+`ReprocessDocumentResolverFunction` log group (in the API-resolvers nested
+stack) instead. The two paths log different messages:
+
+| Path | Log group | Message |
+|---|---|---|
+| Upload / re-upload | `QueueSender` | `Failed to purge previous output data for <key>` |
+| Reprocess action | `ReprocessDocumentResolverFunction` | `Failed to delete previous output data for <key>` |
+
+The most common cause is a KMS or bucket-policy change that denies
+`s3:DeleteObject` to the purging role — check that before assuming a transient
+S3 error.
+
+**Note:** because the purge runs on every upload, a re-upload of a
+byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
+scratch.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:
