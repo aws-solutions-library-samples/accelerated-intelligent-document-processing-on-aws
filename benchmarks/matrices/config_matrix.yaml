@@ -68,6 +68,17 @@ axes:
     sonnet5_1m:   {extraction.model: us.anthropic.claude-sonnet-5:1m}
     nova_pro:     {extraction.model: us.amazon.nova-pro-v1:0}
     nova_lite:    {extraction.model: us.amazon.nova-lite-v1:0}
+  # classification.model. Added for #653: that bug was reported on Sonnet 5 and
+  # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
+  # fix has to be verified on the model it was reported against, not only on the
+  # default. Sonnet 5 also REJECTS temperature/top_p/top_k (they are stripped, see
+  # _CLAUDE_4_7_BASE_NAMES), so it samples where Nova receives temperature: 0 —
+  # which makes it the stricter test of a prompt-only fix.
+  classification_model:
+    nova_2_lite: {classification.model: us.amazon.nova-2-lite-v1:0}
+    nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
+    sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
+    sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
@@ -92,6 +103,7 @@ default_cell:
                                # BOTH v0.5.16 and v0.6 run. Sonnet-5 capability is a
                                # documented v0.6-only delta, not part of the matrix.
   confidence_model: nova_lite
+  classification_model: nova_2_lite   # the shipped default
   reasoning_effort: low
   enforcement: warn
   section_splitting: llm_determined   # the shipped default; the sweep varies it
@@ -137,6 +149,7 @@ sweeps:
   escalation:       ["off", "on"]           # run on the low-confidence corpus to expose cost
   extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
+  classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]
 
 # -----------------------------------------------------------------------------
@@ -198,6 +211,20 @@ suites:
     docs:
     - small_narrow
     repeats: 5
+  # One-off CONTROL for #653: the SAME paginated document under the PRE-FIX
+  # prompt. Without it, `paginated_3pg` scoring 100% with the fix is ambiguous —
+  # pagination alone could explain it, and the prompt change would be taking
+  # credit for the document. Its config is written by hand (the prompt is not an
+  # axis) and namespaced under its own suite so it cannot collide.
+  boundaryctl:
+    cells:
+    - split-llm-legacyprompt
+    docs:
+    - paginated_3pg      # control: does pagination alone explain the 100%?
+    - twodocs_2x20       # control: what does the OLD prompt score on over-merge?
+    - small_narrow       # control: the pre-fix over-split rate, same doc/model
+    repeats: 5
+
   # Boundary detection, BOTH directions (#653). The two docs pull opposite ways
   # and a fix must satisfy both at once:
   #   small_narrow  = ONE 3-page statement  -> must yield 1 section (over-SPLIT)
@@ -211,8 +238,9 @@ suites:
     - split-llm
     - split-disabled
     docs:
-    - small_narrow
-    - twodocs_2x20
+    - small_narrow      # ONE 3-page statement, NO pagination -> 1 section (hard)
+    - paginated_3pg     # ONE 3-page statement, WITH pagination -> 1 section (common)
+    - twodocs_2x20      # TWO statements -> 2 sections (the over-merge direction)
     repeats: 5
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}

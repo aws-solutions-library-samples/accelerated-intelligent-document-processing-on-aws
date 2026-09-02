@@ -166,6 +166,7 @@ def build(
     ocr_noise=0.0,
     value_noise=False,
     documents=1,
+    paginate=False,
     out="doc.pdf",
 ):
     """``documents=N`` emits N back-to-back COMPLETE statements in one file.
@@ -256,7 +257,42 @@ def build(
             story.append(t)
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
-    doc.build(story)
+    if paginate:
+        # Real statements paginate, and "Page 2 of 3" is the single most decisive
+        # boundary signal a page can carry — the classification boundary rules
+        # check it FIRST (#653). A corpus document without it tests those rules
+        # with their primary evidence removed, which is a legitimate hard case but
+        # not the common one. Two passes, because the total page count is not known
+        # until the document has been laid out once.
+        from copy import copy as _shallow
+
+        counter = {"total": 0}
+
+        def _count(canvas, _doc):
+            counter["total"] = max(counter["total"], canvas.getPageNumber())
+
+        doc.build([_shallow(f) for f in story], onFirstPage=_count, onLaterPages=_count)
+        total = counter["total"] or 1
+
+        def _footer(canvas, doc_):
+            canvas.saveState()
+            canvas.setFont("Helvetica", 8)
+            canvas.drawRightString(
+                7.9 * inch, 0.32 * inch, f"Page {canvas.getPageNumber()} of {total}"
+            )
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=0.5 * inch,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        )
+        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    else:
+        doc.build(story)
     truth = {
         "gen": "bank_statement",
         "rows": rows,
@@ -265,6 +301,7 @@ def build(
         "desc_len": desc_len,
         "ocr_noise": ocr_noise,
         "value_noise": value_noise,
+        "paginate": paginate,
         "fields": dict(FIELDS),
         "seq_ids": seq_ids,
         "per_list": per_list if lists > 1 else None,

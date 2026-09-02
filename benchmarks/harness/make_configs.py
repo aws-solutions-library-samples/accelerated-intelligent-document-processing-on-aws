@@ -44,6 +44,36 @@ BASE_CONFIG = {
 }
 
 
+def override_slug(overrides):
+    """A short deterministic suffix identifying a set of ``--set`` overrides.
+
+    Empty when there are none, so every path and version name is byte-identical
+    to what this script produced before overrides were namespaced.
+
+    Why this exists: the FILE was namespaced by suite but nothing was namespaced
+    by ``--set``, and the uploaded config VERSION name was namespaced by neither.
+    So two runs of one suite differing only in ``--set`` overwrote the same file,
+    the same index, AND the same ``Config#<version>`` on the stack — the second
+    silently relabelling the first. That is the same silent-cross-model-comparison
+    failure the suite namespacing was added to fix (see the comment on `path`
+    below), reached through a different door: `verify_config_axes` cannot catch it,
+    because the file and the index are rewritten together and therefore agree.
+
+    Args:
+        overrides: the raw ``AXIS=VALUE`` strings from ``--set``.
+
+    Returns:
+        ``""`` or ``"__axis-value[-axis-value...]"``, sorted so it is stable.
+    """
+    if not overrides:
+        return ""
+    parts = []
+    for ov in sorted(overrides):
+        axis, _, value = ov.partition("=")
+        parts.append(f"{axis}-{value}".replace("_", "-").replace(".", "-"))
+    return "__" + "-".join(parts)
+
+
 def set_path(cfg, dotted, value):
     """Set a dotted config path, creating dicts as needed. Special-cases the
     knobs whose real shape differs from a plain scalar."""
@@ -233,11 +263,14 @@ def main():
         default_cell[axis] = value
         print(f"  [override] default_cell.{axis} = {value}")
     base_path = BASE_CONFIG[args.klass]
+    slug = override_slug(args.overrides)
     cells = cells_for_suite(matrix, args.suite)
     written = []
     for cell in cells:
         cfg, resolved = build_cell(base_path, axes, default_cell, cell)
-        name = f"{cell['id']}__{args.klass}"
+        # The slug keeps two --set variants of one suite from colliding, on disk
+        # AND in the stack's config table.
+        name = f"{cell['id']}__{args.klass}{slug}"
         # The FILE is namespaced by suite; the config VERSION name is not.
         #
         # Suites share cell names (`core_cells` is used by corefast, core,
@@ -260,9 +293,14 @@ def main():
             }
         )
         print(f"  {name}: {resolved}")
-    idx = os.path.join(OUT, f"_index_{args.suite}_{args.klass}.yaml")
+    idx = os.path.join(OUT, f"_index_{args.suite}_{args.klass}{slug}.yaml")
     yaml.safe_dump(
-        {"suite": args.suite, "class": args.klass, "cells": written},
+        {
+            "suite": args.suite,
+            "class": args.klass,
+            "overrides": list(args.overrides),
+            "cells": written,
+        },
         open(idx, "w"),
         sort_keys=False,
     )
