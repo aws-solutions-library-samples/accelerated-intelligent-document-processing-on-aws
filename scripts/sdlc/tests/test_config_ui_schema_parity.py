@@ -148,6 +148,9 @@ NOT_USER_SETTABLE: dict[str, str] = {
         "Context headroom fraction consumed by idp_common.bedrock.sizing to "
         "auto-derive shard/batch sizes; expert override, not a user setting."
     ),
+    # nosec B105 — "shard_token_budget" refers to LLM context tokens (Bedrock
+    # sizing), not an authentication token; the value is a descriptive string,
+    # not a credential.
     "extraction.agentic.shard_token_budget": (
         "0 = auto-size from the model's context window (bedrock/sizing.py); a "
         "non-zero value only pins what is already derived."
