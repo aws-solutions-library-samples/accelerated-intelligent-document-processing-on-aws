@@ -125,9 +125,14 @@ class TestReuploadCleanup:
             return mock_purge, mock_s3
 
     def test_purges_stale_output_for_object_key(self):
-        """The purge is invoked with the S3 output bucket and the object key."""
+        """The purge is invoked with the S3 output bucket, object key, and is
+        SCOPED to ``pages/`` — that's the only subprefix OCR's retry-safe
+        recovery reads, and scoping there makes it impossible for an upload
+        of ``foo`` to nuke a nested document at ``foo/bar.pdf/*``."""
         mock_purge, mock_s3 = self._run_handler("test1.pdf")
-        mock_purge.assert_called_once_with(mock_s3, "test-output-bucket", "test1.pdf")
+        mock_purge.assert_called_once_with(
+            mock_s3, "test-output-bucket", "test1.pdf", subprefixes=("pages/",)
+        )
 
     def test_purge_failure_does_not_block_processing(self):
         """S3 delete failures are swallowed — the doc still gets queued."""

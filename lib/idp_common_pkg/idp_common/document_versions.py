@@ -26,7 +26,7 @@ defeat stale-OCR recovery).
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,12 @@ def runs_prefix(input_key: str) -> str:
     return f"{input_key}/{RUNS_PREFIX_SEGMENT}/"
 
 
-def delete_current_output_objects(s3_client, output_bucket: str, input_key: str) -> int:
+def delete_current_output_objects(
+    s3_client,
+    output_bucket: str,
+    input_key: str,
+    subprefixes: Optional[Sequence[str]] = None,
+) -> int:
     """
     Delete the current output objects for a document, preserving run manifests.
 
@@ -52,32 +57,66 @@ def delete_current_output_objects(s3_client, output_bucket: str, input_key: str)
     stale ``pages/*`` artefacts from the previous document, skips OCR, and
     downstream classification/extraction consume text from the OLD document.
 
+    ``subprefixes``:
+      - ``None`` (default) — purge ``<key>/*``, preserving only ``<key>/runs/``.
+        Used by the Reprocess resolver, where "start over" is the intent.
+      - ``("pages/",)`` (or similar list) — purge ONLY those subprefixes
+        under ``<key>/``. Used by queue_sender for re-upload cleanup so a
+        re-upload of ``foo`` cannot destroy nested-document data at
+        ``foo/bar.pdf/*`` (issue #719 follow-up). Reduces blast radius to
+        exactly the subprefixes that reintroduce the bug being fixed.
+
     Preserves ``{input_key}/runs/`` (per-run manifests plus the noncurrent
     object versions they pin) so document version history survives. On a
     versioned bucket, ``delete_objects`` without VersionId writes delete
     markers, so the underlying bytes remain retrievable via the manifests.
 
     Returns:
-        Number of objects deleted (0 if the prefix was empty).
+        Number of objects successfully deleted (0 if the prefix was empty).
+        Per-key failures reported by S3 (Quiet=True still returns Errors)
+        are logged as warnings and NOT counted — an incomplete purge that
+        silently over-counted would re-open #719 with a success log.
     """
-    prefix = f"{input_key}/"
     preserved_prefix = runs_prefix(input_key)
+    if subprefixes is not None:
+        # Explicit list (may be empty → no-op) — scan only these subprefixes.
+        prefixes_to_scan = [f"{input_key}/{sp.lstrip('/')}" for sp in subprefixes]
+    else:
+        # None → broad purge under ``<key>/`` (reprocess semantics).
+        prefixes_to_scan = [f"{input_key}/"]
     deleted = 0
     paginator = s3_client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
-        objects = [
-            obj
-            for obj in page.get("Contents", [])
-            if not obj["Key"].startswith(preserved_prefix)
-        ]
-        if not objects:
-            continue
-        for i in range(0, len(objects), 1000):
-            batch = [{"Key": obj["Key"]} for obj in objects[i : i + 1000]]
-            s3_client.delete_objects(
-                Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
-            )
-            deleted += len(batch)
+    for prefix in prefixes_to_scan:
+        for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
+            objects = [
+                obj
+                for obj in page.get("Contents", [])
+                if not obj["Key"].startswith(preserved_prefix)
+            ]
+            if not objects:
+                continue
+            for i in range(0, len(objects), 1000):
+                batch = [{"Key": obj["Key"]} for obj in objects[i : i + 1000]]
+                response = s3_client.delete_objects(
+                    Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
+                )
+                errors = response.get("Errors", [])
+                if errors:
+                    # Surface per-key failures — Quiet=True hides them from
+                    # the response body but they still land in ``Errors``.
+                    # Counting only successes prevents a partial purge from
+                    # reporting a false "N deleted" success log while stale
+                    # pages/*.json remain and re-open #719 via OCR's
+                    # retry-safe recovery.
+                    sample = ", ".join(
+                        f"{e.get('Key')}({e.get('Code')})" for e in errors[:5]
+                    )
+                    logger.warning(
+                        f"delete_objects reported {len(errors)} per-key "
+                        f"failure(s) purging s3://{output_bucket}/{prefix} "
+                        f"(sample: {sample}). Stale artefacts may remain."
+                    )
+                deleted += len(batch) - len(errors)
     return deleted
 
 

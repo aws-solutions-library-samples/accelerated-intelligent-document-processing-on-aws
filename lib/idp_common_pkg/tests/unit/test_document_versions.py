@@ -226,6 +226,137 @@ class TestDeleteCurrentOutputObjects:
             Bucket="out-bucket", Prefix="doc.pdf/"
         )
 
+    def test_subprefixes_scopes_scan_to_named_subprefixes_only(self):
+        """subprefixes=("pages/",) scans only <key>/pages/, not <key>/. This is
+        the queue_sender re-upload path — closes #719 (OCR's discovery reads
+        only pages/) while keeping the blast radius off nested-document
+        prefixes like foo/bar.pdf/*."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [{"Contents": [{"Key": "foo/pages/1/rawText.json"}]}]
+        )
+        deleted = delete_current_output_objects(
+            s3, "out-bucket", "foo", subprefixes=("pages/",)
+        )
+        assert deleted == 1
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="foo/pages/"
+        )
+
+    def test_subprefixes_none_is_broad_purge(self):
+        """subprefixes=None (default) preserves the reprocess-resolver
+        semantics — purge everything under <key>/ except runs/."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "doc.pdf", subprefixes=None)
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="doc.pdf/"
+        )
+
+    def test_subprefixes_empty_tuple_is_noop(self):
+        """subprefixes=() means 'purge these zero subprefixes' — no scans,
+        no deletes. Distinguishes an explicit empty from ``None`` (broad)."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        deleted = delete_current_output_objects(
+            s3, "out-bucket", "doc.pdf", subprefixes=()
+        )
+        assert deleted == 0
+        s3.get_paginator.return_value.paginate.assert_not_called()
+        s3.delete_objects.assert_not_called()
+
+    def test_subprefixes_pages_does_not_touch_nested_doc_prefix(self):
+        """Adversarial: uploads exist at both `foo` and `foo/bar.pdf`. The
+        queue_sender purge of `foo` with subprefixes=("pages/",) must scan
+        only `foo/pages/`, never `foo/`. A broad scan would return
+        `foo/bar.pdf/runs/manifest.json` (the nested document's version
+        history) and — because that key does NOT start with `foo/runs/` —
+        the preserved-prefix filter would let it through to delete_objects,
+        permanently orphaning the nested document's noncurrent versions."""
+        s3 = MagicMock()
+
+        # Broad scan on foo/ WOULD return the nested manifest (list_objects_v2
+        # is prefix-based). But queue_sender uses subprefixes=("pages/",), so
+        # only foo/pages/ is scanned — the nested manifest never appears.
+        def paginate_side_effect(**kwargs):
+            prefix = kwargs.get("Prefix", "")
+            if prefix == "foo/pages/":
+                return iter([{"Contents": [{"Key": "foo/pages/1/rawText.json"}]}])
+            # If the code ever regresses to scanning foo/ broadly, this branch
+            # would return the nested-doc manifest — the assertion below on
+            # the delete_objects payload catches that regression.
+            return iter(
+                [
+                    {
+                        "Contents": [
+                            {"Key": "foo/pages/1/rawText.json"},
+                            {"Key": "foo/bar.pdf/runs/manifest.json"},
+                            {"Key": "foo/bar.pdf/pages/1/result.json"},
+                        ]
+                    }
+                ]
+            )
+
+        s3.get_paginator.return_value.paginate.side_effect = paginate_side_effect
+        deleted = delete_current_output_objects(
+            s3, "out-bucket", "foo", subprefixes=("pages/",)
+        )
+        assert deleted == 1
+        # Critical: the nested document's manifest and pages must NEVER end up
+        # in a delete_objects payload.
+        for call in s3.delete_objects.call_args_list:
+            keys = [o["Key"] for o in call.kwargs["Delete"]["Objects"]]
+            assert "foo/bar.pdf/runs/manifest.json" not in keys
+            assert "foo/bar.pdf/pages/1/result.json" not in keys
+
+    def test_delete_objects_errors_are_subtracted_from_count(self):
+        """S3 delete_objects with Quiet=True still returns per-key failures
+        in ``Errors``. A silent partial failure that reported success would
+        re-open #719 (some stale pages survive; OCR's retry-safe recovery
+        finds them). The count must reflect only actual successes."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [
+                {
+                    "Contents": [
+                        {"Key": "doc.pdf/pages/1/rawText.json"},
+                        {"Key": "doc.pdf/pages/1/result.json"},
+                        {"Key": "doc.pdf/pages/1/textConfidence.json"},
+                    ]
+                }
+            ]
+        )
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {
+                    "Key": "doc.pdf/pages/1/result.json",
+                    "Code": "AccessDenied",
+                    "Message": "KMS policy denies",
+                }
+            ]
+        }
+        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        # 3 requested, 1 failed → 2 actual successes.
+        assert deleted == 2
+
+    def test_delete_objects_no_errors_returns_full_count(self):
+        """Baseline: with no Errors in the response, the count equals the
+        batch size — preserved for callers that log deleted-count."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [
+                {
+                    "Contents": [
+                        {"Key": "doc.pdf/pages/1/rawText.json"},
+                        {"Key": "doc.pdf/pages/1/result.json"},
+                    ]
+                }
+            ]
+        )
+        s3.delete_objects.return_value = {}
+        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+        assert deleted == 2
+
 
 @pytest.mark.unit
 class TestLoadAndDelete:

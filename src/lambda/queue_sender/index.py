@@ -107,17 +107,30 @@ def handler(event, context):
     # recovery mechanism (`discover_existing_ocr_pages`) resurrect the previous
     # document's OCR results, so classification/extraction would consume text
     # from the OLD document and the UI would show stale extraction. Issue #719.
+    #
+    # Scoped to `<key>/pages/` — that's the only subprefix
+    # ``discover_existing_ocr_pages`` reads, so purging just pages/ fully
+    # closes #719 while making it impossible for an upload of ``foo`` to
+    # destroy a nested document at ``foo/bar.pdf/*`` (the reprocess resolver
+    # keeps the broad ``<key>/*`` purge because its "start over" intent is
+    # deliberate and the caller is an authenticated admin action).
+    #
     # No-op on a fresh key. Preserves `<key>/runs/` (version-history manifests).
     try:
-        deleted = delete_current_output_objects(s3, output_bucket, object_key)
+        deleted = delete_current_output_objects(
+            s3, output_bucket, object_key, subprefixes=("pages/",)
+        )
         if deleted:
             logger.info(
                 f"Purged {deleted} stale output objects for re-uploaded key "
-                f"s3://{output_bucket}/{object_key}/"
+                f"s3://{output_bucket}/{object_key}/pages/"
             )
     except Exception as e:
-        # Non-fatal: OCR will still run but may recover stale partial data.
-        logger.warning(
+        # Non-fatal: OCR will still run but may recover stale partial data,
+        # silently reproducing #719. Logged at ERROR so a metric filter /
+        # alarm can catch it — the alternative (silent stale extraction)
+        # is exactly the symptom the fix exists to prevent.
+        logger.error(
             f"Failed to purge previous output data for {object_key}: {e}"
         )
 

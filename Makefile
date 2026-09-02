@@ -319,6 +319,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
+	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
+	$(PYTHON) -m pytest -q -p no:cacheprovider \
+	    src/lambda/queue_sender/test_index.py
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
