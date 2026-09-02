@@ -163,7 +163,22 @@ def score_synthetic(bucket, doc_prefix, truth):
     cell_accuracy = (
         round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
     )
+    # Section count vs the truth's expectation. This is the metric boundary
+    # detection is judged on, and nothing else can see it: a document split into
+    # 3 sections instead of 1 still reports completeness_recall 1.0 and status
+    # COMPLETED, because every row came back — just distributed across sections
+    # that should not exist (#653/#726). Reported as a 1.0/0.0 so the mean over
+    # repeats IS the pass rate, which is what a non-deterministic failure needs.
+    expected_sections = truth.get("expected_sections")
+    sections_correct = (
+        (1.0 if len(sections) == int(expected_sections) else 0.0)
+        if expected_sections is not None
+        else None
+    )
     return {
+        "sections": len(sections),
+        "sections_expected": expected_sections,
+        "sections_correct": sections_correct,
         "rows_truth": n_truth,
         "rows_extracted": len(extracted),
         "completeness_recall": round(recall, 4) if recall is not None else None,

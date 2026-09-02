@@ -85,6 +85,10 @@ CSV_COLS = [
     "completeness_recall",
     "truncation_prefix",
     "scalar_accuracy",
+    "typed_accuracy",
+    "cell_accuracy",
+    # Mean over repeats IS the boundary-detection pass rate.
+    "sections_correct",
     "weighted_accuracy",
     "parse_failures",
     "mean_confidence",
@@ -141,6 +145,11 @@ def cell_stats(rows):
             "cost": _stats([r.get("cost") for r in succ]),
             "completeness_recall": _stats([r.get("completeness_recall") for r in succ]),
             "scalar_accuracy": _stats([r.get("scalar_accuracy") for r in succ]),
+            "typed_accuracy": _stats([r.get("typed_accuracy") for r in succ]),
+            "cell_accuracy": _stats([r.get("cell_accuracy") for r in succ]),
+            # The mean here is the boundary-detection PASS RATE over repeats,
+            # which is the only meaningful reading of a non-deterministic failure.
+            "sections_correct": _stats([r.get("sections_correct") for r in succ]),
             "weighted_accuracy": _stats([r.get("weighted_accuracy") for r in succ]),
             "wall_s": _stats([r.get("wall_s") for r in succ]),
         }

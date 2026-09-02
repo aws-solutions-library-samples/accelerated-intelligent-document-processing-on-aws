@@ -30,6 +30,11 @@ def mock_env():
         "OUTPUT_BUCKET": "test-output-bucket",
         "CONFIG_TABLE": "test-config-table",
         "LOG_LEVEL": "INFO",
+        # index.py builds boto3 clients (sqs/s3/cloudwatch) which need a region.
+        # Without this the tests inherit one from the developer's environment and
+        # pass locally, then fail in CI with NoRegionError — which is exactly what
+        # happened. A unit test must not depend on ambient AWS configuration.
+        "AWS_DEFAULT_REGION": "us-east-1",
     }
     with patch.dict(os.environ, env_vars):
         yield

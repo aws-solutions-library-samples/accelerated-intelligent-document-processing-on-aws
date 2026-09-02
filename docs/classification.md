@@ -167,6 +167,41 @@ The boundary detection is automatically included in the classification results. 
 }
 ```
 
+The value is also **persisted** on the page record and exposed on the API, so an
+unexpected split or merge can be inspected after the fact instead of re-derived
+from Lambda logs.
+
+###### How the model is asked to decide it
+
+Each page is classified in an **independent** LLM call that sees only that page
+(plus any neighbours from `contextPagesCount`) and is never told its position in
+the packet. So "does this continue the previous document?" is a question the model
+often cannot answer from what it was given — and the prompt used to ask exactly
+that. Failing runs said so in their own reasoning: *"Since no prior page 1 has been
+established in this sequence, this is treated as the start of the document."* The
+result was intermittent over-splitting of multi-page documents
+([#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)).
+
+`classification.task_prompt` now carries a `<boundary-detection-rules>` block that
+asks a question a single page **can** answer — is this page a *first* page? — from
+its own evidence, in priority order: pagination (`Page 2 of 2` ⇒ `continue`), then
+the presence of an opening identity block, then continuation evidence. Two clauses
+in it are a matched pair and must not be removed independently:
+
+| Clause | Prevents |
+|---|---|
+| *no preceding page shown* — absence of page 1 in the input says nothing about the document | **over-splitting** (every page reported as `start`) |
+| *consecutive documents of the same type* — a genuine first page is `start` even when the previous page has the same class | **over-merging** (back-to-back copies of one form collapsing into one section) |
+
+The block sits **before `<<CACHEPOINT>>`**, so it is part of the cacheable prefix
+and is not re-billed per page.
+
+> `contextPagesCount: 1` is not a substitute. It fixes the simple two-page case but
+> biases the model toward `continue`, which then merges genuinely separate
+> back-to-back documents — trading over-splitting for over-merging. It remains the
+> right answer for one case the rules cannot cover: **pages scanned out of order**,
+> where a page has no way to know it is physically second.
+
 ##### Enforcing a Valid Class Vocabulary (Validation + Retry)
 
 With a fixed set of classes, a language model can occasionally return a label
@@ -180,10 +215,20 @@ classifications:
    class vocabulary.
 2. If the class is **not** valid, the model is **re-prompted** — the original
    request content is re-sent with an appended correction message that lists
-   the allowed classes. (This matters: classification runs at `temperature=0`,
-   so re-sending an identical request would return the identical invalid
-   answer. The correction changes the input and steers the model back to the
-   allowed set.)
+   the allowed classes. (This matters: on a model that honors it, classification
+   runs at `temperature=0`, so re-sending an identical request would return the
+   identical invalid answer. The correction changes the input and steers the
+   model back to the allowed set.)
+
+   > **`temperature=0` is not universal.** Claude Opus 4.7/4.8, Opus 5 and
+   > Sonnet 5 **reject** `temperature`/`top_p`/`top_k` (HTTP 400), so
+   > `idp_common` strips them before the request (`_CLAUDE_4_7_BASE_NAMES` in
+   > `idp_common/bedrock/client.py`). On those models classification **samples**,
+   > and identical inputs can return different answers run to run. This
+   > documentation previously stated the parameter applied everywhere, and that
+   > assumption is what made [#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)
+   > — intermittent page-boundary misdetection — look like a model defect rather
+   > than a prompt one.
 3. The retry repeats up to `maxValidationRetries` times.
 4. If all retries are exhausted, the page is assigned `invalidClassFallback`
    (default `unclassified`) and flagged with a `validation_error` entry in its
