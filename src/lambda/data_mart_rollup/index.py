@@ -105,6 +105,16 @@ lambda_client = boto3.client("lambda")
 # call in ``handler``.
 _lambda_memory_cache: Dict[str, Tuple[int, str]] = {}
 
+# Per-invocation cache of the CFN stack tree and the data-plane ARN set.
+# ``_rollup_control_plane_hourly`` and ``_rollup_data_plane_lambda_hourly`` both
+# need them, and each used to re-walk the tree (``ListStackResources`` across
+# root + every nested stack) and re-run the ``idp:plane=data`` tag query
+# independently — twice the CFN and Tagging API calls per hourly fire for
+# results that cannot change mid-invocation. Cleared alongside the other caches
+# in ``handler`` so a stack update between fires is still picked up.
+_stack_tree_cache: Optional[List[str]] = None
+_data_plane_arn_cache: Optional[List[str]] = None
+
 
 def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     """Route between hourly and daily rollup modes.
@@ -121,9 +131,12 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # editing pricing.yaml must see the change on the next rollup, not
     # after the container recycles.
     global _bedrock_pricing_map, _bedrock_pricing_unavailable
+    global _stack_tree_cache, _data_plane_arn_cache
     _lambda_memory_cache.clear()
     _bedrock_pricing_map = None
     _bedrock_pricing_unavailable = False
+    _stack_tree_cache = None
+    _data_plane_arn_cache = None
 
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
@@ -1225,6 +1238,43 @@ def _require_hourly_matches_raw_metering(
 # ---------------------------------------------------------------------------
 
 
+def _cached_stack_tree() -> List[str]:
+    """The CFN stack tree (root + nested), walked at most once per invocation.
+
+    Both hourly plane rollups need it. The walk is a ``ListStackResources``
+    paginate per stack in the tree, and the topology cannot change while a
+    single rollup runs, so doing it twice was pure duplicate API load.
+    ``handler`` clears the cache so a stack update between fires is picked up.
+    """
+    global _stack_tree_cache
+    if _stack_tree_cache is None:
+        _stack_tree_cache = _enumerate_stack_tree(STACK_NAME)
+        logger.info(
+            f"Stack tree from root {STACK_NAME!r}: "
+            f"{len(_stack_tree_cache)} stack(s) — {_stack_tree_cache}"
+        )
+    return _stack_tree_cache
+
+
+def _cached_data_plane_arns() -> List[str]:
+    """Lambda ARNs tagged ``idp:plane=data`` in this stack tree, fetched at most
+    once per invocation.
+
+    ``_discover_control_plane_lambdas`` subtracts this set and
+    ``_discover_data_plane_lambdas`` returns it, so the same tag query used to
+    run twice per hourly fire.
+    """
+    global _data_plane_arn_cache
+    if _data_plane_arn_cache is None:
+        _data_plane_arn_cache = _get_resources_by_tag(
+            {
+                "aws:cloudformation:stack-name": _cached_stack_tree(),
+                "idp:plane": ["data"],
+            }
+        )
+    return _data_plane_arn_cache
+
+
 def _discover_control_plane_lambdas() -> List[str]:
     """Return control-plane Lambda ARNs (all IDP Lambdas minus data-plane).
 
@@ -1246,19 +1296,12 @@ def _discover_control_plane_lambdas() -> List[str]:
         logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
         return []
 
-    stack_tree = _enumerate_stack_tree(STACK_NAME)
-    logger.info(
-        f"Stack tree from root {STACK_NAME!r}: {len(stack_tree)} stack(s) — {stack_tree}"
-    )
+    stack_tree = _cached_stack_tree()
 
     all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": stack_tree})
     # Scope the data-plane query to the SAME tree — a shared account with
     # multiple IDP stacks would otherwise cross-contaminate.
-    data_plane = set(
-        _get_resources_by_tag(
-            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
-        )
-    )
+    data_plane = set(_cached_data_plane_arns())
 
     control_plane = [arn for arn in all_idp if arn not in data_plane]
 
@@ -1304,12 +1347,7 @@ def _discover_data_plane_lambdas() -> List[str]:
     if not STACK_NAME:
         logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
         return []
-    stack_tree = _enumerate_stack_tree(STACK_NAME)
-    return list(
-        _get_resources_by_tag(
-            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
-        )
-    )
+    return list(_cached_data_plane_arns())
 
 
 def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
@@ -1709,9 +1747,12 @@ def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
 
     Cached across warm-container invocations so we don't spam
     get_function_configuration — both properties are static per deployed
-    function. Falls back to (128 MB, "x86_64") on lookup failure — x86_64
-    is the AWS default architecture, so this errs on the side of
-    *slightly higher* per-GB-second cost (safer than under-estimating).
+    function. Falls back to (512 MB, "x86_64") on lookup failure: 512 is the
+    median across this stack's Lambdas (see the rationale at the ``except``
+    below — 128, the AWS floor, was up to ~24x under-count on a 3008 MB
+    function), and x86_64 is the AWS default architecture, so the arch half
+    errs toward *slightly higher* per-GB-second cost rather than under-
+    estimating.
 
     On lookup FAILURE the fallback is used for this call but NOT cached
     — a transient throttle should not poison the warm container for its
@@ -2099,13 +2140,42 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     # was misleading. CFN names for these look like
     # ``PATTERNSTACK-2UBGW8A18HIT-OCRFunction-xxxx`` etc. Match on the
     # bare stage name embedded in the middle of the CFN-generated ID.
+    #
+    # BDA rules come FIRST among the data-plane stages, and name each BDA
+    # Lambda explicitly. Two bugs in the round-24 version, both fixed here:
+    #
+    # 1. The rule was ``(^|[^a-z])bda`` — a boundary guard so ``lambda``
+    #    (``GetDomainLambda`` etc.) wouldn't match. But it ALSO failed on
+    #    ``InvokeBDAFunction``: lowercased, ``invoke*bda*function`` has the
+    #    letter ``e`` before ``bda``, so the BDA-mode invoke Lambda — the
+    #    most expensive one on that path — silently fell through to
+    #    ``other-control``.
+    # 2. The rule sat BELOW ``processresultsfunction``, so
+    #    ``BDAProcessResultsFunction`` was claimed by the pipeline
+    #    ``process-results`` rule instead.
+    #
+    # An explicit list fixes both without a boundary guard, and can't
+    # false-positive on a CFN random suffix that happens to contain ``bda``.
+    # The first three are data plane; BDAOCRProject is a control-plane CFN
+    # custom resource that still belongs in the ``bda`` bucket. (One more
+    # BDA-ish Lambda exists — ``SyncBdaIdpResolverFunction`` in
+    # nested/api-resolvers — but it is a UI resolver for BDA *blueprint sync*,
+    # not a BDA invocation, so it stays in ``other-control`` as it was before
+    # this change.)
+    (
+        re.compile(r"invokebda|bdaprocessresults|bdacompletion|bdaocrproject"),
+        "bda",
+    ),
+    # ``rulevalidation`` must precede ``classificationfunction``:
+    # ``RuleValidationPolicyClassificationFunction`` contains
+    # ``classificationfunction`` and was being labelled ``classification``.
+    (re.compile(r"rulevalidation"), "rule-validation"),
     (re.compile(r"ocrfunction"), "ocr"),
     (re.compile(r"classificationfunction"), "classification"),
     (re.compile(r"extractionfunction"), "extraction"),
     (re.compile(r"assessmentfunction"), "assessment"),
     (re.compile(r"summarizationfunction"), "summarization"),
     (re.compile(r"evaluationfunction"), "evaluation"),
-    (re.compile(r"rulevalidation"), "rule-validation"),
     (re.compile(r"processresultsfunction"), "process-results"),
     (re.compile(r"shardruntimefunction"), "shard-runtime"),
     (re.compile(r"savereportingdata"), "save-reporting"),
@@ -2113,12 +2183,28 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"queueprocessor"), "queue-processor"),
     (re.compile(r"queuesender"), "queue-sender"),
     (re.compile(r"pipelinehooks"), "pipeline-hooks"),
-    # Round-24 fix: careful with ``bda`` — a bare substring match would
-    # false-positive on ``lambda`` (contains ``bda`` at chars 3-5).
-    # Require the BDA marker to appear at a word boundary / after a
-    # non-alphanum character so ``LamBda`` doesn't match but
-    # ``BDAOCRProjectFunction`` and ``bda_invoke`` do.
-    (re.compile(r"(^|[^a-z])bda"), "bda"),
+    # The remaining four data-plane Lambdas on DATA_PLANE_ALLOWLIST. Round-24
+    # added rules for the pipeline stages but missed these, so their
+    # ``data_plane_lambda_hourly`` rows carried ``component='other-control'``
+    # — a label whose name says "control" appearing in the data-plane table.
+    # ``scripts/tests/test_data_plane_component_labels.py`` now pins the
+    # allowlist ↔ label mapping so a future addition can't be forgotten.
+    #
+    # KEEP EVERY LITERAL AT OR UNDER 24 CHARACTERS. Lambda function names cap at
+    # 64 chars and CloudFormation truncates the *logical-ID* segment to fit, so
+    # what arrives here is a PREFIX of the logical ID, not the whole thing. Live
+    # examples from the deployment account, all cut to exactly 24:
+    #   IDP1-PATTERNSTACK-170UXCO-BDAProcessResultsFunctio-05Xr5A5hn8po
+    #   IDP1-PATTERNSTACK-170UXCO-RuleValidationPolicyClas-QmIjulE8f33f
+    #   IDP1-APIRESOLVERSTACK-LI3-SyncBdaIdpResolverFuncti-P3kLHJldG4DK
+    # ``postprocessingdecompressor`` (26) was over that budget and matched
+    # nothing on any stack whose name is long enough to force truncation —
+    # i.e. it silently failed to fix the very row it was added for. The
+    # truncated-name shape in the test above now covers this.
+    (re.compile(r"batchpreprocessor"), "batch-ingest"),
+    (re.compile(r"jobtracker"), "job-tracker"),
+    (re.compile(r"postprocessingdecomp"), "post-processing"),
+    (re.compile(r"completesectionreview"), "hitl-review"),
 ]
 
 
@@ -2248,9 +2334,7 @@ def _query_wrote_manifest(query_id: str) -> bool:
         s3_client.head_object(Bucket=bucket, Key=key)
         return True
     except Exception as e:  # nosec — best-effort positive signal only
-        logger.info(
-            f"S3 manifest probe for {query_id} did not confirm success: {e}"
-        )
+        logger.info(f"S3 manifest probe for {query_id} did not confirm success: {e}")
         return False
 
 
@@ -2399,6 +2483,22 @@ def _run_athena(
             # that two concurrent retries of THIS invocation share it
             # (dedup wins), but every subsequent async-retry gets a
             # different one (breaks lock).
+            #
+            # This is the ONE window ``ClientRequestToken`` can't close, and
+            # it's why ``DataMartRollupFunction`` sets
+            # ``ReservedConcurrentExecutions: 1`` in template.yaml — do not
+            # remove that property. Two concurrent restarts of the same
+            # partition landing in DIFFERENT wall-clock seconds get different
+            # tokens and would both INSERT.
+            #
+            # The salt can't be derived from the event anchor time instead:
+            # the anchor is identical across async retries by design (that's
+            # what makes retries target the right partition), so an
+            # anchor-derived salt would be stable across retries and
+            # reinstate exactly the cached-failure lock this branch exists to
+            # break. The two requirements — differ across sequential retries,
+            # match across concurrent duplicates — have no single-token
+            # solution, hence the concurrency pin.
             fresh_salt = str(int(time.time()))
             # Round-23 (#2208): input token was truncated to 116 chars
             # above so the "-r<10-digit-timestamp>" suffix (12 chars)

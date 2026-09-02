@@ -29,9 +29,12 @@ BASE_CONFIG = {
     "bank_statement": os.path.join(
         REPO, "config_library", "unified", "bank-statement-sample", "config.yaml"
     ),
-    "kv_form": os.path.join(
-        REPO, "config_library", "managed_config", "realkie-fcc-verified", "config.yaml"
-    ),
+    # Emitted by the generator itself (gen_corpus.py must run first), so the class
+    # schema and the ground truth are derived from one source and cannot drift.
+    # It previously pointed at realkie-fcc-verified — an unrelated forms schema
+    # that does not declare any of this generator's 25 fields, so anything scored
+    # under it produced a meaningless number rather than an obvious error.
+    "kv_form": os.path.join(BENCH, "corpus", "docs", "kv_form.pdf.classes.yaml"),
     "realkie": os.path.join(
         REPO, "config_library", "managed_config", "realkie-fcc-verified", "config.yaml"
     ),
