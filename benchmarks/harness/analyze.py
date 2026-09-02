@@ -34,13 +34,100 @@ def _wall(row):
         return None
 
 
+def typed_match(expected, got):
+    """Does ``got`` match a SCHEMA-TYPED expectation, in both type and value?
+
+    This is deliberately stricter than ``scalar_accuracy``'s string compare, and
+    the difference is the whole point of the metric. ``fields`` in a truth file
+    records the text the document RENDERS (``"$685.50"``); ``fields_typed``
+    records what a correctly-typed extraction must produce (``685.5``). Comparing
+    a typed field by ``str()`` scores the *rendered* form as correct, so a
+    pipeline that correctly returns the number looks WRONG — which is exactly
+    backwards, and is how a value-normalization feature would be measured as a
+    regression.
+
+    So: a string in a ``number`` field is a MISS, because that is the failure
+    under test. Numbers compare by value (``1234`` == ``1234.0``) since JSON does
+    not distinguish them; booleans must be real booleans, not ``"Yes"``/``"true"``.
+    """
+    if isinstance(expected, bool):
+        # Checked before the numeric branch: bool is a subclass of int.
+        return isinstance(got, bool) and got == expected
+    if isinstance(expected, (int, float)):
+        if isinstance(got, bool) or not isinstance(got, (int, float)):
+            return False
+        return float(got) == float(expected)
+    if expected is None:
+        return got is None
+    return isinstance(got, str) and got.strip() == str(expected).strip()
+
+
+def _seq_of(row):
+    """The SEQnnnnn tag embedded in any string cell of an extracted row."""
+    if not isinstance(row, dict):
+        return None
+    for v in row.values():
+        if isinstance(v, str):
+            m = lib.SEQ.search(v)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def score_cells(sections, rows_typed, list_key):
+    """Per-CELL accuracy over list rows, matched to truth by SEQ tag.
+
+    Completeness (``completeness_recall``) answers "did every row come back";
+    this answers "did every cell come back with the right typed value". They are
+    independent: a run can recover 100% of rows and still return every ``Amount``
+    as the string ``"$1,234.00"``. Without this metric, per-row value handling is
+    invisible to the whole benchmark — which is why an earlier enforcement A/B
+    measured 81 value repairs and a delta of exactly zero.
+
+    Returns ``(hits, total, rows_matched)``. ``total`` counts only cells the
+    truth declares AND whose row was recovered, so this metric is about VALUE
+    fidelity and does not double-count the truncation that recall already reports.
+    """
+    if not rows_typed:
+        return None, None, None
+    by_seq = {}
+    for sec in sections:
+        ir = sec.get("inference_result") or {}
+        if not isinstance(ir, dict):
+            continue
+        for key, val in ir.items():
+            if list_key and key.lower() != str(list_key).lower():
+                continue
+            if not isinstance(val, list):
+                continue
+            for row in val:
+                seq = _seq_of(row)
+                if seq is not None:
+                    by_seq.setdefault(seq, row)
+    hits = total = 0
+    for seq_tag, cells in rows_typed.items():
+        seq = int(str(seq_tag)[3:]) if str(seq_tag).startswith("SEQ") else int(seq_tag)
+        row = by_seq.get(seq)
+        if row is None:
+            continue  # not recovered at all -> recall's business, not ours
+        for cell, exp in (cells or {}).items():
+            total += 1
+            got = next((v for k, v in row.items() if k.lower() == cell.lower()), None)
+            if typed_match(exp, got):
+                hits += 1
+    return hits, total, len(by_seq)
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values."""
     seqs, confs = [], []
     scalar_hits = scalar_tot = 0
+    typed_hits = typed_tot = 0
     fields = truth.get("fields") or {}
+    fields_typed = truth.get("fields_typed") or {}
     got_fields = {}
-    for sec in lib.iter_section_results(bucket, doc_prefix):
+    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    for sec in sections:
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
         seqs += [int(m) for m in lib.SEQ.findall(blob)]
@@ -56,12 +143,26 @@ def score_synthetic(bucket, doc_prefix, truth):
     prefix = 0
     while prefix in extracted:
         prefix += 1
-    # scalar field accuracy (exact, normalized)
+    # scalar field accuracy (exact, normalized). Compares against the RENDERED
+    # text, so it is unchanged for every existing truth file — the committed
+    # baseline stays comparable.
     for label, exp in fields.items():
         scalar_tot += 1
         got = got_fields.get(label.lower())
         if got is not None and str(got).strip() == str(exp).strip():
             scalar_hits += 1
+    # Typed accuracy: a SEPARATE metric, not a redefinition of the one above.
+    # Only populated for truth files that declare `fields_typed`.
+    for label, exp in fields_typed.items():
+        typed_tot += 1
+        if typed_match(exp, got_fields.get(label.lower())):
+            typed_hits += 1
+    cell_hits, cell_tot, _rows_matched = score_cells(
+        sections, truth.get("rows_typed"), truth.get("list_key")
+    )
+    cell_accuracy = (
+        round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
+    )
     return {
         "rows_truth": n_truth,
         "rows_extracted": len(extracted),
@@ -70,6 +171,10 @@ def score_synthetic(bucket, doc_prefix, truth):
         "dups": len(seqs) - len(extracted),
         "n_gaps": len(truth_ids - extracted),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
+        "typed_accuracy": round(typed_hits / typed_tot, 4) if typed_tot else None,
+        "typed_fields": typed_tot or None,
+        "cell_accuracy": cell_accuracy,
+        "cells_compared": cell_tot or None,
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
         "pct_conf_below_0.9": round(
             100 * sum(1 for c in confs if c < 0.9) / len(confs), 1

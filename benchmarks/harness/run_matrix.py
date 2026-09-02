@@ -216,7 +216,51 @@ def load_plan(suite, klass):
         )
     else:
         doc_ids = [dg]
+    doc_ids, skipped = _docs_for_class(doc_ids, docm, klass)
+    if skipped:
+        print(
+            f"note: {len(skipped)} doc(s) in suite '{suite}' belong to another "
+            f"document class and are NOT run here: {skipped}\n"
+            f"      run them with --class <their class> (configs are per class)."
+        )
+    if not doc_ids:
+        sys.exit(
+            f"suite '{suite}' has no docs for class '{klass}' — every doc it names "
+            f"belongs to a different class. Check --class."
+        )
     return cells, doc_ids, int(suite_spec.get("repeats", 1))
+
+
+def _docs_for_class(doc_ids, docm, klass):
+    """Split ``doc_ids`` into (runnable under ``klass``, belonging elsewhere).
+
+    A suite may legitimately name documents of several classes — the enforcement
+    suite runs a transaction-list doc AND a flat form, because the feature it
+    measures behaves differently on each. But configs are built per class, so a
+    document scored under another class's schema produces a meaningless number
+    that looks like a real one. ``run_matrix`` used to run every named doc under
+    whatever ``--class`` was passed, despite a comment claiming otherwise; this is
+    that comment, implemented.
+
+    A synthetic doc's class is its generator (``gen``); a reference doc names its
+    config explicitly. Anything unrecognized is left in rather than dropped —
+    silently skipping a document would be its own kind of wrong answer.
+    """
+    by_id = {d["id"]: d for d in docm.get("synthetic", [])}
+    for d in docm.get("reference", []):
+        by_id[d["id"]] = d
+    keep, other = [], []
+    for doc_id in doc_ids:
+        spec = by_id.get(doc_id)
+        if spec is None:
+            keep.append(doc_id)  # unknown: let the existing missing-PDF error fire
+            continue
+        doc_class = spec.get("gen") or spec.get("config")
+        if doc_class is None or doc_class == klass:
+            keep.append(doc_id)
+        else:
+            other.append(doc_id)
+    return keep, other
 
 
 def _dig(d, dotted):
