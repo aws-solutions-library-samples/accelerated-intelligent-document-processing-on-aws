@@ -1167,6 +1167,23 @@ The same board is available on a processed document, from **Document Sections** 
 the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
+### A section with no field values
+
+A section can legitimately have nothing extracted, and the editor says which of three
+things happened rather than showing an empty form:
+
+- **No document class.** With no class there is no schema, so extraction had nothing to
+  extract against. This is the actionable one: set the class first — re-extracting before
+  that produces nothing. A section in this state is marked **(no class)** in its tab. It
+  often means the packet split is wrong and the pages belong with a neighbouring section,
+  which **Edit page grouping** can merge.
+- **Extraction ran and produced nothing**, on a section that does have a class.
+- **A section added by re-grouping**, which starts with no values because nothing has
+  extracted those pages as a group yet.
+
+Section tabs name each section's class, so the one that is missing a class is visible
+without opening each tab in turn.
+
 ### Annotating creates a new version of the set
 
 Correcting ground truth changes what every previously-scored run was measured against, so

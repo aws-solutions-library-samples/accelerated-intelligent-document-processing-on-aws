@@ -38,8 +38,11 @@ vi.mock('../../../hooks/use-configuration', () => ({
 vi.mock('../../../contexts/app', () => ({ default: () => ({ user: { username: 'tester' } }) }));
 
 import GroundTruthVisualEditor from '../GroundTruthVisualEditor';
+import type { TestSetDocumentSectionRef } from '../GroundTruthVisualEditor';
 
-const SECTIONS = [{ sectionId: '1', baselineKey: 'ts1/baseline/p.pdf/sections/1/result.json', documentClass: 'Invoice', pageIndices: [0] }];
+const SECTIONS: TestSetDocumentSectionRef[] = [
+  { sectionId: '1', baselineKey: 'ts1/baseline/p.pdf/sections/1/result.json', documentClass: 'Invoice', pageIndices: [0] },
+];
 const TWO_SECTIONS = [
   ...SECTIONS,
   { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'Invoice', pageIndices: [1] },
@@ -59,7 +62,7 @@ beforeEach(() => {
   });
 });
 
-const renderEditor = (sections = SECTIONS) =>
+const renderEditor = (sections: TestSetDocumentSectionRef[] = SECTIONS) =>
   render(
     <GroundTruthVisualEditor
       bucket="test-set-bucket"
@@ -84,13 +87,45 @@ describe('GroundTruthVisualEditor with no field values', () => {
     expect(screen.queryByText('Document Data')).not.toBeInTheDocument();
   });
 
-  it('names re-grouping as the other way a section gets here', async () => {
+  it('names re-grouping as the other way a classified section gets here', async () => {
     // updateTestSetDocumentSections writes `inference_result: {}` for an added section
     // deliberately, so this is a state the product creates, not only a failure.
-    mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
+    //
+    // Needs a class: an unclassified section has a more specific cause and takes the
+    // branch below. This fixture originally had none, so it was passing for that reason
+    // rather than the one it names.
+    mockBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0] }, inference_result: {} });
     renderEditor();
 
     expect(await screen.findByText(/re-grouped/i)).toBeInTheDocument();
+  });
+
+  it('blames the missing class when there is one, and says re-extracting will not help', async () => {
+    // The live case: the labelling run left section 1 unclassified, so there is no schema
+    // and extraction has nothing to extract against. Telling a reviewer to re-extract
+    // sends them round a loop that cannot succeed until a class is set, so the advice has
+    // to differ from the other two causes.
+    mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
+    renderEditor();
+
+    expect(await screen.findByText(/no document class/i)).toBeInTheDocument();
+    expect(screen.getByText(/no schema to extract against/i)).toBeInTheDocument();
+    expect(screen.getByText(/re-extracting before that will not produce anything/i)).toBeInTheDocument();
+    // And it offers the other real remedy: the pages may belong with another section.
+    expect(screen.getByText(/can merge them/i)).toBeInTheDocument();
+  });
+
+  it('offers the class control on a section that has no class', async () => {
+    // The dead end this pair of fixes exists for: the Class label field was gated on a
+    // class already being set, so the section that needed one had no control to set it —
+    // while the alert told the reviewer to change the class.
+    mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
+    renderEditor();
+
+    expect(await screen.findByText('Class label')).toBeInTheDocument();
+    // Asserted as text, not getByPlaceholderText: a Cloudscape Select renders its
+    // placeholder as button content, not an HTML placeholder attribute.
+    expect(screen.getByText('Choose a document class')).toBeInTheDocument();
   });
 
   it('still distinguishes a missing result from an empty one', async () => {
@@ -115,6 +150,24 @@ describe('GroundTruthVisualEditor with no field values', () => {
 
     await waitFor(() => expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument());
     expect(screen.queryByText(/Other sections of this document/i)).not.toBeInTheDocument();
+  });
+
+  it('marks an unclassified section in its tab, and names every class from the payload', async () => {
+    // A bare "Section 1" beside "Section 2 (ExxonMobilInvoice)" expressed the missing
+    // class only as absent text, which reads as "this tab shows the number". And only the
+    // OPEN tab used to name its class at all, so finding the problem section meant
+    // clicking each one — even though the payload carries documentClass for all of them.
+    mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
+    renderEditor([
+      { sectionId: '1', baselineKey: 'ts1/baseline/p.pdf/sections/1/result.json', documentClass: null, pageIndices: [0] },
+      { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'ExxonMobilInvoice', pageIndices: [1] },
+    ]);
+
+    // findAllByText: a Cloudscape SegmentedControl renders each label more than once
+    // (visible plus assistive copies), so the singular query is ambiguous by design.
+    expect(await screen.findAllByText('Section 1 (no class)')).not.toHaveLength(0);
+    // Named without being opened.
+    expect(screen.getAllByText('Section 2 (ExxonMobilInvoice)')).not.toHaveLength(0);
   });
 
   it('renders the fields normally when there are any', async () => {

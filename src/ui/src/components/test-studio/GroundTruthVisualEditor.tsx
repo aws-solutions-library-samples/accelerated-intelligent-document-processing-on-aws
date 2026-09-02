@@ -153,10 +153,21 @@ interface GroundTruthVisualEditorProps {
   buildFieldLink?: ((fieldPath: string) => string) | null;
 }
 
-const getSectionLabel = (sectionId: string, data: Record<string, unknown> | null): string => {
-  const docClass = (data?.document_class as Record<string, unknown> | undefined)?.type;
-  return docClass ? `Section ${sectionId} (${String(docClass)})` : `Section ${sectionId}`;
-};
+/**
+ * A section tab's label, naming the class — or naming its absence.
+ *
+ * An unclassified section used to read as a bare `Section 1` beside a classified
+ * `Section 2 (ExxonMobilInvoice)`, so the missing class was expressed only as *absent*
+ * parenthetical text. That reads as "this tab just shows the number", not "this section
+ * has no class" — and it is the reason the section has no extracted fields, so it is
+ * worth saying out loud.
+ *
+ * Every tab is labelled from the queue payload, not only the open one: the payload
+ * carries `documentClass` per section, so there is no reason to make a reviewer click
+ * each tab to find out which section is the problem.
+ */
+const sectionTabLabel = (sectionId: string, documentClass: string | null | undefined): string =>
+  documentClass ? `Section ${sectionId} (${documentClass})` : `Section ${sectionId} (no class)`;
 
 const GroundTruthVisualEditor = ({
   bucket,
@@ -762,7 +773,11 @@ const GroundTruthVisualEditor = ({
               onChange={({ detail }) => handleSectionChange(detail.selectedId)}
               options={sections.map((s) => ({
                 id: s.sectionId,
-                text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
+                /* The open section's class comes from its loaded baseline, which may carry
+                   an unsaved edit; the others come from the payload. Falling back to the
+                   payload while the baseline is still loading keeps a tab from flashing
+                   "(no class)" at a section that has one. */
+                text: sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass),
               }))}
             />
           ) : (
@@ -820,7 +835,17 @@ const GroundTruthVisualEditor = ({
                   label: 'Visual Editor',
                   content: (
                     <SpaceBetween size="s">
-                      {documentClassType !== undefined && (
+                      {/* Rendered whenever a baseline is loaded, including when it carries
+                          no class. The gate was `documentClassType !== undefined`, which
+                          showed the control only if a class was ALREADY set — backwards for
+                          the one case that needs it. Observed on a live stack: a section the
+                          labelling run left unclassified had no class control at all, so the
+                          empty-result alert's advice to "Change class & re-extract" pointed
+                          at something not on screen, and the JSON editor is scoped to
+                          `inference_result` so it could not set one either. The only route
+                          left was the page-grouping board's per-section dropdown, which
+                          nothing pointed at. */}
+                      {localData && (
                         <FormField
                           label="Class label"
                           description={
@@ -968,19 +993,36 @@ const GroundTruthVisualEditor = ({
                         </>
                       ) : (
                         <Alert type="info" header="No field values for this section">
-                          {/* Distinguished, because the two causes need different advice and
-                              because the reviewer's next move differs. An empty object used
-                              to fall through to the renderer and produce a bare "Document
-                              Data" heading with nothing under it and no explanation —
-                              indistinguishable from a rendering failure. */}
-                          {inferenceResult
-                            ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
-                            : 'This section has no inference_result at all.'}{' '}
+                          {/* Three causes, each with a different remedy, which is why they are
+                              distinguished rather than covered by one sentence. An empty
+                              object used to fall through to the renderer and produce a bare
+                              "Document Data" heading with no explanation at all —
+                              indistinguishable from a rendering failure.
+
+                              The unclassified case was found on a live stack and is the most
+                              actionable: with no class there is no schema, so extraction has
+                              nothing to extract against and re-running it changes nothing
+                              until a class is set. Saying "re-extract" there would send a
+                              reviewer round a loop that cannot succeed. */}
+                          {!documentClassType
+                            ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set the class above first; re-extracting before that will not produce anything.'
+                            : inferenceResult
+                              ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
+                              : 'This section has no inference_result at all.'}{' '}
                           {sections.length > 1
                             ? 'Other sections of this document may still have values — check the section tabs above. '
                             : ''}
-                          Use <b>Change class &amp; re-extract</b> to have the model populate it, or the <b>JSON Editor</b> tab to enter
-                          values by hand.
+                          {documentClassType ? (
+                            <>
+                              Use <b>Change class &amp; re-extract</b> to have the model populate it, or the <b>JSON Editor</b> tab to enter
+                              values by hand.
+                            </>
+                          ) : (
+                            <>
+                              If the pages belong with another section instead, <b>Edit page grouping</b> can merge them rather than
+                              classifying this one separately.
+                            </>
+                          )}
                         </Alert>
                       )}
                     </SpaceBetween>
