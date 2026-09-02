@@ -26,9 +26,13 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 # Initialize clients
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
+cloudwatch = boto3.client("cloudwatch")
 document_service = create_document_service()
 queue_url = os.environ["QUEUE_URL"]
 retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
+# Matches queue_processor's namespace so both concurrency and ingest
+# telemetry share the same operator-facing surface.
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 
 def resolve_active_config_version(config_table):
@@ -140,12 +144,27 @@ def handler(event, context):
             )
     except Exception as e:
         # Non-fatal: OCR will still run but may recover stale partial data,
-        # silently reproducing #719. Logged at ERROR so a metric filter /
-        # alarm can catch it — the alternative (silent stale extraction)
-        # is exactly the symptom the fix exists to prevent.
-        logger.error(
-            f"Failed to purge previous output data for {object_key}: {e}"
-        )
+        # silently reproducing #719. Logged at ERROR AND emitted as a
+        # CloudWatch metric so an operator can alarm on it without
+        # depending on log-scraping (matches the round-16 pattern in
+        # queue_processor._put_drift_sample). The alternative (raise →
+        # DLQ the SQS event → drop the upload entirely) is worse:
+        # customers would rather see a possibly-stale extraction than
+        # have the ingest silently disappear.
+        logger.error(f"Failed to purge previous output data for {object_key}: {e}")
+        try:
+            cloudwatch.put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "StaleOutputPurgeFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass  # telemetry must not affect document ingest
 
     # Create document object - config version will be read from S3 metadata automatically
     current_time = datetime.now(timezone.utc).isoformat()

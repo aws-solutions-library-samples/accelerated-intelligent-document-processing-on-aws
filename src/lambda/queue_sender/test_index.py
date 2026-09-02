@@ -148,6 +148,7 @@ class TestReuploadCleanup:
             patch.object(index, "sqs") as mock_sqs,
             patch.object(index, "document_service") as mock_doc_service,
             patch.object(index, "s3"),
+            patch.object(index, "cloudwatch"),
             patch.object(
                 index,
                 "delete_current_output_objects",
@@ -156,6 +157,78 @@ class TestReuploadCleanup:
             patch.object(index.Document, "from_s3_event", return_value=mock_document),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            response = index.handler(make_event("doc.pdf"), None)
+
+        assert response["statusCode"] == 200
+        mock_doc_service.create_document.assert_called_once()
+        mock_sqs.send_message.assert_called_once()
+
+    def test_purge_failure_emits_alarmable_metric(self):
+        """On a purge failure the code MUST emit ``StaleOutputPurgeFailed``
+        so an operator can alarm on it — logging alone is not enough
+        (log-scraping isn't provisioned by this MR, and the alternative
+        would be silent stale extraction, exactly the symptom #719
+        exists to prevent)."""
+        import index
+
+        mock_document = MagicMock()
+        mock_document.config_version = "v1"
+        mock_document.id = "doc.pdf"
+        mock_document.input_key = "doc.pdf"
+        mock_document.to_json.return_value = "{}"
+
+        with (
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("simulated partial-purge S3 error"),
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=mock_document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+
+        mock_cw.put_metric_data.assert_called_once()
+        call = mock_cw.put_metric_data.call_args
+        # Namespace defaults to the METRIC_NAMESPACE env var (test env
+        # doesn't set it, so it falls back to "IDP" — see index.py).
+        assert call.kwargs["Namespace"]
+        metrics = call.kwargs["MetricData"]
+        assert metrics[0]["MetricName"] == "StaleOutputPurgeFailed"
+        assert metrics[0]["Value"] == 1
+        assert metrics[0]["Unit"] == "Count"
+
+    def test_metric_emit_failure_is_swallowed(self):
+        """Telemetry must not affect document ingest — if PutMetricData
+        itself fails (throttled, network blip), the doc still gets
+        queued. Belt-and-braces on the metric emit's try/except."""
+        import index
+
+        mock_document = MagicMock()
+        mock_document.config_version = "v1"
+        mock_document.id = "doc.pdf"
+        mock_document.input_key = "doc.pdf"
+        mock_document.to_json.return_value = "{}"
+
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("purge failed"),
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=mock_document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            # Metric emit ALSO fails — doc should still queue.
+            mock_cw.put_metric_data.side_effect = RuntimeError("CW throttle")
             response = index.handler(make_event("doc.pdf"), None)
 
         assert response["statusCode"] == 200

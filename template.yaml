@@ -6598,6 +6598,10 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
+          # Namespace for the ``StaleOutputPurgeFailed`` telemetry metric
+          # (issue #719). Matches every other IDP Lambda's convention:
+          # stack-name isolates per-deployment.
+          METRIC_NAMESPACE: !Ref AWS::StackName
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
@@ -6624,6 +6628,20 @@ Resources:
               Action:
                 - s3:DeleteObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
+        # Issue #719: emit ``StaleOutputPurgeFailed`` on partial-purge
+        # failure so operators can alarm on the metric rather than
+        # scraping ERROR logs. Matches the pattern in
+        # queue_processor._put_drift_sample. Fire-and-forget — the emit
+        # is wrapped in its own try/except so telemetry can't affect
+        # document ingest.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace: !Ref AWS::StackName
         - Statement:
             - Effect: Allow
               Action:

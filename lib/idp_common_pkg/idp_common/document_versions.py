@@ -61,12 +61,16 @@ def delete_current_output_objects(
       - ``None`` (default) — purge ``<key>/*``, preserving only
         ``<key>/runs/``. Used by the Reprocess resolver, where "start
         over" is the intent. ⚠️ For nested-key deployments (uploads
-        exist at ``foo`` AND ``foo/bar.pdf``) this ALSO deletes
-        ``foo/bar.pdf/runs/*`` — the preserved-prefix filter only
-        protects THIS document's runs/, not nested documents'. Reprocess
+        exist at ``foo`` AND ``foo/bar.pdf``) this deletes the ENTIRE
+        nested document — ``foo/bar.pdf/pages/*``,
+        ``foo/bar.pdf/sections/*``, ``foo/bar.pdf/summary/*``,
+        ``foo/bar.pdf/evaluation/*`` AND ``foo/bar.pdf/runs/*`` — not
+        just its version history. The preserved-prefix filter only
+        protects THIS document's ``<key>/runs/``, so anything under a
+        nested document's prefix is unreachable and gets swept. Reprocess
         accepts that risk because the caller is an authenticated admin
         action ("start over" is deliberate); other callers should scope
-        via ``subprefixes`` to avoid it.
+        via ``subprefixes`` to avoid destroying nested-doc data.
       - ``("pages/",)`` (or similar list) — purge ONLY those subprefixes
         under ``<key>/``. Used by queue_sender for re-upload cleanup so a
         re-upload of ``foo`` cannot destroy nested-document data at
