@@ -3110,6 +3110,108 @@ class TestTestSetResolver:
         assert after["1"]["labelSource"] == "reviewed-human"
         assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
 
+    # ------------------------------------------------- zip upload: the set's name
+
+    def test_the_supplied_name_is_used_not_the_zip_filename(self, labeling_env):
+        """The bug Spencer hit: he typed a name and got the archive's.
+
+        `TestSetUploadInput` carried no `name` at all, so the wizard collected and
+        validated a name it had nowhere to send, and the resolver derived one from the
+        filename. There were no tests for this resolver, which is how it survived.
+        """
+        table, _s3 = labeling_env
+
+        result = test_set_index.add_test_set_from_upload(
+            {
+                "input": {
+                    "fileName": "Archive.zip",
+                    "fileSize": 1024,
+                    "name": "my-test-set",
+                    "description": "",
+                }
+            }
+        )
+
+        assert result["testSetId"] == "my-test-set"
+        item = table.get_item(Key={"PK": "testset#my-test-set", "SK": "metadata"})[
+            "Item"
+        ]
+        assert item["name"] == "my-test-set"
+
+    def test_a_name_with_spaces_becomes_a_slugged_id(self, labeling_env):
+        table, _s3 = labeling_env
+
+        result = test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.zip", "fileSize": 1, "name": "My Test Set"}}
+        )
+
+        assert result["testSetId"] == "my-test-set"
+        item = table.get_item(Key={"PK": "testset#my-test-set", "SK": "metadata"})[
+            "Item"
+        ]
+        # The display name keeps what was typed; only the id is slugged.
+        assert item["name"] == "My Test Set"
+
+    def test_no_name_still_falls_back_to_the_filename(self, labeling_env):
+        # Kept working on purpose: the field is optional because this mutation has
+        # shipped since 0.6.1, so a direct caller that sends no name must not break.
+        table, _s3 = labeling_env
+
+        result = test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.zip", "fileSize": 1}}
+        )
+
+        assert result["testSetId"] == "archive"
+        assert (
+            table.get_item(Key={"PK": "testset#archive", "SK": "metadata"})["Item"][
+                "name"
+            ]
+            == "Archive"
+        )
+
+    def test_a_blank_name_falls_back_rather_than_creating_an_empty_id(
+        self, labeling_env
+    ):
+        # `name: "   "` from a form is not a name.
+        _table, _s3 = labeling_env
+
+        result = test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.zip", "fileSize": 1, "name": "   "}}
+        )
+
+        assert result["testSetId"] == "archive"
+
+    def test_an_uppercase_extension_still_yields_a_clean_fallback_name(
+        self, labeling_env
+    ):
+        # Stripping the suffix by length handles any case; the previous code needed a
+        # `.replace` per spelling and would have missed e.g. ".Zip".
+        _table, _s3 = labeling_env
+
+        result = test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.ZIP", "fileSize": 1}}
+        )
+
+        assert result["testSetId"] == "archive"
+
+    def test_a_supplied_name_that_is_not_a_valid_set_name_is_refused(
+        self, labeling_env
+    ):
+        # The name now reaching validation is the caller's, so its rejection has to name
+        # the caller's problem rather than a filename they did not choose.
+        _table, _s3 = labeling_env
+
+        with pytest.raises(Exception, match="letters, numbers, spaces"):
+            test_set_index.add_test_set_from_upload(
+                {
+                    "input": {
+                        "fileName": "Archive.zip",
+                        "fileSize": 1,
+                        "name": "bad/name",
+                    }
+                }
+            )
+
     def test_a_repeated_section_id_is_refused(self, labeling_env):
         """Sections are keyed by id when the existing baselines are looked up, so a
         repeated id writes the same baseline content into two section files and

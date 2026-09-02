@@ -197,12 +197,16 @@ const CreateTestSetWizard = ({
       setError('Choose a zip file');
       return;
     }
+    // `name` is load-bearing: without it the resolver derives the set's name from the
+    // zip's filename, so "my-test-set" + Archive.zip produced a set called "Archive"
+    // while the toast below reported the name the server never received.
     const input: {
       fileName: string;
       fileSize: number;
+      name: string;
       description: string;
       documentClassType?: DocumentClassType;
-    } = { fileName: zip.name, fileSize: zip.size, description: description.trim() };
+    } = { fileName: zip.name, fileSize: zip.size, name: name.trim(), description: description.trim() };
     if (documentClassType.value) {
       input.documentClassType = documentClassType.value as DocumentClassType;
     }
@@ -220,10 +224,14 @@ const CreateTestSetWizard = ({
       throw new Error(`Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
     }
 
+    // Named from the response, not from local state. This previously interpolated the
+    // form's `name` — which was never sent — so it confirmed a name the server had not
+    // used. Reporting the id the server actually created cannot drift from what happened.
+    const createdId = response.testSetId;
     onCreated(
       source === 'upload-documents'
-        ? `Test set "${name.trim()}" created. Once the zip is processed, use "Generate draft labels" to label it.`
-        : `Test set "${name.trim()}" created. The zip is being processed.`,
+        ? `Test set "${createdId}" created. Once the zip is processed, use "Generate draft labels" to label it.`
+        : `Test set "${createdId}" created. The zip is being processed.`,
     );
   };
 

@@ -243,13 +243,26 @@ def add_test_set_from_upload(args):
     zip_filename = input_data["fileName"]
     description = input_data.get("description", "")  # Optional field
     document_class_type = input_data.get("documentClassType")  # Optional field
+    requested_name = (input_data.get("name") or "").strip()
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
         raise Exception("File must be a zip file")
 
-    # Extract test set name from filename (remove .zip extension)
-    test_set_name = zip_filename.replace(".zip", "").replace(".ZIP", "")
+    # The caller's name wins. This used to be derived from the filename
+    # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
+    # Archive.zip got a set called "Archive" — and the wizard's own success toast
+    # reported the name it had never sent. Only the suffix is stripped: `.replace`
+    # removed *every* occurrence, so "my.zip.backup.zip" lost both.
+    derived_name = zip_filename[: -len(".zip")]
+    test_set_name = requested_name or derived_name
+    if not requested_name:
+        # Logged rather than silent: a caller reaching this has no name of its own, and
+        # this is the path that produced the wrong name for two releases.
+        logger.info(
+            f"No name supplied for zip upload '{zip_filename}'; "
+            f"falling back to the filename '{derived_name}'"
+        )
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):

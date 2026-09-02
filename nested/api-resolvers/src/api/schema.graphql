@@ -1128,6 +1128,12 @@ type SendTestRunToReviewResult @aws_cognito_user_pools @aws_iam {
 input TestSetUploadInput {
   fileName: String!
   fileSize: Int!
+  # What to call the test set. Optional rather than required only because this
+  # mutation has shipped since 0.6.1 and a required field would break a direct
+  # HTTP-API caller; the resolver falls back to the zip's filename and logs that it
+  # did. Absent it, the name the user typed in the wizard was silently discarded and
+  # the set took the archive's name.
+  name: String
   description: String
   documentClassType: DocumentClassType
 }

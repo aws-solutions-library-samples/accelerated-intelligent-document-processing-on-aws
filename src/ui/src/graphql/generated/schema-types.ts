@@ -2109,6 +2109,7 @@ export type TestSetUploadInput = {
   documentClassType?: InputMaybe<DocumentClassType>;
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
+  name?: InputMaybe<Scalars['String']['input']>;
 };
 
 export type TestSetUploadResponse = {

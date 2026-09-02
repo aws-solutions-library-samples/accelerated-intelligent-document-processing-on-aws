@@ -3042,6 +3042,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "name",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "description",
         "non_null": false,
         "type": "String"
