@@ -92,6 +92,11 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # were once lost (see CHANGELOG). Runs recorded before this existed
             # have no such key; 0 means "undetermined", matching the live doc.
             "InstanceCount": int(s.get("InstanceCount") or 0),
+            # Exclusion flags, snapshotted by create_document_run. Same allow-list
+            # hazard: omitted here, a historical excluded section loses its
+            # "Skipped" badge and reads as an unexplained empty section.
+            "Excluded": bool(s.get("Excluded", False)),
+            "ExclusionReason": s.get("ExclusionReason"),
         }
         for s in item.get("Sections", []) or []
     ]

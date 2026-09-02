@@ -12,6 +12,8 @@ Covers:
   propagate the flags onto sections.
 * The ``Section.to_dict`` / ``from_dict`` emission contract is backward
   compatible (only emits the fields when they're set).
+* Every DynamoDB section writer persists the flags (GitHub #704) — without
+  the write the UI's "Skipped" badge can never render.
 * Downstream service skip behaviour (extraction) writes a stub result
   and leaves the section otherwise untouched.
 * Assessment short-circuits without calling LLM.
@@ -108,6 +110,157 @@ class TestSectionExclusionFields:
         d = s.to_dict()
         assert d["excluded"] is False
         assert d["exclusion_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB persistence (GitHub #704)
+#
+# The flags existed end to end EXCEPT for the write: the model carried them,
+# Document.to_dict emitted them, schema.graphql declared them and SectionsPanel
+# rendered the "Skipped" badge off them — but no DynamoDB writer put them in the
+# item, so the badge could never appear and an excluded section looked like an
+# unexplained empty one.
+# ---------------------------------------------------------------------------
+
+
+class TestExclusionPersistedToDynamoDB:
+    def setup_method(self) -> None:
+        from idp_common.dynamodb.service import DocumentDynamoDBService
+
+        self.mock_client = MagicMock()
+        self.service = DocumentDynamoDBService(dynamodb_client=self.mock_client)
+
+    @staticmethod
+    def _excluded_section() -> Section:
+        return Section(
+            section_id="1",
+            classification="Instructions",
+            page_ids=["1", "2"],
+            excluded=True,
+            exclusion_reason="instructions",
+        )
+
+    # -- writer 1: the full document item (update_document) ------------------
+
+    def _update_expression_sections(self, doc: Document):
+        self.mock_client.update_item.return_value = {"Attributes": {}}
+        self.service.update_document(doc)
+        return self.mock_client.update_item.call_args.kwargs[
+            "expression_attribute_values"
+        ][":Sections"]
+
+    def test_update_document_persists_flags(self) -> None:
+        doc = Document(id="d", input_key="d", sections=[self._excluded_section()])
+        section_data = self._update_expression_sections(doc)[0]
+        assert section_data["Excluded"] is True
+        assert section_data["ExclusionReason"] == "instructions"
+
+    def test_update_document_omits_flags_for_normal_section(self) -> None:
+        """Items stay byte-identical to what older code wrote."""
+        doc = Document(
+            id="d",
+            input_key="d",
+            sections=[Section(section_id="1", classification="Form", page_ids=["1"])],
+        )
+        section_data = self._update_expression_sections(doc)[0]
+        assert "Excluded" not in section_data
+        assert "ExclusionReason" not in section_data
+
+    def test_update_document_omits_reason_when_unset(self) -> None:
+        doc = Document(
+            id="d",
+            input_key="d",
+            sections=[
+                Section(
+                    section_id="1",
+                    classification="Instructions",
+                    page_ids=["1"],
+                    excluded=True,
+                )
+            ],
+        )
+        section_data = self._update_expression_sections(doc)[0]
+        assert section_data["Excluded"] is True
+        assert "ExclusionReason" not in section_data
+
+    # -- writer 2: the atomic single-section update --------------------------
+
+    def _single_section_data(self, section: Section):
+        self.mock_client.update_item.return_value = {"Attributes": {}}
+        self.service.update_document_section(
+            document_id="d", section_index=0, section=section
+        )
+        return self.mock_client.update_item.call_args.kwargs[
+            "expression_attribute_values"
+        ][":section"]
+
+    def test_update_document_section_persists_flags(self) -> None:
+        """This writer is a WHOLE-MAP replace (``SET #Sections[i] = :section``).
+
+        Extraction calls it for every section including the excluded ones it
+        short-circuited, so omitting the keys did not merely skip them — it
+        ERASED the flags classification had already written, and the badge would
+        have vanished moments after appearing.
+        """
+        section_data = self._single_section_data(self._excluded_section())
+        assert section_data["Excluded"] is True
+        assert section_data["ExclusionReason"] == "instructions"
+
+    def test_update_document_section_omits_flags_for_normal_section(self) -> None:
+        section_data = self._single_section_data(
+            Section(section_id="1", classification="Form", page_ids=["1"])
+        )
+        assert "Excluded" not in section_data
+        assert "ExclusionReason" not in section_data
+
+    # -- writer 3: the immutable run (version) snapshot ----------------------
+
+    def test_create_document_run_snapshots_flags(self) -> None:
+        doc = Document(
+            id="d",
+            input_key="d",
+            queued_time="2025-07-07T14:00:00.000Z",
+            sections=[self._excluded_section()],
+        )
+        self.service.create_document_run(
+            document=doc, run_id="20250707T141530Z-a", manifest_uri="s3://o/m.json"
+        )
+        item = self.mock_client.put_item.call_args[0][0]
+        assert item["Sections"][0]["Excluded"] is True
+        assert item["Sections"][0]["ExclusionReason"] == "instructions"
+
+    # -- the read side ------------------------------------------------------
+
+    def test_item_to_document_restores_flags(self) -> None:
+        """A Document read back and re-written must not lose the flags."""
+        doc = self.service._dynamodb_item_to_document(
+            {
+                "ObjectKey": "d",
+                "ObjectStatus": "COMPLETED",
+                "Sections": [
+                    {
+                        "Id": "1",
+                        "Class": "Instructions",
+                        "PageIds": [1, 2],
+                        "Excluded": True,
+                        "ExclusionReason": "instructions",
+                    }
+                ],
+            }
+        )
+        assert doc.sections[0].excluded is True
+        assert doc.sections[0].exclusion_reason == "instructions"
+
+    def test_item_to_document_tolerates_items_written_before_the_fix(self) -> None:
+        doc = self.service._dynamodb_item_to_document(
+            {
+                "ObjectKey": "d",
+                "ObjectStatus": "COMPLETED",
+                "Sections": [{"Id": "1", "Class": "Form", "PageIds": [1]}],
+            }
+        )
+        assert doc.sections[0].excluded is False
+        assert doc.sections[0].exclusion_reason is None
 
 
 # ---------------------------------------------------------------------------

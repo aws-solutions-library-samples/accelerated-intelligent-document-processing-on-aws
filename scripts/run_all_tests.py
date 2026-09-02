@@ -48,6 +48,13 @@ PRUNE_DIR_MARKERS = (
     "/scratch/",
     # idp_common ships fixture-style helper "tests" that are not a suite.
     "/idp_common/agents/testing/",
+    # Agent worktrees: `git worktree` checkouts of this same repo, created under
+    # .claude/worktrees/ when work is delegated to a subagent. Every test file in
+    # the repo therefore appears once per live worktree, so without this the guard
+    # reports the entire suite as "unregistered test roots" and the gate fails for
+    # a reason that has nothing to do with the code under test. They are also
+    # gitignored, so CI never sees them.
+    "/.claude/worktrees/",
 )
 
 # Generated files that are never source tests. `make srt-scan` nbconverts every
