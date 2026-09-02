@@ -533,19 +533,121 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
             "_execute_athena_query",
             side_effect=lambda q, d: captured.append(q) or [],
         ),
+        patch.object(index, "_lookup_test_run_completed_at", return_value=None),
     ):
         result = index._get_cost_data_from_athena(_UNSAFE_RUN_ID)
 
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
-    # The embedded YYYYMMDD is still parsed out for partition pruning.
-    # Round-25 revert: pre-Phase-1 bounded 2-day window
-    # ``date IN (run_date, run_date+1)``. The round-7 unbounded upper
-    # edge broke Test Studio's cost section at scale (S3 throttling +
-    # poll timeout), and even the round-24 date-BETWEEN-today window
-    # still scanned days of raw metering for any older run. HITL
-    # long-tail completions past run_date+1 are Phase-2 work.
+    # The embedded YYYYMMDD is still parsed out for partition pruning. With no
+    # CompletedAt to size the window from, we fall back to the bounded 2-day
+    # ``date IN (run_date, run_date+1)`` — see TestCostQueryDateWindow for the
+    # derived-window cases.
     assert "date IN ('2026-08-13', '2026-08-14')" in captured[0]
+
+
+@pytest.mark.unit
+class TestCostQueryDateWindow:
+    """``metering.date`` became COMPLETION time in the Phase-1 partitioning
+    change, so a window fixed at ``run_date``/``run_date+1`` silently drops any
+    run whose documents finish more than ~24h after the date embedded in its ID
+    (HITL review, throttled or very large batches). The window is now derived
+    from the run's own ``CompletedAt``.
+
+    The opposite failure matters too: an unbounded upper edge scanned days of
+    raw metering, hit ``HIVE_S3_THROTTLING`` and timed out the resolver's poll
+    loop, leaving the UI's cost section empty. Hence the clamp.
+    """
+
+    RUN_ID = "lending-test-20260813-101500"
+
+    def test_same_day_completion_keeps_the_two_day_window(self):
+        """The overwhelmingly common case must not get more expensive: a run
+        that completes the same day yields exactly the pre-change partitions."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-13T11:02:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_completion_just_before_midnight_still_covers_the_next_day(self):
+        """A document completing at 23:58 has its metering row written moments
+        later, possibly in the next date partition — that's the +1 day."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-13T23:58:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_multi_day_run_widens_the_window(self):
+        """The regression this fixes: a 3-day HITL run's later completions used
+        to fall outside the window and vanish from the reported cost."""
+        assert index._cost_query_date_filter(self.RUN_ID, "2026-08-16T09:00:00Z") == (
+            "AND date IN ('2026-08-13', '2026-08-14', '2026-08-15', "
+            "'2026-08-16', '2026-08-17')"
+        )
+
+    def test_window_is_clamped_to_the_configured_maximum(self):
+        """A pathological run (abandoned, or a clock problem putting
+        CompletedAt months out) must not scan the whole lake."""
+        sql = index._cost_query_date_filter(self.RUN_ID, "2026-09-12T09:00:00Z")
+        assert sql.count("'") == 2 * (index._COST_QUERY_MAX_PARTITION_DAYS + 1)
+        assert "'2026-08-13'" in sql  # run date is always the lower bound
+        assert "'2026-09-12'" not in sql  # far edge dropped by the clamp
+
+    def test_unparseable_completed_at_falls_back(self):
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "not-a-timestamp")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_completed_at_before_run_date_falls_back_rather_than_inverting(self):
+        """If the ID's date and the tracking row disagree, take the wider of the
+        two — never emit an empty or inverted range."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-01T09:00:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_naive_completed_at_is_treated_as_utc(self):
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-14T09:00:00")
+            == "AND date IN ('2026-08-13', '2026-08-14', '2026-08-15')"
+        )
+
+    def test_run_id_without_a_date_leaves_the_query_unpruned(self):
+        """Pre-existing behavior, unchanged: no parseable date means no filter
+        (the selective ``document_id LIKE`` predicate still bounds the result)."""
+        assert (
+            index._cost_query_date_filter("no-date-here", "2026-08-14T09:00:00Z") == ""
+        )
+
+    def test_lookup_ignores_non_string_completed_at(self):
+        """A stubbed DynamoDB client returns Mocks, not None. Only a real ISO
+        string is usable; anything else must fall back quietly rather than reach
+        the parser."""
+        fake_table = Mock()
+        fake_table.get_item.return_value = {"Item": {"CompletedAt": Mock()}}
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert index._lookup_test_run_completed_at(self.RUN_ID) is None
+
+    def test_lookup_returns_the_stored_string(self):
+        fake_table = Mock()
+        fake_table.get_item.return_value = {
+            "Item": {"CompletedAt": "2026-08-16T09:00:00Z"}
+        }
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert (
+                    index._lookup_test_run_completed_at(self.RUN_ID)
+                    == "2026-08-16T09:00:00Z"
+                )
+
+    def test_lookup_failure_is_survivable(self):
+        fake_table = Mock()
+        fake_table.get_item.side_effect = RuntimeError("throttled")
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert index._lookup_test_run_completed_at(self.RUN_ID) is None
 
 
 @pytest.mark.unit

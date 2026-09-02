@@ -1240,6 +1240,11 @@ Resources:
                     maximum: 100
                     default: 5
                     order: 2
+                  restate_schema_in_system_prompt:
+                    type: boolean
+                    description: "Repeat the document schema in the agent's system prompt. It is already sent as the extraction tool's input schema — the identical JSON — so this is a duplicate worth roughly 2,600 of the ~6,700 schema tokens in every request (38%). Turning it OFF reclaims that; the agent can still fetch the schema on demand. Kept ON by default because restating a schema often improves how closely the model follows it, so the duplication may be doing real work — measure completeness on your own documents before turning it off. Both copies sit inside the prompt cache, so the dollar saving is much smaller than the token count suggests; the real benefit is context-window headroom, which is what pushes a long document into extra shards. Default: on."
+                    default: true
+                    order: 2.5
                   table_parsing:
                     type: object
                     sectionLabel: Table Parsing Tool (Requires OCR TABLES enabled)

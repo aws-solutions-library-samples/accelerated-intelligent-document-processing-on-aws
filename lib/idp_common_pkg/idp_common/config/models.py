@@ -322,6 +322,24 @@ class AgenticConfig(BaseModel):
             "confidence.mode == 'integrated' AND agentic extraction is active."
         ),
     )
+    restate_schema_in_system_prompt: bool = Field(
+        default=True,
+        description=(
+            "Append the generated JSON Schema to the agent's SYSTEM prompt "
+            "('Expected Schema: ...'). The class schema is already on the wire as "
+            "the extraction tool's inputSchema, derived from the same "
+            "model_json_schema(), so this is a byte-for-byte duplicate — measured "
+            "at ~2,595 of ~5,692 schema tokens per request on the lending "
+            "Payslip class (#710). Turning it OFF reclaims that. It defaults ON "
+            "because restating a schema in prose often improves adherence, so the "
+            "duplication may be load-bearing rather than accidental — this is an "
+            "A/B knob, not a recommendation. The agent can still fetch the schema "
+            "on demand via get_extraction_schema_reminder, which is unaffected. "
+            "Both copies sit inside the prompt-cache prefix, so the dollar saving "
+            "is roughly a tenth of the token count; the real win is context-window "
+            "headroom, which is what pushes a document into sharding early."
+        ),
+    )
     review_agent: bool = Field(default=False, description="Enable review agent")
     review_agent_model: str | None = Field(
         default=None,

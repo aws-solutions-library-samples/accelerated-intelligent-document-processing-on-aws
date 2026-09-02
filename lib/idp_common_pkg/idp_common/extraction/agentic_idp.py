@@ -1046,18 +1046,35 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
 
 
 def _build_system_prompt(
-    base_prompt: str, custom_instruction: str | None, data_format: type[BaseModel]
+    base_prompt: str,
+    custom_instruction: str | None,
+    data_format: type[BaseModel],
+    restate_schema: bool = True,
 ) -> tuple[str, str]:
     """
     Build complete system prompt with custom instructions and schema.
+
+    ``schema_json`` is returned regardless of ``restate_schema`` — it is stored in
+    agent state for ``get_extraction_schema_reminder``, which lets the agent fetch
+    the schema ON DEMAND. So turning the restatement off removes a per-request
+    duplicate without removing the agent's access to the schema.
+
+    Why the restatement is optional (#710): the class schema is already on the
+    wire as ``extraction_tool``'s ``inputSchema``, which Strands derives from the
+    same ``model_json_schema()`` — so this is a byte-for-byte duplicate, measured
+    at ~2,595 of ~5,692 schema tokens per request on the lending ``Payslip``
+    class. It is not obviously safe to drop: restating a schema in prose often
+    improves adherence, which is why this is a knob defaulting to the existing
+    behaviour rather than a removal.
 
     Args:
         base_prompt: The base system prompt (typically SYSTEM_PROMPT constant)
         custom_instruction: Optional custom instructions to append
         data_format: Pydantic model class to extract schema from
+        restate_schema: Append "Expected Schema: ..." to the system prompt.
 
     Returns:
-        Tuple of (complete system prompt with schema, schema_json for state storage)
+        Tuple of (complete system prompt, schema_json for state storage)
     """
     # Generate and clean schema
     schema_json = json.dumps(data_format.model_json_schema(), indent=2)
@@ -1067,7 +1084,11 @@ def _build_system_prompt(
     if custom_instruction:
         final_prompt = f"{final_prompt}\n\nCustom Instructions for this specific task: {custom_instruction}"
 
-    complete_prompt = f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+    complete_prompt = (
+        f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+        if restate_schema
+        else final_prompt
+    )
 
     return complete_prompt, schema_json
 
@@ -1920,12 +1941,23 @@ async def structured_output_async(
         map_tool = create_map_table_to_schema_tool()
         tools.append(map_tool)
 
-    # Build system prompt with schema
+    # Build system prompt. The schema restatement is optional (#710): it duplicates
+    # the extraction tool's inputSchema, which Strands derives from the same
+    # model_json_schema(). schema_json is returned either way and stored in agent
+    # state below, so get_extraction_schema_reminder still works when it is off.
+    restate_schema = config.extraction.agentic.restate_schema_in_system_prompt
     final_system_prompt, schema_json = _build_system_prompt(
         base_prompt=system_prompt or SYSTEM_PROMPT,
         custom_instruction=custom_instruction,
         data_format=data_format,
+        restate_schema=restate_schema,
     )
+    if not restate_schema:
+        logger.info(
+            "Schema restatement disabled; the class schema goes on the wire once, "
+            "as the extraction tool's inputSchema (saved ~%d chars of system prompt)",
+            len(schema_json) + len("\n\nExpected Schema:\n"),
+        )
 
     tool_names = [getattr(tool, "__name__", str(tool)) for tool in tools]
     logger.debug(
