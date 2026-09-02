@@ -320,7 +320,9 @@ def test_the_core_grid_expansion_excludes_controls(matrix):
     }
     got = {c["id"] for c in make_configs.cells_for_suite(fake, "grid")}
     controls = {c["id"] for c in fake["control_cells"]}
-    assert not (got & controls), f"core_cells expansion leaked controls: {got & controls}"
+    assert not (got & controls), (
+        f"core_cells expansion leaked controls: {got & controls}"
+    )
     assert got, "expansion produced nothing; this test would be vacuous"
 
 
