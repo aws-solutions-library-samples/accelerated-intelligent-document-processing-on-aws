@@ -55,7 +55,11 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document, Section, Status
-from idp_common.utils import extract_json_from_text, extract_structured_data_from_text
+from idp_common.utils import (
+    extract_json_from_text,
+    extract_structured_data_from_text,
+    parse_confidence,
+)
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,28 @@ class PageContextData:
     page_id: str
     text_content: Optional[str] = None
     image_content: Optional[bytes] = None
+
+
+def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
+    """Aggregate per-page classification confidence to one section score.
+
+    Returns the MINIMUM, and ``None`` (not scored) if the list is empty or if
+    ANY page is unscored.
+
+    Two deliberate choices:
+
+    - **min, not mean.** A mean hides the single page the classifier was unsure
+      about, which is exactly the page a reviewer needs to look at; and a
+      section's class cannot be more certain than its least certain page.
+    - **``None`` absorbs.** If any page in the section has no score, the section
+      genuinely has no score — reporting the min of the *scored* subset would
+      quietly present a partial aggregate as a whole-section number.
+    """
+    if not values:
+        return None
+    if any(v is None for v in values):
+        return None
+    return min(v for v in values if v is not None)
 
 
 class ClassificationService:
@@ -404,10 +430,18 @@ class ClassificationService:
             classifications.keys(), key=lambda k: classifications[k]
         )
 
-        # Apply to all pages in original document
+        # Apply to all pages in original document.
+        #
+        # Confidence is deliberately left unscored (None) for EVERY page here,
+        # including the pages that were classified: this path exists because
+        # maxPagesForClassification stopped the classifier early, so the class is
+        # extrapolated from a sample to pages the model never saw. There is no
+        # defensible score for those pages, and reporting one for the sampled
+        # pages only would attach a per-page number to a document-level guess.
+        # (It previously claimed 1.0 for all of them.)
         for page_id, page in original_document.pages.items():
             page.classification = primary_classification
-            page.confidence = 1.0  # High confidence for applied classification
+            page.confidence = None
 
         # Create single section with all pages
         section = self._create_section(
@@ -593,6 +627,31 @@ class ClassificationService:
         page_result.classification.confidence = 1.0
         return page_result
 
+    @staticmethod
+    def _apply_page_result(page: Any, page_result: PageClassification) -> None:
+        """Copy one page's classification result onto the DECLARED Page fields.
+
+        The whole metadata dict is also stashed on the page by the callers via
+        ``setattr``, but that writes an attribute which is not a dataclass field:
+        it is absent from ``Document.to_dict``, so it never survives the Step
+        Functions hop or reaches DynamoDB (GitHub #565). Everything that has to
+        outlive this invocation — class, confidence, reason, boundary — is copied
+        here instead.
+
+        Shared by the cache-hit and fresh-inference branches so a cache hit
+        cannot silently produce a page with fewer signals than a miss (before
+        this existed, the cached branch dropped ``document_boundary`` entirely).
+        """
+        classification = page_result.classification
+        page.classification = classification.doc_type
+        page.confidence = classification.confidence
+        reason = classification.metadata.get("classification_reason")
+        if reason:
+            page.classification_reason = str(reason)
+        boundary = classification.metadata.get("document_boundary")
+        if boundary:
+            page.document_boundary = str(boundary).lower()
+
     def _classify_pages_multimodal(
         self, document: Document, forced_class: Optional[str] = None
     ) -> Document:
@@ -639,12 +698,7 @@ class ClassificationService:
                 else:
                     # Update document with cached classification
                     cached_result = cached_page_classifications[page_id]
-                    document.pages[
-                        page_id
-                    ].classification = cached_result.classification.doc_type
-                    document.pages[
-                        page_id
-                    ].confidence = cached_result.classification.confidence
+                    self._apply_page_result(document.pages[page_id], cached_result)
 
                     setattr(
                         document.pages[page_id],
@@ -726,13 +780,12 @@ class ClassificationService:
                                     error_msg = f"Error classifying page {page_id}: {page_result.classification.metadata['error']}"
                                     document.errors.append(error_msg)
 
-                            # Update the page in the document
-                            document.pages[
-                                page_id
-                            ].classification = page_result.classification.doc_type
-                            document.pages[
-                                page_id
-                            ].confidence = page_result.classification.confidence
+                            # Update the page in the document — class, confidence,
+                            # reason and boundary onto DECLARED fields, so they
+                            # survive the Step Functions hop and reach DynamoDB.
+                            self._apply_page_result(
+                                document.pages[page_id], page_result
+                            )
 
                             # Copy metadata (including boundary information) to the page
                             setattr(
@@ -740,22 +793,6 @@ class ClassificationService:
                                 "metadata",
                                 page_result.classification.metadata,
                             )
-
-                            # Persist the boundary signal on a DECLARED field.
-                            # The setattr above stashes the whole metadata dict on
-                            # an attribute that is not a dataclass field, so it is
-                            # absent from Document.to_dict and never survives the
-                            # Step Functions hop or reaches DynamoDB — which is why
-                            # an unexpected section merge could only be diagnosed
-                            # from Lambda logs (GitHub #565). Copy the one value
-                            # that needs to outlive this invocation.
-                            boundary = page_result.classification.metadata.get(
-                                "document_boundary"
-                            )
-                            if boundary:
-                                document.pages[page_id].document_boundary = str(
-                                    boundary
-                                ).lower()
 
                             # Merge metering data
                             page_metering = page_result.classification.metadata.get(
@@ -1696,6 +1733,11 @@ class ClassificationService:
             metering: Dict[str, Any] = {}
             doc_type = ""
             document_boundary = "continue"
+            # Both OPTIONAL outputs, reset per attempt below so a retry's values
+            # never leak from the rejected attempt: the confidence the model
+            # reported for a class we threw away does not apply to the new one.
+            confidence: Optional[float] = None
+            classification_reason: Optional[str] = None
             validation_error: Optional[str] = None
 
             for attempt in range(max_retries + 1):
@@ -1736,6 +1778,8 @@ class ClassificationService:
                 )
 
                 # Try to extract structured data (JSON or YAML) from the response
+                confidence = None
+                classification_reason = None
                 try:
                     classification_data, detected_format = (
                         extract_structured_data_from_text(classification_text)
@@ -1745,6 +1789,20 @@ class ClassificationService:
                         document_boundary = classification_data.get(
                             "document_boundary", "continue"
                         )
+                        # Both optional. `confidence` has been a documented part
+                        # of this response shape for a long time but was
+                        # discarded (GitHub #673), and `classification_reason` is
+                        # asked for by the DEFAULT prompt — those output tokens
+                        # were bought on every page and dropped. Keep whatever
+                        # the model actually returned; a prompt that asks for
+                        # neither simply yields None for both.
+                        confidence = parse_confidence(
+                            classification_data.get("confidence"),
+                            context=f"page {page_id}",
+                        )
+                        reason = classification_data.get("classification_reason")
+                        if isinstance(reason, str) and reason.strip():
+                            classification_reason = reason.strip()
                         logger.info(
                             f"Parsed classification response as {detected_format}: {classification_data}"
                         )
@@ -1800,6 +1858,10 @@ class ClassificationService:
                     )
                     logger.error(f"Page {page_id}: {validation_error}")
                     doc_type = fallback
+                    # The class is now ours, not the model's, so neither its
+                    # confidence nor its reasoning describes the stored class.
+                    confidence = None
+                    classification_reason = None
 
             t1 = time.time()
             logger.info(
@@ -1815,12 +1877,19 @@ class ClassificationService:
             }
             if validation_error:
                 metadata["validation_error"] = validation_error
+            # Travels in metadata alongside document_boundary so the cache and
+            # the section builders carry it, and is copied onto the declared
+            # Page.classification_reason field by _classify_pages_multimodal.
+            if classification_reason:
+                metadata["classification_reason"] = classification_reason
 
             return PageClassification(
                 page_id=page_id,
                 classification=DocumentClassification(
                     doc_type=doc_type,
-                    confidence=1.0,  # Default confidence
+                    # None unless the model was asked for a confidence and
+                    # returned a usable one — see parse_confidence.
+                    confidence=confidence,
                     metadata=metadata,
                 ),
                 image_uri=image_uri,
@@ -1913,7 +1982,11 @@ class ClassificationService:
                     page_id=page_id,
                     classification=DocumentClassification(
                         doc_type=doc_type,
-                        confidence=1.0,  # Default confidence since SageMaker doesn't provide it
+                        # Not scored: the UDOP endpoint returns a prediction with
+                        # no score, so there is nothing to report. This used to
+                        # claim 1.0, which asserted certainty the endpoint never
+                        # expressed.
+                        confidence=None,
                         metadata={
                             "metering": metering,
                             "document_boundary": "continue",
@@ -2203,7 +2276,13 @@ class ClassificationService:
                             page_id=page_id,
                             classification=DocumentClassification(
                                 doc_type=page_data["classification"]["doc_type"],
-                                confidence=page_data["classification"]["confidence"],
+                                # .get: a cache entry written before confidence
+                                # was optional (or by a run that produced none)
+                                # has no key, and a missing score is not an
+                                # error — it reads back as not scored.
+                                confidence=page_data["classification"].get(
+                                    "confidence"
+                                ),
                                 metadata=page_data["classification"]["metadata"],
                             ),
                             image_uri=page_data.get("image_uri"),
@@ -2772,16 +2851,35 @@ class ClassificationService:
                 f"All pages are unclassifiable types, using first page's class: '{first_classification}'"
             )
 
-        # Set all pages to this classification
+        # Set all pages to this classification.
+        #
+        # A page that voted for the winning class keeps its own score; a page
+        # that predicted something else is now labelled with a class it did NOT
+        # predict, so its score (which was about a different class) says nothing
+        # about this one and becomes unscored. Previously every page was
+        # rewritten to 1.0, which asserted certainty precisely where the pages
+        # had disagreed.
+        confidence_by_page = {
+            r.page_id: r.classification.confidence for r in sorted_results
+        }
+        predicted_by_page = {
+            r.page_id: r.classification.doc_type for r in sorted_results
+        }
         for page_id in document.pages:
             document.pages[page_id].classification = first_classification
-            document.pages[page_id].confidence = 1.0
+            document.pages[page_id].confidence = (
+                confidence_by_page.get(page_id)
+                if predicted_by_page.get(page_id) == first_classification
+                else None
+            )
 
         # Create single section with all pages
         section = Section(
             section_id="1",
             classification=first_classification,
-            confidence=1.0,
+            confidence=aggregate_page_confidence(
+                [document.pages[page_id].confidence for page_id in document.pages]
+            ),
             page_ids=list(document.pages.keys()),
         )
         document.sections = [section]
@@ -2908,11 +3006,16 @@ class ClassificationService:
             if result.classification.doc_type == current_type and boundary != "start":
                 current_pages.append(result)
             else:
-                # Create section with current group
+                # Create section with current group. The section's confidence is
+                # the weakest page in it (None if any page is unscored) — see
+                # aggregate_page_confidence.
                 section = self._create_section(
                     section_id=str(current_group),
                     doc_type=current_type,
                     pages=[p.page_id for p in current_pages],
+                    confidence=aggregate_page_confidence(
+                        [p.classification.confidence for p in current_pages]
+                    ),
                 )
                 if isinstance(section, Section):
                     document.sections.append(section)
@@ -2921,6 +3024,7 @@ class ClassificationService:
                         Section(
                             section_id=section.section_id,
                             classification=section.classification.doc_type,
+                            confidence=section.classification.confidence,
                             page_ids=[page.page_id for page in section.pages],
                         )
                     )
@@ -2935,6 +3039,9 @@ class ClassificationService:
             section_id=str(current_group),
             doc_type=current_type,
             pages=[p.page_id for p in current_pages],
+            confidence=aggregate_page_confidence(
+                [p.classification.confidence for p in current_pages]
+            ),
         )
         if isinstance(section, Section):
             document.sections.append(section)
@@ -2943,6 +3050,7 @@ class ClassificationService:
                 Section(
                     section_id=section.section_id,
                     classification=section.classification.doc_type,
+                    confidence=section.classification.confidence,
                     page_ids=[page.page_id for page in section.pages],
                 )
             )
@@ -2971,7 +3079,11 @@ class ClassificationService:
             return sorted(results, key=lambda x: x.page_id)
 
     def _create_section(
-        self, section_id: str, doc_type: str, pages: List[Any], confidence: float = 1.0
+        self,
+        section_id: str,
+        doc_type: str,
+        pages: List[Any],
+        confidence: Optional[float] = None,
     ) -> Union[DocumentSection, Section]:
         """
         Create a document section based on the input type.
@@ -2980,7 +3092,9 @@ class ClassificationService:
             section_id: ID for the section
             doc_type: Document type for the section
             pages: List of pages (either PageClassification or page_ids)
-            confidence: Confidence score for the classification
+            confidence: Confidence in the section's class, or None for not
+                scored (the default — callers that have a score pass it, usually
+                from aggregate_page_confidence)
 
         Returns:
             Either DocumentSection or Section depending on the input pages type
@@ -3050,6 +3164,9 @@ class ClassificationService:
                         section_id=str(current_group),
                         doc_type=current_type,
                         pages=current_pages,
+                        confidence=aggregate_page_confidence(
+                            [p.classification.confidence for p in current_pages]
+                        ),
                     )
                 )
                 current_group += 1
@@ -3062,6 +3179,9 @@ class ClassificationService:
                 section_id=str(current_group),
                 doc_type=current_type,
                 pages=current_pages,
+                confidence=aggregate_page_confidence(
+                    [p.classification.confidence for p in current_pages]
+                ),
             )
         )
 
@@ -3343,6 +3463,10 @@ class ClassificationService:
                         if isinstance(segment, dict):
                             segment["type"] = forced_class
 
+                # Per-segment confidence, keyed by the segment's index so the
+                # section builders below can reuse what was parsed here.
+                segment_confidences: Dict[int, Optional[float]] = {}
+
                 # Update page classifications based on segments
                 for i, segment in enumerate(segments):
                     # Validate segment data
@@ -3357,6 +3481,18 @@ class ClassificationService:
                     start_page = segment["ordinal_start_page"]
                     end_page = segment["ordinal_end_page"]
                     doc_type = segment["type"]
+                    # Optional, exactly as on the page-level path: used when the
+                    # holistic prompt asks each segment for a confidence, None
+                    # otherwise. A forced class is the operator's own assertion,
+                    # so the model's number does not describe it.
+                    segment_confidence = (
+                        None
+                        if forced_class
+                        else parse_confidence(
+                            segment.get("confidence"), context=f"segment {i}"
+                        )
+                    )
+                    segment_confidences[i] = segment_confidence
 
                     # Check if the doc_type is valid
                     if doc_type not in self.valid_doc_types:
@@ -3371,7 +3507,11 @@ class ClassificationService:
                             if page_id in document.pages:
                                 # Update page classification
                                 document.pages[page_id].classification = doc_type
-                                document.pages[page_id].confidence = 1.0
+                                # Every page in a segment inherits the segment's
+                                # score — the holistic method makes ONE decision
+                                # per segment, so there is no per-page signal to
+                                # report (and no basis for claiming 1.0).
+                                document.pages[page_id].confidence = segment_confidence
                     except Exception as e:
                         logger.error(f"Error processing segment {i}: {e}")
                         continue
@@ -3387,7 +3527,15 @@ class ClassificationService:
                             Section(
                                 section_id="1",
                                 classification=first_classification,
-                                confidence=1.0,
+                                # One section spanning segments the model may
+                                # have scored differently: the weakest of them,
+                                # unscored if any segment had no score.
+                                confidence=aggregate_page_confidence(
+                                    [
+                                        page.confidence
+                                        for page in document.pages.values()
+                                    ]
+                                ),
                                 page_ids=list(document.pages.keys()),
                             )
                         ]
@@ -3443,12 +3591,14 @@ class ClassificationService:
                             logger.warning(f"No valid pages found for segment {i}")
                             continue
 
-                        # Create and add the section
+                        # Create and add the section, carrying the confidence the
+                        # model reported for this segment (None if it reported
+                        # none — see the parse above).
                         document.sections.append(
                             Section(
                                 section_id=str(i + 1),
                                 classification=doc_type,
-                                confidence=1.0,
+                                confidence=segment_confidences.get(i),
                                 page_ids=page_ids,
                             )
                         )

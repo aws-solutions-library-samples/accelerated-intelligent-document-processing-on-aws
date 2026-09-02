@@ -21,6 +21,7 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassConfidence from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
@@ -32,6 +33,10 @@ const logger = new ConsoleLogger('PagesPanel');
 interface PageItem {
   Id: string;
   Class?: string | null;
+  /** Confidence in Class (0-1). Absent/null = not scored — see ClassConfidence. */
+  ClassConfidence?: number | null;
+  /** The model's stated evidence for Class, when the prompt asked for one. */
+  ClassReason?: string | null;
   ImageUri?: string;
   TextUri?: string;
   TextConfidenceUri?: string;
@@ -77,6 +82,7 @@ const ClassCell = ({
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
     <span>{item.Class || '-'}</span>
+    <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} />
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -133,6 +139,9 @@ const EditableClassCell = ({
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
         <StatusIndicator>{item.Class}</StatusIndicator>
+        {/* Shown in edit mode too: deciding whether to correct a class is
+            exactly when the classifier's own confidence and reasoning matter. */}
+        <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} />
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>

@@ -27,6 +27,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassConfidence from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
@@ -118,10 +119,14 @@ const ClassCell = ({
       </SpaceBetween>
     );
   }
-  if (!mismatch) return <span>{item.Class}</span>;
+  // Confidence in the section's CLASS, aggregated from its pages as the minimum.
+  // Renders nothing when the classifier produced no score, which is the default.
+  const confidence = <ClassConfidence confidence={item.Confidence} />;
+  if (!mismatch && item.Confidence == null) return <span>{item.Class}</span>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
       <span>{item.Class}</span>
+      {confidence}
       {mismatch}
     </SpaceBetween>
   );

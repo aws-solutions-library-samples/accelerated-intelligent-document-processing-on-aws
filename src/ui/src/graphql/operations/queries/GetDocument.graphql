@@ -13,6 +13,7 @@ query GetDocument($objectKey: ID!) {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
       InstanceCount
       Excluded
@@ -33,6 +34,8 @@ query GetDocument($objectKey: ID!) {
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
       ImageUri
       TextUri
       TextConfidenceUri

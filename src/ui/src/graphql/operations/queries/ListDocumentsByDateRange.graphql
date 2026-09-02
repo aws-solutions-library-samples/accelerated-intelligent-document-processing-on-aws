@@ -22,6 +22,7 @@ query ListDocumentsByDateRange($startDateTime: AWSDateTime!, $endDateTime: AWSDa
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
         InstanceCount
         Excluded
@@ -42,6 +43,8 @@ query ListDocumentsByDateRange($startDateTime: AWSDateTime!, $endDateTime: AWSDa
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
         ImageUri
         TextUri
         TextConfidenceUri

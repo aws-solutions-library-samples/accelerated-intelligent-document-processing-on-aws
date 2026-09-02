@@ -72,6 +72,53 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 `(absent)` means the model omitted the field, in which case the code defaults it to `"continue"`. That is deliberately reported as distinct from an explicit `"continue"`: an omitted signal merges pages *by accident*, while an explicit `"continue"` is the model's judgement. Distinguishing the two is what makes an unexpected merge diagnosable.
 
+### Classification confidence (`confidence`, `classification_reason`)
+
+Two OPTIONAL keys in the model's response are parsed alongside `class` and
+`document_boundary` ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+Neither used to be read by anything, even though `confidence` was documented as
+supported and `classification_reason` is asked for by the **default** prompt.
+
+| Key | Lands on | Persisted as |
+|-----|----------|--------------|
+| `confidence` | `DocumentClassification.confidence` → `Page.confidence` | `ClassConfidence` (DynamoDB), `ClassConfidence` (GraphQL `Page`), `confidence` (document.json) |
+| `classification_reason` | `metadata["classification_reason"]` → `Page.classification_reason` | `ClassReason` (DynamoDB + GraphQL), `classification_reason` (document.json) |
+
+`parse_confidence` does the reading: it accepts `0.95`, `"0.95"`, `95` and
+`"95%"`, and returns `None` for anything unparseable or out of range rather than
+raising — a malformed confidence must not fail a classification that otherwise
+worked.
+
+**`None` means NOT SCORED, and is never serialized as a number.** This is the
+whole point of the change: `Page.confidence` used to default to a fabricated
+`1.0`/`0.0`, and that value flowed to the reporting lake's `section_confidence`
+column where it was indistinguishable from a real one. `1.0` now appears only
+where something genuinely asserts the class — a document-name regex match
+(`_pin_page_class`), a single-class configuration, a page-content regex match, or
+a human correction in the Web UI — and `0.0` only on an errored page.
+
+Three paths deliberately produce no score: the SageMaker/UDOP backend (the
+endpoint returns none), pages beyond `maxPagesForClassification` (their class is
+extrapolated from a sample, not predicted), and a page whose invalid class was
+replaced by `invalidClassFallback` (the stored class is no longer the model's, so
+neither its score nor its reasoning describes it — both are dropped, including
+across a validation retry).
+
+Section confidence is `aggregate_page_confidence`: the **minimum** across the
+section's pages, and `None` if any page is unscored. Min because a mean hides the
+one page the classifier was unsure about, and because a section cannot be more
+certain than its weakest page; `None`-absorbing because the min of a *scored
+subset* would present a partial aggregate as a whole-section number.
+
+⚠️ Page-level classification is one inference **per page**, so anything added to
+its output format multiplies by page count — unlike extraction's confidence,
+which is per section.
+
+`_apply_page_result` is the single place that copies a result onto the declared
+`Page` fields (class, confidence, reason, boundary), shared by the cache-hit and
+fresh-inference branches so a cache hit cannot yield a page with fewer signals
+than a miss.
+
 ### Section splitting strategies
 
 `classification.sectionSplitting` controls how classified pages become sections:
@@ -529,7 +576,7 @@ def handler(event, context):
 ## Data Models
 
 - `DocumentType`: Definition of a document type with name and description
-- `DocumentClassification`: Classification result with document type and confidence
+- `DocumentClassification`: Classification result with document type and an optional confidence (`None` = not scored)
 - `PageClassification`: Classification result for a single page
 - `DocumentSection`: A section of consecutive pages with the same classification
 - `ClassificationResult`: Overall result of a classification operation
@@ -593,7 +640,7 @@ The cache uses the following DynamoDB table structure:
 {
   "PK": "classcache#doc-123#arn:aws:states:us-east-1:123456789012:execution:MyWorkflow:abc-123",
   "SK": "none",
-  "page_classifications": "{\"1\":{\"doc_type\":\"invoice\",\"confidence\":1.0,\"metadata\":{\"metering\":{...}},\"image_uri\":\"s3://...\",\"text_uri\":\"s3://...\",\"raw_text_uri\":\"s3://...\"},\"2\":{...}}",
+  "page_classifications": "{\"1\":{\"doc_type\":\"invoice\",\"confidence\":null,\"metadata\":{\"metering\":{...}},\"image_uri\":\"s3://...\",\"text_uri\":\"s3://...\",\"raw_text_uri\":\"s3://...\"},\"2\":{...}}",
   "cached_at": "1672531200",
   "document_id": "doc-123",
   "workflow_execution_arn": "arn:aws:states:us-east-1:123456789012:execution:MyWorkflow:abc-123",

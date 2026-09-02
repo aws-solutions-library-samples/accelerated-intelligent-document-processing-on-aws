@@ -161,11 +161,15 @@ The boundary detection is automatically included in the classification results. 
     "doc_type": "invoice",
     "confidence": 0.95,
     "metadata": {
-      "document_boundary": "start"  // New document begins
+      "document_boundary": "start",  // New document begins
+      "classification_reason": "Invoice number and remittance block present"
     }
   }
 }
 ```
+
+`confidence` and `classification_reason` appear only when the model returned
+them — see [Classification Confidence](#classification-confidence) below.
 
 ##### Enforcing a Valid Class Vocabulary (Validation + Retry)
 
@@ -1138,6 +1142,108 @@ The classification service uses the new `extract_structured_data_from_text()` fu
 - Provides robust parsing with multiple extraction strategies
 - Handles malformed content gracefully
 - Returns both parsed data and detected format for logging
+
+## Classification Confidence
+
+Classification can report **how confident it is in the class it chose**, per page
+and per section. This is separate from the per-field confidence that extraction
+produces (see [extraction-and-confidence.md](./extraction-and-confidence.md));
+this one is about the *class*, not the extracted values.
+
+> **Two of the keys in the examples above — `confidence` and
+> `classification_reason` — used to be parsed by nothing.** A prompt could ask
+> for them, the model would answer, and the values were discarded. They are now
+> read and persisted ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+
+### Where a score comes from
+
+There is no separate confidence inference for classification: the value comes
+out of the same response as the class. Ask for it in the prompt's output format
+and it is used; ask for nothing and there is no score.
+
+```yaml
+classification:
+  task_prompt: |
+    ...
+    <output-format>
+    {
+      "classification_reason": "Evidence that led to this classification",
+      "class": "exact_document_type_from_list",
+      "confidence": <probability between 0.0 and 1.0>,
+      "document_boundary": "start or continue"
+    }
+    </output-format>
+```
+
+The parse is tolerant: `0.95`, `"0.95"`, `95`, and `"95%"` all read as 0.95. A
+value that is unparseable or out of range is ignored (the page is simply
+unscored) rather than failing the classification.
+
+⚠️ **Confidence multiplies output tokens per PAGE.** Page-level classification
+runs one inference per page, so anything added to its output format is paid for
+on every page of every document — unlike extraction's confidence, which is per
+section. Reasoning text in particular is not free.
+
+### Not scored vs. scored 1.0
+
+An **absent** confidence means NOT SCORED, and it is stored as null, not as a
+number. Nothing invents a value:
+
+| Situation | Confidence |
+|-----------|-----------|
+| Model asked for a confidence and returned one | the model's value |
+| Prompt asks for no confidence (the default) | *not scored* |
+| **BDA mode**, blueprint matched | BDA's **matched-blueprint confidence** — the blueprint is what determines the class, so this needs no prompt change and costs nothing extra |
+| **BDA mode**, no blueprint match | *not scored* |
+| Class came from a document-name regex, a single-class configuration, or a page-content regex | `1.0` — deterministic assertion, no model involved |
+| Class was corrected by a human in the Web UI | `1.0` — the operator's assertion |
+| Model returned an invalid class and the fallback was applied | *not scored* (the class is no longer the model's) |
+| Pages beyond `maxPagesForClassification` | *not scored* (the class is extrapolated) |
+| SageMaker/UDOP backend | *not scored* (the endpoint returns no score) |
+| Page classification errored | `0.0` |
+
+This distinction matters because the aggregated value reaches the reporting lake
+as `section_confidence`: a fabricated `1.0` there would be indistinguishable
+from a genuinely confident classification and would silently corrupt any
+analysis of it.
+
+### Section confidence is the weakest page
+
+A section's confidence is the **minimum** across its pages, and *not scored* if
+any of its pages is unscored. A mean would hide the one page the classifier was
+unsure about — which is the page a reviewer needs — and a section's class cannot
+be more certain than its least certain page.
+
+### Where it shows up
+
+- **Web UI** — next to the class in the Pages and Sections tables. The page cell
+  is hoverable when the model gave a reason ("Why this class?"). Nothing is
+  rendered when there is no score, so an unscored run looks exactly as it did
+  before.
+- **API** — `Page.ClassConfidence`, `Page.ClassReason`, and `Section.Confidence`
+  on `getDocument`, `getDocumentVersion` and the document subscription. Named
+  `ClassConfidence` on a page because `TextConfidenceUri` there is *OCR*
+  confidence — a different measurement.
+- **Reporting / analytics** — the existing `section_confidence` column, which
+  now carries a real value when one exists and null when it does not.
+- **Document JSON** — `pages.<id>.confidence`, `pages.<id>.classification_reason`
+  and `sections[].confidence`, each omitted when absent.
+
+### Calibration: read the number critically
+
+A single self-reported confidence is usually poorly calibrated — models asked
+"how sure are you?" answer ~0.95 almost everywhere, which is worse than no score
+because it invites automated escalation on noise. Smaller models are the most
+overconfident, and the default classification model is a small one. Before wiring
+this to any automatic action, measure whether the numbers actually separate
+correct from incorrect classifications on YOUR documents: the evaluation report's
+per-page classification details give you the ground truth to do it.
+
+Two cheap signals are already reliable and cost nothing extra:
+
+- a page whose class came back **invalid** and needed a re-prompt (or fell back
+  to `invalidClassFallback`) — the classifier demonstrably struggled;
+- a page classified as `unclassified` or a blank-page class.
 
 ## Regex-Based Classification for Performance Optimization
 

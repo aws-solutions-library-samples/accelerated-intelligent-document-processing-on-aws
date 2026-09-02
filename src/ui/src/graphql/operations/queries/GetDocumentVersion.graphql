@@ -18,6 +18,7 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
       InstanceCount
       Excluded
@@ -38,6 +39,8 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
       ImageUri
       TextUri
       OcrPageDataUri

@@ -51,6 +51,22 @@ def _caller_groups(event) -> List[str]:
     return list(groups)
 
 
+def _as_float(value: Any) -> Optional[float]:
+    """Coerce a stored DynamoDB number to a GraphQL Float, preserving null.
+
+    DynamoDB returns numbers as ``Decimal``, which this resolver's
+    ``json.dumps(..., default=str)`` would emit as a quoted string — a Float
+    field would then arrive at the UI as ``"0.85"``. ``None`` stays ``None``
+    (not scored) rather than becoming 0.0.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _shape_processing_issues(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Shape a run section's stored issues to the GraphQL ProcessingIssue type.
 
@@ -78,6 +94,11 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "PageIds": s.get("PageIds", []),
             "Class": s.get("Class"),
             "OutputJSONUri": s.get("OutputJSONUri"),
+            # Confidence in the section's CLASS. Coerced to float because
+            # DynamoDB hands back a Decimal, which this resolver's
+            # json.dumps(default=str) would emit as a quoted string for a
+            # GraphQL Float field. None when the run was not scored.
+            "Confidence": _as_float(s.get("Confidence")),
             # Per-section quality data snapshotted by create_document_run. The
             # UI's "Low Confidence Fields" count and section Status read these,
             # so dropping them here makes every historical section look clean.
@@ -107,9 +128,11 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "ImageUri": p.get("ImageUri"),
             "TextUri": p.get("TextUri"),
             "OcrPageDataUri": p.get("OcrPageDataUri"),
-            # Boundary signal snapshotted by create_document_run. Like the
+            # Classification signals snapshotted by create_document_run. Like the
             # section allow-list above, an omitted key here is silently dropped
             # from every historical view.
+            "ClassConfidence": _as_float(p.get("ClassConfidence")),
+            "ClassReason": p.get("ClassReason") or None,
             "Boundary": p.get("Boundary") or None,
         }
         for p in item.get("Pages", []) or []

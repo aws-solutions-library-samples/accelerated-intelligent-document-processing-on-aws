@@ -283,7 +283,9 @@ class TestClassificationService:
         # Verify results
         assert result.page_id == "1"
         assert result.classification.doc_type == "invoice"
-        assert result.classification.confidence == 1.0
+        # The model returned no confidence, so the page is NOT SCORED rather
+        # than credited with a fabricated 1.0 (GitHub #673).
+        assert result.classification.confidence is None
         assert result.classification.metadata["metering"] == {"tokens": 100}
         assert result.classification.metadata["document_boundary"] == "continue"
         assert result.image_uri == "s3://bucket/image.jpg"
@@ -296,18 +298,152 @@ class TestClassificationService:
         mock_invoke.assert_called_once()
 
     @staticmethod
-    def _bedrock_response(class_value):
-        """Helper to build a mocked _invoke_bedrock_model return value."""
+    def _bedrock_response(class_value, **extra):
+        """Helper to build a mocked _invoke_bedrock_model return value.
+
+        ``extra`` goes into the JSON body alongside ``class``, for the optional
+        keys the prompt may ask for (``confidence``, ``classification_reason``,
+        ``document_boundary``).
+        """
+        body = {"class": class_value, **extra}
         return {
             "response": {
-                "output": {
-                    "message": {
-                        "content": [{"text": json.dumps({"class": class_value})}]
-                    }
-                }
+                "output": {"message": {"content": [{"text": json.dumps(body)}]}}
             },
             "metering": {"bedrock": {"inputTokens": 100, "outputTokens": 10}},
         }
+
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.image.prepare_image")
+    @patch(
+        "idp_common.classification.service.ClassificationService._invoke_bedrock_model"
+    )
+    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    def test_model_reported_confidence_and_reason_are_kept(
+        self,
+        mock_prepare_bedrock_image,
+        mock_invoke,
+        mock_prepare_image,
+        mock_get_text,
+        service,
+    ):
+        """A confidence and reason the model returns must survive (GitHub #673).
+
+        Both were parsed by nobody before this: `confidence` was documented and
+        discarded, and `classification_reason` is asked for by the DEFAULT prompt,
+        so its output tokens were bought on every page and dropped.
+        """
+        mock_get_text.return_value = "This is an invoice for $100"
+        mock_prepare_image.return_value = b"image_data"
+        mock_prepare_bedrock_image.return_value = {"image": "base64_encoded_image"}
+        mock_invoke.return_value = self._bedrock_response(
+            "invoice",
+            confidence=0.72,
+            classification_reason="Invoice number and remittance block present",
+        )
+
+        result = service.classify_page_bedrock(
+            page_id="1",
+            text_uri="s3://bucket/text.txt",
+            image_uri="s3://bucket/image.jpg",
+        )
+
+        assert result.classification.confidence == 0.72
+        assert result.classification.metadata["classification_reason"] == (
+            "Invoice number and remittance block present"
+        )
+
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.image.prepare_image")
+    @patch(
+        "idp_common.classification.service.ClassificationService._invoke_bedrock_model"
+    )
+    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    def test_percentage_confidence_is_normalized(
+        self,
+        mock_prepare_bedrock_image,
+        mock_invoke,
+        mock_prepare_image,
+        mock_get_text,
+        service,
+    ):
+        """Models asked for a probability often answer 95 rather than 0.95."""
+        mock_get_text.return_value = "This is an invoice for $100"
+        mock_prepare_image.return_value = b"image_data"
+        mock_prepare_bedrock_image.return_value = {"image": "base64_encoded_image"}
+        mock_invoke.return_value = self._bedrock_response("invoice", confidence=95)
+
+        result = service.classify_page_bedrock(
+            page_id="1",
+            text_uri="s3://bucket/text.txt",
+            image_uri="s3://bucket/image.jpg",
+        )
+
+        assert result.classification.confidence == 0.95
+
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.image.prepare_image")
+    @patch(
+        "idp_common.classification.service.ClassificationService._invoke_bedrock_model"
+    )
+    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    def test_fallback_class_discards_the_rejected_prediction_confidence(
+        self,
+        mock_prepare_bedrock_image,
+        mock_invoke,
+        mock_prepare_image,
+        mock_get_text,
+        service,
+    ):
+        """The fallback class is ours, so the model's score does not describe it."""
+        mock_get_text.return_value = "Some ambiguous content"
+        mock_prepare_image.return_value = b"image_data"
+        mock_prepare_bedrock_image.return_value = {"image": "base64_encoded_image"}
+        mock_invoke.return_value = self._bedrock_response(
+            "bogus_class", confidence=0.99, classification_reason="looks bogus"
+        )
+
+        result = service.classify_page_bedrock(
+            page_id="1",
+            text_uri="s3://bucket/text.txt",
+            image_uri="s3://bucket/image.jpg",
+        )
+
+        assert result.classification.doc_type == "unclassified"
+        assert result.classification.confidence is None
+        assert "classification_reason" not in result.classification.metadata
+
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.image.prepare_image")
+    @patch(
+        "idp_common.classification.service.ClassificationService._invoke_bedrock_model"
+    )
+    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    def test_retry_does_not_carry_the_rejected_attempt_confidence(
+        self,
+        mock_prepare_bedrock_image,
+        mock_invoke,
+        mock_prepare_image,
+        mock_get_text,
+        service,
+    ):
+        """A retry's accepted class must not inherit the rejected one's score."""
+        mock_get_text.return_value = "This is an invoice for $100"
+        mock_prepare_image.return_value = b"image_data"
+        mock_prepare_bedrock_image.return_value = {"image": "base64_encoded_image"}
+        mock_invoke.side_effect = [
+            self._bedrock_response("not_a_real_class", confidence=0.99),
+            self._bedrock_response("invoice"),  # valid, but reports no confidence
+        ]
+
+        result = service.classify_page_bedrock(
+            page_id="1",
+            text_uri="s3://bucket/text.txt",
+            image_uri="s3://bucket/image.jpg",
+        )
+
+        assert result.classification.doc_type == "invoice"
+        assert result.classification.confidence is None
 
     @patch("idp_common.s3.get_text_content")
     @patch("idp_common.image.prepare_image")
@@ -522,7 +658,8 @@ class TestClassificationService:
             # Verify results
             assert result.page_id == "1"
             assert result.classification.doc_type == "invoice"
-            assert result.classification.confidence == 1.0
+            # The UDOP endpoint returns a prediction with no score.
+            assert result.classification.confidence is None
             assert (
                 "Classification/sagemaker/invoke_endpoint"
                 in result.classification.metadata["metering"]

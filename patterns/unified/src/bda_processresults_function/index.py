@@ -16,7 +16,7 @@ from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
 from idp_common.s3 import get_s3_client, write_content
-from idp_common.utils import build_s3_uri, parse_s3_uri
+from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -338,11 +338,18 @@ def process_bda_sections(
                 # Create the OutputJSONUri using the utility function
                 extraction_result_uri = build_s3_uri(output_bucket, result_path)
 
-                # Create Section object and add to document
+                # Create Section object and add to document.
+                #
+                # Confidence is left unscored here and filled in later from BDA's
+                # matched-blueprint confidence, which is the real signal for the
+                # class this section was given (see the segment loop in
+                # update_hitl_status_in_dynamodb). A section whose blueprint did
+                # not MATCH therefore stays unscored rather than claiming the 1.0
+                # this used to hardcode.
                 section = Section(
                     section_id=section_id,
                     classification=doc_class,
-                    confidence=1.0,
+                    confidence=None,
                     page_ids=page_ids,
                     extraction_result_uri=extraction_result_uri,
                 )
@@ -1146,6 +1153,9 @@ def process_segments(
                 pagespecific_details, confidence_threshold
             )
 
+            blueprint_name = custom_output["matched_blueprint"]["name"]
+            bp_confidence = custom_output["matched_blueprint"]["confidence"]
+
             # Update the corresponding document section with confidence alerts
             # Find the section that contains these page indices (now 1-based)
             page_ids_str = [str(idx) for idx in page_indices_1based]
@@ -1153,12 +1163,22 @@ def process_segments(
                 # Check if this section's pages match the current segment's pages
                 if set(section.page_ids) == set(page_ids_str):
                     section.confidence_threshold_alerts = confidence_threshold_alerts
+                    # BDA's matched-blueprint confidence IS the classification
+                    # confidence in this mode: the matched blueprint is what
+                    # determines the section's class. It was already read below
+                    # for the HITL decision but never stored, so the section
+                    # carried a hardcoded 1.0 (GitHub #673). Note this makes BDA
+                    # mode scored by default, with no extra inference and no
+                    # prompt change — unlike the pipeline mode, where the model
+                    # has to be asked.
+                    section.confidence = parse_confidence(
+                        bp_confidence, context=f"BDA blueprint {blueprint_name}"
+                    )
                     logger.info(
-                        f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts"
+                        f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts, "
+                        f"class confidence {section.confidence}"
                     )
                     break
-            blueprint_name = custom_output["matched_blueprint"]["name"]
-            bp_confidence = custom_output["matched_blueprint"]["confidence"]
 
             # Check if any key-value or blueprint confidence is below threshold
             # Use confidence_threshold_alerts to determine if HITL should be triggered

@@ -1351,6 +1351,8 @@ export type MutationUploadSampleDocumentArgs = {
 export type Page = {
   Boundary?: Maybe<Scalars['String']['output']>;
   Class?: Maybe<Scalars['String']['output']>;
+  ClassConfidence?: Maybe<Scalars['Float']['output']>;
+  ClassReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['Int']['output']>;
   ImageUri?: Maybe<Scalars['String']['output']>;
   OcrPageDataUri?: Maybe<Scalars['String']['output']>;
@@ -1860,6 +1862,7 @@ export type SampleDocumentUrl = {
 
 export type Section = {
   Class?: Maybe<Scalars['String']['output']>;
+  Confidence?: Maybe<Scalars['Float']['output']>;
   ConfidenceThresholdAlerts?: Maybe<Array<Maybe<ConfidenceThresholdAlert>>>;
   Excluded?: Maybe<Scalars['Boolean']['output']>;
   ExclusionReason?: Maybe<Scalars['String']['output']>;

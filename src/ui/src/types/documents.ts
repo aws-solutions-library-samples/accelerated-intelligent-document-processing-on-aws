@@ -101,6 +101,7 @@ type _EditableSectionCoversSchema = AssertAssignable<keyof GqlSection, keyof Edi
  */
 export const SECTION_FIELDS: Record<keyof GqlSection, true> = {
   Class: true,
+  Confidence: true,
   ConfidenceThresholdAlerts: true,
   Excluded: true,
   ExclusionReason: true,

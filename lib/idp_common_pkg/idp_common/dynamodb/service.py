@@ -72,6 +72,34 @@ def convert_decimals_to_native(obj):
     return obj
 
 
+def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
+    """Serialize a Page's OPTIONAL classification signals for DynamoDB.
+
+    Returns only the keys that have a value: ``ClassConfidence`` (the
+    classifier's confidence in ``Class``, as a Decimal — DynamoDB rejects
+    floats), ``ClassReason`` (the model's stated evidence) and ``Boundary``
+    (the ``start``/``continue`` signal ``sectionSplitting: llm_determined``
+    splits on). A page that produced none of them adds no attributes, so items
+    stay byte-identical to what older code wrote.
+
+    Named ``ClassConfidence`` rather than ``Confidence`` because a page item
+    already carries ``TextConfidenceUri``, which is OCR confidence — a different
+    measurement entirely. The prefix ties this one to the sibling ``Class``.
+
+    Shared by the live doc item writer (update_document) and the run-record
+    writer (create_document_run) so a version snapshot never carries fewer
+    signals than the live document.
+    """
+    signals: Dict[str, Any] = {}
+    if page.confidence is not None:
+        signals["ClassConfidence"] = Decimal(str(float(page.confidence)))
+    if getattr(page, "classification_reason", None):
+        signals["ClassReason"] = page.classification_reason
+    if page.document_boundary:
+        signals["Boundary"] = page.document_boundary
+    return signals
+
+
 def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, Any]]:
     """
     Serialize a Section's confidence threshold alerts to the DynamoDB/GraphQL
@@ -305,12 +333,13 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
-                # The classifier's "start"/"continue" signal, which is what
-                # sectionSplitting: llm_determined splits on. Persisted so an
-                # unexpected section merge can be audited after the fact instead
-                # of re-derived from Lambda logs. Omitted when absent.
-                if page.document_boundary:
-                    page_data["Boundary"] = page.document_boundary
+                # Optional classification signals — the confidence in Class, the
+                # model's reason for it, and the "start"/"continue" boundary
+                # signal that sectionSplitting: llm_determined splits on.
+                # Persisted so a surprising classification or section merge can
+                # be audited after the fact instead of re-derived from Lambda
+                # logs. Each is omitted when absent.
+                page_data.update(serialize_page_classification_signals(page))
                 pages_data.append(page_data)
 
             if pages_data:
@@ -338,6 +367,12 @@ class DocumentDynamoDBService:
                     "Class": section.classification,
                     "OutputJSONUri": section.extraction_result_uri or "",
                 }
+
+                # Confidence in the section's CLASS (aggregated from its pages),
+                # distinct from the per-field ConfidenceThresholdAlerts below.
+                # Omitted when not scored.
+                if section.confidence is not None:
+                    section_data["Confidence"] = Decimal(str(float(section.confidence)))
 
                 # Convert confidence threshold alerts (matching current AppSync interface)
                 if section.confidence_threshold_alerts:
@@ -572,6 +607,14 @@ class DocumentDynamoDBService:
                     text_confidence_uri=page_data.get("TextConfidenceUri"),
                     ocr_page_data_uri=page_data.get("OcrPageDataUri") or None,
                     classification=page_data.get("Class"),
+                    # Stored as a DynamoDB Decimal; back to float for the model.
+                    # Absent => not scored (None), never a presumed 1.0.
+                    confidence=(
+                        float(page_data["ClassConfidence"])
+                        if page_data.get("ClassConfidence") is not None
+                        else None
+                    ),
+                    classification_reason=page_data.get("ClassReason") or None,
                     document_boundary=page_data.get("Boundary") or None,
                 )
 
@@ -626,6 +669,12 @@ class DocumentDynamoDBService:
                     Section(
                         section_id=section_data.get("Id", ""),
                         classification=section_data.get("Class", ""),
+                        # Confidence in the CLASS. Absent => not scored.
+                        confidence=(
+                            float(section_data["Confidence"])
+                            if section_data.get("Confidence") is not None
+                            else None
+                        ),
                         page_ids=page_ids,
                         extraction_result_uri=section_data.get("OutputJSONUri"),
                         confidence_threshold_alerts=confidence_threshold_alerts,
@@ -1118,12 +1167,20 @@ class DocumentDynamoDBService:
                     f"Skipping page ID {page_id} in section {section.section_id} - not an integer"
                 )
 
-        section_data = {
+        section_data: Dict[str, Any] = {
             "Id": section.section_id,
             "PageIds": page_ids,
             "Class": section.classification,
             "OutputJSONUri": section.extraction_result_uri or "",
         }
+
+        # Confidence in the section's CLASS, written here for the same reason the
+        # exclusion flags below are: this is a whole-map replace, so omitting a key
+        # classification already persisted ERASES it. Extraction calls this writer
+        # per section, which would otherwise drop the class confidence moments
+        # after it was stored.
+        if section.confidence is not None:
+            section_data["Confidence"] = Decimal(str(float(section.confidence)))
 
         # Convert confidence threshold alerts
         if section.confidence_threshold_alerts:
@@ -1282,6 +1339,8 @@ class DocumentDynamoDBService:
                 # and an empty Status for every section, because the UI derives
                 # both from these attributes (there is no other source once the
                 # run's outputs have been overwritten).
+                if section.confidence is not None:
+                    section_data["Confidence"] = Decimal(str(float(section.confidence)))
                 if section.confidence_threshold_alerts:
                     section_data["ConfidenceThresholdAlerts"] = (
                         serialize_confidence_threshold_alerts(section)
@@ -1316,10 +1375,10 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
-                # Snapshot the boundary signal too, so a historical run can be
-                # audited for why its sections were split the way they were.
-                if page.document_boundary:
-                    page_snapshot["Boundary"] = page.document_boundary
+                # Snapshot the classification signals too (confidence, reason,
+                # boundary), so a historical run can be audited for why its pages
+                # were classified — and its sections split — the way they were.
+                page_snapshot.update(serialize_page_classification_signals(page))
                 pages_data.append(page_snapshot)
             if pages_data:
                 item["Pages"] = pages_data
