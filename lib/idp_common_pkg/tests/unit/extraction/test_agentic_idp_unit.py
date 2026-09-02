@@ -286,20 +286,58 @@ class TestBuildModelConfig:
 
 
 class TestGetInferenceParams:
+    """`temperature` and `top_p` are mutually exclusive on Bedrock, and Claude
+    4.7+ rejects both.
+
+    These three tests spent their whole life skipped — ``strands`` was stubbed
+    unconditionally, so the module-level guard import saw a MagicMock and
+    reported the package as missing. In the meantime ``_get_inference_params``
+    gained a required ``model_id`` and they had rotted into a ``TypeError``.
+    """
+
+    # Not Claude 4.7+, so the mutual-exclusion rules apply.
+    SAMPLING_MODEL = "us.anthropic.claude-sonnet-4-6"
+
     def test_temperature_only(self):
-        params = _get_inference_params(temperature=0.0, top_p=None)
+        params = _get_inference_params(self.SAMPLING_MODEL, temperature=0.0, top_p=None)
         assert "temperature" in params
         assert "top_p" not in params
 
     def test_top_p_when_positive(self):
-        params = _get_inference_params(temperature=0.5, top_p=0.9)
+        params = _get_inference_params(self.SAMPLING_MODEL, temperature=0.5, top_p=0.9)
         assert "top_p" in params
         assert "temperature" not in params
 
     def test_top_p_zero_uses_temperature(self):
-        params = _get_inference_params(temperature=0.5, top_p=0.0)
+        """`top_p: 0.0` means "unset", not "top_p of zero" — a literal 0.0 would
+        make the model degenerate, and temperature=0 is the recommended way to
+        ask for deterministic output."""
+        params = _get_inference_params(self.SAMPLING_MODEL, temperature=0.5, top_p=0.0)
         assert "temperature" in params
         assert "top_p" not in params
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.anthropic.claude-opus-4-7",
+            "us.anthropic.claude-sonnet-5",
+            "us.anthropic.claude-opus-5",
+        ],
+    )
+    def test_claude_4_7_plus_gets_no_sampling_params_at_all(self, model_id):
+        """These models **reject** `temperature`/`top_p` outright, so passing
+        either fails the ConverseStream call with "`top_p` is deprecated for this
+        model" (#304). The helper must return an empty dict — the whole reason it
+        takes a model_id, and the behavior these tests could not see while they
+        were skipped."""
+        assert _get_inference_params(model_id, temperature=0.0, top_p=0.9) == {}
+
+    def test_a_nova_model_still_gets_sampling_params(self):
+        """Guard-the-guard: the 4.7+ exclusion must not swallow every model."""
+        params = _get_inference_params(
+            "us.amazon.nova-lite-v1:0", temperature=0.0, top_p=None
+        )
+        assert params, "Nova accepts temperature; an empty dict would be wrong"
 
 
 # ──────────────────────────────────────────────────────────────
