@@ -26,6 +26,7 @@ separate — they answer different questions and are regenerated on different ca
 |----------|--------------------|---------|
 | **This guide** (`index.md`) | *How does the suite work and what do the numbers mean?* | Evergreen; edit when the harness changes. |
 | [Configuration Guidance](./config-guidance.md) | *Which config (OCR / mode / assessment / model) should I pick?* — cross-config at one release | Refreshed per release. |
+| [Classification Confidence](./classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
 | [Release Audit Trail](./releases/) | *Is upgrading from the last published release safe / cheaper / faster?* — release-vs-release | **One new entry per release** (never overwritten). |
 
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`

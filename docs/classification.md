@@ -1280,6 +1280,23 @@ overconfident, and the default classification model is a small one. That is why
 `topk` is recommended over `verbalized`, and why the whole block is off by
 default.
 
+**This is measured, not asserted.** On 298 pages of a deliberately confusable
+13-class corpus, in `topk` mode ([full study](./benchmarking/classification-confidence.md)):
+
+| | Nova 2 Lite (default) | Claude Haiku 4.5 |
+|---|---|---|
+| Page classification accuracy | 0.846 | 0.852 |
+| Calibration separation | +0.044 | **+0.207** |
+| Mean confidence when **wrong** | 0.903 | 0.741 |
+| Distinct confidence values emitted | **6** (90 % of pages at exactly 0.95) | 11 |
+| Errors caught / pages reviewed at the best threshold | 43 % / 8 % | **73 % / 11 %** |
+| Classification cost per page | $0.00090 | $0.00573 |
+
+Equally accurate; not equally *informative*. Nova 2 Lite answered 0.95 for 90 % of
+pages including half its own errors, so its score is a coarse triage flag at best.
+Haiku 4.5's is actionable — and costs 6.4× more per page. Decide that trade
+deliberately; do not assume the number is useful because it exists.
+
 **You can measure this directly, and you should before wiring it to anything
 automatic.** With ground truth available, the evaluation report's per-page
 classification details now record the classifier's own confidence next to whether
