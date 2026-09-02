@@ -58,36 +58,65 @@ def delete_current_output_objects(
     downstream classification/extraction consume text from the OLD document.
 
     ``subprefixes``:
-      - ``None`` (default) — purge ``<key>/*``, preserving only ``<key>/runs/``.
-        Used by the Reprocess resolver, where "start over" is the intent.
+      - ``None`` (default) — purge ``<key>/*``, preserving only
+        ``<key>/runs/``. Used by the Reprocess resolver, where "start
+        over" is the intent. ⚠️ For nested-key deployments (uploads
+        exist at ``foo`` AND ``foo/bar.pdf``) this ALSO deletes
+        ``foo/bar.pdf/runs/*`` — the preserved-prefix filter only
+        protects THIS document's runs/, not nested documents'. Reprocess
+        accepts that risk because the caller is an authenticated admin
+        action ("start over" is deliberate); other callers should scope
+        via ``subprefixes`` to avoid it.
       - ``("pages/",)`` (or similar list) — purge ONLY those subprefixes
         under ``<key>/``. Used by queue_sender for re-upload cleanup so a
         re-upload of ``foo`` cannot destroy nested-document data at
         ``foo/bar.pdf/*`` (issue #719 follow-up). Reduces blast radius to
         exactly the subprefixes that reintroduce the bug being fixed.
+        Values are normalized: leading and trailing ``/`` are stripped
+        and one trailing ``/`` re-appended, so both ``pages`` and
+        ``/pages/`` scan ``<key>/pages/`` — never ``<key>/pages`` (which
+        would match sibling prefixes like ``pages_backup/*``).
 
-    Preserves ``{input_key}/runs/`` (per-run manifests plus the noncurrent
-    object versions they pin) so document version history survives. On a
-    versioned bucket, ``delete_objects`` without VersionId writes delete
-    markers, so the underlying bytes remain retrievable via the manifests.
+    Preserves the CURRENT document's ``{input_key}/runs/`` (per-run
+    manifests plus the noncurrent object versions they pin) so its
+    version history survives. On a versioned bucket, ``delete_objects``
+    without VersionId writes delete markers, so the underlying bytes
+    remain retrievable via the manifests.
 
     Returns:
-        Number of objects successfully deleted (0 if the prefix was empty).
-        Per-key failures reported by S3 (Quiet=True still returns Errors)
-        are logged as warnings and NOT counted — an incomplete purge that
-        silently over-counted would re-open #719 with a success log.
+        Number of objects successfully deleted (0 if the prefix was
+        empty).
+
+    Raises:
+        RuntimeError: if any batch's ``delete_objects`` returns per-key
+        ``Errors`` (visible in the response even with ``Quiet=True``).
+        Silently continuing on partial failures would re-open #719 —
+        OCR's retry-safe recovery only needs ONE complete 4-file page
+        (rawText/result/textConfidence/image) to survive to resurrect
+        stale text. Callers should catch and decide the escalation
+        (queue_sender logs at ERROR so a metric filter can alarm on it).
     """
     preserved_prefix = runs_prefix(input_key)
     if subprefixes is not None:
-        # Explicit list (may be empty → no-op) — scan only these subprefixes.
-        prefixes_to_scan = [f"{input_key}/{sp.lstrip('/')}" for sp in subprefixes]
+        # Explicit list (may be empty → no-op) — scan only these
+        # subprefixes. Normalize both leading and trailing slashes so
+        # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
+        # — a bare ``<key>/pages`` would match ``<key>/pages_backup/*``.
+        prefixes_to_scan = [
+            f"{input_key}/{sp.strip('/')}/" for sp in subprefixes if sp.strip("/")
+        ]
     else:
         # None → broad purge under ``<key>/`` (reprocess semantics).
         prefixes_to_scan = [f"{input_key}/"]
     deleted = 0
+    total_errors: List[Dict[str, Any]] = []
     paginator = s3_client.get_paginator("list_objects_v2")
     for prefix in prefixes_to_scan:
         for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
+            # Defense-in-depth: even when scanning a subprefix that
+            # structurally cannot include runs/ (e.g. ``pages/``), keep
+            # the filter — it protects future callers that pass ``("",)``
+            # or ``("runs/",)`` and would otherwise nuke the manifests.
             objects = [
                 obj
                 for obj in page.get("Contents", [])
@@ -101,22 +130,21 @@ def delete_current_output_objects(
                     Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
                 )
                 errors = response.get("Errors", [])
-                if errors:
-                    # Surface per-key failures — Quiet=True hides them from
-                    # the response body but they still land in ``Errors``.
-                    # Counting only successes prevents a partial purge from
-                    # reporting a false "N deleted" success log while stale
-                    # pages/*.json remain and re-open #719 via OCR's
-                    # retry-safe recovery.
-                    sample = ", ".join(
-                        f"{e.get('Key')}({e.get('Code')})" for e in errors[:5]
-                    )
-                    logger.warning(
-                        f"delete_objects reported {len(errors)} per-key "
-                        f"failure(s) purging s3://{output_bucket}/{prefix} "
-                        f"(sample: {sample}). Stale artefacts may remain."
-                    )
                 deleted += len(batch) - len(errors)
+                total_errors.extend(errors)
+    if total_errors:
+        # Even one surviving 4-file page (rawText+result+textConfidence
+        # +image) lets discover_existing_ocr_pages re-open #719.
+        # Raise so the caller's error path (queue_sender: logger.error;
+        # reprocess resolver: caller's try/except) fires visibly rather
+        # than logging-and-continuing with a partial success count.
+        sample = ", ".join(f"{e.get('Key')}({e.get('Code')})" for e in total_errors[:5])
+        raise RuntimeError(
+            f"delete_objects reported {len(total_errors)} per-key "
+            f"failure(s) while purging s3://{output_bucket}/{input_key}/ "
+            f"(sample: {sample}). Stale artefacts may remain and OCR's "
+            f"retry-safe recovery could re-open #719 on the next run."
+        )
     return deleted
 
 

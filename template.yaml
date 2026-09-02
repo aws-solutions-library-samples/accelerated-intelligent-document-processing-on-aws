@@ -6608,11 +6608,22 @@ Resources:
             TableName: !Ref ConfigurationTable
         - S3ReadPolicy:
             BucketName: !Ref InputBucket
-        # Issue #719: purge stale output from a prior upload of the same key
-        # before the pipeline runs (defeats OCR retry-safe recovery on
-        # re-upload). Preserves `<key>/runs/` version-history manifests.
-        - S3CrudPolicy:
-            BucketName: !Ref OutputBucket
+        # Issue #719: purge stale <key>/pages/* from a prior upload of the
+        # same key before the pipeline runs (defeats OCR retry-safe recovery
+        # on re-upload). Scoped to exactly what the purge needs — ListBucket
+        # to enumerate, DeleteObject to remove. Tighter than the S3CrudPolicy
+        # SAM template (which also grants Put/Get/Restore/ACL/tagging that
+        # this function never uses), matching least-privilege on a data-plane
+        # function invoked once per document upload.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}"
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
         - Statement:
             - Effect: Allow
               Action:

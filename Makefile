@@ -320,8 +320,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
 	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
-	$(PYTHON) -m pytest -q -p no:cacheprovider \
-	    src/lambda/queue_sender/test_index.py
+	@# Both suites import their own ``index`` module; run each in its
+	@# own directory to prevent the sys.path collision that fails a
+	@# combined pytest invocation.
+	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \

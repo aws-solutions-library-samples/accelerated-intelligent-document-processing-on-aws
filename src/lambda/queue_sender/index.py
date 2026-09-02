@@ -116,6 +116,19 @@ def handler(event, context):
     # deliberate and the caller is an authenticated admin action).
     #
     # No-op on a fresh key. Preserves `<key>/runs/` (version-history manifests).
+    #
+    # Known trade-off (concurrent re-uploads mid-flight): if a prior
+    # workflow for the same key is still writing to ``pages/*`` when a
+    # NEW upload arrives, this purge deletes pages the running OCR is
+    # actively writing. The prior workflow keeps writing whatever pages
+    # come after the purge, so the new workflow's OCR discovery sees a
+    # partial subset of stale pages and resurrects them — the resulting
+    # extraction is a mix of old and new document text. This is a
+    # regression only in the concurrent-race case (previously the new
+    # workflow saw ALL of the old document's pages and was uniformly
+    # wrong; now it can be mixed). A full fix needs content-etag-keyed
+    # OCR recovery (out of scope for #719). For the non-concurrent
+    # case — which is what #719 actually covers — the purge is correct.
     try:
         deleted = delete_current_output_objects(
             s3, output_bucket, object_key, subprefixes=("pages/",)

@@ -309,11 +309,14 @@ class TestDeleteCurrentOutputObjects:
             assert "foo/bar.pdf/runs/manifest.json" not in keys
             assert "foo/bar.pdf/pages/1/result.json" not in keys
 
-    def test_delete_objects_errors_are_subtracted_from_count(self):
+    def test_delete_objects_errors_raise_to_caller(self):
         """S3 delete_objects with Quiet=True still returns per-key failures
         in ``Errors``. A silent partial failure that reported success would
-        re-open #719 (some stale pages survive; OCR's retry-safe recovery
-        finds them). The count must reflect only actual successes."""
+        re-open #719 — OCR's retry-safe recovery only needs ONE complete
+        4-file page (rawText+result+textConfidence+image) to survive. Any
+        error MUST raise so the caller's error path fires (queue_sender
+        logs at ERROR for metric-filter alarming; reprocess resolver's
+        try/except catches and surfaces to the operator)."""
         s3 = MagicMock()
         s3.get_paginator.return_value = _paginator_returning(
             [
@@ -335,9 +338,8 @@ class TestDeleteCurrentOutputObjects:
                 }
             ]
         }
-        deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
-        # 3 requested, 1 failed → 2 actual successes.
-        assert deleted == 2
+        with pytest.raises(RuntimeError, match="delete_objects reported"):
+            delete_current_output_objects(s3, "out-bucket", "doc.pdf")
 
     def test_delete_objects_no_errors_returns_full_count(self):
         """Baseline: with no Errors in the response, the count equals the
@@ -356,6 +358,31 @@ class TestDeleteCurrentOutputObjects:
         s3.delete_objects.return_value = {}
         deleted = delete_current_output_objects(s3, "out-bucket", "doc.pdf")
         assert deleted == 2
+
+    def test_subprefix_without_trailing_slash_is_normalized(self):
+        """A caller passing ``pages`` (no trailing /) would otherwise scan
+        ``<key>/pages`` — which S3 treats as a prefix match, so
+        ``<key>/pages_backup/*`` would be listed and deleted along with
+        the intended ``<key>/pages/*``. The helper normalizes to
+        ``<key>/pages/`` so this class of sibling-prefix collision is
+        structurally impossible."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "foo", subprefixes=("pages",))
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="foo/pages/"
+        )
+
+    def test_subprefix_leading_and_trailing_slashes_both_normalized(self):
+        """``/pages/`` (leading + trailing) normalizes the same as ``pages``
+        or ``pages/`` — a caller cannot accidentally scan a different
+        prefix by passing surrounding slashes."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "foo", subprefixes=("/pages/",))
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="foo/pages/"
+        )
 
 
 @pytest.mark.unit
