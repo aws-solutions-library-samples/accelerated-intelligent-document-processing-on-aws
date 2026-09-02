@@ -373,6 +373,57 @@ class TestDeleteCurrentOutputObjects:
             Bucket="out-bucket", Prefix="foo/pages/"
         )
 
+    def test_subprefix_none_entry_raises_value_error_not_attribute_error(self):
+        """A ``None`` entry in ``subprefixes`` used to hit
+        ``None.strip('/')`` → AttributeError, contradicting the
+        docstring's advertised ``ValueError``. Rejected up front now."""
+        s3 = MagicMock()
+        with pytest.raises(ValueError, match="not a str"):
+            delete_current_output_objects(
+                s3, "out-bucket", "doc.pdf", subprefixes=(None,)
+            )
+
+    def test_subprefix_non_str_entry_raises_value_error(self):
+        """Non-str entries (int, dict, etc.) get the same clean
+        ValueError as ``None`` — the docstring's contract holds."""
+        s3 = MagicMock()
+        with pytest.raises(ValueError, match="not a str"):
+            delete_current_output_objects(
+                s3, "out-bucket", "doc.pdf", subprefixes=(42,)
+            )
+
+    def test_bare_str_subprefixes_raises_not_iterated_over_chars(self):
+        """A caller who typo'd ``subprefixes="pages/"`` (missing the
+        comma → bare str) would otherwise iterate over characters
+        and produce absurd per-char scans. Reject up front."""
+        s3 = MagicMock()
+        with pytest.raises(ValueError, match="bare string"):
+            delete_current_output_objects(
+                s3, "out-bucket", "doc.pdf", subprefixes="pages/"
+            )
+
+    def test_partial_error_message_names_scoped_prefix_not_bare_key(self):
+        """A narrow ``subprefixes=("pages/",)`` failure should report the
+        scanned prefix (``<key>/pages/``), not the bare key — so triage
+        knows the failure surface was narrow, not a full-reprocess purge."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [{"Contents": [{"Key": "doc.pdf/pages/1/rawText.json"}]}]
+        )
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {
+                    "Key": "doc.pdf/pages/1/rawText.json",
+                    "Code": "AccessDenied",
+                }
+            ]
+        }
+        with pytest.raises(RuntimeError, match="doc.pdf/pages/") as exc:
+            delete_current_output_objects(
+                s3, "out-bucket", "doc.pdf", subprefixes=("pages/",)
+            )
+        assert "doc.pdf/pages/" in str(exc.value)
+
     def test_subprefix_empty_string_raises_value_error(self):
         """An entry like ``""`` or ``"/"`` normalizes to empty, which would
         silently reduce to a no-op — indistinguishable from a fresh-key

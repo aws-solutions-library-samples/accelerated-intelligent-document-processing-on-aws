@@ -105,8 +105,29 @@ def delete_current_output_objects(
         # Explicit list — normalize both leading and trailing slashes so
         # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
         # (a bare ``<key>/pages`` would match ``<key>/pages_backup/*``).
-        # Empty tuple ``()`` is an intentional no-op (see below). But an
-        # entry like ``""`` or ``"/"`` normalizes to empty, which would
+        # Empty tuple ``()`` is an intentional no-op (see below).
+        # ``str`` is a Sequence[str] too but iterates over characters —
+        # reject it explicitly so a caller who typo'd ``subprefixes="pages/"``
+        # instead of ``subprefixes=("pages/",)`` gets a clear error rather
+        # than absurd per-character prefix scans.
+        if isinstance(subprefixes, str):
+            raise ValueError(
+                f"subprefixes must be a sequence of strings (e.g. ``('pages/',)``), "
+                f"not a bare string ``{subprefixes!r}`` — a bare str would iterate "
+                f"over characters and produce per-character prefix scans."
+            )
+        # Reject non-str entries up front — the docstring advertises
+        # ValueError as the failure mode; without this check a ``None`` /
+        # int / other non-str entry raises AttributeError from
+        # ``.strip('/')`` instead, breaking the documented contract.
+        for i, sp in enumerate(subprefixes):
+            if not isinstance(sp, str):
+                raise ValueError(
+                    f"subprefixes[{i}]={sp!r} is not a str (got "
+                    f"{type(sp).__name__}). Each entry must be a string "
+                    f"like ``'pages/'``."
+                )
+        # An entry like ``""`` or ``"/"`` normalizes to empty, which would
         # silently reduce to a no-op — indistinguishable from a fresh-key
         # upload. Callers passing a non-empty list clearly intend to
         # scope-purge; raise so a bad entry is loud rather than a silent
@@ -155,9 +176,18 @@ def delete_current_output_objects(
         # reprocess resolver: caller's try/except) fires visibly rather
         # than logging-and-continuing with a partial success count.
         sample = ", ".join(f"{e.get('Key')}({e.get('Code')})" for e in total_errors[:5])
+        # Report the exact prefix(es) scanned so triage knows what was
+        # actually purged — a narrow subprefixes=("pages/",) scan and a
+        # broad reprocess purge report different failure surface even
+        # for the same ``input_key``.
+        scope = (
+            prefixes_to_scan[0]
+            if len(prefixes_to_scan) == 1
+            else f"{len(prefixes_to_scan)} prefixes: {prefixes_to_scan!r}"
+        )
         raise RuntimeError(
             f"delete_objects reported {len(total_errors)} per-key "
-            f"failure(s) while purging s3://{output_bucket}/{input_key}/ "
+            f"failure(s) while purging s3://{output_bucket}/{scope} "
             f"(sample: {sample}). Stale artefacts may remain and OCR's "
             f"retry-safe recovery could re-open #719 on the next run."
         )

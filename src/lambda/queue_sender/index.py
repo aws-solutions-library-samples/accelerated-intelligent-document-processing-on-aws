@@ -148,9 +148,12 @@ def handler(event, context):
         # CloudWatch metric so an operator can alarm on it without
         # depending on log-scraping (matches the round-16 pattern in
         # queue_processor._put_drift_sample). The alternative (raise →
-        # DLQ the SQS event → drop the upload entirely) is worse:
+        # EventBridge async retries exhaust → QueueSenderDLQ) is worse:
         # customers would rather see a possibly-stale extraction than
-        # have the ingest silently disappear.
+        # have the ingest silently disappear. queue_sender is
+        # ``Type: CloudWatchEvent`` (EventBridge Object-Created rule),
+        # so retries/DLQ behavior is EventBridge's async-invoke semantics,
+        # not an SQS DLQ on the source.
         logger.error(f"Failed to purge previous output data for {object_key}: {e}")
         try:
             cloudwatch.put_metric_data(
