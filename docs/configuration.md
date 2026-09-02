@@ -184,6 +184,37 @@ The `config_library/` directory contains example configurations demonstrating th
 
 See the [config_library README](../config_library/README.md) for available configurations and usage examples.
 
+### Retired and legacy Bedrock models
+
+Bedrock retires model versions over time. A retired model is removed from the
+model picklists (the enums in `patterns/unified/template.yaml` and
+`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+configuration are plain strings, not a closed enum, so **a stored configuration
+that still names a retired model keeps loading** — it just fails at invoke time
+with:
+
+```
+ResourceNotFoundException: This model version has reached the end of its life.
+```
+
+The failing stage's model is named in the Lambda log line and by the Error
+Analyzer agent's `fetch_pipeline_configuration` tool. Repoint the stage at a
+current model to fix it.
+
+Two failure shapes to distinguish:
+
+- **End of life** — the model is gone for everyone. It is removed from the
+  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
+  example.
+- **Provider-legacy, account-scoped** — the model still exists but access is
+  withdrawn per account after inactivity:
+  `ResourceNotFoundException: Access denied. This Model is marked by provider as
+  Legacy and you have not been actively using the model in the last 30 days.`
+  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
+  remains selectable because it works for accounts that have used it recently —
+  if you hit this error, either pick a current model or request access again in
+  the Bedrock console.
+
 ## Summarization Configuration
 
 ### Enable/Disable Summarization
