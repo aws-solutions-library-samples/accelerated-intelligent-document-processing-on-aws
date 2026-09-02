@@ -1,0 +1,3 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+enforce-off,6,0,0.15217,0.00692,0.0455,0.1456,0.1641,1.0,0.58333,73.36203
+enforce-warn,6,0,0.15467,0.00791,0.0511,0.1442,0.164,1.0,0.83333,136.24337
