@@ -194,9 +194,12 @@ class TestReuploadCleanup:
 
         mock_cw.put_metric_data.assert_called_once()
         call = mock_cw.put_metric_data.call_args
-        # Namespace defaults to the METRIC_NAMESPACE env var (test env
-        # doesn't set it, so it falls back to "IDP" — see index.py).
-        assert call.kwargs["Namespace"]
+        # Lock the exact Namespace so a future refactor that accidentally
+        # passes a typo (``idp`` lowercase, ``IDP-Test``, hardcoded stack
+        # name, ...) fails this test rather than silently drifting.
+        # Test env's mock_env fixture doesn't set METRIC_NAMESPACE, so
+        # the code's fallback ``"IDP"`` is what we expect here.
+        assert call.kwargs["Namespace"] == "IDP"
         metrics = call.kwargs["MetricData"]
         assert metrics[0]["MetricName"] == "StaleOutputPurgeFailed"
         assert metrics[0]["Value"] == 1

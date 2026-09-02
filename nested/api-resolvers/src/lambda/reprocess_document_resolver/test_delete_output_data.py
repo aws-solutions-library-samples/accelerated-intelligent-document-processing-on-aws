@@ -71,10 +71,59 @@ class TestDeleteOutputDataArgPassing:
         the caller's happy path still enqueues the reprocess."""
         import index
 
-        with patch.object(
-            index,
-            "delete_current_output_objects",
-            side_effect=RuntimeError("simulated S3 outage"),
+        with (
+            patch.object(index, "cloudwatch"),
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("simulated S3 outage"),
+            ),
         ):
+            # Must not raise.
+            index._delete_output_data("doc.pdf")
+
+    def test_failure_emits_alarmable_metric(self):
+        """Parity with queue_sender: on purge failure the reprocess
+        resolver must emit ``StaleOutputPurgeFailed`` so an operator
+        can alarm on it without depending on log-scraping."""
+        import index
+
+        with (
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("partial-purge S3 error"),
+            ),
+        ):
+            index._delete_output_data("doc.pdf")
+
+        mock_cw.put_metric_data.assert_called_once()
+        call = mock_cw.put_metric_data.call_args
+        # Lock the exact Namespace — the code's fallback ``IDP`` in test
+        # env; a refactor typo (``idp``, ``IDP-Test``, ...) fails here
+        # rather than silently drifting.
+        assert call.kwargs["Namespace"] == "IDP"
+        metrics = call.kwargs["MetricData"]
+        assert metrics[0]["MetricName"] == "StaleOutputPurgeFailed"
+        assert metrics[0]["Value"] == 1
+        assert metrics[0]["Unit"] == "Count"
+
+    def test_metric_emit_failure_is_swallowed(self):
+        """Telemetry must not affect the reprocess flow — if
+        PutMetricData itself throws (throttled / network), the outer
+        try/except swallows it and _delete_output_data returns
+        normally."""
+        import index
+
+        with (
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("purge failed"),
+            ),
+        ):
+            mock_cw.put_metric_data.side_effect = RuntimeError("CW throttle")
             # Must not raise.
             index._delete_output_data("doc.pdf")

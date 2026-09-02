@@ -100,22 +100,34 @@ def delete_current_output_objects(
         stale text. Callers should catch and decide the escalation
         (queue_sender logs at ERROR so a metric filter can alarm on it).
     """
+    # Strip any trailing slashes so an accidental ``input_key="foo/"``
+    # (folder pseudo-object shape) doesn't produce ``foo//pages/`` — S3
+    # treats that as a literal prefix that matches nothing, silently
+    # reducing the purge to a no-op and leaving stale artefacts.
+    input_key = input_key.rstrip("/")
     preserved_prefix = runs_prefix(input_key)
     if subprefixes is not None:
-        # Explicit list — normalize both leading and trailing slashes so
-        # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
-        # (a bare ``<key>/pages`` would match ``<key>/pages_backup/*``).
-        # Empty tuple ``()`` is an intentional no-op (see below).
         # ``str`` is a Sequence[str] too but iterates over characters —
-        # reject it explicitly so a caller who typo'd ``subprefixes="pages/"``
-        # instead of ``subprefixes=("pages/",)`` gets a clear error rather
-        # than absurd per-character prefix scans.
+        # reject it BEFORE materialization (list(str) would produce a
+        # char list that passes downstream checks and produce per-char
+        # scans). A caller who typo'd ``subprefixes="pages/"`` instead
+        # of ``subprefixes=("pages/",)`` gets a clear error.
         if isinstance(subprefixes, str):
             raise ValueError(
                 f"subprefixes must be a sequence of strings (e.g. ``('pages/',)``), "
                 f"not a bare string ``{subprefixes!r}`` — a bare str would iterate "
                 f"over characters and produce per-character prefix scans."
             )
+        # Materialize iterators (generators aren't Sequences but callers
+        # sometimes pass one anyway) so the two passes below — the
+        # isinstance validation loop and the ``strip`` comprehension —
+        # see the same values. Without this a generator exhausts on the
+        # first pass and the second reduces to an empty scan.
+        subprefixes = list(subprefixes)
+        # Explicit list — normalize both leading and trailing slashes so
+        # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
+        # (a bare ``<key>/pages`` would match ``<key>/pages_backup/*``).
+        # Empty tuple ``()`` is an intentional no-op (see below).
         # Reject non-str entries up front — the docstring advertises
         # ValueError as the failure mode; without this check a ``None`` /
         # int / other non-str entry raises AttributeError from
@@ -188,8 +200,9 @@ def delete_current_output_objects(
         raise RuntimeError(
             f"delete_objects reported {len(total_errors)} per-key "
             f"failure(s) while purging s3://{output_bucket}/{scope} "
-            f"(sample: {sample}). Stale artefacts may remain and OCR's "
-            f"retry-safe recovery could re-open #719 on the next run."
+            f"({deleted} succeeded, {len(total_errors)} failed; sample: "
+            f"{sample}). Stale artefacts may remain and OCR's retry-safe "
+            f"recovery could re-open #719 on the next run."
         )
     return deleted
 

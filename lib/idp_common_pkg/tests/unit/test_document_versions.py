@@ -373,6 +373,76 @@ class TestDeleteCurrentOutputObjects:
             Bucket="out-bucket", Prefix="foo/pages/"
         )
 
+    def test_input_key_trailing_slash_normalized_no_double_slash(self):
+        """``input_key`` ending with '/' (e.g. ``foo/``) would otherwise
+        produce ``foo//`` or ``foo//pages/`` — a literal prefix that
+        matches nothing in S3, silently reducing the purge to a no-op
+        and leaving stale artefacts. The helper strips trailing slashes
+        up front."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "foo/")
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="foo/"
+        )
+        # And with a subprefix: expected ``foo/pages/``, NOT ``foo//pages/``.
+        s3.reset_mock()
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        delete_current_output_objects(s3, "out-bucket", "foo/", subprefixes=("pages/",))
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="foo/pages/"
+        )
+
+    def test_partial_error_message_includes_success_count(self):
+        """When the helper raises on partial delete errors, the caller
+        cannot inspect ``deleted`` from the exception — so the message
+        must include both counts so triage knows whether 0, 50, or 1950
+        of a large purge succeeded before failing."""
+        s3 = MagicMock()
+        # Two batches: page 1 (2 keys, both succeed), page 2 (1 key, fails).
+        s3.get_paginator.return_value = _paginator_returning(
+            [
+                {
+                    "Contents": [
+                        {"Key": "doc.pdf/pages/1/rawText.json"},
+                        {"Key": "doc.pdf/pages/1/result.json"},
+                    ]
+                },
+                {"Contents": [{"Key": "doc.pdf/pages/2/rawText.json"}]},
+            ]
+        )
+        s3.delete_objects.side_effect = [
+            {},  # first batch: no errors → 2 succeed
+            {
+                "Errors": [
+                    {
+                        "Key": "doc.pdf/pages/2/rawText.json",
+                        "Code": "AccessDenied",
+                    }
+                ]
+            },  # second: 1 failure
+        ]
+        with pytest.raises(RuntimeError, match="2 succeeded, 1 failed"):
+            delete_current_output_objects(s3, "out-bucket", "doc.pdf")
+
+    def test_subprefixes_generator_input_is_materialized(self):
+        """A generator (not a Sequence, but easy to pass) was iterated
+        twice — the isinstance validation loop and the ``strip('/')``
+        comprehension. First pass exhausted it; second reduced to an
+        empty scan and the purge silently no-oped. The helper now wraps
+        in ``list()`` up front, so a generator caller works."""
+        s3 = MagicMock()
+        s3.get_paginator.return_value = _paginator_returning(
+            [{"Contents": [{"Key": "doc.pdf/pages/1/rawText.json"}]}]
+        )
+        deleted = delete_current_output_objects(
+            s3, "out-bucket", "doc.pdf", subprefixes=(sp for sp in ["pages/"])
+        )
+        assert deleted == 1
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="out-bucket", Prefix="doc.pdf/pages/"
+        )
+
     def test_subprefix_none_entry_raises_value_error_not_attribute_error(self):
         """A ``None`` entry in ``subprefixes`` used to hit
         ``None.strip('/')`` → AttributeError, contradicting the
