@@ -43,6 +43,16 @@ axes:
     disabled:       {classification.sectionSplitting: disabled}
     page:           {classification.sectionSplitting: page}
     llm_determined: {classification.sectionSplitting: llm_determined}
+  # extraction.agentic.restate_schema_in_system_prompt (#710). Advanced extraction
+  # sends the class schema THREE times per request; copies 2 and 3 are the same
+  # JSON string, so copy 2 (the system-prompt restatement) is pure duplication —
+  # measured at 2,600 of 6,680 schema tokens on the lending Payslip class (38%).
+  # A config toggle, so this A/Bs on ONE stack with identical code. It is NOT a
+  # free win: restating a schema in prose often improves adherence, so the gate is
+  # "no completeness regression", not "fewer tokens".
+  schema_restatement:
+    'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
+    'off': {extraction.agentic.restate_schema_in_system_prompt: false}
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -106,6 +116,7 @@ default_cell:
   classification_model: nova_2_lite   # the shipped default
   reasoning_effort: low
   enforcement: warn
+  schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
 
 # -----------------------------------------------------------------------------
@@ -121,6 +132,9 @@ core_cells:
   # Section-splitting cost cells. Identical but for the knob, so the delta is the
   # classification inference the #686 fix introduced.
   - {id: split-disabled,       ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: disabled}
+  # #710 pair. ADVANCED mode: the restatement only exists on the agentic path.
+  - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
+  - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
@@ -138,6 +152,7 @@ core_cells:
 # Isolates each knob's marginal effect on accuracy/cost/calibration/latency.
 # -----------------------------------------------------------------------------
 sweeps:
+  schema_restatement: ['on', 'off']
   enforcement:
   - 'off'
   - warn
@@ -242,6 +257,20 @@ suites:
     - paginated_3pg     # ONE 3-page statement, WITH pagination -> 1 section (common)
     - twodocs_2x20      # TWO statements -> 2 sections (the over-merge direction)
     repeats: 5
+  # #710: does dropping the duplicated schema copy cost completeness?
+  # The gate is COMPLETENESS, not tokens — #710 warns the prose restatement may be
+  # load-bearing for adherence, so a token saving that loses rows is a loss. Run on
+  # list-heavy docs where adherence actually shows: if the agent drifts from the
+  # schema, rows go missing. repeats: 3 because the agentic path is
+  # non-deterministic (turn counts have varied ~4x run to run).
+  restatement:
+    cells:
+    - restate-on
+    - restate-off
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

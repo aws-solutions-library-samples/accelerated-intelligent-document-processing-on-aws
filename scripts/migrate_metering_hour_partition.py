@@ -158,7 +158,7 @@ def new_key(old_key: str, hour: str) -> Optional[str]:
     return f"metering/date={date_part}/hour={hour}/{filename}"
 
 
-def _process_one(s3, bucket: str, key: str, dry_run: bool, default_hour: str) -> str:
+def _process_one(s3, bucket: str, key: str, dry_run: bool) -> str:
     """Migrate a single key (called from the parallel pool).
 
     Returns one of: ``"moved"`` (or ``"dry-moved"``), ``"skipped"``,
@@ -214,7 +214,6 @@ def _process_one(s3, bucket: str, key: str, dry_run: bool, default_hour: str) ->
 def migrate(
     bucket: str,
     dry_run: bool,
-    default_hour: str = "00",
     concurrency: int = 50,
 ) -> tuple[int, int, int, int]:
     """Move every un-hour-partitioned metering parquet under ``bucket`` to
@@ -229,9 +228,7 @@ def migrate(
     keys = list(iter_metering_parquet_keys(s3, bucket))
     moved = skipped = errors = unreadable = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futures = [
-            ex.submit(_process_one, s3, bucket, k, dry_run, default_hour) for k in keys
-        ]
+        futures = [ex.submit(_process_one, s3, bucket, k, dry_run) for k in keys]
         for f in as_completed(futures):
             outcome = f.result()
             if outcome in ("moved", "dry-moved"):
@@ -261,10 +258,11 @@ def main() -> int:
         "--default-hour",
         default="00",
         help=(
-            "Retained for backward compatibility with older callers; the "
-            "script no longer parks unreadable files at this hour. "
-            "Unreadable files are left in place and the migration exits "
-            "non-zero."
+            "IGNORED. Accepted so an older caller's command line keeps working. "
+            "The script no longer parks unreadable files at a default hour — "
+            "they are left in place and the migration exits non-zero, because a "
+            "mis-placed file cannot be re-attempted (the lister excludes keys "
+            "already under /hour=NN/)."
         ),
     )
     parser.add_argument(
@@ -281,7 +279,6 @@ def main() -> int:
     moved, skipped, errors, unreadable = migrate(
         bucket=args.bucket,
         dry_run=args.dry_run,
-        default_hour=args.default_hour,
         concurrency=args.concurrency,
     )
     print(

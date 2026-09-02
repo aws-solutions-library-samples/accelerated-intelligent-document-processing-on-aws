@@ -37,6 +37,11 @@ const CREDS = { accessKeyId: 'AKIA', secretAccessKey: 's' };
 // The production schedule is 400/1200/3000ms; sleeping it in three cases cost
 // ~9s of a 16s suite and left thin margin on a loaded runner. Same code path.
 const FAST_RETRIES = [1, 2, 3];
+// Long enough that a sign-out lands mid-sleep, short enough not to drag the
+// suite. Module scope, like FAST_RETRIES — see the note on `retryDelaysInMs`
+// in the hook: an inline array would change identity every render, re-run the
+// effect, and bump the cycle guard against its own in-flight fetch.
+const SLOW_ENOUGH_TO_INTERRUPT = [40, 40, 40];
 
 describe('useCurrentSessionCreds', () => {
   beforeEach(() => {
@@ -140,6 +145,57 @@ describe('useCurrentSessionCreds', () => {
     rerender();
 
     await waitFor(() => expect(result.current.currentCredentials).toBeUndefined());
+    expect(result.current.credentialsStatus).toBe('idle');
+  });
+
+  it('does not restore a signed-out user from a fetch still in flight', async () => {
+    // The race `cycleRef` exists for, and the one case the other tests cannot
+    // reach: every other test resolves via mockResolvedValue, which settles on
+    // the microtask queue, so no fetch is ever in flight ACROSS an authStatus
+    // transition. Here the fetch is held open, the user signs out, and only
+    // then does it resolve — with the previous user's credentials.
+    let releaseSession: (value: unknown) => void = () => {};
+    fetchAuthSession.mockReturnValue(
+      new Promise((resolve) => {
+        releaseSession = resolve;
+      }),
+    );
+
+    const { result, rerender } = renderHook(() => useCurrentSessionCreds({}));
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('pending'));
+
+    authStatusRef.current = 'unauthenticated';
+    rerender();
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('idle'));
+
+    // The in-flight call now comes back. Without the cycle guard this writes
+    // the signed-out user's session straight back into state.
+    await act(async () => {
+      releaseSession({ credentials: CREDS });
+    });
+
+    expect(result.current.currentCredentials).toBeUndefined();
+    expect(result.current.currentSession).toBeUndefined();
+    expect(result.current.credentialsStatus).toBe('idle');
+  });
+
+  it('stops retrying after sign-out instead of hammering Cognito', async () => {
+    // The retry loop sleeps BETWEEN attempts, so a sign-out during a delay must
+    // be noticed after the sleep — otherwise a signed-out session keeps issuing
+    // credential calls until the schedule is exhausted.
+    fetchAuthSession.mockRejectedValue(new Error('nope'));
+
+    const { result, rerender } = renderHook(() => useCurrentSessionCreds({ retryDelaysInMs: SLOW_ENOUGH_TO_INTERRUPT }));
+    await waitFor(() => expect(fetchAuthSession).toHaveBeenCalled());
+
+    const callsBeforeSignOut = fetchAuthSession.mock.calls.length;
+    authStatusRef.current = 'unauthenticated';
+    rerender();
+    await waitFor(() => expect(result.current.credentialsStatus).toBe('idle'));
+
+    // Wait out the rest of the retry schedule; no further attempts should fire.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(fetchAuthSession.mock.calls.length).toBe(callsBeforeSignOut);
     expect(result.current.credentialsStatus).toBe('idle');
   });
 

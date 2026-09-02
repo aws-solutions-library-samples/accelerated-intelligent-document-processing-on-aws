@@ -242,7 +242,8 @@ The solution creates various IAM roles to run different components of the system
   * `tag:GetResources` (`*` — account-scoped API) for tag-based Lambda discovery
   * `cloudformation:ListStackResources` (scoped to this stack + its nested stacks) to walk the stack tree
   * `lambda:GetFunctionConfiguration` (scoped to functions in this account/region) for accurate per-Lambda memory + architecture in the cost estimate
-  * `s3:GetObject`, `s3:PutObject`, `s3:HeadObject`, `s3:ListBucket`, `s3:GetBucketLocation` (reporting bucket only; also needed by Athena's `StartQueryExecution` on the OutputLocation bucket)
+  * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `s3:GetBucketLocation` (reporting bucket only; `GetBucketLocation` is also needed by Athena's `StartQueryExecution` on the OutputLocation bucket). `HeadObject` calls are authorized by `s3:GetObject` — there is no `s3:HeadObject` IAM action
+  * `s3:AbortMultipartUpload`, `s3:ListBucketMultipartUploads`, `s3:ListMultipartUploadParts` (reporting bucket only) — part of AWS's reference policy for Athena `INSERT INTO`, which switches to a multipart upload once a result part exceeds its buffer
   * `sqs:SendMessage` on its DLQ (async-failure destination)
   * KMS on the stack CMK
 

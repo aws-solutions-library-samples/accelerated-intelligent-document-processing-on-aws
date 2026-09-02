@@ -718,11 +718,29 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
     or application-inference-profile deployments are ARN-only everywhere. ARNs
-    are reduced to the model ID they name before the catalog lookup. An ARN that
-    still does not match (an opaque application-inference-profile UUID, say)
-    yields a warning rather than an error: its underlying model cannot be
-    determined without a Bedrock API call, so it is unverifiable, not wrong.
-    A bare model ID that does not match remains an error — that is a typo.
+    are reduced to the model ID they name before the catalog lookup.
+
+    Three outcomes for a value that doesn't match the catalog:
+
+    - **Bare model ID → error.** That's a typo; nothing else it could be.
+    - **ARN whose resolved resource has model-ID *shape*** (contains a ``.``
+      and isn't a UUID) **→ error.** It looks like a model ID and still doesn't
+      match, so the likely cause is a typo in the ARN's resource-id, partition
+      or account. It is also, by construction, a model with no
+      ``config_library/pricing.yaml`` entry — so cost reporting would be broken
+      for it regardless. To use a model newer than this release, add it to
+      ``config_library/pricing.yaml`` (see ``.claude/skills/add-model.md``,
+      which requires that entry anyway).
+    - **ARN whose resolved resource is opaque** (an application-inference-profile
+      UUID, a provisioned-model name — no ``.``, or UUID-shaped) **→ warning.**
+      Its underlying model can't be determined without a Bedrock API call, so
+      it's unverifiable, not wrong.
+
+    Note this whole function is a no-op when ``config_library/pricing.yaml``
+    isn't on disk: ``_load_valid_bedrock_models`` returns an empty set and we
+    return early. So the strict paths above only fire from a repository
+    checkout — the CLI/SDK run from source, and CI — not from a
+    pip-installed ``idp_common`` in a Lambda.
     """
     valid_models = _load_valid_bedrock_models()
     if not valid_models:
