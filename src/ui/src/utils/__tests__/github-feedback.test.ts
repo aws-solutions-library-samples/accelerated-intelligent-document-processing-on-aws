@@ -64,7 +64,7 @@ describe('buildBugReportUrl', () => {
     expect(url.searchParams.get('title')).toContain('lending_package-long.pdf');
     const body = url.searchParams.get('body') ?? '';
     expect(body).toContain('FAILED');
-    expect(body).toContain('Config version:');
+    expect(body).toContain('Config profile:');
     expect(body).toContain('The extraction step timed out.');
   });
 

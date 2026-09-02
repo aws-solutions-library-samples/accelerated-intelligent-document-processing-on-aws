@@ -16,7 +16,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
 - [Headless Deployment](./headless-deployment.md) - Backend-only deployment (no UI/AppSync/Cognito/WAF) — for API-only / pipeline integrations in Commercial regions or GovCloud
 - [Configuration](./configuration.md) - Configuration and customization options
-- [Configuration Versions](./configuration-versions.md) - Managing multiple configuration versions
+- [Configuration Profiles](./configuration-profiles.md) - Managing multiple named configurations and their revision history
 - [IDP Configuration Best Practices](./idp-configuration-best-practices.md) - Guidelines for effective configuration design
 - [JSON Schema Migration](./json-schema-migration.md) - JSON Schema format guide and legacy migration details
 - [Web UI](./web-ui.md) - Web interface features and usage
@@ -65,6 +65,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Lambda Hook Inference](./lambda-hook-inference.md) - Custom LLM integration via Lambda hooks
 - [Nova Fine-Tuning](./nova-finetuning.md) - Fine-tuning Amazon Nova models for IDP tasks
 - [OpenAI GPT-5.x Models](./openai-models.md) - GPT-5.4 / GPT-5.5 / GPT-5.6 (Sol/Terra/Luna) via the bedrock-mantle Responses API: support matrix, limitations, regions, caching
+- [xAI Grok Models](./grok-models.md) - Grok 4.6 via the Converse API (CRIS-only `us.`/`global.` IDs): support matrix, agentic extraction, reasoning effort, tier and caching caveats
 - [Service Tiers](./service-tiers.md) - Configurable service tier options
 
 ## Monitoring & Operations

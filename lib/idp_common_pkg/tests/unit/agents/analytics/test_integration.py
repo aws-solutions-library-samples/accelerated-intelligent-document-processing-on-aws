@@ -8,19 +8,16 @@ Integration tests for the analytics agent functionality.
 # ruff: noqa: E402, I001
 # The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mock strands modules before importing analytics modules
-sys.modules["strands"] = MagicMock()
-sys.modules["strands.models"] = MagicMock()
-
-# Mock bedrock_agentcore modules before importing analytics modules
-sys.modules["bedrock_agentcore"] = MagicMock()
-sys.modules["bedrock_agentcore.tools"] = MagicMock()
-sys.modules["bedrock_agentcore.tools.code_interpreter_client"] = MagicMock()
+# `strands` and `bedrock_agentcore` are stubbed by tests/conftest.py, and ONLY
+# when genuinely absent. This module used to force MagicMocks into `sys.modules`
+# here instead, unconditionally and without ever restoring them — which replaced
+# a real installed `strands` for every test module imported after this one, so
+# whether the agentic tests ran against the real library depended on collection
+# order. See the note in tests/conftest.py.
 
 from idp_common.agents.analytics import (
     get_analytics_config,

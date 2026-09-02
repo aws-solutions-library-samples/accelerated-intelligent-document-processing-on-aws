@@ -26,6 +26,10 @@ interface ConfigVersion {
   updatedAt?: string;
   description?: string;
   managed?: boolean;
+  /** Highest revision cut for this profile (null before revision history). */
+  latestRevision?: number | null;
+  /** Revision the profile's current configuration reflects. */
+  publishedRevision?: number | null;
 }
 
 interface ConfigurationVersionsTableProps {
@@ -39,6 +43,10 @@ interface ConfigurationVersionsTableProps {
   onActivateVersion?: (versionName: string) => void;
   onDeleteVersions?: (versionNames: string[]) => void;
   onImportAsNewVersion?: () => void;
+  /** Open the "create a profile as a copy of an existing one" modal. */
+  onCreateProfile?: () => void;
+  /** Open the revision history for one profile. */
+  onShowHistory?: (versionName: string) => void;
   isAdmin?: boolean;
 }
 
@@ -46,29 +54,34 @@ type TypeFilter = 'all' | 'managed' | 'custom';
 
 // One-line explanations shown on hover for the version Type/state badges.
 const BADGE_TOOLTIPS = {
-  managed: 'Stack-managed: shipped with the solution and overwritten on stack updates; not directly editable.',
-  custom: 'Custom: a user-created version you can freely edit, save, and delete.',
-  active: 'Active: the version used to process newly uploaded documents.',
+  managed:
+    'Stack-managed: shipped with the solution. A stack update records a new revision of it rather than overwriting silently; not directly editable.',
+  custom: 'Custom: a user-created profile you can freely edit, save, and delete.',
+  active: 'Active: the profile used to process newly uploaded documents.',
 };
 
 const PAGE_SIZE_OPTIONS = [
-  { value: 5, label: '5 versions' },
-  { value: 10, label: '10 versions' },
-  { value: 20, label: '20 versions' },
-  { value: 50, label: '50 versions' },
+  { value: 5, label: '5 profiles' },
+  { value: 10, label: '10 profiles' },
+  { value: 20, label: '20 profiles' },
+  { value: 50, label: '50 profiles' },
 ];
 
 const VISIBLE_CONTENT_OPTIONS = [
-  { id: 'versionName', label: 'Version Name', editable: false },
+  { id: 'versionName', label: 'Profile Name', editable: false },
   { id: 'type', label: 'Type' },
   { id: 'description', label: 'Description' },
   { id: 'createdAt', label: 'Created' },
   { id: 'updatedAt', label: 'Updated' },
+  { id: 'history', label: 'History' },
 ];
 
 const DEFAULT_PREFERENCES = {
   pageSize: 10,
-  visibleContent: ['versionName', 'type', 'description', 'createdAt', 'updatedAt'],
+  // Created is available in the preferences gear but off by default: two
+  // timestamps cost a whole column for information the Updated column already
+  // answers, and the extra column is what squeezed the others into wrapping.
+  visibleContent: ['versionName', 'type', 'description', 'updatedAt', 'history'],
   wrapLines: false,
 };
 
@@ -83,6 +96,8 @@ const ConfigurationVersionsTable = ({
   onActivateVersion,
   onDeleteVersions,
   onImportAsNewVersion,
+  onCreateProfile,
+  onShowHistory,
   isAdmin = false,
 }: ConfigurationVersionsTableProps): React.JSX.Element => {
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -108,7 +123,7 @@ const ConfigurationVersionsTable = ({
   const allColumnDefinitions = [
     {
       id: 'versionName',
-      header: 'Version Name',
+      header: 'Profile Name',
       cell: (item: ConfigVersion) => (
         <Box
           fontWeight={item.versionName === currentlyOpenVersion ? 'bold' : 'normal'}
@@ -126,7 +141,6 @@ const ConfigurationVersionsTable = ({
         </Box>
       ),
       sortingField: 'versionName',
-      width: '25%',
     },
     {
       id: 'type',
@@ -154,27 +168,41 @@ const ConfigurationVersionsTable = ({
         const bType = isVersionManaged(b) ? 'managed' : 'custom';
         return aType.localeCompare(bType);
       },
-      width: 160,
+      width: 150,
     },
     {
       id: 'description',
       header: 'Description',
       cell: (item: ConfigVersion) => item.description || '-',
-      width: '25%',
     },
     {
       id: 'createdAt',
       header: 'Created',
       cell: (item: ConfigVersion) => (item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'),
       sortingField: 'createdAt',
-      width: '20%',
+      width: 180,
     },
     {
       id: 'updatedAt',
       header: 'Updated',
       cell: (item: ConfigVersion) => (item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '-'),
       sortingField: 'updatedAt',
-      width: '20%',
+      width: 180,
+    },
+    {
+      id: 'history',
+      header: 'History',
+      cell: (item: ConfigVersion) => (
+        <Button
+          variant="inline-link"
+          iconName="undo"
+          onClick={() => onShowHistory?.(item.versionName)}
+          ariaLabel={`Revision history for ${item.versionName}`}
+        >
+          {item.latestRevision ? `${item.latestRevision} revision${item.latestRevision === 1 ? '' : 's'}` : 'History'}
+        </Button>
+      ),
+      width: 130,
     },
   ];
 
@@ -224,7 +252,7 @@ const ConfigurationVersionsTable = ({
   return (
     <SpaceBetween size="s">
       {deleteError && (
-        <Alert type="error" dismissible onDismiss={() => setDeleteError(null)} header="Cannot Delete Version">
+        <Alert type="error" dismissible onDismiss={() => setDeleteError(null)} header="Cannot Delete Profile">
           {deleteError}
         </Alert>
       )}
@@ -233,9 +261,12 @@ const ConfigurationVersionsTable = ({
         columnDefinitions={columnDefinitions}
         items={items}
         loading={loading}
-        loadingText="Loading versions..."
+        loadingText="Loading profiles..."
         resizableColumns
         stripedRows
+        // The profile table sits ABOVE the configuration editor, so its vertical
+        // footprint is what pushes the thing you came to edit off-screen.
+        contentDensity="compact"
         selectionType="multi"
         selectedItems={selectedItems}
         onSelectionChange={({ detail }) => {
@@ -252,28 +283,32 @@ const ConfigurationVersionsTable = ({
         }}
         trackBy="versionName"
         ariaLabels={{
-          selectionGroupLabel: 'Version selection',
-          allItemsSelectionLabel: () => 'Select all versions',
-          itemSelectionLabel: (_sel, item) => `Select version ${item.versionName}`,
+          selectionGroupLabel: 'Profile selection',
+          allItemsSelectionLabel: () => 'Select all profiles',
+          itemSelectionLabel: (_sel, item) => `Select profile ${item.versionName}`,
         }}
         wrapLines={preferences.wrapLines}
         empty={
           <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
             <SpaceBetween size="m">
-              <b>No versions</b>
+              <b>No profiles</b>
               <Box variant="p" color="inherit">
-                No configuration versions found.
+                No configuration profiles found.
               </Box>
             </SpaceBetween>
           </Box>
         }
         header={
           <SpaceBetween size="s">
-            <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Configuration Versions ({filteredItemsCount})</Header>
+            <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Configuration Profiles ({filteredItemsCount})</Header>
             {/* Action buttons row */}
             <SpaceBetween direction="horizontal" size="xs">
+              {/* "profiles" is explicit because the revision-history panel has its
+                  own Compare button that compares WITHIN one profile. Two
+                  identically-labelled compare actions on different axes is the
+                  ambiguity this feature exists to remove. */}
               <Button onClick={onCompareVersions} disabled={selectedVersionsForCompare.length < 2}>
-                Compare Selected ({selectedVersionsForCompare.length})
+                Compare profiles ({selectedVersionsForCompare.length})
               </Button>
               <Button
                 onClick={() => onActivateVersion?.(selectedVersionsForCompare[0])}
@@ -288,8 +323,11 @@ const ConfigurationVersionsTable = ({
                   Import
                 </Button>
               )}
+              {/* Delete is deliberately NOT the primary button: a destructive action
+                  should not be the visual default on a table whose main job is
+                  creating and opening profiles. */}
               <Button
-                variant="primary"
+                variant="normal"
                 onClick={() => {
                   // Check if any selected versions are active, default, or managed
                   const activeVersions = selectedVersionsForCompare.filter((vId) => {
@@ -302,11 +340,11 @@ const ConfigurationVersionsTable = ({
                   });
 
                   if (activeVersions.length > 0) {
-                    setDeleteError(`Cannot delete active or default versions: ${activeVersions.join(', ')}`);
+                    setDeleteError(`Cannot delete active or default profiles: ${activeVersions.join(', ')}`);
                     return;
                   }
                   if (managedVersions.length > 0) {
-                    setDeleteError(`Cannot delete stack-managed versions: ${managedVersions.join(', ')}`);
+                    setDeleteError(`Cannot delete stack-managed profiles: ${managedVersions.join(', ')}`);
                     return;
                   }
 
@@ -318,12 +356,21 @@ const ConfigurationVersionsTable = ({
               >
                 Delete Selected ({selectedVersionsForCompare.length})
               </Button>
+              {/* Creating a profile from an existing one used to require opening the
+                  source profile in the editor and finding "Save as Profile" in the
+                  Actions menu. It is the most common way a profile gets made, so it
+                  belongs here, on the profile-management surface. */}
+              {isAdmin && (
+                <Button variant="primary" onClick={() => onCreateProfile?.()} iconName="add-plus">
+                  Create profile
+                </Button>
+              )}
             </SpaceBetween>
           </SpaceBetween>
         }
         filter={
           <SpaceBetween direction="horizontal" size="m">
-            <TextFilter {...filterProps} {...({ placeholder: 'Search versions...' } as Record<string, unknown>)} />
+            <TextFilter {...filterProps} {...({ placeholder: 'Search profiles...' } as Record<string, unknown>)} />
             <SegmentedControl
               selectedId={typeFilter}
               onChange={({ detail }) => setTypeFilter(detail.selectedId as TypeFilter)}
@@ -357,7 +404,7 @@ const ConfigurationVersionsTable = ({
               title: 'Visible columns',
               options: [
                 {
-                  label: 'Version properties',
+                  label: 'Profile properties',
                   options: VISIBLE_CONTENT_OPTIONS,
                 },
               ],
@@ -374,7 +421,7 @@ const ConfigurationVersionsTable = ({
       <Modal
         visible={!!pendingDeleteVersions}
         onDismiss={() => setPendingDeleteVersions(null)}
-        header="Delete configuration versions"
+        header="Delete configuration profiles"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -399,8 +446,8 @@ const ConfigurationVersionsTable = ({
         <SpaceBetween size="s">
           <Box>
             {pendingDeleteVersions && pendingDeleteVersions.length === 1
-              ? `Permanently delete the configuration version "${pendingDeleteVersions[0]}"? This action cannot be undone.`
-              : `Permanently delete these ${pendingDeleteVersions?.length ?? 0} configuration versions? This action cannot be undone.`}
+              ? `Permanently delete the configuration profile "${pendingDeleteVersions[0]}" and its revision history? This action cannot be undone.`
+              : `Permanently delete these ${pendingDeleteVersions?.length ?? 0} configuration profiles and their revision histories? This action cannot be undone.`}
           </Box>
           {pendingDeleteVersions && pendingDeleteVersions.length > 1 && (
             <ul>

@@ -27,9 +27,11 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassConfidence from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
-import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
+import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -39,22 +41,17 @@ import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
 
-interface SectionItem {
-  Id: string;
-  Class: string;
-  PageIds: number[];
-  OutputJSONUri?: string;
-  OriginalId?: string | null;
-  isModified?: boolean;
-  isNew?: boolean;
-  // True when the class is marked with x-aws-idp-exclude-from-processing=true
-  // (e.g., static instruction pages). No extraction / assessment / summary
-  // is performed for excluded sections; the UI renders a "Skipped" badge.
-  Excluded?: boolean;
-  ExclusionReason?: string | null;
-  // Structured self-healing / quality issues detected for this section.
-  ProcessingIssues?: ProcessingIssue[] | null;
-}
+/**
+ * The row shape for the sections table.
+ *
+ * Derived from the generated GraphQL `Section` via `EditableSection` (issue
+ * #711) — this used to be a second, hand-written interface, so a field added to
+ * `schema.graphql` was invisible here even after codegen, with nothing failing
+ * to say so. That is why `InstanceCount` needed hand-wiring in two places, and
+ * why `Excluded` / `ExclusionReason` / `ConfidenceThresholdAlerts` had already
+ * drifted between the two Section shapes.
+ */
+type SectionItem = EditableSection;
 
 interface PageItem {
   Id: number;
@@ -122,16 +119,71 @@ const ClassCell = ({
       </SpaceBetween>
     );
   }
-  if (!mismatch) return <span>{item.Class}</span>;
+  // Confidence in the section's CLASS, aggregated from its pages as the minimum.
+  // Renders nothing when the classifier produced no score, which is the default.
+  const confidence = <ClassConfidence confidence={item.Confidence} />;
+  if (!mismatch && item.Confidence == null) return <span>{item.Class}</span>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
       <span>{item.Class}</span>
+      {confidence}
       {mismatch}
     </SpaceBetween>
   );
 };
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
+
+// Instance count cell. `InstanceCount` is how many separate documents of this
+// section's Class extraction found in it:
+//   absent / 0 -> undetermined (older documents, or extraction that failed
+//                 before producing a result). Rendered as "-": it is not a
+//                 problem and must not read as "0 instances".
+//   1          -> the normal case. Rendered quietly, in secondary text.
+//   > 1        -> the section holds several distinct documents that
+//                 classification did not split apart. Emphasised with a Badge
+//                 (the same Badge vocabulary ClassCell uses for "Skipped") plus
+//                 a hover Popover, following the StatusCell precedent.
+// The *warning* for the unflagged case is owned by the Status column (backend
+// raises a `extraction_multi_instance_detected` ProcessingIssue), so this
+// column deliberately stays factual rather than alarming — a class configured
+// for multiple instances is working as intended.
+const InstancesCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+  const count = item.InstanceCount ?? 0;
+
+  if (count <= 0) {
+    return <Box color="text-status-inactive">-</Box>;
+  }
+
+  if (count === 1) {
+    return <Box color="text-body-secondary">1</Box>;
+  }
+
+  return (
+    <Popover
+      dismissButton={false}
+      position="top"
+      size="medium"
+      triggerType="custom"
+      header="Multiple documents in one section"
+      content={
+        <SpaceBetween size="xs">
+          <Box variant="p">
+            Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
+            instance.
+          </Box>
+          <Box variant="small" color="text-body-secondary">
+            If these should be separate sections, review the classification settings for this class.
+          </Box>
+        </SpaceBetween>
+      }
+    >
+      <span style={{ cursor: 'pointer' }}>
+        <Badge color="blue">{count}</Badge>
+      </span>
+    </Popover>
+  );
+};
 
 // Confidence alerts cell showing only count
 const ConfidenceAlertsCell = ({
@@ -635,6 +687,15 @@ const createColumnDefinitions = (
       isResizable: true,
     },
     {
+      id: 'instances',
+      header: 'Instances',
+      cell: (item: SectionItem) => <InstancesCell item={item} />,
+      sortingField: 'InstanceCount',
+      minWidth: 110,
+      width: 110,
+      isResizable: true,
+    },
+    {
       id: 'confidenceAlerts',
       header: 'Low Confidence Fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
@@ -723,6 +784,15 @@ const createPattern1EditColumnDefinitions = (
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
       minWidth: 120,
       width: 120,
+      isResizable: true,
+    },
+    {
+      id: 'instances',
+      header: 'Instances',
+      cell: (item: SectionItem) => <InstancesCell item={item} />,
+      sortingField: 'InstanceCount',
+      minWidth: 110,
+      width: 110,
       isResizable: true,
     },
     {
@@ -874,7 +944,7 @@ const SectionsPanel = ({
   // (see DocumentPanel: it fetches `documentVersionConfig` from the doc's
   // `configVersion` and passes it in here). Using the current live config
   // instead would show the wrong class vocabulary in Edit Mode for docs
-  // processed under a previous or different config version.
+  // processed under a previous or different configuration profile.
   const configuration = mergedConfig;
   const { settings: settings2 } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview } = useUserRole();
@@ -1011,7 +1081,7 @@ const SectionsPanel = ({
     }
   }, [isEditMode, sections]);
 
-  // Get available classes from the document's config version (passed in as
+  // Get available classes from the document's configuration profile (passed in as
   // `mergedConfig`). Shared with Test Studio's annotation editor, which offers
   // the same correction against the same config.
   const getAvailableClasses = () => getConfigClassOptions(configuration);

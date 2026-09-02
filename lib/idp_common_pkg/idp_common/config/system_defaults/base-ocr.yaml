@@ -72,7 +72,24 @@ ocr:
   # Concurrent API call workers
   max_workers: 20
   
-  # Image preprocessing settings
+  # Image preprocessing settings.
+  #
+  # null means "use the built-in default" (see idp_common/ocr/service.py):
+  #   dpi                      -> 300
+  #   target_width x _height   -> 2600x3600, an out-of-memory ceiling only. It
+  #                               does not bind for A4 or US Letter at 300 dpi,
+  #                               so those render at full 300 dpi.
+  #
+  # Do NOT lower dpi to save cost. Bedrock downscales images to its own long-edge
+  # ceiling before tokenizing, so LLM token spend saturates and higher dpi is
+  # nearly free (measured: 897x1269 -> 2000x2829 moved total input tokens 1.4%).
+  # What low dpi does cost is OCR accuracy: below ~200 dpi Textract silently
+  # omits small, faint or skewed characters - page numbers, box numbers,
+  # hand-filled values - from its response entirely. See issue #729.
+  #
+  # These two knobs interact: target_width/_height cannot raise resolution,
+  # because the page is rendered at `dpi` first and images are never upscaled.
+  # Raising the ceiling without also raising dpi is a no-op.
   image:
     target_width: null
     target_height: null

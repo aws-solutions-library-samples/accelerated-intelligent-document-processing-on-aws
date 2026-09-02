@@ -8,6 +8,7 @@ query ListDocuments($startDateTime: AWSDateTime, $endDateTime: AWSDateTime, $lim
       InitialEventTime
       CompletionTime
       ConfigVersion
+      ConfigRevision
       EvaluationStatus
       HITLStatus
       HITLTriggered

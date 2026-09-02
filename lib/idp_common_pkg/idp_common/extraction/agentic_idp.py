@@ -40,8 +40,10 @@ from strands.types.media import (
 from idp_common.bedrock.client import (
     CACHEPOINT_SUPPORTED_MODELS,
     CLAUDE_EFFORT_LEVELS,
-    is_claude_4_7_model,
+    GROK_EFFORT_LEVELS,
     is_claude_effort_model,
+    is_grok_model,
+    strips_sampling_params,
 )
 from idp_common.bedrock.model_utils import get_model_max_output_tokens
 from idp_common.bedrock.openai_responses import is_openai_responses_model
@@ -874,6 +876,13 @@ When using batched extraction plan it out and make a todo list with target size 
 
 NEVER STOP early on large documents, always extract all the data.
 
+NEVER return null or an empty list for an array/list field whose rows are visible
+in the document — that silently discards every row, and no other signal will show
+it (the scalar fields still score perfectly). If part of the data is unreadable,
+garbled, or ambiguous, emit EVERY row anyway with the problem cells set to null or
+to the literal text you can see. A partially-correct list is far more useful than
+no list. Difficulty is never a reason to return nothing.
+
 JSON PATCH FORMAT (RFC 6902):
 - {"op": "replace", "path": "/field_name", "value": "new_value"} - Update a field
 - {"op": "add", "path": "/new_field", "value": "value"} - Add a field
@@ -947,7 +956,18 @@ FALLBACK WORKFLOW (use when map_table_to_schema is not suitable):
 - Complex tables with merged cells, nested headers, or irregular structure
 - Tables where column mapping is ambiguous
 - Small tables (< 50 rows) where manual extraction is acceptable
+- Any column that is OCR-corrupted, garbled, or cannot be mapped cleanly
 In these cases, use parse_table + extraction_tool/apply_json_patches as before.
+
+DECLINING THE TOOL IS NOT DECLINING THE TABLE (ABSOLUTE RULE):
+Choosing not to use the table tools obliges you to extract the table DIRECTLY.
+- NEVER return null or an empty list for an array field whose rows are visible
+  in the document. That silently discards every row.
+- If ONE column is unreadable, garbled, or cannot be mapped, still emit EVERY
+  row. Set that single cell to null, or to the literal text you can see. Do not
+  drop the row, and do not drop the whole list, because of one bad column.
+- A partially-correct table is far more useful than no table. "I could not map
+  this cleanly" is never a reason to return nothing.
 
 QUALITY CHECKS:
 - parse_success_rate target: >= {min_parse_success_rate}
@@ -1028,18 +1048,35 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
 
 
 def _build_system_prompt(
-    base_prompt: str, custom_instruction: str | None, data_format: type[BaseModel]
+    base_prompt: str,
+    custom_instruction: str | None,
+    data_format: type[BaseModel],
+    restate_schema: bool = True,
 ) -> tuple[str, str]:
     """
     Build complete system prompt with custom instructions and schema.
+
+    ``schema_json`` is returned regardless of ``restate_schema`` — it is stored in
+    agent state for ``get_extraction_schema_reminder``, which lets the agent fetch
+    the schema ON DEMAND. So turning the restatement off removes a per-request
+    duplicate without removing the agent's access to the schema.
+
+    Why the restatement is optional (#710): the class schema is already on the
+    wire as ``extraction_tool``'s ``inputSchema``, which Strands derives from the
+    same ``model_json_schema()`` — so this is a byte-for-byte duplicate, measured
+    at ~2,595 of ~5,692 schema tokens per request on the lending ``Payslip``
+    class. It is not obviously safe to drop: restating a schema in prose often
+    improves adherence, which is why this is a knob defaulting to the existing
+    behaviour rather than a removal.
 
     Args:
         base_prompt: The base system prompt (typically SYSTEM_PROMPT constant)
         custom_instruction: Optional custom instructions to append
         data_format: Pydantic model class to extract schema from
+        restate_schema: Append "Expected Schema: ..." to the system prompt.
 
     Returns:
-        Tuple of (complete system prompt with schema, schema_json for state storage)
+        Tuple of (complete system prompt, schema_json for state storage)
     """
     # Generate and clean schema
     schema_json = json.dumps(data_format.model_json_schema(), indent=2)
@@ -1049,7 +1086,11 @@ def _build_system_prompt(
     if custom_instruction:
         final_prompt = f"{final_prompt}\n\nCustom Instructions for this specific task: {custom_instruction}"
 
-    complete_prompt = f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+    complete_prompt = (
+        f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+        if restate_schema
+        else final_prompt
+    )
 
     return complete_prompt, schema_json
 
@@ -1123,6 +1164,25 @@ def _build_model_config(
                 additional_request_fields = {}
             additional_request_fields["output_config"] = {"effort": effort}
             logger.info("Agentic extraction using reasoning effort '%s'", effort)
+
+    # xAI Grok uses a DIFFERENT carrier and a different vocabulary: reasoning is
+    # always on and effort rides in `reasoning.effort`, accepting
+    # none/low/medium/high/xhigh but NOT Claude's `max`. Claude's
+    # `output_config.effort` is silently ignored by Grok, as is any unrecognized
+    # key — so an out-of-vocabulary value must be dropped, not forwarded.
+    elif reasoning_effort and is_grok_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in GROK_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Grok reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(GROK_EFFORT_LEVELS),
+            )
 
     # Resolve the model's true max output tokens from the single source of truth
     # (config_library/model_config_limits.yaml via get_model_max_output_tokens).
@@ -1228,26 +1288,27 @@ def _get_inference_params(
 
     Claude 4.7+ models (e.g. ``us.anthropic.claude-opus-4-7``) deprecate the
     ``temperature``, ``top_p`` and ``top_k`` parameters and reject requests
-    that pass them. For these models this helper returns an empty dict so
-    that no inference parameters are forwarded to the Strands ``BedrockModel``
-    / ConverseStream call. See GitHub issue #304.
+    that pass them. xAI Grok rejects them outright with a 400 naming the field.
+    For these models this helper returns an empty dict so that no inference
+    parameters are forwarded to the Strands ``BedrockModel`` / ConverseStream
+    call. See GitHub issue #304.
 
     Args:
-        model_id: Bedrock model identifier (used to detect Claude 4.7+).
+        model_id: Bedrock model identifier.
         temperature: Temperature value from config.
         top_p: Top_p value from config (may be None).
 
     Returns:
-        Dict with only one of temperature or top_p, or an empty dict for
-        Claude 4.7+ models where both are deprecated.
+        Dict with only one of temperature or top_p, or an empty dict for models
+        that reject the sampling group.
     """
-    # Claude 4.7+ models don't support temperature/top_p/top_k. Omit them
+    # Claude 4.7+ and xAI Grok don't accept temperature/top_p/top_k. Omit them
     # entirely so ConverseStream doesn't fail with
-    # "`top_p` is deprecated for this model".
-    if is_claude_4_7_model(model_id):
+    # "`top_p` is deprecated for this model" (Claude) or
+    # "This model doesn't support the topP field" (Grok).
+    if strips_sampling_params(model_id):
         logger.info(
-            "Skipping temperature/top_p for Claude 4.7+ model "
-            "(these parameters are deprecated for this model)",
+            "Skipping temperature/top_p (rejected or deprecated for this model)",
             extra={"model_id": model_id},
         )
         return {}
@@ -1902,12 +1963,23 @@ async def structured_output_async(
         map_tool = create_map_table_to_schema_tool()
         tools.append(map_tool)
 
-    # Build system prompt with schema
+    # Build system prompt. The schema restatement is optional (#710): it duplicates
+    # the extraction tool's inputSchema, which Strands derives from the same
+    # model_json_schema(). schema_json is returned either way and stored in agent
+    # state below, so get_extraction_schema_reminder still works when it is off.
+    restate_schema = config.extraction.agentic.restate_schema_in_system_prompt
     final_system_prompt, schema_json = _build_system_prompt(
         base_prompt=system_prompt or SYSTEM_PROMPT,
         custom_instruction=custom_instruction,
         data_format=data_format,
+        restate_schema=restate_schema,
     )
+    if not restate_schema:
+        logger.info(
+            "Schema restatement disabled; the class schema goes on the wire once, "
+            "as the extraction tool's inputSchema (saved ~%d chars of system prompt)",
+            len(schema_json) + len("\n\nExpected Schema:\n"),
+        )
 
     tool_names = [getattr(tool, "__name__", str(tool)) for tool in tools]
     logger.debug(

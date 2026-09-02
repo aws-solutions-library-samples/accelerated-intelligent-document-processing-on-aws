@@ -51,7 +51,7 @@ import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
-import CreateDiscoveryVersionModal from './CreateDiscoveryVersionModal';
+import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 
 const client = generateClient();
 
@@ -153,11 +153,11 @@ const DEFAULT_PAGE_SIZE = 10;
 
 const MultiDocDiscoveryPanel = () => {
   const navigate = useNavigate();
-  // Settings & config versions
+  // Settings & configuration profiles
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
-  // Save mode: 'augment' (default) adds to the version's existing schema;
+  // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
@@ -231,11 +231,11 @@ const MultiDocDiscoveryPanel = () => {
 
   const handleStartDiscovery = async () => {
     if (!selectedVersion) {
-      setError('Please select a configuration version');
+      setError('Please select a configuration profile');
       return;
     }
     if (selectedVersion.value === 'default') {
-      setError('The "default" configuration version is read-only. Create a new version to save the discovered schema.');
+      setError('The "default" configuration profile is read-only. Create a new version to save the discovered schema.');
       return;
     }
 
@@ -542,7 +542,7 @@ const MultiDocDiscoveryPanel = () => {
             <Box>{job.clustersFound ?? '—'}</Box>
           </div>
           <div>
-            <Box variant="awsui-key-label">Config Version</Box>
+            <Box variant="awsui-key-label">Config Profile</Box>
             <Box>{job.version || '—'}</Box>
           </div>
           <div>
@@ -675,7 +675,7 @@ const MultiDocDiscoveryPanel = () => {
     },
     {
       id: 'version',
-      header: 'Config Version',
+      header: 'Config Profile',
       cell: (item: MultiDocJob) => formatConfigVersionLink(item.version, versions as unknown as ConfigVersion[]),
       width: 140,
     },
@@ -755,18 +755,18 @@ const MultiDocDiscoveryPanel = () => {
         }
       >
         <SpaceBetween size="m">
-          {/* Config Version */}
+          {/* Config Profile */}
           <FormField
-            label="Configuration Version"
-            description="Discovered classes will be saved to this config version, or create a new one"
+            label="Configuration Profile"
+            description="Discovered classes will be saved to this configuration profile, or create a new one"
           >
             <SpaceBetween size="xs" direction="horizontal" alignItems="end">
               <Select
                 selectedOption={selectedVersion}
                 onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
                 options={getVersionOptions()}
-                placeholder="Select a configuration version"
-                loadingText="Loading versions..."
+                placeholder="Select a configuration profile"
+                loadingText="Loading profiles..."
                 statusType={versionsLoading ? 'loading' : 'finished'}
               />
               <Button iconName="add-plus" onClick={() => setShowCreateVersionModal(true)} disabled={starting}>
@@ -777,7 +777,7 @@ const MultiDocDiscoveryPanel = () => {
 
           {selectedVersion?.value === 'default' && (
             <Alert type="warning">
-              The <strong>default</strong> configuration version is read-only and cannot be overwritten by discovery. Click{' '}
+              The <strong>default</strong> configuration profile is read-only and cannot be overwritten by discovery. Click{' '}
               <strong>Create new version</strong> to save the discovered schema to a new version (it will be seeded from{' '}
               <strong>default</strong>).
             </Alert>
@@ -786,7 +786,7 @@ const MultiDocDiscoveryPanel = () => {
           {/* Save Mode */}
           <FormField
             label="Save mode"
-            description="Choose whether discovered classes are added to the version's existing schema or replace it"
+            description="Choose whether discovered classes are added to the profile's existing schema or replace it"
           >
             <RadioGroup
               value={saveMode}
@@ -990,7 +990,7 @@ const MultiDocDiscoveryPanel = () => {
                     { id: 'currentStep', label: 'Current Step' },
                     { id: 'totalDocuments', label: 'Documents' },
                     { id: 'clustersFound', label: 'Clusters' },
-                    { id: 'version', label: 'Config Version' },
+                    { id: 'version', label: 'Config Profile' },
                     { id: 'createdAt', label: 'Created' },
                     { id: 'duration', label: 'Duration' },
                     { id: 'result', label: 'Result' },
@@ -1003,10 +1003,11 @@ const MultiDocDiscoveryPanel = () => {
         }
       />
 
-      <CreateDiscoveryVersionModal
+      <CreateConfigProfileModal
         visible={showCreateVersionModal}
         onDismiss={() => setShowCreateVersionModal(false)}
         defaultSourceVersion={selectedVersion?.value ?? null}
+        infoText="Creates a new configuration profile that inherits its settings and document classes from the selected source profile. Discovered schema will then be saved to this new profile."
         onCreated={async (versionName) => {
           setShowCreateVersionModal(false);
           await fetchVersions();

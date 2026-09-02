@@ -10,8 +10,10 @@ locally.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
@@ -34,15 +36,54 @@ _cfg_mod = MagicMock()
 _cfg_mod.get_config = MagicMock(return_value={})
 sys.modules["idp_common.config"] = _cfg_mod
 
-# Stub idp_common.bedrock.client — used by the processor for is_claude_4_7_model
-# (Claude 4.7+ temperature/top_p skip) and default_client (passed to the OpenAI
+# config_scope is loaded for REAL rather than stubbed: it is the security boundary
+# the RBAC test below exercises, and a MagicMock would make that test pass
+# regardless of what the matcher does. The module is dependency-free (stdlib
+# only), so loading it from the repo costs nothing.
+_scope_spec = importlib.util.spec_from_file_location(
+    "idp_common.config_scope",
+    Path(__file__).resolve().parents[4] / "lib/idp_common_pkg/idp_common/config_scope.py",
+)
+_scope_mod = importlib.util.module_from_spec(_scope_spec)
+_scope_spec.loader.exec_module(_scope_mod)
+sys.modules["idp_common.config_scope"] = _scope_mod
+
+# Stub idp_common.bedrock.client — used by the processor for the sampling-param
+# and reasoning-effort capability gates, and default_client (passed to the OpenAI
 # streaming generator).
+#
+# These MUST be real callables, not bare MagicMock attributes: a MagicMock
+# attribute is truthy, so `if not strips_sampling_params(model)` would evaluate
+# False for EVERY model and silently drop `temperature` from every chat request.
+# Mirrors the real predicates in idp_common/bedrock/client.py.
 _bedrock_mod = MagicMock()
-_bedrock_mod.is_claude_4_7_model = lambda model_id: (
+_is_claude_4_7 = lambda model_id: (  # noqa: E731
     "claude-opus-4-7" in model_id
     or "claude-opus-4-8" in model_id
     or "claude-4-7" in model_id
+    or "claude-opus-5" in model_id
+    or "claude-sonnet-5" in model_id
 )
+_bedrock_mod.is_claude_4_7_model = _is_claude_4_7
+_bedrock_mod.is_grok_model = lambda model_id: "xai.grok" in (model_id or "")
+_bedrock_mod.strips_sampling_params = lambda model_id: (
+    _is_claude_4_7(model_id) or "xai.grok" in (model_id or "")
+)
+_bedrock_mod.is_claude_effort_model = lambda model_id: any(
+    t in (model_id or "")
+    for t in (
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-fable-5",
+    )
+)
+_bedrock_mod.CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+_bedrock_mod.GROK_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh")
 _bedrock_mod.default_client = MagicMock()
 # The idp_common.bedrock facade exposes stream_responses_api (OpenAI GPT-5.x
 # streaming chat path). Tests patch this generator.

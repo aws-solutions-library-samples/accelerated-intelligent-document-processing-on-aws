@@ -27,7 +27,17 @@ if not KB_ID:
 KB_ACCOUNT_ID = os.environ.get("KB_ACCOUNT_ID")
 KB_REGION = os.environ.get("KB_REGION") or os.environ["AWS_REGION"]
 MODEL_ID = os.environ.get("MODEL_ID")
-MODEL_ARN = f"arn:aws:bedrock:{KB_REGION}:{KB_ACCOUNT_ID}:inference-profile/{MODEL_ID}"
+# Partition-aware: a hardcoded `arn:aws:` can never resolve outside the
+# commercial partition (AWS account ids do not span partitions), so every
+# Knowledge Base query in GovCloud/China would fail on an invalid model ARN.
+# AWS_PARTITION is injected by the template (!Ref AWS::Partition); default to
+# the commercial partition so a stale deployment without the env var behaves as
+# it did before rather than breaking.
+AWS_PARTITION = os.environ.get("AWS_PARTITION") or "aws"
+MODEL_ARN = (
+    f"arn:{AWS_PARTITION}:bedrock:{KB_REGION}:{KB_ACCOUNT_ID}"
+    f":inference-profile/{MODEL_ID}"
+)
 GUARDRAIL_ENV = os.environ.get("GUARDRAIL_ID_AND_VERSION", "")
 
 KB_CLIENT = (

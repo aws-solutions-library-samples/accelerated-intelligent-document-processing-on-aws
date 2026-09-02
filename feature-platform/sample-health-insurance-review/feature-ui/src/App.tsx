@@ -15,12 +15,6 @@ import { createApiClient } from './api';
 import ClaimsDashboardView from './ClaimsDashboardView';
 import RulesDiscoveryView from './RulesDiscoveryView';
 
-// Compile-time constant injected by Vite from feature.yaml -> version. The
-// config preset the feature installs is named `sample-health-insurance-review-v<version>`
-// (see apply_feature_config_preset on the host), so the Rules Discovery view
-// writes discovered rules into that same version.
-declare const __FEATURE_VERSION__: string;
-
 /**
  * Sample: Health Insurance Review. Two tabs:
  *   1. Claims Dashboard — lists processed claims with deterministic status
@@ -42,7 +36,9 @@ const App: React.FC<FeatureContext> = ({
   const [activeTab, setActiveTab] = useState('claims');
 
   // Config version the bundled preset was installed as.
-  const configVersion = `sample-health-insurance-review-v${installedVersion || __FEATURE_VERSION__}`;
+  // One Configuration Profile per feature — an upgrade cuts a revision of it
+  // rather than creating `<featureId>-v<version>` afresh (issue 697).
+  const configVersion = 'sample-health-insurance-review';
 
   useEffect(() => {
     if (!uiAccessAllowed) return;

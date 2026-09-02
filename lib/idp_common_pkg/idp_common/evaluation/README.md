@@ -300,7 +300,61 @@ The service supports multiple evaluation methods that can be configured for each
   - `FUZZY`: Fuzzy string matching with configurable threshold
   - `NUMERIC`: Numeric comparison after normalizing currency symbols and formats
 - `SEMANTIC`: Efficient semantic similarity comparison using Bedrock Titan embeddings (amazon.titan-embed-text-v1)
-- `LLM`: LLM-based evaluation using Bedrock models (Claude or Titan) for semantically comparable values with detailed explanations
+- `LLM`: LLM-based evaluation using Bedrock models (Claude or Titan) for semantically comparable values with detailed explanations. **Not supported on fields inside a structured list — see below.**
+
+#### ⚠️ `LLM` is not usable inside a structured list
+
+An `LLM` method on a field **inside a list's items** is downgraded to that field's
+deterministic type default (string → Levenshtein, number → Numeric, boolean →
+Exact), with a warning naming the field.
+
+Structured lists are matched with the Hungarian algorithm, which builds a full
+`N_ground_truth × N_predicted` similarity matrix and invokes each item field's
+comparator **once per cell**, then scores the matched pairs — measured at
+`N² + 2N` comparator calls. One Bedrock round trip per cell means a 54-row
+invoice needs ~3,000 sequential calls (~45 minutes), so the 900 s evaluation
+Lambda can never finish it at any retry count. This was observed wedging an
+entire stack: every affected document burned 9 × 900 s attempts before failing,
+and the leaked workflow-concurrency slots stopped the pipeline accepting new
+documents.
+
+A matching cost function wants a cheap, deterministic similarity anyway, so the
+downgrade is also the right shape. To override on a small, bounded list:
+
+```yaml
+LineItems:
+  type: array
+  items:
+    type: object
+    properties:
+      Description:
+        type: string
+        x-aws-idp-evaluation-method: LLM
+        x-aws-idp-evaluation-allow-llm-in-list: true   # accepts the O(N²) cost
+```
+
+Note also that an evaluation method on the **array itself** has never had any
+effect (lists score through their item fields, and row matching is Hungarian).
+That is now logged as a warning rather than silently discarded.
+
+#### Field context in the `LLM` prompt
+
+The `LLM` prompt interpolates `{DOCUMENT_CLASS}`, `{ATTRIBUTE_NAME}` and
+`{ATTRIBUTE_DESCRIPTION}`. Stickler's comparator protocol is
+`compare(value1, value2)` and carries no field context, so `SticklerConfigMapper`
+supplies each LLM-method field's class, name and description through the same
+per-field `x-aws-stickler-comparator-config` channel the model config uses, and
+`LLMComparator` forwards them.
+
+> Before this was wired up, every judge call went out as
+> `for a document of class: . For the attribute named "" described as "":` — the
+> model was asked to decide whether two bare strings meant the same thing with no
+> idea what field it was grading. Scores produced by the `LLM` method before this
+> fix are context-free and not comparable with scores produced after it.
+
+Identical values (after case and whitespace normalization) short-circuit to a
+match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
+memoized per comparator instance.
 
 #### DATE method configuration
 
@@ -347,18 +401,35 @@ The evaluation produces:
 
 ## Metrics
 
-The evaluation calculates the following metrics:
+The evaluation calculates the following metrics. As of v0.6.7, counts come
+directly from
+Stickler's row-level `field_comparisons` — one count per drilldown row the
+UI displays — with item-level rejected/missing/extra rows weighted by their
+leaf count so a truncated 5-item list and a partially-wrong 5-item list
+contribute the same leaf-normalized units.
 
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate (FAR)**: Rate of false positives among negatives (FP / (FP + TN))
-  - Measures how often the system extracts information that wasn't present in the document
-- **False Discovery Rate (FDR)**: Rate of false positives among positive predictions (FP / (FP + TP))
-  - Measures what proportion of the extracted information is incorrect
+- **Precision**: `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: `TP / (TP + FN)`
+- **F1 Score**: `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: `FA / (FA + TN)`
+  - Rate of *hallucinated* fields (predicted values where none was expected)
+    among true-negatives. Stickler splits `FP` into `fa` (false alarm) and
+    `fd` (false discovery); FAR measures the hallucination side.
+- **False Discovery Rate (FDR)**: `FD / (FD + TP)`
+  - Rate of *wrong-value* fields among positive predictions. The other side
+    of the `fa`/`fd` split — measures incorrect extractions.
 
-These metrics are calculated at both the attribute level (per field), section level (per document class), and document level (overall performance).
+The `fa`/`fd` distinction matters because they represent different failure
+modes and warrant different remediations — FAR isolates hallucinations, FDR
+isolates wrong extractions. These metrics are calculated at attribute
+level (per field), section level (per document class), and document level.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this
+counting semantics and may show inflated (leaves-inside-kept-items masked)
+or deflated (item-level rows counted as one unit each) section metrics on
+list-heavy configs. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625);
+re-run those evaluations after upgrading for accurate comparison.
 
 ### Failure and exclusion flags in section metrics
 
@@ -753,17 +824,27 @@ page_level = {
             "page_index": 0,
             "ground_truth_class": "Invoice",
             "predicted_class": "Invoice",
-            "correct": True
+            "correct": True,
+            "predicted_confidence": 0.91
         },
         {
             "page_index": 5,
             "ground_truth_class": "W2",
             "predicted_class": "Receipt",
-            "correct": False
+            "correct": False,
+            "predicted_confidence": 0.48
         }
     ]
 }
 ```
+
+`predicted_confidence` is the classifier's own confidence in the class it
+predicted (`None` when the page was not scored — the default; see
+[classification confidence](../classification/README.md#classification-confidence-confidence-classification_reason)).
+Paired with `correct` on the same row it is the **calibration** measurement: if
+confident-and-wrong pages score as high as confident-and-right ones, the
+confidence carries no information and must not drive escalation. The benchmark
+harness computes exactly that separation from these rows.
 
 #### 2. Split Accuracy (Without Order)
 

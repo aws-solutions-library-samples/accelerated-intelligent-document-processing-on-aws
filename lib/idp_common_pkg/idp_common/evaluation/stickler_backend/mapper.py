@@ -13,6 +13,7 @@ neutral evaluation configuration that can be translated to Stickler's format.
 
 import copy
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from idp_common.config.schema_constants import (
@@ -30,6 +31,7 @@ from idp_common.config.schema_constants import (
     TYPE_ARRAY,
     TYPE_OBJECT,
     X_AWS_IDP_DOCUMENT_TYPE,
+    X_AWS_IDP_EVALUATION_LLM_IN_LIST,
     X_AWS_IDP_EVALUATION_MATCH_THRESHOLD,
     X_AWS_IDP_EVALUATION_METHOD,
     X_AWS_IDP_EVALUATION_METHOD_CONFIG,
@@ -39,6 +41,23 @@ from idp_common.config.schema_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a schema value to a boolean, treating YAML-quoted ``"false"``
+    / ``"no"`` / ``"off"`` (case-insensitive) as False.
+
+    Raw Python ``bool()`` returns True for any non-empty string, so a
+    YAML config with ``x-aws-idp-evaluation-llm-in-list: "false"``
+    would evaluate truthy under ``bool()`` and bypass truthiness
+    guards. This helper honors the strings the way YAML would if
+    the field were unquoted.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "false", "no", "off", "0", "n"}
+    return bool(value)
 
 
 class SticklerConfigMapper:
@@ -543,6 +562,8 @@ class SticklerConfigMapper:
         schema: Dict[str, Any],
         field_path: str = "",
         llm_config: Optional[Dict[str, Any]] = None,
+        in_list_items: bool = False,
+        document_class: str = "",
     ) -> Dict[str, Any]:
         """
         Recursively translate IDP evaluation extensions to Stickler extensions.
@@ -567,6 +588,14 @@ class SticklerConfigMapper:
                 singleton in ``llm_comparator.py`` — two ``EvaluationService``
                 instances with different configs in one process no longer share
                 state.
+            in_list_items: True while recursing INSIDE a structured array's
+                ``items`` subtree. Set by the recursion, not by callers. Used to
+                reject LLM comparators there, where Hungarian matching makes them
+                O(N^2) Bedrock calls (see the downgrade below). ``_inline_refs``
+                runs before this pass, so ``items`` subtrees are fully
+                materialized and this flag sees every field a list row contains.
+            document_class: Class name, threaded down so LLM-method fields can be
+                given their ``{DOCUMENT_CLASS}`` context.
 
         Returns:
             Translated schema (same object, modified in-place)
@@ -613,16 +642,100 @@ class SticklerConfigMapper:
                 cls._validate_method_for_field(schema, method, field_path)
             except ValueError as e:
                 logger.error(str(e))
-                # Remove invalid method to prevent downstream errors
+                # Remove invalid method to prevent downstream errors, but
+                # STILL recurse into children — an outer method validation
+                # failure shouldn't strip IDP-evaluation extensions from
+                # nested items, which have their own methods to translate
+                # (finding from code review — an earlier ``return schema``
+                # here silently skipped nested extension translation on
+                # any parent with an invalid method).
                 del schema[X_AWS_IDP_EVALUATION_METHOD]
-                return schema
+                return cls._recurse_children(
+                    schema, field_path, llm_config, in_list_items, document_class
+                )
+
+        # An evaluation method on a STRUCTURED ARRAY is silently discarded below
+        # (structured lists score through their item fields' comparators, and
+        # Hungarian matching supplies the row-level comparison). Say so, rather
+        # than dropping the author's intent without a word — a config carrying
+        # `x-aws-idp-evaluation-method: LLM` on a list looks like it configured
+        # something and did not.
+        #
+        # HUNGARIAN is the default/correct list-matching algorithm — no
+        # warning when that's what the author asked for (finding from
+        # #625 review). Also strip the key after warning so it doesn't
+        # linger as dead metadata that downstream code could re-interpret
+        # (finding from #625 review).
+        if is_structured_array and X_AWS_IDP_EVALUATION_METHOD in schema:
+            list_method = schema[X_AWS_IDP_EVALUATION_METHOD]
+            if list_method != EVALUATION_METHOD_HUNGARIAN:
+                logger.warning(
+                    f"Field '{field_path}': evaluation method "
+                    f"'{list_method}' on a structured array is "
+                    f"ignored — structured lists are scored through their item fields' "
+                    f"comparators (row matching is Hungarian). Set the method on the "
+                    f"item fields instead."
+                )
+            # Strip the key regardless — it's inert for structured arrays,
+            # keeping it lingering as dead metadata invites a downstream
+            # consumer to reinterpret it later.
+            del schema[X_AWS_IDP_EVALUATION_METHOD]
 
         # Translate evaluation method to comparator
         # BUT skip for structured arrays - they use item field comparators
         numeric_tolerance: Optional[float] = None
+        llm_in_list_downgraded = False
         if X_AWS_IDP_EVALUATION_METHOD in schema and not is_structured_array:
             method = schema[X_AWS_IDP_EVALUATION_METHOD]
-            comparator = cls.METHOD_TO_COMPARATOR.get(method)
+
+            # An LLM comparator on a field INSIDE a structured list is quadratic
+            # and unusable. Hungarian matching builds a full N_gt x N_pred
+            # similarity matrix, invoking each item field's comparator for EVERY
+            # cell (stickler/algorithms/hungarian.py builds the matrix in a nested
+            # loop), then scores the matched pairs — measured at N^2 + 2N calls.
+            # One Bedrock round trip per cell means a 54-row invoice needs ~3,000
+            # sequential calls (~45 min), so the 900 s evaluation Lambda can never
+            # finish it at any retry count; observed wedging a whole stack.
+            # Downgrade to Stickler's type-appropriate deterministic default
+            # (string -> Levenshtein, number -> Numeric, boolean -> Exact), which
+            # is what a matching cost function should be anyway, unless the author
+            # explicitly opts in for a small list.
+            # ``_coerce_bool`` handles YAML-quoted ``"false"`` / ``"no"``
+            # / ``"off"`` (all truthy under raw Python ``bool()``, so
+            # ``not schema.get(...)`` would let a config with
+            # ``x-aws-idp-evaluation-llm-in-list: "false"`` bypass this
+            # guard, triggering ~N² Bedrock calls and a Lambda timeout).
+            if (
+                method == EVALUATION_METHOD_LLM
+                and in_list_items
+                and not _coerce_bool(
+                    schema.get(X_AWS_IDP_EVALUATION_LLM_IN_LIST, False)
+                )
+            ):
+                logger.warning(
+                    f"Field '{field_path}': LLM evaluation method inside a "
+                    f"structured list is not supported and has been downgraded to "
+                    f"the deterministic default for type "
+                    f"'{schema.get(SCHEMA_TYPE, 'string')}'. Hungarian row matching "
+                    f"invokes this comparator once per (ground-truth row x "
+                    f"predicted row) cell, so an LLM call here costs O(N^2) Bedrock "
+                    f"requests and times out the evaluation Lambda on lists of a "
+                    f"few dozen rows. Set "
+                    f"'{X_AWS_IDP_EVALUATION_LLM_IN_LIST}: true' on this field to "
+                    f"override (only safe for very small lists)."
+                )
+                # Drop the method so no x-aws-stickler-comparator is emitted and
+                # Stickler's JsonSchemaFieldConverter applies its own type default.
+                # Deliberately fall THROUGH rather than returning early: this
+                # field's threshold / weight / clip-under-threshold / aggregate
+                # extensions are translated further down and must still be
+                # honored — only the comparator choice is being overridden.
+                del schema[X_AWS_IDP_EVALUATION_METHOD]
+                llm_in_list_downgraded = True
+
+            comparator = (
+                None if llm_in_list_downgraded else cls.METHOD_TO_COMPARATOR.get(method)
+            )
             if comparator:
                 schema["x-aws-stickler-comparator"] = comparator
 
@@ -646,6 +759,51 @@ class SticklerConfigMapper:
                     and "x-aws-stickler-comparator-config" not in schema
                 ):
                     schema["x-aws-stickler-comparator-config"] = dict(llm_config)
+
+                # LLM method: also hand the comparator its FIELD CONTEXT. The
+                # shipped prompt interpolates {DOCUMENT_CLASS}, {ATTRIBUTE_NAME}
+                # and {ATTRIBUTE_DESCRIPTION}, but Stickler's comparator protocol
+                # is compare(value1, value2) — no field context — so the adapter
+                # used to pass empty strings and every judge call went out as
+                # `class: . For the attribute named "" described as "":`. The
+                # description is what makes a *semantic* match decision possible,
+                # so this is the difference between a judge that knows it is
+                # comparing an agency name and one guessing at two bare strings.
+                # Per-field comparator instances are already how config reaches
+                # the comparator, so the context rides the same channel.
+                if method == EVALUATION_METHOD_LLM:
+                    ctx = schema.setdefault("x-aws-stickler-comparator-config", {})
+                    if isinstance(ctx, dict):
+                        ctx.setdefault("document_class", document_class or "")
+                        # Strip bracket suffixes (``Items[]`` → ``Items``) so
+                        # the LLM judge's prompt shows the schema attribute
+                        # name, not the list-index punctuation that a
+                        # top-level list retains from Stickler's field-path
+                        # syntax (finding from code review — a top-level
+                        # list attribute previously sent ``ATTRIBUTE_NAME
+                        # = "Items[]"`` to the judge).
+                        #
+                        # Fall back to ``document_class`` (then ``"root"``)
+                        # when field_path is empty — a top-level scalar
+                        # attribute scored via LLM would otherwise send
+                        # ``ATTRIBUTE_NAME = ""`` and lose the context-
+                        # threading fix this block enforces (finding
+                        # from #625 review).
+                        raw_name = field_path.split(".")[-1] or field_path
+                        # Fallback chain: bracket-stripped → document_class
+                        # → "root". Each candidate is ``.strip()``-checked
+                        # so a whitespace-only value doesn't leak through
+                        # as truthy — the LLM judge would otherwise see
+                        # ``ATTRIBUTE_NAME = "   "`` (finding from #625
+                        # self-review — same trap as the bracketed-raw
+                        # case this block already avoided).
+                        stripped = re.sub(r"\[[^\]]*\]", "", raw_name).strip()
+                        doc_class_str = (document_class or "").strip()
+                        clean_name = stripped or doc_class_str or "root"
+                        ctx.setdefault("attribute_name", clean_name)
+                        ctx.setdefault(
+                            "attribute_description", schema.get("description") or ""
+                        )
 
                 # NUMERIC_EXACT: user-configured evaluation-threshold means
                 # ±tolerance, NOT the 0..1 score threshold the generic branch
@@ -730,30 +888,73 @@ class SticklerConfigMapper:
                 "x-aws-idp-evaluation-aggregate"
             ]
 
-        # Recursively process nested schemas with path tracking
+        return cls._recurse_children(
+            schema, field_path, llm_config, in_list_items, document_class
+        )
+
+    @classmethod
+    def _recurse_children(
+        cls,
+        schema: Dict[str, Any],
+        field_path: str,
+        llm_config: Optional[Dict[str, Any]],
+        in_list_items: bool,
+        document_class: str,
+    ) -> Dict[str, Any]:
+        """Recurse into a schema's children, tracking path and list-items depth.
+
+        Factored out of ``_translate_extensions_in_schema`` so the LLM-in-list
+        downgrade can return early without skipping the children of the field it
+        just rewrote.
+        """
         if SCHEMA_PROPERTIES in schema:
             for prop_name, prop_schema in schema[SCHEMA_PROPERTIES].items():
                 prop_path = f"{field_path}.{prop_name}" if field_path else prop_name
                 cls._translate_extensions_in_schema(
-                    prop_schema, prop_path, llm_config=llm_config
+                    prop_schema,
+                    prop_path,
+                    llm_config=llm_config,
+                    in_list_items=in_list_items,
+                    document_class=document_class,
                 )
 
         if SCHEMA_ITEMS in schema:
             items_path = f"{field_path}[]" if field_path else "items"
+            # Everything below an array's items is a list row: once inside, stay
+            # inside (a nested list inside a row is still, transitively, matched
+            # per row).
             cls._translate_extensions_in_schema(
-                schema[SCHEMA_ITEMS], items_path, llm_config=llm_config
+                schema[SCHEMA_ITEMS],
+                items_path,
+                llm_config=llm_config,
+                in_list_items=True,
+                document_class=document_class,
             )
 
+        # $defs / definitions are reached independently of where they are $ref'd
+        # from, so list-membership cannot be known here. _inline_refs has already
+        # materialized every referenced subtree into its use site (that inlined
+        # copy is what Stickler's converter reads), so the copy under items is the
+        # one the guard needs to catch — and it does. These bare definitions are
+        # translated for completeness with in_list_items left as inherited.
         if "$defs" in schema:
             for def_name, def_schema in schema["$defs"].items():
                 cls._translate_extensions_in_schema(
-                    def_schema, f"$defs.{def_name}", llm_config=llm_config
+                    def_schema,
+                    f"$defs.{def_name}",
+                    llm_config=llm_config,
+                    in_list_items=in_list_items,
+                    document_class=document_class,
                 )
 
         if "definitions" in schema:
             for def_name, def_schema in schema["definitions"].items():
                 cls._translate_extensions_in_schema(
-                    def_schema, f"definitions.{def_name}", llm_config=llm_config
+                    def_schema,
+                    f"definitions.{def_name}",
+                    llm_config=llm_config,
+                    in_list_items=in_list_items,
+                    document_class=document_class,
                 )
 
         return schema
@@ -825,7 +1026,18 @@ class SticklerConfigMapper:
             )
 
         # Translate IDP extensions to Stickler extensions throughout the schema
-        cls._translate_extensions_in_schema(schema, llm_config=llm_config)
+        # document_class is threaded down so LLM-method fields can be handed their
+        # {DOCUMENT_CLASS} context. Prefer the authored document type over the
+        # sanitized Python model name — the judge reads it as prose.
+        cls._translate_extensions_in_schema(
+            schema,
+            llm_config=llm_config,
+            document_class=str(
+                document_class_schema.get(X_AWS_IDP_DOCUMENT_TYPE)
+                or document_class_schema.get("$id")
+                or model_name
+            ),
+        )
 
         # Return the full schema - JsonSchemaFieldConverter will handle everything else
         stickler_config = {

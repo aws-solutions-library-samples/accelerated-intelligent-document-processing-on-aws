@@ -116,15 +116,17 @@ class ConfigurationReader:
         return deep_update(merged, custom)
     
     @overload
-    def get_merged_configuration(self, *, as_model: Literal[True], version: Optional[str] = None) -> IDPConfig: ...
+    def get_merged_configuration(
+        self, *, as_model: Literal[True], version: Optional[str] = None, revision: Optional[int] = None
+    ) -> IDPConfig: ...
 
     @overload
     def get_merged_configuration(
-        self, *, as_model: Literal[False], version: Optional[str] = None
+        self, *, as_model: Literal[False], version: Optional[str] = None, revision: Optional[int] = None
     ) -> Dict[str, Any]: ...
 
     def get_merged_configuration(
-        self, *, as_model: bool = False, version: Optional[str] = None
+        self, *, as_model: bool = False, version: Optional[str] = None, revision: Optional[int] = None
     ) -> Union[IDPConfig, Dict[str, Any]]:
         """
         Get the full configuration for a version, ready for runtime processing.
@@ -136,16 +138,19 @@ class ConfigurationReader:
 
         Args:
             as_model: If True, return IDPConfig Pydantic model. If False (default), return dict.
-            version: Optional version to load. If None, uses active version.
+            version: Optional Configuration Profile to load. If None, uses the active one.
+            revision: Optional revision of that profile to load instead of its current
+                configuration, for a document or test run pinned to a revision.
 
         Returns:
             Full configuration as IDPConfig or dictionary
         """
         try:
             # Use ConfigurationManager.get_merged_configuration which handles:
+            # - An explicitly pinned revision: read that revision's body
             # - Full config format (new): direct read
             # - Legacy sparse format: merge with default + auto-migrate
-            config = self.manager.get_merged_configuration(version=version)
+            config = self.manager.get_merged_configuration(version=version, revision=revision)
 
             if config is None:
                 raise ValueError(f"Configuration not found for version: {version}")
@@ -162,7 +167,11 @@ class ConfigurationReader:
 
 @overload
 def get_config(
-    *, table_name: Optional[str] = None, as_model: Literal[True], version: Optional[str] = None
+    *,
+    table_name: Optional[str] = None,
+    as_model: Literal[True],
+    version: Optional[str] = None,
+    revision: Optional[int] = None,
 ) -> IDPConfig:
     """
     Get configuration as Pydantic model.
@@ -176,14 +185,22 @@ def get_config(
 
 @overload
 def get_config(
-    *, table_name: Optional[str] = None, as_model: Literal[False] = False, version: Optional[str] = None
+    *,
+    table_name: Optional[str] = None,
+    as_model: Literal[False] = False,
+    version: Optional[str] = None,
+    revision: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Get configuration as mutable dictionary."""
     ...
 
 
 def get_config(
-    *, table_name: Optional[str] = None, as_model: bool = False, version: Optional[str] = None
+    *,
+    table_name: Optional[str] = None,
+    as_model: bool = False,
+    version: Optional[str] = None,
+    revision: Optional[int] = None,
 ) -> Union[IDPConfig, Dict[str, Any]]:
     """
     Get the merged configuration using the environment variable for table name.
@@ -191,7 +208,10 @@ def get_config(
     Args:
         table_name: Optional override for configuration table name
         as_model: If True, return IDPConfig Pydantic model. If False (default), return dict.
-        version: Optional version to load. If None, uses active version.
+        version: Optional Configuration Profile to load. If None, uses the active one.
+        revision: Optional revision of that profile. Pass document.config_revision so a
+            document keeps processing under the configuration it was queued with, even
+            if someone saves the profile mid-flight.
     Returns:
         Merged configuration as IDPConfig (with .to_dict() helper) or mutable dictionary.
 
@@ -205,4 +225,4 @@ def get_config(
         config_dict = config.to_dict(sagemaker_endpoint_name=endpoint)
     """
     reader = ConfigurationReader(table_name)
-    return reader.get_merged_configuration(as_model=as_model, version=version)
+    return reader.get_merged_configuration(as_model=as_model, version=version, revision=revision)

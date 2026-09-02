@@ -214,7 +214,7 @@ const GroundTruthVisualEditor = ({
 
   const documentClassType = (localData?.document_class as Record<string, unknown> | undefined)?.type as string | undefined;
 
-  // Classes come from the config version stamped on the baseline, not the
+  // Classes come from the configuration profile stamped on the baseline, not the
   // deployment's active config, which may have moved on since the labels were
   // written.
   const baselineConfigVersion =
@@ -225,7 +225,10 @@ const GroundTruthVisualEditor = ({
   // class was since renamed would silently blank the field.
   const classOptionsWithCurrent = useMemo(() => {
     if (!documentClassType || classOptions.some((o) => o.value === documentClassType)) return classOptions;
-    return [{ label: documentClassType, value: documentClassType, description: 'Not defined in this config version' }, ...classOptions];
+    return [
+      { label: documentClassType, value: documentClassType, description: 'Not defined in this configuration profile' },
+      ...classOptions,
+    ];
   }, [classOptions, documentClassType]);
   const classChanged = Boolean(savedClassType) && documentClassType !== savedClassType;
   const editHistoryCount = Array.isArray(localData?._editHistory) ? (localData._editHistory as unknown[]).length : 0;
@@ -428,7 +431,7 @@ const GroundTruthVisualEditor = ({
           {baselineConfigVersion !== 'default' && <Badge color="grey">Config: {baselineConfigVersion}</Badge>}
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
-              {editHistoryCount} revision{editHistoryCount === 1 ? '' : 's'} — see Revision History
+              {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see Edit history
             </Box>
           )}
         </SpaceBetween>
@@ -489,7 +492,7 @@ const GroundTruthVisualEditor = ({
                           label="Class label"
                           description={
                             classOptions.length > 0
-                              ? 'What this section is classified as, from this config version. Distinct from the extraction labels below.'
+                              ? 'What this section is classified as, from this configuration profile. Distinct from the extraction labels below.'
                               : 'What this section is classified as. Distinct from the extraction labels below.'
                           }
                         >
@@ -607,7 +610,10 @@ const GroundTruthVisualEditor = ({
                 },
                 {
                   id: 'history',
-                  label: 'Revision History',
+                  // See the same tab in VisualEditorModal: these are field edits,
+                  // not revisions. This editor sits next to Configuration Profile
+                  // pickers, so the distinction has to hold here especially.
+                  label: 'Edit history',
                   content: <EditHistoryTab predictionData={localData} baselineData={null} />,
                 },
               ]}

@@ -1807,9 +1807,16 @@ class StackDeployer:
             boundary_name = f"{stack_name}-PermissionsBoundary"
             try:
                 sts_client = boto3.client("sts", region_name=self.region)
-                account_id = sts_client.get_caller_identity()["Account"]
+                identity = sts_client.get_caller_identity()
+                account_id = identity["Account"]
+                # Partition-aware: a hardcoded arn:aws: never resolves in
+                # GovCloud/China, so teardown silently failed to delete the
+                # permissions boundary there and leaked the policy.
+                partition = (
+                    (identity.get("Arn") or "arn:aws:").split(":")[1] or "aws"
+                )  # arn-partition-ok: fallback used only to PARSE the partition out
                 iam_client.delete_policy(
-                    PolicyArn=f"arn:aws:iam::{account_id}:policy/{boundary_name}"
+                    PolicyArn=f"arn:{partition}:iam::{account_id}:policy/{boundary_name}"
                 )
                 logger.info(f"Deleted permissions boundary: {boundary_name}")
             except iam_client.exceptions.NoSuchEntityException:

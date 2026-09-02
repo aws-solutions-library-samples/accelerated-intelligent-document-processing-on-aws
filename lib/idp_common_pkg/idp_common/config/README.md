@@ -61,10 +61,62 @@ if not result["valid"]:
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
-| `constants.py` | Configuration constants. |
+| `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `schema_constants.py` | JSON Schema extension keys (e.g. `x-aws-idp-document-type`, `x-aws-idp-extraction-model`, `x-aws-idp-extraction-system-prompt`, `x-aws-idp-extraction-task-prompt`). |
+| `schema_utils.py` | `deref_schema()` — resolve a local `#/$defs/<name>` `$ref` against a class schema. See [Dereferencing `$ref` subschemas](#dereferencing-ref-subschemas). |
 | `system_defaults/` | Packaged default configuration YAML used as the merge base. |
+
+## Dereferencing `$ref` subschemas
+
+The Web UI's schema editor emits every group and list-item shape into the
+class's `$defs` and references it, so a group property looks like
+`{"$ref": "#/$defs/Signatures"}` — carrying **no** `type` and **no**
+`description` of its own. Any consumer that reads those keys straight off the
+property therefore sees an untyped, undescribed leaf and silently treats a
+whole group as a scalar.
+
+`deref_schema(node, root)` is the single shared fix. It returns the referenced
+subschema with sibling keys on the referencing node layered on top (a local
+`description` overrides the definition's) and follows `$ref` chains. An
+unresolvable `$ref` — remote, dangling, or cyclic — leaves the node returned
+as-is, so callers degrade to the un-dereferenced reading rather than raising. A
+non-dict node yields `{}` instead, so callers can `.get()` the result
+unconditionally.
+
+```python
+from idp_common.config.schema_utils import deref_schema
+
+prop = deref_schema(class_schema["properties"]["Signatures"], class_schema)
+prop["type"]  # "object", not None
+```
+
+Callers: the confidence prompt's attribute-description formatter and the
+confidence enhancer's attribute-type read (`assessment/service.py`), the
+classification attribute-name walk (`classification/service.py`), and the
+assessment escalation-skip reason plus the integrated/BDA threshold enrichment
+(`assessment/batching.py`). The Web UI carries a deliberate port, `derefSchema`
+in `configuration-layout/PromptPreview.tsx`, so the prompt preview shows the
+same attribute list the backend builds — keep the two in step.
+
+Dereference for the **type/description** read specifically; do not hoist it over
+a property wholesale. `_assess_core` reads a property's own
+`x-aws-idp-confidence-threshold` right beside its `type`, and honoring one
+declared on the `$defs` definition rather than the property is a change to
+threshold *inheritance* — the carve-out below, not a bug to fix in passing.
+
+> **Note:** `assessment/threshold_resolver.py` keeps its own `_deref`. Its
+> dangling-ref and definition-wins-over-sibling semantics are load-bearing for
+> threshold inheritance in `resolve_threshold_for_path()`, so it is
+> deliberately not routed through this helper.
+
+Anything that walks a class schema after dereferencing must guard against
+**recursive** `$defs` (a definition whose member references the definition):
+dereferencing makes those reachable where reading the raw property did not.
+`deref_schema` itself is cycle-safe, but a recursive *walk* over the result is
+not — track the `$ref` targets already entered on the current branch, as
+`_get_attribute_names_for_class()` does.
 
 ## Class ids
 
@@ -121,6 +173,85 @@ The same Default/Custom pattern is used for auxiliary records:
   else Default. Consumed at runtime by
   `bedrock.model_utils.get_model_max_output_tokens()` (60s cache; falls back to
   the on-disk `config_library/` YAML when no table is configured).
+
+## Configuration Profiles and revisions
+
+A **Configuration Profile** is the named entity users manage (`default`,
+`Production`, `lending`) — the RBAC object, the document-visibility partition, and
+the activation target. A **revision** is an immutable numbered snapshot of one
+profile's configuration, cut by `save_configuration()` on every save. The user-facing
+guide is [docs/configuration-profiles.md](../../../../docs/configuration-profiles.md).
+
+The invariant: **revisions are content, profiles are access-control objects.** Scope
+(`allowedConfigVersions`) is checked at the profile; nothing checks a revision.
+
+| Item | Key | Holds |
+|---|---|---|
+| Profile head | `Config#<profile>` | The working configuration (gzip Binary), plus `LatestRevision` / `PublishedRevision` |
+| Revision index | `ConfigRevIndex#<profile>` | One small entry per retained revision (number, timestamps, author, label, notes, size, class fingerprint, pinned) |
+| Revision body | `s3://<ConfigurationBucket>/config_revisions/<profile>/<nnnnnn>.json.gz` | The full configuration that revision recorded |
+| Active pointer | `Config#__active` | The active profile name (`__active` is a reserved profile name) |
+
+Four decisions worth knowing before changing this code:
+
+- **Bodies are in S3, not DynamoDB.** `ConfigurationTable` is HASH-only, so listing
+  profiles requires a `Scan`, and DynamoDB bills a scan on **full item size
+  regardless of `ProjectionExpression`**. Storing revision bodies in the table would
+  make the profile list — which the UI loads constantly — more expensive with every
+  save.
+- **Metadata is one index item per profile.** Listing history is a single `get_item`,
+  not a scan. Appends use DynamoDB's native `list_append` (which cannot lose a
+  concurrent append); the rare read-modify-write paths (label, delete, prune) are
+  guarded by an `IndexSeq` counter with one retry.
+- **`ConfigRevIndex#` deliberately does not match `begins_with(Configuration,
+  "Config#")`.** That filter lists profiles and feeds the scope-filtered dropdowns; a
+  revision leaking into it would look like a profile with no configuration.
+  `list_config_versions()` additionally skips reserved names.
+- **History is best-effort.** If the revision cannot be recorded, the save still
+  succeeds (logged at WARNING). Losing a history entry is recoverable; refusing a
+  save is an outage. `ConfigRevisionStore.enabled` is False when no
+  `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
+  working unchanged.
+
+`_record_revisions()` skips the cut entirely when the saved configuration equals
+what was already stored. Every deployment re-saves `default` and each managed
+profile, so without that check a few no-op upgrades would evict a user's real
+history from the retention window.
+
+Retention keeps the last `CONFIG_REVISION_CAP` (default 20) revisions per profile,
+plus the published revision and anything labeled or pinned by a test run. A
+count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
+runs in `ConfigRevisionStore.prune()` on write.
+
+`restore_revision()` is forward-only: it saves the chosen revision as a *new*
+revision rather than rewinding the counter, so history is never rewritten.
+
+### Reading a pinned revision
+
+`get_config(version=…, revision=…)` (→ `ConfigurationManager.get_merged_configuration`)
+loads a specific revision's stored body instead of the profile head. Every pipeline
+Lambda passes `document.config_revision`, which the queue processor pins at queue
+time, so a save made mid-flight cannot change the configuration under an in-flight
+document.
+
+Two deliberate choices:
+
+- **A missing pinned revision raises.** It does *not* fall back to the head: a run
+  that silently used the wrong configuration looks successful, and its numbers then
+  enter a comparison.
+- **No "published revision" branch on the unpinned path.** The head always holds
+  the published revision's content, and reading the head is one `get_item` against
+  an S3 GET, so an unpinned read stays on the head.
+
+`resolve_published_revision(profile)` returns the revision a new document should be
+pinned to, or None when the profile has no history (an older deployment, or one
+untouched since the upgrade) — in which case consumers fall back to the head, which
+is the pre-revision behavior.
+
+`confidence_fingerprint()` hashes only the configuration that determines what a
+confidence number *means* (extraction model/sampling, assessment). It is recorded on
+every revision so confidence curves can eventually be branched per semantics rather
+than per profile; nothing keys off it yet.
 
 ## Rollback-safe DynamoDB serialization
 

@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from idp_common.dynamodb.service import DocumentDynamoDBService
-from idp_common.models import Section, Status
+from idp_common.models import ProcessingIssue, Section, Status
 
 
 @pytest.mark.unit
@@ -353,6 +353,91 @@ class TestDocumentDynamoDBServiceSectionUpdates:
         assert alerts[1]["attributeName"] == "wages"
         assert alerts[1]["confidence"] == Decimal("0.6")
         assert alerts[1]["confidenceThreshold"] == Decimal("0.8")
+
+    def test_update_document_section_persists_instance_count(self):
+        """A multi-document section's instance count must reach DynamoDB.
+
+        Extraction persists through this path for immediate UI visibility, so if
+        the count is dropped here the UI never shows the multi-instance badge.
+        """
+        self.mock_client.update_item.return_value = {
+            "Attributes": {"ObjectKey": "test-document.pdf", "Sections": []}
+        }
+
+        section = Section(
+            section_id="section-1",
+            classification="patient_demographics",
+            page_ids=["1", "2"],
+            extraction_result_uri="s3://bucket/sections/section-1/result.json",
+            instance_count=3,
+        )
+
+        self.service.update_document_section(
+            document_id="test-document.pdf", section_index=0, section=section
+        )
+
+        section_data = self.mock_client.update_item.call_args[1][
+            "expression_attribute_values"
+        ][":section"]
+        assert section_data["InstanceCount"] == 3
+
+    def test_update_document_section_omits_instance_count_when_undetermined(self):
+        """Undetermined (0) is omitted so items match what older code wrote."""
+        self.mock_client.update_item.return_value = {
+            "Attributes": {"ObjectKey": "test-document.pdf", "Sections": []}
+        }
+
+        section = Section(section_id="section-1", classification="W2", page_ids=["1"])
+
+        self.service.update_document_section(
+            document_id="test-document.pdf", section_index=0, section=section
+        )
+
+        section_data = self.mock_client.update_item.call_args[1][
+            "expression_attribute_values"
+        ][":section"]
+        assert "InstanceCount" not in section_data
+
+    def test_update_document_section_persists_processing_issues(self):
+        """Regression: this writer used to omit ProcessingIssues entirely.
+
+        The update is ``SET #Sections[i] = :section``, which REPLACES the whole
+        section map — so omitting the key did not merely skip it, it ERASED any
+        issues an earlier stage had written, and left the section status icon
+        blank until the collate step rewrote the full document.
+        """
+        self.mock_client.update_item.return_value = {
+            "Attributes": {"ObjectKey": "test-document.pdf", "Sections": []}
+        }
+
+        section = Section(
+            section_id="section-1",
+            classification="patient_demographics",
+            page_ids=["1"],
+            processing_issues=[
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code="extraction_multi_instance_detected",
+                    message="This section contains 3 separate documents.",
+                    section_id="section-1",
+                )
+            ],
+        )
+
+        self.service.update_document_section(
+            document_id="test-document.pdf", section_index=0, section=section
+        )
+
+        section_data = self.mock_client.update_item.call_args[1][
+            "expression_attribute_values"
+        ][":section"]
+        assert "ProcessingIssues" in section_data
+        assert len(section_data["ProcessingIssues"]) == 1
+        assert (
+            section_data["ProcessingIssues"][0]["code"]
+            == "extraction_multi_instance_detected"
+        )
 
     def test_update_document_section_empty_extraction_uri(self):
         """Test section update with no extraction result URI."""

@@ -1,915 +1,1062 @@
 {
-    "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag",
-    "StartAt": "PreprocessingHook",
-    "States": {
-        "PreprocessingHook": {
+  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag",
+  "StartAt": "PreprocessingHook",
+  "States": {
+    "PreprocessingHook": {
+      "Type": "Task",
+      "Comment": "Standalone preprocessing extension point \u2014 runs FIRST, before the BDA/pipeline routing, so it fires in both processing modes and even when OCR is disabled. Dispatches to the single generic hook (arn + args) in the config's preprocessing section (e.g. PII anonymization). A hook may return halt=true to short-circuit this execution (e.g. when it has spawned a redacted copy that will be processed as a separate document). NOTE: a dispatcher/hook error is NOT caught to normal routing \u2014 a preprocessing hook that fails (e.g. onError:fail on a redaction hook) must STOP the execution, never fall through to processing the un-preprocessed original (which for PII redaction would leak the original). It fails the execution instead.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "preprocessing",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$.document"
+        }
+      },
+      "ResultPath": "$.HookResults.preprocessing",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.HookResults.preprocessing.error",
+          "Next": "PreprocessingHookFailed"
+        }
+      ],
+      "Next": "ApplyPreprocessingHookDocument"
+    },
+    "ApplyPreprocessingHookDocument": {
+      "Type": "Pass",
+      "Comment": "Copy the (possibly hook-modified) document the dispatcher returned into $.document, which the routing + OCR steps read. The dispatcher ALWAYS returns a document \u2014 the inbound one verbatim when no hook modified it \u2014 so this is a no-op copy in the common case. A dispatcher/hook error skips this state via the Catch above, leaving the pre-hook $.document intact.",
+      "InputPath": "$.HookResults.preprocessing.Payload.document",
+      "ResultPath": "$.document",
+      "Next": "CheckPreprocessingHalt"
+    },
+    "PreprocessingHookFailed": {
+      "Type": "Fail",
+      "Error": "PreprocessingHookFailed",
+      "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original."
+    },
+    "CheckPreprocessingHalt": {
+      "Type": "Choice",
+      "Comment": "If a preprocessing hook requested halt (e.g. redacted-only mode), end this execution as REDACTED_SUPERSEDED. Otherwise route to normal processing. The dispatcher always returns a top-level halt flag, so this path is safe even when no hook is registered (halt=false).",
+      "Choices": [
+        {
+          "Variable": "$.HookResults.preprocessing.Payload.halt",
+          "BooleanEquals": true,
+          "Next": "MarkSupersededByRedacted"
+        }
+      ],
+      "Default": "RouteByProcessingMode"
+    },
+    "MarkSupersededByRedacted": {
+      "Type": "Pass",
+      "Comment": "Terminal state for a document intentionally not processed further because a preprocessing hook produced a redacted copy (processed as its own document). Sets status REDACTED_SUPERSEDED, which the workflow tracker preserves rather than forcing COMPLETED.",
+      "Parameters": {
+        "document.$": "$.document"
+      },
+      "ResultPath": "$",
+      "Next": "SetSupersededStatus"
+    },
+    "SetSupersededStatus": {
+      "Type": "Pass",
+      "Result": "REDACTED_SUPERSEDED",
+      "ResultPath": "$.document.status",
+      "Next": "WorkflowComplete"
+    },
+    "RouteByProcessingMode": {
+      "Type": "Choice",
+      "Comment": "Route to BDA or step-by-step pipeline based on use_bda flag in document config",
+      "Choices": [
+        {
+          "Variable": "$.document.use_bda",
+          "BooleanEquals": true,
+          "Next": "BDA_CheckExistingData"
+        }
+      ],
+      "Default": "OCRStep"
+    },
+    "BDA_CheckExistingData": {
+      "Type": "Choice",
+      "Comment": "Check if document already has pages/sections data (reprocessing scenario)",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.document.num_pages",
+              "NumericGreaterThan": 0
+            },
+            {
+              "Variable": "$.document.sections[0]",
+              "IsString": true
+            }
+          ],
+          "Comment": "Document has existing data with string section IDs - skip BDA invocation",
+          "Next": "BDA_ProcessResultsSkip"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.document.num_pages",
+              "NumericGreaterThan": 0
+            },
+            {
+              "Variable": "$.document.sections[0].section_id",
+              "IsPresent": true
+            }
+          ],
+          "Comment": "Document has existing data with section objects - skip BDA invocation",
+          "Next": "BDA_ProcessResultsSkip"
+        }
+      ],
+      "Default": "BDA_InvokeDataAutomation"
+    },
+    "BDA_InvokeDataAutomation": {
+      "Type": "Task",
+      "Resource": "arn:${Partition}:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${InvokeBDALambdaArn}",
+        "Payload": {
+          "taskToken.$": "$$.Task.Token",
+          "execution_arn.$": "$$.Execution.Id",
+          "working_bucket": "${WorkingBucket}",
+          "BDAProjectArn.$": "$.document.bda_project_arn",
+          "document.$": "$.document"
+        }
+      },
+      "ResultPath": "$.BDAResponse",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "BDA_ProcessResultsStep",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "FailState"
+        }
+      ]
+    },
+    "BDA_ProcessResultsStep": {
+      "Type": "Task",
+      "Resource": "${BDAProcessResultsLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "output_bucket": "${OutputBucket}",
+        "BDAResponse.$": "$.BDAResponse"
+      },
+      "ResultPath": "$.Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "CheckHITLRequired"
+    },
+    "BDA_ProcessResultsSkip": {
+      "Type": "Task",
+      "Comment": "Process existing document data without BDA invocation (reprocessing scenario)",
+      "Resource": "${BDAProcessResultsLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "output_bucket": "${OutputBucket}",
+        "skip_bda": true,
+        "document.$": "$.document"
+      },
+      "ResultPath": "$.Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "CheckHITLRequired"
+    },
+    "OCRStep": {
+      "Type": "Task",
+      "Resource": "${OCRFunctionArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.document"
+      },
+      "ResultPath": "$.OCRResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "PostOcrHook"
+    },
+    "PostOcrHook": {
+      "Type": "Task",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "postOcr",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$.OCRResult.document"
+        }
+      },
+      "ResultPath": "$.HookResults.postOcr",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.HookResults.postOcr.error",
+          "Next": "ClassificationStep"
+        }
+      ],
+      "Next": "ApplyPostOcrHookDocument"
+    },
+    "ApplyPostOcrHookDocument": {
+      "Type": "Pass",
+      "Comment": "Copy the (possibly hook-modified) document into $.OCRResult.document, which ClassificationStep reads. No-op copy when no hook modified it. On a dispatcher/hook error the Catch above routes straight to ClassificationStep, bypassing this state, so $.OCRResult keeps its pre-hook value with no restore logic needed.",
+      "InputPath": "$.HookResults.postOcr.Payload.document",
+      "ResultPath": "$.OCRResult.document",
+      "Next": "ClassificationStep"
+    },
+    "ClassificationStep": {
+      "Type": "Task",
+      "Resource": "${ClassificationFunctionArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "OCRResult.$": "$.OCRResult"
+      },
+      "ResultPath": "$.ClassificationResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "PostClassificationHook"
+    },
+    "PostClassificationHook": {
+      "Type": "Task",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "postClassification",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$.ClassificationResult.document"
+        }
+      },
+      "ResultPath": "$.HookResults.postClassification",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.HookResults.postClassification.error",
+          "Next": "ProcessSections"
+        }
+      ],
+      "Next": "ApplyPostClassificationHookDocument"
+    },
+    "ApplyPostClassificationHookDocument": {
+      "Type": "Pass",
+      "Comment": "Copy the (possibly hook-modified) document into $.ClassificationResult.document. This is the most powerful mutation point: ProcessSections iterates ITS sections list, and Pipeline_ProcessResultsStep rebuilds the final document from it \u2014 so section adds/removes/relabels made here propagate through the whole rest of the pipeline. No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+      "InputPath": "$.HookResults.postClassification.Payload.document",
+      "ResultPath": "$.ClassificationResult.document",
+      "Next": "ProcessSections"
+    },
+    "ProcessSections": {
+      "Type": "Map",
+      "ItemsPath": "$.ClassificationResult.document.sections",
+      "ItemSelector": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.ClassificationResult.document",
+        "section_id.$": "$$.Map.Item.Value"
+      },
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "ExtractionPlanStep",
+        "States": {
+          "ExtractionPlanStep": {
             "Type": "Task",
-            "Comment": "Standalone preprocessing extension point — runs FIRST, before the BDA/pipeline routing, so it fires in both processing modes and even when OCR is disabled. Dispatches to the single generic hook (arn + args) in the config's preprocessing section (e.g. PII anonymization). A hook may return halt=true to short-circuit this execution (e.g. when it has spawned a redacted copy that will be processed as a separate document). NOTE: a dispatcher/hook error is NOT caught to normal routing — a preprocessing hook that fails (e.g. onError:fail on a redaction hook) must STOP the execution, never fall through to processing the un-preprocessed original (which for PII redaction would leak the original). It fails the execution instead.",
+            "Resource": "${ShardRuntimeFunctionArn}",
+            "Parameters": {
+              "mode": "plan",
+              "execution_arn.$": "$.execution_arn",
+              "document.$": "$.document",
+              "section_id.$": "$.section_id"
+            },
+            "ResultPath": "$.ShardPlan",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Sandbox.Timedout",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "ThrottlingException",
+                  "ServiceUnavailableException",
+                  "InternalServerException",
+                  "InternalServerError"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "ShardModeChoice"
+          },
+          "ShardModeChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.ShardPlan.shard_mode",
+                "BooleanEquals": true,
+                "Next": "ExtractionShardMap"
+              }
+            ],
+            "Default": "ExtractionStep"
+          },
+          "ExtractionShardMap": {
+            "Type": "Map",
+            "ItemProcessor": {
+              "ProcessorConfig": {
+                "Mode": "DISTRIBUTED",
+                "ExecutionType": "STANDARD"
+              },
+              "StartAt": "ShardExtractionStep",
+              "States": {
+                "ShardExtractionStep": {
+                  "Type": "Task",
+                  "Resource": "arn:${Partition}:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${ShardRuntimeFunctionArn}",
+                    "Payload": {
+                      "mode": "shard",
+                      "execution_arn.$": "$.execution_arn",
+                      "document.$": "$.document",
+                      "section_id.$": "$.section_id",
+                      "shard_index.$": "$.shard_index"
+                    }
+                  },
+                  "OutputPath": "$.Payload",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "States.Timeout",
+                        "Lambda.Unknown",
+                        "Sandbox.Timedout",
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException",
+                        "ServiceQuotaExceededException",
+                        "ThrottlingException",
+                        "ProvisionedThroughputExceededException",
+                        "RequestLimitExceeded",
+                        "ServiceUnavailableException",
+                        "InternalServerException",
+                        "InternalServerError",
+                        "States.TaskFailed"
+                      ],
+                      "IntervalSeconds": 10,
+                      "MaxAttempts": 8,
+                      "BackoffRate": 2.0
+                    }
+                  ],
+                  "End": true
+                }
+              }
+            },
+            "ItemsPath": "$.ShardPlan.shards",
+            "ItemSelector": {
+              "execution_arn.$": "$.execution_arn",
+              "document.$": "$.document",
+              "section_id.$": "$.section_id",
+              "shard_index.$": "$$.Map.Item.Value.shard_index"
+            },
+            "MaxConcurrency": 5,
+            "ResultPath": "$.ShardResults",
+            "Next": "ExtractionMergeStep"
+          },
+          "ExtractionMergeStep": {
+            "Type": "Task",
+            "Resource": "${ShardRuntimeFunctionArn}",
+            "Parameters": {
+              "mode": "merge",
+              "execution_arn.$": "$.execution_arn",
+              "document.$": "$.document",
+              "section_id.$": "$.section_id"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.Timeout",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "ThrottlingException",
+                  "ServiceUnavailableException",
+                  "InternalServerException",
+                  "InternalServerError"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 8,
+                "BackoffRate": 2.5
+              }
+            ],
+            "Next": "PostExtractionHook"
+          },
+          "ExtractionStep": {
+            "Type": "Task",
+            "Resource": "${ExtractionFunctionArn}",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.Timeout",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "ServiceQuotaExceededException",
+                  "ThrottlingException",
+                  "ProvisionedThroughputExceededException",
+                  "RequestLimitExceeded",
+                  "ServiceUnavailableException",
+                  "InternalServerException",
+                  "InternalServerError"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 8,
+                "BackoffRate": 2.5
+              }
+            ],
+            "Next": "PostExtractionHook"
+          },
+          "PostExtractionHook": {
+            "Type": "Task",
             "Resource": "arn:${Partition}:states:::lambda:invoke",
             "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "preprocessing",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$.document"
-                }
+              "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+              "Payload": {
+                "hookPoint": "postExtraction",
+                "executionArn.$": "$$.Execution.Id",
+                "document.$": "$.document",
+                "section.$": "$"
+              }
             },
-            "ResultPath": "$.HookResults.preprocessing",
+            "ResultPath": "$.HookResults",
             "Retry": [
-                { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
             ],
             "Catch": [
-                { "ErrorEquals": ["States.ALL"], "ResultPath": "$.HookResults.preprocessing.error", "Next": "PreprocessingHookFailed" }
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.HookResults.error",
+                "Next": "AssessmentStep"
+              }
             ],
-            "Next": "ApplyPreprocessingHookDocument"
-        },
-        "ApplyPreprocessingHookDocument": {
+            "Next": "ApplyPostExtractionHookDocument"
+          },
+          "ApplyPostExtractionHookDocument": {
             "Type": "Pass",
-            "Comment": "Copy the (possibly hook-modified) document the dispatcher returned into $.document, which the routing + OCR steps read. The dispatcher ALWAYS returns a document — the inbound one verbatim when no hook modified it — so this is a no-op copy in the common case. A dispatcher/hook error skips this state via the Catch above, leaving the pre-hook $.document intact.",
-            "InputPath": "$.HookResults.preprocessing.Payload.document",
+            "Comment": "Copy the (possibly hook-modified) document into $.document, which AssessmentStep reads. NOTE this runs INSIDE the ProcessSections Map, so the document here is a SECTION document: Pipeline_ProcessResultsStep rebuilds the final document from the ClassificationResult base and takes only sections[0] + metering from each Map result, so section-scoped mutations propagate but top-level/page-level ones made here do not (use postClassification or postRuleValidation for those). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+            "InputPath": "$.HookResults.Payload.document",
             "ResultPath": "$.document",
-            "Next": "CheckPreprocessingHalt"
-        },
-        "PreprocessingHookFailed": {
-            "Type": "Fail",
-            "Error": "PreprocessingHookFailed",
-            "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original."
-        },
-        "CheckPreprocessingHalt": {
-            "Type": "Choice",
-            "Comment": "If a preprocessing hook requested halt (e.g. redacted-only mode), end this execution as REDACTED_SUPERSEDED. Otherwise route to normal processing. The dispatcher always returns a top-level halt flag, so this path is safe even when no hook is registered (halt=false).",
-            "Choices": [
-                {
-                    "Variable": "$.HookResults.preprocessing.Payload.halt",
-                    "BooleanEquals": true,
-                    "Next": "MarkSupersededByRedacted"
-                }
-            ],
-            "Default": "RouteByProcessingMode"
-        },
-        "MarkSupersededByRedacted": {
-            "Type": "Pass",
-            "Comment": "Terminal state for a document intentionally not processed further because a preprocessing hook produced a redacted copy (processed as its own document). Sets status REDACTED_SUPERSEDED, which the workflow tracker preserves rather than forcing COMPLETED.",
-            "Parameters": {
-                "document.$": "$.document"
-            },
-            "ResultPath": "$",
-            "Next": "SetSupersededStatus"
-        },
-        "SetSupersededStatus": {
-            "Type": "Pass",
-            "Result": "REDACTED_SUPERSEDED",
-            "ResultPath": "$.document.status",
-            "Next": "WorkflowComplete"
-        },
-        "RouteByProcessingMode": {
-            "Type": "Choice",
-            "Comment": "Route to BDA or step-by-step pipeline based on use_bda flag in document config",
-            "Choices": [
-                {
-                    "Variable": "$.document.use_bda",
-                    "BooleanEquals": true,
-                    "Next": "BDA_CheckExistingData"
-                }
-            ],
-            "Default": "OCRStep"
-        },
-        "BDA_CheckExistingData": {
-            "Type": "Choice",
-            "Comment": "Check if document already has pages/sections data (reprocessing scenario)",
-            "Choices": [
-                {
-                    "And": [
-                        {
-                            "Variable": "$.document.num_pages",
-                            "NumericGreaterThan": 0
-                        },
-                        {
-                            "Variable": "$.document.sections[0]",
-                            "IsString": true
-                        }
-                    ],
-                    "Comment": "Document has existing data with string section IDs - skip BDA invocation",
-                    "Next": "BDA_ProcessResultsSkip"
-                },
-                {
-                    "And": [
-                        {
-                            "Variable": "$.document.num_pages",
-                            "NumericGreaterThan": 0
-                        },
-                        {
-                            "Variable": "$.document.sections[0].section_id",
-                            "IsPresent": true
-                        }
-                    ],
-                    "Comment": "Document has existing data with section objects - skip BDA invocation",
-                    "Next": "BDA_ProcessResultsSkip"
-                }
-            ],
-            "Default": "BDA_InvokeDataAutomation"
-        },
-        "BDA_InvokeDataAutomation": {
+            "Next": "AssessmentStep"
+          },
+          "AssessmentStep": {
             "Type": "Task",
-            "Resource": "arn:${Partition}:states:::lambda:invoke.waitForTaskToken",
+            "Resource": "${AssessmentFunctionArn}",
             "Parameters": {
-                "FunctionName": "${InvokeBDALambdaArn}",
-                "Payload": {
-                    "taskToken.$": "$$.Task.Token",
-                    "execution_arn.$": "$$.Execution.Id",
-                    "working_bucket": "${WorkingBucket}",
-                    "BDAProjectArn.$": "$.document.bda_project_arn",
-                    "document.$": "$.document"
-                }
-            },
-            "ResultPath": "$.BDAResponse",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "BDA_ProcessResultsStep",
-            "Catch": [
-                {
-                    "ErrorEquals": [
-                        "States.ALL"
-                    ],
-                    "Next": "FailState"
-                }
-            ]
-        },
-        "BDA_ProcessResultsStep": {
-            "Type": "Task",
-            "Resource": "${BDAProcessResultsLambdaArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "output_bucket": "${OutputBucket}",
-                "BDAResponse.$": "$.BDAResponse"
-            },
-            "ResultPath": "$.Result",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "CheckHITLRequired"
-        },
-        "BDA_ProcessResultsSkip": {
-            "Type": "Task",
-            "Comment": "Process existing document data without BDA invocation (reprocessing scenario)",
-            "Resource": "${BDAProcessResultsLambdaArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "output_bucket": "${OutputBucket}",
-                "skip_bda": true,
-                "document.$": "$.document"
-            },
-            "ResultPath": "$.Result",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "CheckHITLRequired"
-        },
-        "OCRStep": {
-            "Type": "Task",
-            "Resource": "${OCRFunctionArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "document.$": "$.document"
-            },
-            "ResultPath": "$.OCRResult",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "PostOcrHook"
-        },
-        "PostOcrHook": {
-            "Type": "Task",
-            "Resource": "arn:${Partition}:states:::lambda:invoke",
-            "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "postOcr",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$.OCRResult.document"
-                }
-            },
-            "ResultPath": "$.HookResults.postOcr",
-            "Retry": [
-                { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
-            ],
-            "Catch": [
-                { "ErrorEquals": ["States.ALL"], "ResultPath": "$.HookResults.postOcr.error", "Next": "ClassificationStep" }
-            ],
-            "Next": "ApplyPostOcrHookDocument"
-        },
-        "ApplyPostOcrHookDocument": {
-            "Type": "Pass",
-            "Comment": "Copy the (possibly hook-modified) document into $.OCRResult.document, which ClassificationStep reads. No-op copy when no hook modified it. On a dispatcher/hook error the Catch above routes straight to ClassificationStep, bypassing this state, so $.OCRResult keeps its pre-hook value with no restore logic needed.",
-            "InputPath": "$.HookResults.postOcr.Payload.document",
-            "ResultPath": "$.OCRResult.document",
-            "Next": "ClassificationStep"
-        },
-        "ClassificationStep": {
-            "Type": "Task",
-            "Resource": "${ClassificationFunctionArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "OCRResult.$": "$.OCRResult"
-            },
-            "ResultPath": "$.ClassificationResult",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "PostClassificationHook"
-        },
-        "PostClassificationHook": {
-            "Type": "Task",
-            "Resource": "arn:${Partition}:states:::lambda:invoke",
-            "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "postClassification",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$.ClassificationResult.document"
-                }
-            },
-            "ResultPath": "$.HookResults.postClassification",
-            "Retry": [
-                { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
-            ],
-            "Catch": [
-                { "ErrorEquals": ["States.ALL"], "ResultPath": "$.HookResults.postClassification.error", "Next": "ProcessSections" }
-            ],
-            "Next": "ApplyPostClassificationHookDocument"
-        },
-        "ApplyPostClassificationHookDocument": {
-            "Type": "Pass",
-            "Comment": "Copy the (possibly hook-modified) document into $.ClassificationResult.document. This is the most powerful mutation point: ProcessSections iterates ITS sections list, and Pipeline_ProcessResultsStep rebuilds the final document from it — so section adds/removes/relabels made here propagate through the whole rest of the pipeline. No-op copy when no hook modified it; the Catch above bypasses this state on error.",
-            "InputPath": "$.HookResults.postClassification.Payload.document",
-            "ResultPath": "$.ClassificationResult.document",
-            "Next": "ProcessSections"
-        },
-        "ProcessSections": {
-            "Type": "Map",
-            "ItemsPath": "$.ClassificationResult.document.sections",
-            "ItemSelector": {
-                "execution_arn.$": "$$.Execution.Id",
-                "document.$": "$.ClassificationResult.document",
-                "section_id.$": "$$.Map.Item.Value"
-            },
-            "MaxConcurrency": 10,
-            "Iterator": {
-                "StartAt": "ExtractionPlanStep",
-                "States": {
-                    "ExtractionPlanStep": {
-                        "Type": "Task",
-                        "Resource": "${ShardRuntimeFunctionArn}",
-                        "Parameters": {
-                            "mode": "plan",
-                            "execution_arn.$": "$.execution_arn",
-                            "document.$": "$.document",
-                            "section_id.$": "$.section_id"
-                        },
-                        "ResultPath": "$.ShardPlan",
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "Sandbox.Timedout",
-                                    "Lambda.ServiceException",
-                                    "Lambda.AWSLambdaException",
-                                    "Lambda.SdkClientException",
-                                    "Lambda.TooManyRequestsException",
-                                    "ThrottlingException",
-                                    "ServiceUnavailableException",
-                                    "InternalServerException",
-                                    "InternalServerError"
-                                ],
-                                "IntervalSeconds": 5,
-                                "MaxAttempts": 6,
-                                "BackoffRate": 2.0
-                            }
-                        ],
-                        "Next": "ShardModeChoice"
-                    },
-                    "ShardModeChoice": {
-                        "Type": "Choice",
-                        "Choices": [
-                            {
-                                "Variable": "$.ShardPlan.shard_mode",
-                                "BooleanEquals": true,
-                                "Next": "ExtractionShardMap"
-                            }
-                        ],
-                        "Default": "ExtractionStep"
-                    },
-                    "ExtractionShardMap": {
-                        "Type": "Map",
-                        "ItemProcessor": {
-                            "ProcessorConfig": {
-                                "Mode": "DISTRIBUTED",
-                                "ExecutionType": "STANDARD"
-                            },
-                            "StartAt": "ShardExtractionStep",
-                            "States": {
-                                "ShardExtractionStep": {
-                                    "Type": "Task",
-                                    "Resource": "arn:${Partition}:states:::lambda:invoke",
-                                    "Parameters": {
-                                        "FunctionName": "${ShardRuntimeFunctionArn}",
-                                        "Payload": {
-                                            "mode": "shard",
-                                            "execution_arn.$": "$.execution_arn",
-                                            "document.$": "$.document",
-                                            "section_id.$": "$.section_id",
-                                            "shard_index.$": "$.shard_index"
-                                        }
-                                    },
-                                    "OutputPath": "$.Payload",
-                                    "Retry": [
-                                        {
-                                            "ErrorEquals": [
-                                                "States.Timeout",
-                                                "Lambda.Unknown",
-                                                "Sandbox.Timedout",
-                                                "Lambda.ServiceException",
-                                                "Lambda.AWSLambdaException",
-                                                "Lambda.SdkClientException",
-                                                "Lambda.TooManyRequestsException",
-                                                "ServiceQuotaExceededException",
-                                                "ThrottlingException",
-                                                "ProvisionedThroughputExceededException",
-                                                "RequestLimitExceeded",
-                                                "ServiceUnavailableException",
-                                                "InternalServerException",
-                                                "InternalServerError",
-                                                "States.TaskFailed"
-                                            ],
-                                            "IntervalSeconds": 10,
-                                            "MaxAttempts": 8,
-                                            "BackoffRate": 2.0
-                                        }
-                                    ],
-                                    "End": true
-                                }
-                            }
-                        },
-                        "ItemsPath": "$.ShardPlan.shards",
-                        "ItemSelector": {
-                            "execution_arn.$": "$.execution_arn",
-                            "document.$": "$.document",
-                            "section_id.$": "$.section_id",
-                            "shard_index.$": "$$.Map.Item.Value.shard_index"
-                        },
-                        "MaxConcurrency": 5,
-                        "ResultPath": "$.ShardResults",
-                        "Next": "ExtractionMergeStep"
-                    },
-                    "ExtractionMergeStep": {
-                        "Type": "Task",
-                        "Resource": "${ShardRuntimeFunctionArn}",
-                        "Parameters": {
-                            "mode": "merge",
-                            "execution_arn.$": "$.execution_arn",
-                            "document.$": "$.document",
-                            "section_id.$": "$.section_id"
-                        },
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "States.Timeout",
-                                    "Lambda.Unknown",
-                                    "Sandbox.Timedout",
-                                    "Lambda.ServiceException",
-                                    "Lambda.AWSLambdaException",
-                                    "Lambda.SdkClientException",
-                                    "Lambda.TooManyRequestsException",
-                                    "ThrottlingException",
-                                    "ServiceUnavailableException",
-                                    "InternalServerException",
-                                    "InternalServerError"
-                                ],
-                                "IntervalSeconds": 10,
-                                "MaxAttempts": 8,
-                                "BackoffRate": 2.5
-                            }
-                        ],
-                        "Next": "PostExtractionHook"
-                    },
-                    "ExtractionStep": {
-                        "Type": "Task",
-                        "Resource": "${ExtractionFunctionArn}",
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "States.Timeout",
-                                    "Lambda.Unknown",
-                                    "Sandbox.Timedout",
-                                    "Lambda.ServiceException",
-                                    "Lambda.AWSLambdaException",
-                                    "Lambda.SdkClientException",
-                                    "Lambda.TooManyRequestsException",
-                                    "ServiceQuotaExceededException",
-                                    "ThrottlingException",
-                                    "ProvisionedThroughputExceededException",
-                                    "RequestLimitExceeded",
-                                    "ServiceUnavailableException",
-                                    "InternalServerException",
-                                    "InternalServerError"
-                                ],
-                                "IntervalSeconds": 10,
-                                "MaxAttempts": 8,
-                                "BackoffRate": 2.5
-                            }
-                        ],
-                        "Next": "PostExtractionHook"
-                    },
-                    "PostExtractionHook": {
-                        "Type": "Task",
-                        "Resource": "arn:${Partition}:states:::lambda:invoke",
-                        "Parameters": {
-                            "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                            "Payload": {
-                                "hookPoint": "postExtraction",
-                                "executionArn.$": "$$.Execution.Id",
-                                "document.$": "$.document",
-                                "section.$": "$"
-                            }
-                        },
-                        "ResultPath": "$.HookResults",
-                        "Retry": [
-                            { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
-                        ],
-                        "Catch": [
-                            { "ErrorEquals": ["States.ALL"], "ResultPath": "$.HookResults.error", "Next": "AssessmentStep" }
-                        ],
-                        "Next": "ApplyPostExtractionHookDocument"
-                    },
-                    "ApplyPostExtractionHookDocument": {
-                        "Type": "Pass",
-                        "Comment": "Copy the (possibly hook-modified) document into $.document, which AssessmentStep reads. NOTE this runs INSIDE the ProcessSections Map, so the document here is a SECTION document: Pipeline_ProcessResultsStep rebuilds the final document from the ClassificationResult base and takes only sections[0] + metering from each Map result, so section-scoped mutations propagate but top-level/page-level ones made here do not (use postClassification or postRuleValidation for those). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
-                        "InputPath": "$.HookResults.Payload.document",
-                        "ResultPath": "$.document",
-                        "Next": "AssessmentStep"
-                    },
-                    "AssessmentStep": {
-                        "Type": "Task",
-                        "Resource": "${AssessmentFunctionArn}",
-                        "Parameters": {
-                            "execution_arn.$": "$$.Execution.Id",
-                            "document.$": "$.document",
-                            "section_id.$": "$.section_id"
-                        },
-                        "ResultPath": "$",
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "States.Timeout",
-                                    "Lambda.Unknown",
-                                    "Sandbox.Timedout",
-                                    "Lambda.ServiceException",
-                                    "Lambda.AWSLambdaException",
-                                    "Lambda.SdkClientException",
-                                    "Lambda.TooManyRequestsException",
-                                    "ServiceQuotaExceededException",
-                                    "ThrottlingException",
-                                    "ProvisionedThroughputExceededException",
-                                    "RequestLimitExceeded",
-                                    "ServiceUnavailableException"
-                                ],
-                                "IntervalSeconds": 10,
-                                "MaxAttempts": 8,
-                                "BackoffRate": 2.5
-                            }
-                        ],
-                        "Next": "SectionComplete"
-                    },
-                    "SectionComplete": {
-                        "Type": "Pass",
-                        "End": true
-                    }
-                }
-            },
-            "ResultPath": "$.ExtractionResults",
-            "Next": "Pipeline_ProcessResultsStep"
-        },
-        "Pipeline_ProcessResultsStep": {
-            "Type": "Task",
-            "Resource": "${PipelineProcessResultsLambdaArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "ClassificationResult.$": "$.ClassificationResult",
-                "ExtractionResults.$": "$.ExtractionResults"
-            },
-            "ResultPath": "$.Result",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "CheckHITLRequired"
-        },
-        "CheckRuleValidationEnabled": {
-            "Type": "Choice",
-            "Choices": [
-                {
-                    "Variable": "$.Result.rule_validation_enabled",
-                    "BooleanEquals": true,
-                    "Next": "PolicyClassificationStep"
-                }
-            ],
-            "Default": "SetEmptyRuleValidationResult"
-        },
-        "PolicyClassificationStep": {
-            "Type": "Task",
-            "Resource": "${RuleValidationPolicyClassificationLambdaArn}",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 2,
-                    "MaxAttempts": 6,
-                    "BackoffRate": 2
-                }
-            ],
-            "ResultPath": "$.PolicyClassificationResult",
-            "Next": "CheckPolicyMatch"
-        },
-        "CheckPolicyMatch": {
-            "Type": "Choice",
-            "Choices": [
-                {
-                    "Variable": "$.PolicyClassificationResult.skip_rule_validation",
-                    "BooleanEquals": true,
-                    "Next": "SetSkippedRuleValidationResult"
-                }
-            ],
-            "Default": "ProcessRuleValidationSections"
-        },
-        "SetSkippedRuleValidationResult": {
-            "Type": "Pass",
-            "Parameters": {
-                "document.$": "$.PolicyClassificationResult.document"
-            },
-            "ResultPath": "$.RuleValidationOrchestrationResult",
-            "Next": "PostRuleValidationHook"
-        },
-        "SetEmptyRuleValidationResult": {
-            "Type": "Pass",
-            "Parameters": {
-                "document.$": "$.Result.document"
-            },
-            "ResultPath": "$.RuleValidationOrchestrationResult",
-            "Next": "PostRuleValidationHook"
-        },
-        "ProcessRuleValidationSections": {
-            "Type": "Map",
-            "ItemsPath": "$.PolicyClassificationResult.document.sections",
-            "ItemSelector": {
-                "execution_arn.$": "$$.Execution.Id",
-                "document.$": "$.PolicyClassificationResult.document",
-                "section_id.$": "$$.Map.Item.Value"
-            },
-            "MaxConcurrency": 10,
-            "Iterator": {
-                "StartAt": "RuleValidationStep",
-                "States": {
-                    "RuleValidationStep": {
-                        "Type": "Task",
-                        "Resource": "${RuleValidationLambdaArn}",
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "Sandbox.Timedout",
-                                    "Lambda.ServiceException",
-                                    "Lambda.AWSLambdaException",
-                                    "Lambda.SdkClientException",
-                                    "Lambda.TooManyRequestsException",
-                                    "ServiceQuotaExceededException",
-                                    "ThrottlingException",
-                                    "ProvisionedThroughputExceededException",
-                                    "RequestLimitExceeded",
-                                    "ServiceUnavailableException"
-                                ],
-                                "IntervalSeconds": 10,
-                                "MaxAttempts": 8,
-                                "BackoffRate": 2.5
-                            }
-                        ],
-                        "Next": "RuleValidationSectionComplete"
-                    },
-                    "RuleValidationSectionComplete": {
-                        "Type": "Pass",
-                        "End": true
-                    }
-                }
-            },
-            "ResultPath": "$.RuleValidationResults",
-            "Next": "RuleValidationOrchestration"
-        },
-        "RuleValidationOrchestration": {
-            "Type": "Task",
-            "Resource": "${RuleValidationOrchestrationLambdaArn}",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "ResultPath": "$.RuleValidationOrchestrationResult",
-            "Next": "PostRuleValidationHook"
-        },
-        "PostRuleValidationHook": {
-            "Type": "Task",
-            "Resource": "arn:${Partition}:states:::lambda:invoke",
-            "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "postRuleValidation",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$.RuleValidationOrchestrationResult.document"
-                }
-            },
-            "ResultPath": "$.HookResults.postRuleValidation",
-            "Retry": [
-                { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
-            ],
-            "Catch": [
-                { "ErrorEquals": ["States.ALL"], "ResultPath": "$.HookResults.postRuleValidation.error", "Next": "SummarizationStep" }
-            ],
-            "Next": "ApplyPostRuleValidationHookDocument"
-        },
-        "ApplyPostRuleValidationHookDocument": {
-            "Type": "Pass",
-            "Comment": "Copy the (possibly hook-modified) document into $.RuleValidationOrchestrationResult.document, which SummarizationStep reads. This is the last whole-document mutation point (the Map fan-out is done, so mutations here reach summarization, evaluation, and the final workflow output). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
-            "InputPath": "$.HookResults.postRuleValidation.Payload.document",
-            "ResultPath": "$.RuleValidationOrchestrationResult.document",
-            "Next": "SummarizationStep"
-        },
-        "CheckHITLRequired": {
-            "Type": "Choice",
-            "Choices": [
-                {
-                    "Variable": "$.Result.hitl_triggered",
-                    "BooleanEquals": true,
-                    "Next": "MarkHITLPending"
-                }
-            ],
-            "Default": "CheckRuleValidationEnabled"
-        },
-        "MarkHITLPending": {
-            "Type": "Pass",
-            "Comment": "Document marked for async HITL review, workflow continues without waiting",
-            "Next": "CheckRuleValidationEnabled"
-        },
-        "SummarizationStep": {
-            "Type": "Task",
-            "Resource": "${SummarizationLambdaArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "document.$": "$.RuleValidationOrchestrationResult.document"
-            },
-            "ResultPath": "$.Result",
-            "OutputPath": "$.Result.document",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
-            ],
-            "Next": "PostSummarizationHook"
-        },
-        "PostSummarizationHook": {
-            "Type": "Task",
-            "Comment": "At this point in the workflow $ IS the document (SummarizationStep's OutputPath narrowed it), so the dispatcher result is parked under $.PostSummarizationHookOut rather than discarded, and the Apply state below unwraps it back to $. Parameters are evaluated BEFORE ResultPath, so the hook payload still receives a clean document.",
-            "Resource": "arn:${Partition}:states:::lambda:invoke",
-            "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "postSummarization",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$"
-                }
-            },
-            "ResultPath": "$.PostSummarizationHookOut",
-            "Retry": [
-                { "ErrorEquals": ["Lambda.ServiceException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
-            ],
-            "Catch": [
-                { "ErrorEquals": ["States.ALL"], "ResultPath": null, "Next": "EvaluationStep" }
-            ],
-            "Next": "ApplyPostSummarizationHookDocument"
-        },
-        "ApplyPostSummarizationHookDocument": {
-            "Type": "Pass",
-            "Comment": "Replace $ with the (possibly hook-modified) document, which EvaluationStep reads and which becomes the workflow's final output. This also drops the temporary PostSummarizationHookOut key, so the final output shape is byte-identical to before this feature. On a dispatcher/hook error the Catch above keeps ResultPath null and routes past this state, so $ remains the unmodified document.",
-            "InputPath": "$.PostSummarizationHookOut.Payload.document",
-            "ResultPath": "$",
-            "Next": "EvaluationStep"
-        },
-        "EvaluationStep": {
-            "Type": "Task",
-            "Resource": "${EvaluationLambdaArn}",
-            "Parameters": {
-                "execution_arn.$": "$$.Execution.Id",
-                "document.$": "$"
+              "execution_arn.$": "$$.Execution.Id",
+              "document.$": "$.document",
+              "section_id.$": "$.section_id"
             },
             "ResultPath": "$",
             "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Sandbox.Timedout",
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                        "ServiceQuotaExceededException",
-                        "ThrottlingException",
-                        "ProvisionedThroughputExceededException",
-                        "RequestLimitExceeded",
-                        "ServiceUnavailableException"
-                    ],
-                    "IntervalSeconds": 10,
-                    "MaxAttempts": 8,
-                    "BackoffRate": 2.5
-                }
+              {
+                "ErrorEquals": [
+                  "States.Timeout",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "ServiceQuotaExceededException",
+                  "ThrottlingException",
+                  "ProvisionedThroughputExceededException",
+                  "RequestLimitExceeded",
+                  "ServiceUnavailableException"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 8,
+                "BackoffRate": 2.5
+              }
             ],
-            "Next": "PostprocessingHook"
-        },
-        "PostprocessingHook": {
-            "Type": "Task",
-            "Comment": "Standalone postprocessing extension point — runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state — by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which surfaces here as a failed execution.",
-            "Resource": "arn:${Partition}:states:::lambda:invoke",
-            "Parameters": {
-                "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
-                "Payload": {
-                    "hookPoint": "postprocessing",
-                    "executionArn.$": "$$.Execution.Id",
-                    "document.$": "$.document"
-                }
-            },
-            "ResultPath": "$.HookResults.postprocessing",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException"
-                    ],
-                    "IntervalSeconds": 2,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 2
-                }
-            ],
-            "Catch": [
-                {
-                    "ErrorEquals": [
-                        "States.ALL"
-                    ],
-                    "ResultPath": null,
-                    "Next": "WorkflowComplete"
-                }
-            ],
-            "Next": "ApplyPostprocessingHookDocument"
-        },
-        "ApplyPostprocessingHookDocument": {
-            "Type": "Pass",
-            "Comment": "Rebuild $ as { document: <possibly hook-modified document> }, which becomes the workflow's final output. Parameters + ResultPath $ (rather than InputPath) is deliberate: it both unwraps the dispatcher result AND drops the temporary $.HookResults key, so the final output shape stays byte-identical to before this feature — the workflow tracker and the EventBridge post-processing hook read $.document, and the output is subject to Step Functions' 256KB limit. On a dispatcher/hook error the Catch above keeps ResultPath null and routes past this state, so $ remains the unmodified { document: ... }.",
-            "Parameters": {
-                "document.$": "$.HookResults.postprocessing.Payload.document"
-            },
-            "ResultPath": "$",
-            "Next": "WorkflowComplete"
-        },
-        "WorkflowComplete": {
+            "Next": "SectionComplete"
+          },
+          "SectionComplete": {
             "Type": "Pass",
             "End": true
-        },
-        "FailState": {
-            "Type": "Fail",
-            "Cause": "Workflow Failed",
-            "Error": "WorkflowFailedException"
+          }
         }
+      },
+      "ResultPath": "$.ExtractionResults",
+      "Next": "Pipeline_ProcessResultsStep"
+    },
+    "Pipeline_ProcessResultsStep": {
+      "Type": "Task",
+      "Resource": "${PipelineProcessResultsLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "ClassificationResult.$": "$.ClassificationResult",
+        "ExtractionResults.$": "$.ExtractionResults"
+      },
+      "ResultPath": "$.Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "CheckHITLRequired"
+    },
+    "CheckRuleValidationEnabled": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Result.rule_validation_enabled",
+          "BooleanEquals": true,
+          "Next": "PolicyClassificationStep"
+        }
+      ],
+      "Default": "SetEmptyRuleValidationResult"
+    },
+    "PolicyClassificationStep": {
+      "Type": "Task",
+      "Resource": "${RuleValidationPolicyClassificationLambdaArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.PolicyClassificationResult",
+      "Next": "CheckPolicyMatch"
+    },
+    "CheckPolicyMatch": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.PolicyClassificationResult.skip_rule_validation",
+          "BooleanEquals": true,
+          "Next": "SetSkippedRuleValidationResult"
+        }
+      ],
+      "Default": "ProcessRuleValidationSections"
+    },
+    "SetSkippedRuleValidationResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "document.$": "$.PolicyClassificationResult.document"
+      },
+      "ResultPath": "$.RuleValidationOrchestrationResult",
+      "Next": "PostRuleValidationHook"
+    },
+    "SetEmptyRuleValidationResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "document.$": "$.Result.document"
+      },
+      "ResultPath": "$.RuleValidationOrchestrationResult",
+      "Next": "PostRuleValidationHook"
+    },
+    "ProcessRuleValidationSections": {
+      "Type": "Map",
+      "ItemsPath": "$.PolicyClassificationResult.document.sections",
+      "ItemSelector": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.PolicyClassificationResult.document",
+        "section_id.$": "$$.Map.Item.Value"
+      },
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "RuleValidationStep",
+        "States": {
+          "RuleValidationStep": {
+            "Type": "Task",
+            "Resource": "${RuleValidationLambdaArn}",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Sandbox.Timedout",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "ServiceQuotaExceededException",
+                  "ThrottlingException",
+                  "ProvisionedThroughputExceededException",
+                  "RequestLimitExceeded",
+                  "ServiceUnavailableException"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 8,
+                "BackoffRate": 2.5
+              }
+            ],
+            "Next": "RuleValidationSectionComplete"
+          },
+          "RuleValidationSectionComplete": {
+            "Type": "Pass",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.RuleValidationResults",
+      "Next": "RuleValidationOrchestration"
+    },
+    "RuleValidationOrchestration": {
+      "Type": "Task",
+      "Resource": "${RuleValidationOrchestrationLambdaArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "ResultPath": "$.RuleValidationOrchestrationResult",
+      "Next": "PostRuleValidationHook"
+    },
+    "PostRuleValidationHook": {
+      "Type": "Task",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "postRuleValidation",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$.RuleValidationOrchestrationResult.document"
+        }
+      },
+      "ResultPath": "$.HookResults.postRuleValidation",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.HookResults.postRuleValidation.error",
+          "Next": "SummarizationStep"
+        }
+      ],
+      "Next": "ApplyPostRuleValidationHookDocument"
+    },
+    "ApplyPostRuleValidationHookDocument": {
+      "Type": "Pass",
+      "Comment": "Copy the (possibly hook-modified) document into $.RuleValidationOrchestrationResult.document, which SummarizationStep reads. This is the last whole-document mutation point (the Map fan-out is done, so mutations here reach summarization, evaluation, and the final workflow output). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+      "InputPath": "$.HookResults.postRuleValidation.Payload.document",
+      "ResultPath": "$.RuleValidationOrchestrationResult.document",
+      "Next": "SummarizationStep"
+    },
+    "CheckHITLRequired": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Result.hitl_triggered",
+          "BooleanEquals": true,
+          "Next": "MarkHITLPending"
+        }
+      ],
+      "Default": "CheckRuleValidationEnabled"
+    },
+    "MarkHITLPending": {
+      "Type": "Pass",
+      "Comment": "Document marked for async HITL review, workflow continues without waiting",
+      "Next": "CheckRuleValidationEnabled"
+    },
+    "SummarizationStep": {
+      "Type": "Task",
+      "Resource": "${SummarizationLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.RuleValidationOrchestrationResult.document"
+      },
+      "ResultPath": "$.Result",
+      "OutputPath": "$.Result.document",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "PostSummarizationHook"
+    },
+    "PostSummarizationHook": {
+      "Type": "Task",
+      "Comment": "At this point in the workflow $ IS the document (SummarizationStep's OutputPath narrowed it), so the dispatcher result is parked under $.PostSummarizationHookOut rather than discarded, and the Apply state below unwraps it back to $. Parameters are evaluated BEFORE ResultPath, so the hook payload still receives a clean document.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "postSummarization",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$"
+        }
+      },
+      "ResultPath": "$.PostSummarizationHookOut",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "EvaluationStep"
+        }
+      ],
+      "Next": "ApplyPostSummarizationHookDocument"
+    },
+    "ApplyPostSummarizationHookDocument": {
+      "Type": "Pass",
+      "Comment": "Replace $ with the (possibly hook-modified) document, which EvaluationStep reads and which becomes the workflow's final output. This also drops the temporary PostSummarizationHookOut key, so the final output shape is byte-identical to before this feature. On a dispatcher/hook error the Catch above keeps ResultPath null and routes past this state, so $ remains the unmodified document.",
+      "InputPath": "$.PostSummarizationHookOut.Payload.document",
+      "ResultPath": "$",
+      "Next": "EvaluationStep"
+    },
+    "EvaluationStep": {
+      "Type": "Task",
+      "Resource": "${EvaluationLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "Comment": "A Lambda timeout in evaluation is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. This used to share the transient-error policy (8 attempts @2.5x backoff), so one such document occupied a workflow slot for ~5.2 hours before failing - and with MaxConcurrentWorkflows slots leaking behind it, a batch of them stopped a stack accepting documents at all. One attempt, then hand off to the Catch below, which preserves the document and records the failure.",
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "Comment": "Genuinely transient faults - these DO succeed on retry.",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "PostprocessingHook",
+      "Comment": "Scores the document against its baseline. This is a MEASUREMENT step: by the time it runs, every expensive production step has succeeded and its output objects are written, so an evaluation failure must not discard a good document (the same reasoning PostprocessingHook documents). Errors are therefore caught to RecordEvaluationFailure, which stamps an honest EvaluationStatus and continues to the normal tail, rather than failing the execution.",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.EvaluationError",
+          "Next": "RecordEvaluationFailure"
+        }
+      ]
+    },
+    "RecordEvaluationFailure": {
+      "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written. document.$ is $ (not $.document) because ApplyPostSummarizationHookDocument set $ to the document dict itself, so there is no $.document key at this point; the Catch above adds $.EvaluationError as a sibling of the doc fields, and the Lambda handler strips known state-level keys (EvaluationError, record_failure_only, failure_reason, error, execution_arn) on the raw-fallback path.",
+      "Type": "Task",
+      "Resource": "${EvaluationLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "record_failure_only": true,
+        "failure_reason": "Evaluation step failed or timed out",
+        "error.$": "$.EvaluationError",
+        "document.$": "$"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ThrottlingException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "PostprocessingHook"
+        }
+      ],
+      "Next": "PostprocessingHook"
+    },
+    "PostprocessingHook": {
+      "Type": "Task",
+      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which surfaces here as a failed execution.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
+        "Payload": {
+          "hookPoint": "postprocessing",
+          "executionArn.$": "$$.Execution.Id",
+          "document.$": "$.document"
+        }
+      },
+      "ResultPath": "$.HookResults.postprocessing",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "WorkflowComplete"
+        }
+      ],
+      "Next": "ApplyPostprocessingHookDocument"
+    },
+    "ApplyPostprocessingHookDocument": {
+      "Type": "Pass",
+      "Comment": "Rebuild $ as { document: <possibly hook-modified document> }, which becomes the workflow's final output. Parameters + ResultPath $ (rather than InputPath) is deliberate: it both unwraps the dispatcher result AND drops the temporary $.HookResults key, so the final output shape stays byte-identical to before this feature \u2014 the workflow tracker and the EventBridge post-processing hook read $.document, and the output is subject to Step Functions' 256KB limit. On a dispatcher/hook error the Catch above keeps ResultPath null and routes past this state, so $ remains the unmodified { document: ... }.",
+      "Parameters": {
+        "document.$": "$.HookResults.postprocessing.Payload.document"
+      },
+      "ResultPath": "$",
+      "Next": "WorkflowComplete"
+    },
+    "WorkflowComplete": {
+      "Type": "Pass",
+      "End": true
+    },
+    "FailState": {
+      "Type": "Fail",
+      "Cause": "Workflow Failed",
+      "Error": "WorkflowFailedException"
     }
+  }
 }

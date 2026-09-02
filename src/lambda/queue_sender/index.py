@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.document_versions import delete_current_output_objects
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 # Patch AWS SDK calls for X-Ray tracing
@@ -24,23 +25,42 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 
 # Initialize clients
 sqs = boto3.client("sqs")
+s3 = boto3.client("s3")
+cloudwatch = boto3.client("cloudwatch")
 document_service = create_document_service()
 queue_url = os.environ["QUEUE_URL"]
 retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
+# Matches queue_processor's namespace so both concurrency and ingest
+# telemetry share the same operator-facing surface.
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 
 def resolve_active_config_version(config_table):
-    """Return the version segment of the IsActive=true Config# row, or None.
+    """Return the name of the active Configuration Profile, or None.
 
-    Paginates. DynamoDB applies the 1MB page size to the items EXAMINED, not
-    the items matching FilterExpression, so a single scan call finds the active
-    row only when it falls within the first page. ProjectionExpression keeps
-    that page as wide as possible: without it the scan reads whole config
-    bodies (tens to hundreds of KB each), so only a few versions fit per page
-    and the active one is easily missed. Missing it here silently processes the
-    document under the DEFAULT config rather than the active one — the same
-    filtered-scan defect as issue #599.
+    Reads the active-profile pointer item first — one get_item, on a path that
+    runs for EVERY document queued. The scan below remains as the fallback for a
+    stack that has not activated a profile since the pointer was introduced.
+
+    The fallback paginates. DynamoDB applies the 1MB page size to the items
+    EXAMINED, not the items matching FilterExpression, so a single scan call
+    finds the active row only when it falls within the first page.
+    ProjectionExpression keeps that page as wide as possible: without it the
+    scan reads whole config bodies (tens to hundreds of KB each), so only a few
+    profiles fit per page and the active one is easily missed. Missing it here
+    silently processes the document under the DEFAULT config rather than the
+    active one — the same filtered-scan defect as issue #599.
     """
+    try:
+        pointer = config_table.get_item(
+            Key={"Configuration": "Config#__active"},
+            ProjectionExpression="ActiveVersion",
+        ).get("Item")
+        if pointer and pointer.get("ActiveVersion"):
+            return str(pointer["ActiveVersion"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not read the active-profile pointer ({e}); scanning instead")
+
     scan_kwargs = {
         "FilterExpression": (
             "begins_with(Configuration, :config_prefix) AND IsActive = :active"
@@ -84,6 +104,70 @@ def handler(event, context):
     output_bucket = os.environ.get("OUTPUT_BUCKET", "")
     if output_bucket == "":
         raise Exception("OUTPUT_BUCKET environment variable not set")
+
+    # Purge any output data left in S3 from a previous upload of this same key.
+    # Without this, a re-upload that reuses an existing filename (e.g. replacing
+    # a W2 with a W3 under `test.pdf`) would let the OCR function's retry-safe
+    # recovery mechanism (`discover_existing_ocr_pages`) resurrect the previous
+    # document's OCR results, so classification/extraction would consume text
+    # from the OLD document and the UI would show stale extraction. Issue #719.
+    #
+    # Scoped to `<key>/pages/` — that's the only subprefix
+    # ``discover_existing_ocr_pages`` reads, so purging just pages/ fully
+    # closes #719 while making it impossible for an upload of ``foo`` to
+    # destroy a nested document at ``foo/bar.pdf/*`` (the reprocess resolver
+    # keeps the broad ``<key>/*`` purge because its "start over" intent is
+    # deliberate and the caller is an authenticated admin action).
+    #
+    # No-op on a fresh key. Preserves `<key>/runs/` (version-history manifests).
+    #
+    # Known trade-off (concurrent re-uploads mid-flight): if a prior
+    # workflow for the same key is still writing to ``pages/*`` when a
+    # NEW upload arrives, this purge deletes pages the running OCR is
+    # actively writing. The prior workflow keeps writing whatever pages
+    # come after the purge, so the new workflow's OCR discovery sees a
+    # partial subset of stale pages and resurrects them — the resulting
+    # extraction is a mix of old and new document text. This is a
+    # regression only in the concurrent-race case (previously the new
+    # workflow saw ALL of the old document's pages and was uniformly
+    # wrong; now it can be mixed). A full fix needs content-etag-keyed
+    # OCR recovery (out of scope for #719). For the non-concurrent
+    # case — which is what #719 actually covers — the purge is correct.
+    try:
+        deleted = delete_current_output_objects(
+            s3, output_bucket, object_key, subprefixes=("pages/",)
+        )
+        if deleted:
+            logger.info(
+                f"Purged {deleted} stale output objects for re-uploaded key "
+                f"s3://{output_bucket}/{object_key}/pages/"
+            )
+    except Exception as e:
+        # Non-fatal: OCR will still run but may recover stale partial data,
+        # silently reproducing #719. Logged at ERROR AND emitted as a
+        # CloudWatch metric so an operator can alarm on it without
+        # depending on log-scraping (matches the round-16 pattern in
+        # queue_processor._put_drift_sample). The alternative (raise →
+        # EventBridge async retries exhaust → QueueSenderDLQ) is worse:
+        # customers would rather see a possibly-stale extraction than
+        # have the ingest silently disappear. queue_sender is
+        # ``Type: CloudWatchEvent`` (EventBridge Object-Created rule),
+        # so retries/DLQ behavior is EventBridge's async-invoke semantics,
+        # not an SQS DLQ on the source.
+        logger.error(f"Failed to purge previous output data for {object_key}: {e}")
+        try:
+            cloudwatch.put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "StaleOutputPurgeFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass  # telemetry must not affect document ingest
 
     # Create document object - config version will be read from S3 metadata automatically
     current_time = datetime.now(timezone.utc).isoformat()

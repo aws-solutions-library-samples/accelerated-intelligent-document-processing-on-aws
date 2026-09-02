@@ -43,6 +43,8 @@ interface TestRunItem {
   completedAt: string | null;
   context: string;
   configVersion?: string | null;
+  /** Revision of that profile the run scored against, when one was pinned. */
+  configRevision?: number | null;
 }
 
 interface ActiveTestRun {
@@ -249,12 +251,12 @@ const TestResultsList = ({
 
   const downloadToExcel = () => {
     // Convert test runs data to CSV format
-    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Version', 'Status', 'Files Count', 'Created At', 'Completed At'];
+    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Profile', 'Status', 'Files Count', 'Created At', 'Completed At'];
     const csvData = testRuns.map((run) => [
       run.testRunId,
       run.testSetName || '',
       run.context || '',
-      formatConfigVersionText(run.configVersion, versions),
+      formatConfigVersionText(run.configVersion, versions, run.configRevision),
       run.status,
       run.filesCount || 0,
       run.createdAt || '',
@@ -449,8 +451,8 @@ const TestResultsList = ({
           },
           {
             id: 'configVersion',
-            header: 'Config Version',
-            cell: (item) => formatConfigVersionLink(item.configVersion, versions),
+            header: 'Config Profile',
+            cell: (item) => formatConfigVersionLink(item.configVersion, versions, undefined, item.configRevision),
             sortingField: 'configVersion',
             width: 150,
           },

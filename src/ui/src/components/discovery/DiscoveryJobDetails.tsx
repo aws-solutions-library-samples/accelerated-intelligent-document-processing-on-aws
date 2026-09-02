@@ -291,7 +291,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
             </Box>
           </div>
           <div>
-            <Box variant="awsui-key-label">Config Version</Box>
+            <Box variant="awsui-key-label">Config Profile</Box>
             <Box>{formatConfigVersionLink(job.version, versions as unknown as ConfigVersion[])}</Box>
           </div>
           {isMultiDoc && (

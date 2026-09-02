@@ -46,7 +46,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
   // Get updateConfiguration from useConfiguration hook
   const { updateConfiguration } = useConfiguration();
 
-  // Get user's config version scope for filtering
+  // Get user's configuration profile scope for filtering
   const { allowedConfigVersions } = useUserRole();
 
   // Filter versions by user's allowed scope (null = unrestricted)
@@ -76,7 +76,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
       );
       setAllVersions(fetchedVersions);
     } catch (err: unknown) {
-      logger.error('Error fetching configuration versions:', err);
+      logger.error('Error fetching configuration profiles:', err);
       console.error('Full error object:', err);
       const graphqlErr = err as { errors?: { message: string }[]; message?: string };
       if (graphqlErr.errors) {
@@ -109,7 +109,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
         custom: response.Custom,
       };
     } catch (err) {
-      logger.error('Error fetching configuration version:', err);
+      logger.error('Error fetching configuration profile:', err);
       throw err;
     }
   };
@@ -156,6 +156,20 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
         return {
           success: false,
           error: `Cannot create version "${versionName}" - this name is already used by the active version. Please change the active version first or use a different name.`,
+        };
+      }
+
+      // Reject a name that is already taken. The backend's saveAsVersion path
+      // writes straight to the named version, so without this check a typo'd or
+      // reused name silently overwrites that profile's configuration with the
+      // one being saved. (The overwrite does cut a revision, so the previous
+      // state stays recoverable from revision history — but the user gets no
+      // warning at all, which is the bug.) Callers that legitimately want to
+      // replace an existing profile should use updateConfiguration instead.
+      if (versions.some((v) => v.versionName === versionName)) {
+        return {
+          success: false,
+          error: `A configuration profile named "${versionName}" already exists. Please choose a different name.`,
         };
       }
 

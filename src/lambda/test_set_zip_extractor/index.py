@@ -47,11 +47,18 @@ def handler(event, context):
     logger.info(f"Zip extractor invoked with {len(event['Records'])} S3 events")
     
     for record in event['Records']:
+        # Bind test_set_id fresh per record. Without this, an exception raised
+        # BEFORE the assignment inside the try (e.g. a malformed record with
+        # no 's3' key) would raise NameError in the except clause; and for a
+        # malformed record following a healthy one, the except clause would
+        # carry the PREVIOUS record's test_set_id and flip that (unrelated)
+        # set to FAILED. Cross-record contamination.
+        test_set_id = None
         try:
             # Parse S3 event
             bucket = record['s3']['bucket']['name']
             key = record['s3']['object']['key']
-            
+
             # Extract test set ID from key (key format: test_set_id/test_set_id.zip)
             if '/' in key and key.endswith('.zip'):
                 test_set_id = key.split('/')[0]  # Get the folder name
@@ -60,9 +67,9 @@ def handler(event, context):
                 # Fallback for old format
                 test_set_id = key
                 zip_key = key
-            
+
             logger.info(f"Processing zip extraction for test set: {test_set_id}, key: {key}")
-            
+
             # Extract the uploaded ZIP file
             _extract_uploaded_zip(bucket, test_set_id, zip_key)
 
@@ -71,13 +78,17 @@ def handler(event, context):
 
             # Update test set status to COMPLETED with file count
             _update_test_set_status(test_set_id, 'COMPLETED', None, file_count)
-            
+
             logger.info(f"Successfully processed zip extraction for test set {test_set_id}")
-            
+
         except Exception as e:
-            logger.error(f"Error processing S3 event: {str(e)}")
-            # Update test set status to FAILED
-            _update_test_set_status(test_set_id, 'FAILED', str(e))
+            logger.exception(f"Error processing S3 event: {str(e)}")
+            # Only update status if we identified which test set this record was
+            # for — otherwise a pre-parse failure would either NameError here or,
+            # for a bad record following a healthy one, incorrectly FAIL the
+            # PREVIOUS record's set (cross-record contamination).
+            if test_set_id is not None:
+                _update_test_set_status(test_set_id, 'FAILED', str(e))
 
     
     return {'statusCode': 200}
@@ -220,7 +231,15 @@ def _update_test_set_status(test_set_id, status, error=None, file_count=None):
         if file_count is not None:
             update_expression += ', fileCount = :count'
             expression_values[':count'] = file_count
-        
+
+        # REMOVE contentSignature so the resolver's warm-container memo
+        # (in `_reconcile_test_set_tracking_entry`) doesn't skip the next
+        # reconcile via TTL match: our write invalidated whatever signature
+        # was there. Fires on both COMPLETED (with file_count) AND FAILED
+        # (without) — a failed extract may have left partial S3 state, so
+        # the reconcile needs to re-scan even though fileCount didn't move.
+        update_expression += ' REMOVE contentSignature'
+
         table.update_item(
             Key={'PK': f'testset#{test_set_id}', 'SK': 'metadata'},
             UpdateExpression=update_expression,
@@ -232,4 +251,4 @@ def _update_test_set_status(test_set_id, status, error=None, file_count=None):
                    (f" with {file_count} files" if file_count else ""))
         
     except Exception as e:
-        logger.error(f"Failed to update test set status for {test_set_id}: {e}")
+        logger.error(f"Failed to update test set status for {test_set_id}: {e}")  # nosec B608 - log message f-string, not a SQL query

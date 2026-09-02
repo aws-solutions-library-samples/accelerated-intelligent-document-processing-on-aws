@@ -7,8 +7,9 @@ On Create or Update:
   1. Copies s3://<FEATURE_BUCKET>/<FEATURE_ARTIFACT_PREFIX>/<FEATURE_VERSION>/ui-bundle.js
      into s3://<WEBUI_BUCKET>/features/<FEATURE_ID>/v<FEATURE_VERSION>/ui-bundle.js
   2. Invokes the host's `registerFeature` resolver to add an InstalledFeatures row.
-  3. Applies the bundled Invoice config preset as a NON-ACTIVE config version
-     `confbench-testset-v<FEATURE_VERSION>` for an admin to activate.
+  3. Applies the bundled Invoice config preset as a NON-ACTIVE Configuration
+     Profile `confbench-testset` for an admin to activate. Each release is a
+     REVISION of that profile, not a profile of its own.
 
 On Delete:
   1. Deletes the copied UI bundle.
@@ -38,7 +39,9 @@ Test Studio preselects it (falling back to the id-name convention, then to the
 active version). So the name derived here does not need to match anything — it
 just needs to be what the planner records, which is why the same
 `<featureId>-v<version>` string is computed in both places (see
-`config_version_name()` below and CONFIG_VERSION_NAME in the template).
+`config_version_name()` below and CONFIG_VERSION_NAME in the template). That
+string is the feature id alone: the host records each release as a REVISION of
+one profile rather than creating `<featureId>-v<version>` per release.
 """
 
 from __future__ import annotations
@@ -207,12 +210,15 @@ def _load_preset() -> Dict[str, Any]:
 
 
 def config_version_name() -> str:
-    """The config version name the host's resolver will create.
+    """The Configuration Profile the host's resolver will create.
 
-    Mirrors `_version_name()` in the platform's apply_feature_config_preset
-    resolver, which always derives `<featureId>-v<version>`.
+    Mirrors `_profile_name()` in the platform's apply_feature_config_preset
+    resolver: ONE profile per feature, named for the feature. It used to be
+    `<featureId>-v<version>` — a new profile per release — which made every
+    upgrade mint another access-control object. The feature's releases are now
+    revisions of this one profile.
     """
-    return f"{_FEATURE_ID}-v{_FEATURE_VERSION}"
+    return _FEATURE_ID
 
 
 def _apply_config_preset() -> None:

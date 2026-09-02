@@ -43,6 +43,103 @@ The solution automatically creates an integrated dashboard that displays:
 
 ![Error Tracking Dashboard](../images/Dashboard3.png)
 
+### Workflow Concurrency Counter
+
+The stack limits in-flight workflows with a DynamoDB counter: the queue processor
+increments it before `StartExecution`, and the workflow tracker decrements it on
+the execution's terminal event. If a decrement is ever lost, the counter drifts
+**upward** and nothing puts it back — so once it reaches
+`MaxConcurrentWorkflows`, documents stop starting **permanently**.
+
+That failure is quiet. Every other signal looks *idle* rather than broken: no
+errors, no failed executions, latency graphs simply stop. The usual first symptom
+is a person noticing that nothing has processed for hours.
+
+Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
+the **Workflow Concurrency Counter** widget:
+
+- **`ConcurrencyCounterActive`** — the counter value, published on every document
+  completion. Continuous, so there is a history to inspect after the fact.
+- **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
+  running. Sampled only when an increment is *refused*, i.e. when drift is
+  actually blocking work.
+
+Two alarms publish to `AlertsTopic`:
+
+- **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
+  fires on the *symptom*, once slots are already being held wrongly.
+- **`WorkflowTrackerDLQAlarm`** — any message in the Workflow Tracker
+  dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
+  so an event it could not process is a slot that was never released, and it
+  alarms on the first message rather than waiting for drift to accumulate.
+
+The queue processor also **self-heals**: on a refused increment it
+reconciles the counter against `ListExecutions`, requiring the same discrepancy
+in two samples at least five minutes apart, only ever lowering it, and writing
+conditionally on the value it sampled.
+
+**Reading the widget:** the counter tracking a busy queue is normal. The counter
+sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
+in flight and the Step Functions widget shows nothing starting is the leak.
+
+### Stale Output Purge on Re-upload
+
+OCR has a retry-safe recovery path: on a Step Functions retry the document is
+reloaded with `pages={}`, so before re-OCRing it scans
+`s3://<OutputBucket>/<key>/pages/` and reuses any page that already has all four
+of its files (`rawText.json`, `result.json`, `textConfidence.json`, `image.*`).
+That is what makes a throttled OCR retry cheap — and it is also why uploading a
+**different** document under an **existing** filename used to produce the
+previous document's extraction ([#719](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/719)).
+Two paths now purge before processing: the queue sender removes `<key>/pages/`
+on every upload event, and the **Reprocess** action removes everything under
+`<key>/` except `<key>/runs/` (matching its "start over" intent).
+
+This failure is quiet in the same way the concurrency leak is: if the purge only
+partly succeeds, the document processes, reports success, and silently carries
+text from the old document — recovery needs just **one** surviving complete page
+to skip OCR for it. Processing deliberately continues on a purge failure (a
+possibly-stale extraction beats a dropped upload or a refused reprocess), so the
+signal has to come from a metric rather than the document's own status.
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`StaleOutputPurgeFailed`** — published (value `1`) whenever a purge raises.
+  Both the ingest path and the reprocess path publish it, with no dimensions and
+  into the **root** stack's namespace, so one metric and one alarm cover both.
+  Published only on failure, so no data means every purge succeeded.
+
+One alarm publishes to `AlertsTopic`:
+
+- **`StaleOutputPurgeFailedAlarm`** — any occurrence within 5 minutes. Unlike
+  concurrency drift there is no self-healing path: the stale pages sit in S3
+  until someone removes them, and every later upload of that key inherits the
+  same wrong results — so this alarms on the **first** failure rather than on a
+  sustained trend.
+
+Two dashboard widgets are paired on the main dashboard: **Stale Output Purge
+Failures** (the count across both paths) and **Stale Output Purge Failures —
+affected keys** (a Logs Insights table over the Queue Sender log group).
+
+**Recovering:** identify the affected keys, then delete
+`s3://<OutputBucket>/<key>/pages/` and re-upload or reprocess the document.
+The log widget covers the ingest path; for the reprocess path, query the
+`ReprocessDocumentResolverFunction` log group (in the API-resolvers nested
+stack) instead. The two paths log different messages:
+
+| Path | Log group | Message |
+|---|---|---|
+| Upload / re-upload | `QueueSender` | `Failed to purge previous output data for <key>` |
+| Reprocess action | `ReprocessDocumentResolverFunction` | `Failed to delete previous output data for <key>` |
+
+The most common cause is a KMS or bucket-policy change that denies
+`s3:DeleteObject` to the purging role — check that before assuming a transient
+S3 error.
+
+**Note:** because the purge runs on every upload, a re-upload of a
+byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
+scratch.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:

@@ -531,6 +531,67 @@ def detect_format(text: str) -> str:
         return "unknown"
 
 
+def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
+    """Parse an OPTIONAL model-reported classification confidence.
+
+    The classification prompt is free to ask the model for a ``confidence`` key
+    (``docs/classification.md`` has documented that shape for a long time, and
+    the value was silently discarded until GitHub #673). This is the one place
+    that turns whatever a model — or a service such as Bedrock Data Automation,
+    whose matched-blueprint confidence plays the same role — actually reported
+    into a usable number, or into ``None``, which means NOT SCORED and is not an
+    error condition.
+
+    Lives in core utils, next to ``extract_structured_data_from_text``, so the
+    BDA result processor can share it without depending on the classification
+    extra. Re-exported from ``idp_common.classification.service``.
+
+    Accepts a float/int, a numeric string, and a percentage: models asked for a
+    probability routinely answer ``95`` or ``"95%"`` rather than ``0.95``, so a
+    value in ``(1, 100]`` is read as a percentage. That heuristic makes ``1``
+    ambiguous (1 % or certainty?) and it is resolved as ``1.0`` — full
+    confidence — because a model emitting a bare ``1`` in a field it was told is
+    a 0-1 probability means certainty, and a genuine 1 % answer would be
+    written ``0.01``.
+
+    Anything unparseable or out of range returns ``None`` rather than raising: a
+    malformed confidence must not fail a classification that otherwise
+    succeeded.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip().rstrip("%").strip()
+        if not value:
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring unparseable classification confidence %r%s",
+            value,
+            f" ({context})" if context else "",
+        )
+        return None
+    if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
+        logger.warning(
+            "Ignoring non-finite classification confidence %r%s",
+            value,
+            f" ({context})" if context else "",
+        )
+        return None
+    if 1.0 < number <= 100.0:
+        number /= 100.0
+    if not 0.0 <= number <= 1.0:
+        logger.warning(
+            "Ignoring out-of-range classification confidence %r%s",
+            value,
+            f" ({context})" if context else "",
+        )
+        return None
+    return number
+
+
 def extract_structured_data_from_text(
     text: str, preferred_format: str = "auto"
 ) -> Tuple[Any, str]:

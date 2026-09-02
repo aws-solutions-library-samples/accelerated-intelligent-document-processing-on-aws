@@ -128,8 +128,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -180,11 +180,21 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Data-plane Lambda tag check"
+	@if ! make check-data-plane-tags; then \
+		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
 		(echo -e "$(RED)ERROR: Unpaginated filtered DynamoDB scan(s) found!$(NC)" && exit 1)
+
+check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
+	@$(PYTHON) scripts/check_data_plane_tags.py || \
+		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files
 	@echo "Validating buildspec files..."
@@ -244,6 +254,10 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 		echo -e "$(RED)❌ Found hardcoded references that need to be fixed for GovCloud compatibility$(NC)"; \
 		exit 1; \
 	fi
+	@# The loops above cover CloudFormation templates and Step Functions ASL only.
+	@# Python was never scanned, which is how a hardcoded arn:aws: reached runtime
+	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
+	@$(PYTHON) scripts/check_python_arn_partitions.py
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
@@ -255,7 +269,7 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
-TARGET_BRANCH ?= main
+TARGET_BRANCH ?= develop
 typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)
@@ -305,16 +319,32 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
+	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
+	@# Both suites import their own ``index`` module; run each in its
+	@# own directory to prevent the sys.path collision that fails a
+	@# combined pytest invocation.
+	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
 	    nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests
 	@echo "Running Chat-stream processor tests (incl. vendored-in-sync guard)..."
 	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
+	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
+	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
 	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
+	@echo "Running repo-script tests (Python ARN-partition gate)..."
+	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
+	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
+	$(PYTHON) -m pytest scripts/srt/tests -q -p no:cacheprovider
+	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
+	$(PYTHON) -m pytest scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -409,6 +439,33 @@ stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VP
 
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
 	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+
+# --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
+# These do NOT go through run_stacktest.py: every probe there deploys the
+# STANDARD template with different parameters, whereas these deploy the
+# TRANSFORMED template via the documented user path (idp-cli deploy --headless /
+# --govcloud --from-code .) and then process a real sample document. That is the
+# only tier that can prove a transform produces a DEPLOYABLE stack — the gap that
+# shipped issues #676, #677 and the SuppressAdminInvite dangling parameter.
+# Each run is a full publish + deploy (~1h+). Not wired into CI; see
+# .claude/skills/transform-deploy-test.md.
+_TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
+	$(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) \
+	$(if $(STACK_NAME),--stack-name $(STACK_NAME),) \
+	$(if $(KEEP),--keep,) $(if $(SKIP_DOC_TEST),--skip-doc-test,) \
+	$(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
+transform-deploy-test-list: ## List the transform deploy-tests
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py --list
+
+transform-deploy-test-headless: ## Deploy a REAL --headless stack + process a sample doc
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
+
+transform-deploy-test-govcloud: ## Deploy a REAL --govcloud stack + process a sample doc (REGION=us-gov-west-1 for a true GovCloud run)
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
+
+transform-deploy-test-all: ## Both transform deploy-tests, one after the other
+	$(PYTHON) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
 
 # Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
 # through run_stacktest.py: it deploys its own standalone stack (into a seller
@@ -567,7 +624,6 @@ endif
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_sdk/pyproject.toml && rm -f lib/idp_sdk/pyproject.toml.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_common_pkg/pyproject.toml && rm -f lib/idp_common_pkg/pyproject.toml.bak
-	@sed -i.bak 's/version=".*"/version="$(V)"/' lib/idp_common_pkg/setup.py && rm -f lib/idp_common_pkg/setup.py.bak
 	@sed -i.bak 's/@click.version_option(version=".*")/@click.version_option(version="$(V)")/' lib/idp_cli_pkg/idp_cli/cli.py && rm -f lib/idp_cli_pkg/idp_cli/cli.py.bak
 	@sed -i.bak 's/^__version__ = ".*"/__version__ = "$(V)"/' lib/idp_sdk/idp_sdk/__init__.py && rm -f lib/idp_sdk/idp_sdk/__init__.py.bak
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_mcp_connector_pkg/pyproject.toml && rm -f lib/idp_mcp_connector_pkg/pyproject.toml.bak
@@ -586,7 +642,6 @@ endif
 	@echo "  - lib/idp_sdk/pyproject.toml"
 	@echo "  - lib/idp_sdk/idp_sdk/__init__.py"
 	@echo "  - lib/idp_common_pkg/pyproject.toml"
-	@echo "  - lib/idp_common_pkg/setup.py"
 	@echo "  - lib/idp_mcp_connector_pkg/pyproject.toml"
 	@echo "  - lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py"
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
@@ -655,6 +710,17 @@ security-results: ## Run security tests + curate a public-safe snapshot into sec
 ##@ Dependencies
 dep-manifest: ## Generate dependency manifests for artifact repository mirroring (Python + Node)
 	@bash scripts/generate-dep-manifest.sh
+
+# SRT (the security gate) runs syft, which inventories dependencies but does no
+# vulnerability matching — so nothing in CI used to fail on a known-vulnerable
+# pin. This target closes that gap by matching the generated manifests against
+# OSV. Findings that are genuinely unreachable go in
+# scripts/security/dep_audit_allowlist.json WITH a justification.
+dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on HIGH+)
+	@$(PYTHON) scripts/security/dep_audit.py
+
+dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
+	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common

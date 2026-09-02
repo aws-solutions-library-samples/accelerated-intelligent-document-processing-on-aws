@@ -341,7 +341,13 @@ def _update_test_set_status(
         # this change disappear the next time a set is touched.
         if last_add_result:
             logger.info(f"Test set {test_set_id}: {last_add_result}")
-        update_expression += " REMOVE lastAddResult"
+        # REMOVE contentSignature so the resolver's warm-container memo
+        # (in `_reconcile_test_set_tracking_entry`) doesn't skip the next
+        # reconcile via TTL match: our fileCount write invalidated whatever
+        # signature was there, and the next reconcile needs to rebuild it.
+        # Without this, a direct-S3 add landing right after the copier
+        # completes could go unnoticed for up to the memo TTL.
+        update_expression += " REMOVE lastAddResult, contentSignature"
 
         table.update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
@@ -356,4 +362,4 @@ def _update_test_set_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to update test set status for {test_set_id}: {e}")
+        logger.error(f"Failed to update test set status for {test_set_id}: {e}")  # nosec B608 - log message f-string, not a SQL query

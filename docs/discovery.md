@@ -454,7 +454,7 @@ idp-cli discover-multidoc --dir /path/to/documents/
 idp-cli discover-multidoc -d invoice1.pdf -d invoice2.pdf -d w2_form.pdf -d w2_form2.pdf
 
 # Save results to a configuration version
-idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-version v1
+idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-profile v1
 ```
 
 See [IDP CLI Reference — `discover-multidoc`](idp-cli.md) for all options.
@@ -576,6 +576,15 @@ The Discovery module supports comprehensive configuration through the deployment
 > selecting one via a hand-edited config is rejected by `idp-cli config-validate`
 > and raises at runtime. Use a Claude or Nova model for Discovery. See
 > [OpenAI GPT-5.x Models](openai-models.md).
+
+> **⚠️ xAI Grok is NOT supported for Discovery either.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) reaches the Converse API and works
+> for extraction, but it rejects `document` content blocks outright — *"This
+> model doesn't support documents"* — because its input modalities are text and
+> image only. Both Grok IDs are absent from the discovery model picklists, and
+> selecting one via a hand-edited config is rejected by config validation at save
+> time. Note this does **not** limit Grok for agentic extraction, which it fully
+> supports. See [xAI Grok Models](grok-models.md).
 
 **Model Parameters:**
 ```yaml

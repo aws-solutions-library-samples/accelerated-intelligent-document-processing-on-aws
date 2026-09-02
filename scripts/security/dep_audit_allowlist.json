@@ -1,0 +1,23 @@
+[
+  {
+    "id": "GHSA-j6g5-3hh3-pgw8",
+    "package": "bedrock-agentcore",
+    "severity": "HIGH",
+    "reason": "Not reachable. The advisory is in the SDK's install_packages() helper; this repo never calls it — the only code-interpreter tools invoked are writeFiles/listFiles/executeCode (lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py). The fix (1.18.1) also requires boto3>=1.43.31, which breaks the deliberate boto3<1.43.0 pin and would move every Lambda and layer to the 1.43 line; revisit with that migration. Re-check this entry if install_packages() is ever used.",
+    "triagedOn": "2026-08-25"
+  },
+  {
+    "id": "GHSA-4r6h-8v6p-xvw6",
+    "package": "xlsx",
+    "severity": "HIGH",
+    "reason": "Already remediated; OSV cannot express it. Prototype pollution in SheetJS, affected range '< 0.19.3' per last_known_affected_version_range. src/ui pins 0.20.2, which is past that. The advisory carries no 'fixed' event because npm's xlsx is abandoned and patched builds ship from cdn.sheetjs.com — which is exactly where src/ui/package.json already fetches it from, so every version matches the open-ended range.",
+    "triagedOn": "2026-08-25"
+  },
+  {
+    "id": "GHSA-5pgg-2g8v-p4x9",
+    "package": "xlsx",
+    "severity": "HIGH",
+    "reason": "Already remediated; OSV cannot express it. SheetJS ReDoS, affected range '< 0.20.2' per last_known_affected_version_range. src/ui pins exactly 0.20.2 from cdn.sheetjs.com, i.e. the version the advisory names as the fix. Same open-ended-range artifact as GHSA-4r6h-8v6p-xvw6. Raise the pin if SheetJS publishes a newer CDN build with further fixes.",
+    "triagedOn": "2026-08-25"
+  }
+]

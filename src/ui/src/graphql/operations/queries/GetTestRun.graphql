@@ -23,6 +23,7 @@ query GetTestRun($testRunId: String!) {
     completedAt
     context
     configVersion
+    configRevision
     config
   }
 }

@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -34,6 +35,7 @@ from idp_common.evaluation.models import (
 from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
+    attach_page_confidence,
     compute_graded_packet_metrics,
     get_stickler_model,
     load_sections_for_doc_split,
@@ -664,6 +666,81 @@ class EvaluationService:
             )
             return {}, {}
 
+    @staticmethod
+    def _unwrap_confidence_envelope(
+        value: Dict[str, Any],
+        conf_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Strip a synthetic wrapper key off a confidence map, if there is one.
+
+        Some assessment output nests an object's confidence map inside a
+        synthetic key that has no counterpart in the extracted value —
+        ``{"Item #6": {"LineItemRate": {...}, "LineItemDays": {...}}}`` against
+        an inference result of ``{"LineItemRate": 1000.0, "LineItemDays": "..."}``.
+        Left in place, every confidence lookup misses and the whole object
+        scores with no confidence at all, so the envelope has to come off.
+
+        The original heuristic keyed off shape alone: a single non-metadata key
+        whose value held >= 2 confidence children was assumed to be an
+        envelope. That misfires on any class whose schema legitimately declares
+        **one** top-level object property — ``{"InvoiceDetails": {...}}`` is
+        indistinguishable from a wrapper by key count — and the unwrap then
+        silently discarded every confidence score beneath it (issue #713).
+
+        This gates the unwrap on evidence from the data instead:
+
+        1. The candidate key names **no field present in** ``value``. A real
+           field would appear on both sides; a synthetic envelope key appears
+           only on the confidence side. This is the discriminating signal.
+        2. Its contents **do** name at least one field present in ``value``,
+           so unwrapping demonstrably recovers confidence rather than
+           guessing.
+        3. Its contents are not themselves a leaf confidence entry (no
+           ``confidence`` key), which would make it a field's own scores
+           rather than a map of sibling fields.
+
+        Note (1) also makes the unwrap strictly non-destructive: a key absent
+        from ``value`` can never be matched by the caller's per-field lookup,
+        so the envelope contributes nothing before it is stripped. Because the
+        evidence no longer depends on how many children the envelope has, a
+        wrapper around a *single* field is now unwrapped too — previously its
+        confidence was dropped for the same reason.
+
+        Args:
+            value: The extracted object (values only) being annotated.
+            conf_data: The confidence map that may be wrapped in one synthetic key.
+
+        Returns:
+            The inner confidence map when the evidence above holds, otherwise
+            ``conf_data`` unchanged.
+        """
+        candidate_keys = [k for k in conf_data if k != "confidence_threshold"]
+        if len(candidate_keys) != 1:
+            return conf_data
+
+        candidate_key = candidate_keys[0]
+        inner = conf_data[candidate_key]
+        if not isinstance(inner, dict):
+            return conf_data
+
+        if candidate_key in value:
+            # Declared field of this object, not an envelope - leave it alone.
+            return conf_data
+        if "confidence" in inner:
+            # A field's own confidence entry, not a map of sibling fields.
+            return conf_data
+        if not any(k in value for k in inner):
+            # Nothing under it matches this object - unwrapping would recover
+            # no confidence, so there is no evidence it is an envelope.
+            return conf_data
+
+        logger.debug(
+            f"Unwrapping synthetic confidence envelope {candidate_key!r} "
+            f"(absent from extracted value; contents match "
+            f"{sorted(k for k in inner if k in value)})"
+        )
+        return inner
+
     def _convert_to_rich_values(
         self,
         inference_result: Dict[str, Any],
@@ -679,7 +756,8 @@ class EvaluationService:
         confidence and makes it available in the comparison result as 'prediction_confidences'.
 
         Handles wrapper keys (Item_N, Record_N) by detecting and unwrapping them
-        for backward compatibility with existing extraction data.
+        for backward compatibility with existing extraction data. See
+        ``_unwrap_confidence_envelope`` for the evidence that gates the unwrap.
 
         Args:
             inference_result: Actual extraction output (values only)
@@ -732,28 +810,9 @@ class EvaluationService:
                     )
                     return value
 
-            # Object field - check for wrapper keys first
+            # Object field - strip a synthetic confidence envelope first
             if isinstance(value, dict) and isinstance(conf_data, dict):
-                # Check for wrapper pattern: single non-metadata key with nested confidence
-                wrapper_keys = [
-                    k for k in conf_data.keys() if k != "confidence_threshold"
-                ]
-                if len(wrapper_keys) == 1:
-                    wrapper_key = wrapper_keys[0]
-                    wrapper_value = conf_data[wrapper_key]
-
-                    # Detect wrapper by checking if it contains multiple fields with confidence
-                    if isinstance(wrapper_value, dict):
-                        confidence_field_count = sum(
-                            1
-                            for v in wrapper_value.values()
-                            if isinstance(v, dict) and "confidence" in v
-                        )
-
-                        # If multiple confidence fields, treat as wrapper and unwrap
-                        if confidence_field_count >= 2:
-                            # Unwrap: use wrapper contents as confidence data
-                            conf_data = wrapper_value
+                conf_data = self._unwrap_confidence_envelope(value, conf_data)
 
                 # Standard object processing
                 result = {}
@@ -923,6 +982,7 @@ class EvaluationService:
         actual_instance: "StructuredModel",
         stickler_result: Dict[str, Any],
         confidence_scores: Dict[str, Any],
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """Delegate to ``stickler_backend.results.transform_stickler_result``.
 
@@ -942,6 +1002,7 @@ class EvaluationService:
             get_confidence_for_field=self._get_confidence_for_field,
             generate_reason=self._generate_reason,
             format_evaluation_method=_format_evaluation_method,
+            document_context=document_context,
         )
 
     # _transform_stickler_result / _annotate_nested_comparison_methods /
@@ -1279,6 +1340,7 @@ class EvaluationService:
         expected_results: Dict[str, Any],
         actual_results: Dict[str, Any],
         confidence_scores: Optional[Dict[str, Any]] = None,
+        document_context: str = "",
     ) -> SectionEvaluationResult:
         """
         Evaluate extraction results for a document section using Stickler.
@@ -1471,6 +1533,7 @@ class EvaluationService:
                 actual_instance,
                 stickler_result,
                 confidence_scores or {},
+                document_context=document_context,
             )
 
             # Surface any fields that were skipped due to per-field validation
@@ -1615,7 +1678,10 @@ class EvaluationService:
     # (§6 reorg).
 
     def _process_section(
-        self, actual_section: Section, expected_section: Section
+        self,
+        actual_section: Section,
+        expected_section: Section,
+        document_context: str = "",
     ) -> Tuple[Optional[SectionEvaluationResult], Dict[str, int]]:
         """
         Process a single section for evaluation.
@@ -1647,6 +1713,7 @@ class EvaluationService:
             expected_results=expected_results,
             actual_results=actual_results,
             confidence_scores=confidence_scores,
+            document_context=document_context,
         )
 
         # Extract metrics from section result — R3: use Stickler counts stored
@@ -1671,12 +1738,17 @@ class EvaluationService:
 
         # Check if evaluation failed for this section
         if section_result.metrics.get("evaluation_failed", False):
-            # For failed evaluations, count based on expected data
-            # If we have expected data, count as false negatives (expected but not evaluated)
-            # This represents complete failure to evaluate
+            # For failed evaluations, count each expected top-level KEY as
+            # a false negative. Kept at top-level (not leaf-normalized)
+            # because Athena / parquet historical baselines were built
+            # against the top-level count — switching to a leaf-normalized
+            # count would silently shift historical trends 10-30× on
+            # list-heavy schemas without operators knowing what changed.
+            # A failed section under-counts fn relative to a healthy
+            # section on the same schema; that's a KNOWN LIMITATION,
+            # documented, and preferable to a silent baseline break.
             if expected_results:
                 num_expected_fields = len(expected_results)
-                # Conservative approach: count each expected field as a false negative
                 metrics["fn"] = num_expected_fields if num_expected_fields > 0 else 1
             else:
                 # If no expected data, still count as at least 1 failure
@@ -1774,7 +1846,14 @@ class EvaluationService:
                     correctly_classified_pages=page_level["correct_pages"],
                     correctly_split_without_order=split_no_order["correct_sections"],
                     correctly_split_with_order=split_with_order["correct_sections"],
-                    page_details=page_level["page_details"],
+                    # Annotated with the classifier's own confidence in each
+                    # page's class, so `correct` and `predicted_confidence`
+                    # sit side by side — that pairing is the calibration
+                    # measurement (GitHub #673). Absent/None for an unscored
+                    # page, which is the default.
+                    page_details=attach_page_confidence(
+                        page_level["page_details"], actual_document
+                    ),
                     section_details_without_order=split_no_order["section_details"],
                     section_details_with_order=split_with_order["section_details"],
                     predicted_sections=doc_split_calculator.sections_pred,  # Add predicted sections for unmatched display
@@ -1872,12 +1951,34 @@ class EvaluationService:
             # sections table without re-scanning the document.
             actual_sections_by_id = {s.section_id: s for s, _ in section_pairs}
 
+            # Pass the document identity through so any per-doc log warnings
+            # can be located to the source document (a section_id like
+            # ``"s1"`` recurs across documents; without doc-scoping the
+            # first doc's warning would silence every subsequent doc's —
+            # finding 1 from round-4 review). Prefer input_key over id when
+            # present (more human-locatable in CloudWatch).
+            # Fall back to a ``uuid4()`` rather than an empty string —
+            # multi-doc runs where every document has missing/empty
+            # ``input_key`` and ``id`` would otherwise share ``doc_ctx=""``
+            # and silence every subsequent doc's anonymous-root warning.
+            # A uuid (not ``id(actual_document)``) so the context is unique
+            # for the LIFE of the run even if a warm Lambda GC's an earlier
+            # doc and reuses its memory address (which ``id()`` would
+            # collide on — finding from #625 review).
+            doc_ctx = (
+                actual_document.input_key
+                or actual_document.id
+                or f"anonymous:{uuid.uuid4()}"
+            )
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor
                 future_to_section = {
                     executor.submit(
-                        self._process_section, actual_section, expected_section
+                        self._process_section,
+                        actual_section,
+                        expected_section,
+                        doc_ctx,
                     ): actual_section.section_id
                     for actual_section, expected_section in section_pairs
                 }
@@ -2005,9 +2106,20 @@ class EvaluationService:
             # render them as "N/A — Excluded" instead of a misleading 0.0.
             # ``skipped_section_count`` was maintained in the executor loop; no
             # second pass over section_results.
+            # Compare against the ORIGINAL pair count, not
+            # ``len(section_results)``. Sections that raised an exception
+            # (rather than emitting the ``evaluation_skipped`` metric flag)
+            # never make it into ``section_results``, so
+            # ``len(section_results)`` is already reduced by errored
+            # sections. Using it as the denominator would let a doc with
+            # (skipped=N, errored=M) match ``skipped_section_count == N ==
+            # len(section_results)=N`` and misclassify as "all excluded"
+            # even though M sections genuinely failed and should surface as
+            # such.
+            total_sections_attempted = len(section_pairs)
             all_sections_skipped = (
                 skipped_section_count > 0
-                and skipped_section_count == len(section_results)
+                and skipped_section_count == total_sections_attempted
             )
             if total_field_weight > 0:
                 document_weighted_score = total_weighted_score / total_field_weight
@@ -2053,10 +2165,11 @@ class EvaluationService:
 
                 # Store evaluation results in S3.
                 result_dict = evaluation_result.to_dict()
-                # Stamp the Stickler-result-blob version so the aggregation
-                # Lambda can detect shape drift at read time rather than
-                # silently emit wrong dashboard numbers if Stickler's raw
-                # ``compare_with`` output ever changes shape.
+                # Stamp the version at write time — the ONLY place we stamp,
+                # so round-tripping a historical payload through
+                # ``DocumentEvaluationResult`` doesn't silently upgrade it
+                # (which would defeat the drift-detection soft gate). Any new
+                # writer of ``results.json`` must call this line explicitly.
                 result_dict["stickler_result_version"] = STICKLER_RESULT_VERSION
                 # Convert numpy types to native Python types for JSON serialization
                 result_dict = _convert_numpy_types(result_dict)

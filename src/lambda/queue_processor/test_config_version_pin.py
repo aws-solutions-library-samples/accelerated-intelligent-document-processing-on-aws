@@ -85,9 +85,10 @@ class _Doc:
     """Minimal document stand-in. serialize_document mirrors the real wrapper,
     which carries config_version so consumers need not decompress."""
 
-    def __init__(self, config_version=None):
+    def __init__(self, config_version=None, config_revision=None):
         self.id = "w2.pdf"
         self.config_version = config_version
+        self.config_revision = config_revision
         self.status = None
         self.start_time = None
         self.workflow_execution_arn = None
@@ -97,6 +98,7 @@ class _Doc:
             "document_id": self.id,
             "s3_uri": f"s3://{bucket}/compressed_documents/{self.id}/1.json",
             "config_version": self.config_version,
+            "config_revision": self.config_revision,
             "compressed": True,
         }
 
@@ -104,10 +106,13 @@ class _Doc:
         return {"id": self.id, "config_version": self.config_version}
 
 
-def _mock_manager(index_module, active_version="claims-pack-v0.4.0", use_bda=False):
+def _mock_manager(
+    index_module, active_version="claims-pack-v0.4.0", use_bda=False, published_revision=None
+):
     """Patch ConfigurationManager so resolve_active_version returns a known value."""
     manager = MagicMock()
     manager.resolve_active_version.return_value = active_version
+    manager.resolve_published_revision.return_value = published_revision
     manager.get_merged_configuration.return_value = MagicMock(use_bda=use_bda)
     index_module.ConfigurationManager = MagicMock(return_value=manager)
     return manager
@@ -146,6 +151,53 @@ class TestConfigVersionPin:
         assert doc.config_version == "pinned-v1.0.0"
         manager.resolve_active_version.assert_not_called()
         assert _sfn_input(index_module)["config_version"] == "pinned-v1.0.0"
+
+    def test_the_published_revision_is_pinned_alongside_the_version(self, index_module):
+        """
+        Without a revision pin, a save made while the document is in flight would
+        change the configuration under it mid-pipeline — extraction on r7 and
+        assessment on r8 — and the result would match no single configuration.
+        """
+        doc = _Doc(config_version=None)
+        manager = _mock_manager(index_module, "claims-pack-v0.4.0", published_revision=7)
+
+        index_module.start_workflow(doc)
+
+        assert doc.config_revision == 7
+        manager.resolve_published_revision.assert_called_once_with("claims-pack-v0.4.0")
+        assert _sfn_input(index_module)["config_revision"] == 7
+
+    def test_a_profile_with_no_history_pins_no_revision(self, index_module):
+        """An older deployment, or a profile untouched since the upgrade: consumers
+        fall back to the profile head exactly as before."""
+        doc = _Doc(config_version=None)
+        _mock_manager(index_module, "default", published_revision=None)
+
+        index_module.start_workflow(doc)
+
+        assert doc.config_revision is None
+        assert _sfn_input(index_module)["config_revision"] is None
+
+    def test_an_existing_revision_pin_is_never_overwritten(self, index_module):
+        """A revision chosen at upload time, or carried through a reprocess, wins."""
+        doc = _Doc(config_version="lending", config_revision=3)
+        manager = _mock_manager(index_module, "lending", published_revision=9)
+
+        index_module.start_workflow(doc)
+
+        assert doc.config_revision == 3
+        manager.resolve_published_revision.assert_not_called()
+
+    def test_an_unusable_revision_degrades_to_no_pin(self, index_module):
+        """The pin is serialized into the Step Functions input, so a non-numeric
+        answer must not break the workflow start."""
+        doc = _Doc(config_version=None)
+        _mock_manager(index_module, "lending", published_revision="not-a-number")
+
+        index_module.start_workflow(doc)
+
+        assert doc.config_revision is None
+        assert index_module.sfn.start_execution.called
 
     def test_no_active_version_pins_default_rather_than_failing(self, index_module):
         """A freshly deployed stack writes Config#default with no IsActive

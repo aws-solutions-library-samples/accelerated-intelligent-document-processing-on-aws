@@ -304,7 +304,7 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
 
 
 @click.group()
-@click.version_option(version="0.6.5")
+@click.version_option(version="0.6.6")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -1541,6 +1541,7 @@ def _process_impl(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
@@ -1589,6 +1590,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             elif directory:
                 result = client.batch.process(
@@ -1599,6 +1601,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -1609,6 +1612,7 @@ def _process_impl(
                     batch_id=batch_id,
                     number_of_files=number_of_files,
                     config_version=config_version,
+                    config_revision=config_revision,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -1700,8 +1704,19 @@ def _process_impl(
     help="Limit number of files to process (for testing purposes)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to use for processing (e.g., v1, v2)",
+    "config_version",
+    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+)
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Revision of --config-profile to pin (e.g. 7). Omit to process under the "
+        "profile's current configuration; pinning reproduces exactly what that "
+        "revision recorded."
+    ),
 )
 def process(
     stack_name: str,
@@ -1720,6 +1735,7 @@ def process(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int],
 ):
     """
     Process documents
@@ -1787,6 +1803,7 @@ def process(
         region,
         number_of_files,
         config_version,
+        config_revision,
     )
 
 
@@ -1922,8 +1939,19 @@ def reprocess(
     help="Limit number of files to process (for testing purposes)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to use for processing (e.g., v1, v2)",
+    "config_version",
+    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+)
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Revision of --config-profile to pin (e.g. 7). Omit to process under the "
+        "profile's current configuration; pinning reproduces exactly what that "
+        "revision recorded."
+    ),
 )
 def run_inference(
     stack_name: str,
@@ -1942,6 +1970,7 @@ def run_inference(
     region: Optional[str],
     number_of_files: Optional[int],
     config_version: Optional[str],
+    config_revision: Optional[int],
 ):
     """
     Run inference on a batch of documents
@@ -1969,6 +1998,7 @@ def run_inference(
         region,
         number_of_files,
         config_version,
+        config_revision,
     )
 
 
@@ -3313,6 +3343,7 @@ def _process_test_set(
     client,
     number_of_files: Optional[int] = None,
     config_version: Optional[str] = None,
+    config_revision: Optional[int] = None,
 ):
     """Common function to process test sets"""
     # Resolve resources dict from IDPClient for Lambda helper functions
@@ -3338,6 +3369,7 @@ def _process_test_set(
         resources,
         number_of_files,
         config_version,
+        config_revision,
     )
     batch_id = test_run_result["testRunId"]
 
@@ -3444,6 +3476,7 @@ def _invoke_test_runner(
     resources: dict,
     number_of_files: Optional[int] = None,
     config_version: Optional[str] = None,
+    config_revision: Optional[int] = None,
 ):
     """Invoke test runner lambda to start test set processing"""
     import json
@@ -3493,6 +3526,10 @@ def _invoke_test_runner(
     # Add configVersion if provided
     if config_version:
         payload["arguments"]["input"]["configVersion"] = config_version
+    # Pin the revision too, or the run records a profile while actually using
+    # whatever that profile currently holds.
+    if config_revision is not None:
+        payload["arguments"]["input"]["configRevision"] = int(config_revision)
 
     console.print(f"[bold blue]Starting test run for test set: {test_set}[/bold blue]")
     if number_of_files:
@@ -3809,8 +3846,10 @@ def stop_workflows(
     help="Destination prefix in input bucket (default: load-test)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to use for processing (default: active version)",
+    "config_version",
+    help="Configuration profile to use for processing (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def load_test(
@@ -4227,9 +4266,9 @@ def config_validate(
         # works even when the file is an older format that would otherwise warn about
         # deprecated fields — the whole point is to hand the user a pre-migrated file.
         if emit_migrated:
-            from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
+            from idp_common.config.migrations import migrate_config
 
-            migrated = migrate_v05_to_v06(user_config)
+            migrated = migrate_config(user_config)
             migrated_yaml = yaml.dump(
                 migrated,
                 default_flow_style=False,
@@ -4349,13 +4388,24 @@ def config_validate(
     help="Validate config before uploading (default: validate)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration version to update (e.g., v1, v2). If version doesn't exist, it will be created.",
+    help="Configuration profile to update (e.g., v1, v2). If version doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
     help="Description for the configuration version (used when creating new versions)",
+)
+@click.option(
+    "--revision-notes",
+    help=(
+        "What this upload changed, recorded on the revision it cuts and shown as "
+        "Notes in the revision history (e.g. 'raised topK to 20'). Distinct from "
+        "--version-description, which sets the profile's description and is "
+        "overwritten by every save."
+    ),
 )
 @click.option("--region", help="AWS region (optional)")
 def config_upload(
@@ -4364,6 +4414,7 @@ def config_upload(
     validate: bool,
     config_version: Optional[str],
     version_description: Optional[str],
+    revision_notes: Optional[str],
     region: Optional[str],
 ):
     """
@@ -4410,6 +4461,7 @@ def config_upload(
             validate=validate,
             config_version=config_version,
             description=version_description,
+            revision_notes=revision_notes,
         )
 
         if not result.success:
@@ -4427,11 +4479,20 @@ def config_upload(
         if config_version:
             action = "created" if result.version_created else "updated"
             console.print(
-                f"[bold]Configuration version '{config_version}' {action}![/bold]"
+                f"[bold]Configuration profile '{config_version}' {action}![/bold]"
             )
-            console.print(
-                "Use --config-version parameter to process documents with this version."
-            )
+            if result.revision is not None:
+                # Printed so a script can pin the run to exactly what it just
+                # uploaded instead of naming a new profile per iteration.
+                console.print(f"Revision: r{result.revision}")
+                console.print(
+                    f"Process under it with: --config-profile {config_version} "
+                    f"--config-revision {result.revision}"
+                )
+            else:
+                console.print(
+                    "Use --config-profile to process documents with this profile."
+                )
         else:
             console.print("[bold]Configuration is now active![/bold]")
             console.print("New documents will use this configuration immediately.")
@@ -4458,8 +4519,18 @@ def config_upload(
     help="Output format: 'full' (complete config) or 'minimal' (only differences from defaults)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to download (e.g., v1, v2). If not specified, downloads active version.",
+    "config_version",
+    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version. --config-version is the former name and still works.",
+)
+@click.option(
+    "--config-revision",
+    type=int,
+    help=(
+        "Download an exact revision of the profile (e.g. 7) instead of its "
+        "current configuration. Requires --config-profile."
+    ),
 )
 @click.option("--region", help="AWS region (optional)")
 def config_download(
@@ -4467,6 +4538,7 @@ def config_download(
     output: Optional[str],
     output_format: str,
     config_version: Optional[str],
+    config_revision: Optional[int],
     region: Optional[str],
 ):
     """
@@ -4485,18 +4557,34 @@ def config_download(
 
       # Print to stdout
       idp-cli config-download --stack-name my-stack
+
+      # Download an exact revision of a profile (what an earlier run used)
+      idp-cli config-download --stack-name my-stack --config-profile lending \\
+          --config-revision 7 --output r7.yaml
     """
     try:
         from idp_sdk import IDPClient
 
+        if config_revision is not None and not config_version:
+            # Revisions belong to a profile; "revision 7 of whatever is active"
+            # would silently change meaning the moment someone activates
+            # another profile.
+            console.print(
+                "[red]Error: --config-revision requires --config-profile[/red]"
+            )
+            sys.exit(1)
+
         console.print(
             f"[bold blue]Downloading config from stack: {stack_name}[/bold blue]"
         )
+        if config_revision is not None:
+            console.print(f"Profile: {config_version} (revision r{config_revision})")
 
         client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.download(
             format=output_format,
             config_version=config_version,
+            config_revision=config_revision,
             output=output,
         )
 
@@ -4519,9 +4607,11 @@ def config_download(
     help="CloudFormation stack name",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration version to activate",
+    help="Configuration profile to activate; --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_activate(
@@ -4627,8 +4717,9 @@ def config_list(stack_name: str, region: str = None):
         )
 
         table = Table(show_header=True, header_style="bold blue")
-        table.add_column("Version Name", style="cyan")
+        table.add_column("Profile Name", style="cyan")
         table.add_column("Status", justify="center")
+        table.add_column("Rev", justify="right")
         table.add_column("Created", style="dim")
         table.add_column("Updated", style="dim")
         table.add_column("Description", style="green")
@@ -4645,20 +4736,168 @@ def config_list(stack_name: str, region: str = None):
                 if version.updated_at
                 else ""
             )
+            # The current revision, so `config-list` alone tells a script what to
+            # pin. A profile with no history shows nothing rather than "r0".
+            current = (
+                version.published_revision
+                if version.published_revision is not None
+                else version.latest_revision
+            )
             table.add_row(
                 version.version_name,
                 status,
+                f"r{current}" if current is not None else "",
                 created,
                 updated,
                 version.description or "",
             )
 
         console.print(table)
+        console.print(
+            "\n[dim]Rev = the revision each profile's current configuration "
+            "reflects. See revision history with: idp-cli config-revisions "
+            "--config-profile <name>[/dim]"
+        )
 
     except Exception as e:
         logger.error(f"Error listing configs: {e}", exc_info=True)
         console.print(f"[red]✗ Failed to list configurations: {e}[/red]")
         sys.exit(1)
+
+
+@cli.command(name="config-revisions")
+@click.option(
+    "--stack-name",
+    required=True,
+    help="CloudFormation stack name",
+)
+@click.option(
+    "--config-profile",
+    "--config-version",
+    "config_version",
+    required=True,
+    help="Configuration profile whose revision history to list; --config-version is the former name and still works",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit JSON instead of a table (for scripting)",
+)
+@click.option("--region", help="AWS region (optional)")
+def config_revisions(
+    stack_name: str,
+    config_version: str,
+    as_json: bool,
+    region: Optional[str] = None,
+):
+    """
+    List the revision history of a Configuration Profile
+
+    Every save of a profile cuts an immutable revision. This shows the ones still
+    retained: the last 20, plus anything labeled, pinned by a test run, or
+    currently in use.
+
+    Pair it with `config-download --config-revision` to fetch an earlier
+    configuration, and with `--config-revision` on `process` / `run-inference` to
+    process under an exact revision. Together those let an automated tuning loop
+    keep ONE profile and track its iterations as revisions, instead of minting a
+    new named profile per iteration.
+
+    Examples:
+
+      # Revision history of a profile
+      idp-cli config-revisions --stack-name my-stack --config-profile lending
+
+      # Machine-readable, e.g. to pick the newest revision
+      idp-cli config-revisions --stack-name my-stack --config-profile lending --json
+    """
+    try:
+        from idp_sdk import IDPClient
+
+        client = IDPClient(stack_name=stack_name, region=region)
+        result = client.config.revisions(config_profile=config_version)
+
+        if as_json:
+            console.print_json(result.model_dump_json())
+            return
+
+        console.print(
+            f"[bold blue]Revision history of configuration profile "
+            f"'{result.profile}' in stack: {stack_name}[/bold blue]"
+        )
+
+        if not result.revisions:
+            # Distinguish "no history" from "profile does not exist" — the first is
+            # normal on a profile untouched since the stack was upgraded.
+            console.print(
+                "\n[yellow]No revisions recorded for this profile.[/yellow] "
+                "A profile has no history until it is saved on a release that "
+                "records revisions."
+            )
+            return
+
+        console.print(f"\n[bold]{result.count} revision(s) retained:[/bold]\n")
+
+        table = Table(show_header=True, header_style="bold blue")
+        table.add_column("Rev", justify="right", style="cyan")
+        table.add_column("Current", justify="center")
+        table.add_column("Created", style="dim")
+        table.add_column("By")
+        table.add_column("Label")
+        table.add_column("Notes", style="green")
+        table.add_column("Keep", justify="center")
+
+        for revision in result.revisions:
+            created = (
+                revision.created_at.replace("T", " ").replace("Z", "")
+                if revision.created_at
+                else ""
+            )
+            # "Keep" is why a revision survives pruning; without it a user cannot
+            # tell which of their revisions the retention cap will drop next.
+            keep = []
+            if revision.label:
+                keep.append("labeled")
+            if revision.pinned:
+                keep.append("test run")
+            table.add_row(
+                f"r{revision.revision}",
+                "[bold green]←[/bold green]" if revision.published else "",
+                created,
+                revision.created_by or "",
+                revision.label or "",
+                revision.notes or "",
+                ", ".join(keep),
+            )
+
+        console.print(table)
+        console.print(
+            f"\n[dim]Download one: idp-cli config-download --stack-name {stack_name} "
+            f"--config-profile {result.profile} --config-revision <n>[/dim]"
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing config revisions: {e}", exc_info=True)
+        console.print(f"[red]✗ Failed to list revisions: {e}[/red]")
+        sys.exit(1)
+
+
+def _profile_is_managed(client, profile: str) -> bool:
+    """
+    Whether `profile` is stack-managed, best effort.
+
+    Only consulted on the interactive path, so the extra listing costs nothing in
+    scripts. A failure here must never block a delete — the answer is advisory.
+    """
+    try:
+        return any(
+            v.version_name == profile and v.managed
+            for v in client.config.list().versions
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Could not determine whether {profile} is managed: {e}")
+        return False
 
 
 @cli.command(name="config-delete")
@@ -4668,9 +4907,11 @@ def config_list(stack_name: str, region: str = None):
     help="CloudFormation stack name",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     required=True,
-    help="Configuration version to delete",
+    help="Configuration profile to delete; --config-version is the former name and still works",
 )
 @click.option(
     "--force",
@@ -4687,8 +4928,13 @@ def config_delete(
     """
     Delete a configuration version from a deployed IDP stack
 
-    Removes the specified configuration version from DynamoDB.
-    Cannot delete the 'default' version or currently active versions.
+    Removes the specified configuration profile, and its revision history, from
+    the stack. Cannot delete the 'default' profile or the currently active one.
+
+    Unlike the Web UI, this can delete a **stack-managed** profile. That is
+    deliberate: an extension that installed profiles and was then uninstalled can
+    leave managed profiles behind, and the UI refuses them because normally the
+    owning stack would recreate them. You are warned before confirming.
 
     Examples:
       # Delete a version with confirmation
@@ -4705,15 +4951,27 @@ def config_delete(
         )
         console.print(f"Version: {config_version}")
 
+        client = IDPClient(stack_name=stack_name, region=region)
+
         # Confirmation prompt
         if not force:
+            # A stack-managed profile is the interesting case: the Web UI refuses to
+            # delete one, so anyone here is probably cleaning up after an extension
+            # that installed profiles and left them behind. Say which it is rather
+            # than deleting a built-in preset the next stack update would restore.
+            if _profile_is_managed(client, config_version):
+                console.print(
+                    f"[yellow]⚠ '{config_version}' is a stack-managed profile.[/yellow] "
+                    "If its owning stack (an extension, or this stack's built-in "
+                    "presets) is still installed, it will be recreated on the next "
+                    "update. Deleting is the right move only when that stack is gone."
+                )
             if not click.confirm(
-                f"Are you sure you want to delete configuration version '{config_version}'?"
+                f"Are you sure you want to delete configuration profile '{config_version}'?"
             ):
                 console.print("[yellow]Deletion cancelled[/yellow]")
                 return
 
-        client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.delete(config_version=config_version)
 
         if not result.success:
@@ -4751,8 +5009,10 @@ def config_delete(
     help="Sync mode: 'replace' (full alignment) or 'merge' (additive, don't delete) (default: replace)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to sync (default: active version)",
+    "config_version",
+    help="Configuration profile to sync (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
@@ -4854,8 +5114,10 @@ def config_sync_bda(
     help="Path to JSON ground truth file(s). Auto-matched to documents by filename stem",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Configuration version to save the discovered schema to (default: active version)",
+    "config_version",
+    help="Configuration profile to save the discovered schema to (default: active version); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 @click.option(
@@ -5400,9 +5662,11 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
     help="CloudFormation stack name (required for --save-to-config)",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
+    "config_version",
     default=None,
-    help="Configuration version to save schemas to",
+    help="Configuration profile to save schemas to; --config-version is the former name and still works",
 )
 @click.option(
     "--save-to-config",
@@ -5471,7 +5735,7 @@ def multi_discover(
 
     if save_to_config and not config_version:
         console.print(
-            "[red]Error: --config-version is required when using --save-to-config[/red]"
+            "[red]Error: --config-profile is required when using --save-to-config[/red]"
         )
         sys.exit(1)
 
@@ -5928,14 +6192,23 @@ def test_result(
 
         if test_result.accuracy_breakdown:
             breakdown = test_result.accuracy_breakdown
+
+            # ``.get(k, 0)`` doesn't help when the key IS present with
+            # value ``None`` — the new Optional[float] contract on
+            # accuracy_breakdown puts None at present keys on any
+            # zero-denominator or error path, and ``.2%`` on None
+            # raises TypeError.
+            def _fmt_pct(v):
+                return f"{v:.2%}" if isinstance(v, (int, float)) else "N/A"
+
             console.print(
-                f"[bold cyan]Precision:[/bold cyan] {breakdown.get('precision', 0):.2%}"
+                f"[bold cyan]Precision:[/bold cyan] {_fmt_pct(breakdown.get('precision'))}"
             )
             console.print(
-                f"[bold cyan]Recall:[/bold cyan] {breakdown.get('recall', 0):.2%}"
+                f"[bold cyan]Recall:[/bold cyan] {_fmt_pct(breakdown.get('recall'))}"
             )
             console.print(
-                f"[bold cyan]F1 Score:[/bold cyan] {breakdown.get('f1_score', 0):.2%}"
+                f"[bold cyan]F1 Score:[/bold cyan] {_fmt_pct(breakdown.get('f1_score'))}"
             )
 
         if test_result.total_cost:
@@ -6297,12 +6570,16 @@ def abort_test_run(
     help="A field the schema must include. Repeatable: --field-hint X --field-hint Y",
 )
 @click.option(
+    "--config-profile",
     "--config-version",
-    help="Existing config version to source catalog classes from / merge into",
+    "config_version",
+    help="Existing configuration profile to source catalog classes from / merge into; --config-version is the former name and still works",
 )
 @click.option(
+    "--target-profile",
     "--target-version",
-    help="Name of the config version to create (default: bootstrap-<class>)",
+    "target_version",
+    help="Name of the configuration profile to create (default: bootstrap-<class>); --target-version is the former name and still works",
 )
 @click.option(
     "--count", "-c", default=3, show_default=True, help="Documents to generate"

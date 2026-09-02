@@ -208,6 +208,23 @@ def test_real_template_transforms_without_dangling_refs():
     )
 
 
+# publish.py substitutes these <TOKEN> placeholders in the committed template at
+# publish time (artifact bucket, prefix, zip names, version, ...). The raw
+# placeholders are harmless for structural assertions but not for cfn-lint:
+# cfn-lint 1.51 started validating AWS::Lambda::LayerVersion Content.S3Bucket
+# against the S3 bucket-name pattern, so "<ARTIFACT_BUCKET_TOKEN>" reported
+# E1161/E3031 — a finding about the placeholder, not about the template we
+# actually publish. Substituting a lint-valid stand-in (lowercase + dashes: legal
+# as both a bucket name and an S3 key fragment) keeps the Error gate below honest
+# instead of making it exempt whole rules.
+_PUBLISH_TOKEN_RE = re.compile(r"<([A-Z0-9_]+)>")
+
+
+def _substitute_publish_tokens(text: str) -> str:
+    """Replace every publish-time <TOKEN> with a lint-valid stand-in value."""
+    return _PUBLISH_TOKEN_RE.sub(lambda m: m.group(1).lower().replace("_", "-"), text)
+
+
 def _load_real_template_plain():
     """Load the committed template.yaml as plain dict/list/str (no cfn nodes).
 
@@ -215,7 +232,7 @@ def _load_real_template_plain():
     shorthand !Ref/!GetAtt/!Sub tags plain yaml.safe_load chokes on. The
     transform round-trips through yaml.safe_dump/load internally, which can't
     serialize those node types — so coerce the whole tree to plain
-    dict/list/str/scalars first.
+    dict/list/str/scalars first, resolving publish-time tokens on the way.
     """
     cfnlint_decode = pytest.importorskip("cfnlint.decode.cfn_yaml")
 
@@ -225,7 +242,7 @@ def _load_real_template_plain():
         if isinstance(node, list):
             return [_plain(x) for x in node]
         if isinstance(node, str):
-            return str(node)
+            return _substitute_publish_tokens(str(node))
         return node
 
     loaded = cfnlint_decode.load(str(_repo_root() / "template.yaml"))
@@ -341,5 +358,104 @@ def test_real_template_headless_passes_govcloud_region_cfn_lint():
         "(cfn-lint E3006). Add them to a strip set in template_transform.py: "
         + "; ".join(
             f"{f.get('Location', {}).get('Path')}: {f.get('Message')}" for f in e3006
+        )
+    )
+
+
+def test_headless_transform_leaves_no_unresolved_parameter_reference():
+    """No surviving Ref/Fn::Sub may point at a parameter the transform removed.
+
+    Regression guard for the bug that broke EVERY ``--headless`` deploy from
+    2026-07-16: the ``SuppressAdminInvite`` condition tests the ``AdminEmail``
+    parameter against the CI sentinel, ``AdminEmail`` is removed for headless, and
+    the condition was not. A Condition referencing a deleted parameter is not dead
+    weight — CloudFormation rejects the whole template up front:
+
+        Template format error: Unresolved dependencies [AdminEmail].
+        Cannot reference resources in the Conditions block of the template
+
+    so the stack failed at validate time, before creating a single resource
+    (matching the "fails earlier on a parameter mismatch" report in issue #676).
+
+    Structural, so it needs neither cfn-lint nor credentials, and it covers
+    Conditions/Rules/Outputs — not just Resources.
+    """
+    base = _load_real_template_plain()
+    before = set(base.get("Parameters", {}))
+    result = HeadlessTemplateTransformer().apply_transforms(base)
+    removed = before - set(result.get("Parameters", {}))
+    assert removed, "the headless transform should remove some parameters"
+
+    def _refs(node):
+        """Every parameter/resource name referenced via Ref or Fn::Sub."""
+        found = set()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "Ref" and isinstance(value, str):
+                    found.add(value)
+                elif key == "Fn::Sub":
+                    text = value[0] if isinstance(value, list) else value
+                    if isinstance(text, str):
+                        found.update(re.findall(r"\$\{([A-Za-z0-9:]+)[.}]", text))
+                found |= _refs(value)
+        elif isinstance(node, list):
+            for item in node:
+                found |= _refs(item)
+        return found
+
+    dangling = sorted(removed & _refs(result))
+    assert not dangling, (
+        "headless template still references removed parameter(s): "
+        f"{', '.join(dangling)}. Add the referencing condition/resource to a "
+        "removal set in template_transform.py — CloudFormation rejects the whole "
+        "template, it does not ignore the dead reference."
+    )
+
+
+def test_real_template_headless_has_no_cfn_lint_errors():
+    """The headless template must have ZERO cfn-lint Error-level findings.
+
+    The sibling GovCloud probe deliberately gates only on E3006 and discards other
+    E-codes as out of scope — which is exactly how an ``E1020 'AdminEmail' is not
+    one of [...]`` (a removed parameter still referenced by a surviving condition)
+    reached users. This gate closes that hole for the whole Error class.
+
+    Warnings are NOT gated: the headless template legitimately carries unused
+    conditions and unreachable Fn::If branches after the transform, and gating
+    those would be flaky. Offline — no credentials. Skips if cfn-lint is absent.
+    """
+    import json
+    import shutil
+    import subprocess  # nosec B404 - fixed args, no user input
+    import tempfile
+
+    import yaml
+
+    if shutil.which("cfn-lint") is None:
+        pytest.skip("cfn-lint not installed")
+
+    result = HeadlessTemplateTransformer().apply_transforms(_load_real_template_plain())
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        yaml.safe_dump(result, fh)
+        out_path = fh.name
+
+    proc = subprocess.run(  # nosec B603 - fixed executable + args
+        ["cfn-lint", out_path, "--format", "json"],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        findings = json.loads(proc.stdout) if proc.stdout.strip() else []
+    except json.JSONDecodeError:
+        findings = []
+    errors = [f for f in findings if f.get("Level") == "Error"]
+    assert errors == [], (
+        "the headless template has cfn-lint Error-level finding(s); "
+        "CloudFormation will reject it: "
+        + "; ".join(
+            f"{f.get('Rule', {}).get('Id')} at {f.get('Location', {}).get('Path')}: "
+            f"{f.get('Message')}"
+            for f in errors
         )
     )

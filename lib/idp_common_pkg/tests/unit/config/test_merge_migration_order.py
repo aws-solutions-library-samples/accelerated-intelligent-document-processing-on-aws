@@ -110,7 +110,7 @@ class TestHandleUpdateMigratesBeforeMerge:
             return None
 
         def fake_save_configuration(
-            config_type, config, version=None, description=None
+            config_type, config, version=None, description=None, **kwargs
         ):
             saved["config"] = config
             saved["version"] = version

@@ -384,9 +384,51 @@ The evaluation framework provides different comparison methods optimized for var
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses document-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
+
+### ⚠️ Do not use `LLM` on a field inside a list
+
+Setting `x-aws-idp-evaluation-method: LLM` on a field **inside a list's items** is
+downgraded to that field's deterministic type default (string → Levenshtein,
+number → NumericExact, boolean → Exact), and a warning names the field.
+
+Lists are matched with the Hungarian algorithm, which compares **every**
+ground-truth row against **every** predicted row to find the best pairing. That
+means an item field's comparator runs `N × M` times, so one Bedrock call per
+comparison costs roughly **N² calls per document**: a 54-row invoice needs about
+3,000 sequential model calls (~45 minutes), which cannot complete inside the
+evaluation Lambda's 15-minute limit no matter how many times it retries. In a
+live deployment this stalled the whole document pipeline.
+
+Use a deterministic method on list fields — it is also the right choice for a
+matching cost function. If you have a genuinely small, bounded list and want the
+semantic comparison anyway, opt in explicitly:
+
+```yaml
+LineItems:
+  type: array
+  items:
+    type: object
+    properties:
+      Description:
+        type: string
+        x-aws-idp-evaluation-method: LLM
+        x-aws-idp-evaluation-allow-llm-in-list: true   # accepts the O(N²) cost
+```
+
+Setting an evaluation method on the **array itself** has no effect and never has
+(lists are scored through their item fields, and row pairing is Hungarian). That
+is now reported as a warning instead of being silently ignored.
+
+> **Scores from the `LLM` method changed in this release.** The comparison prompt
+> includes the document class, field name and field description, but those were
+> not being passed to the model — every comparison was sent with them blank, so
+> the model judged two bare values with no idea what field it was grading.
+> `LLM`-method scores from earlier releases are not directly comparable with
+> current ones. Identical values now also short-circuit to a match without calling
+> the model at all.
 
 ### Threshold Display in Reports
 
@@ -1183,14 +1225,19 @@ The evaluation framework includes comprehensive monitoring through CloudWatch me
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics:**
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate**: Rate of false positives among negatives (FP / (FP + TN))
-- **False Discovery Rate**: Rate of false positives among positive predictions (FP / (FP + TP))
+**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+
+- **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
+- **F1 Score**: Harmonic mean of precision and recall — `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: Overall correctness — `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: Rate of hallucinated fields among true-negatives — `FA / (FA + TN)` (Stickler's `fa` = false alarm, distinct from `fd` = false discovery)
+- **False Discovery Rate (FDR)**: Rate of wrong-value fields among positive predictions — `FD / (FD + TP)`
 - **Weighted Overall Score**: Field-importance-weighted aggregate score
+
+The distinction between `fa` (predicted a value where none was expected) and `fd` (predicted a wrong value where one was expected) matters because they represent different failure modes and warrant different remediations — FAR isolates hallucinations, FDR isolates wrong extractions.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this counting semantics and may show inflated or deflated section metrics on list-heavy configs; re-run those evaluations after upgrading for accurate comparison. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625).
 
 **Document Split Classification Metrics:**
 - **Page Level Accuracy**: Classification accuracy for individual pages
@@ -1205,6 +1252,7 @@ The evaluation also tracks different evaluation statuses:
 - **RUNNING**: Evaluation is in progress
 - **COMPLETED**: Evaluation finished successfully
 - **FAILED**: Evaluation encountered errors
+- **TIMED_OUT**: Evaluation could not finish within the evaluation Lambda's time limit
 - **NO_BASELINE**: No baseline data available for comparison
 - **BASELINE_COPYING**: Process of copying document to baseline is in progress
 - **BASELINE_AVAILABLE**: Document is available in the baseline
@@ -1443,7 +1491,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 ### Stickler Version Information
 
 The solution installs Stickler from PyPI (`stickler-eval==0.5.0`, pinned in
-`lib/idp_common_pkg/pyproject.toml` and `setup.py`). The resolved version is
+`lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from
 `importlib.metadata.version("stickler-eval")` so environment drift and
@@ -1542,6 +1590,33 @@ annotation table preserves full auditability.
 
 See the end-to-end demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
+
+## A failed evaluation no longer discards the document
+
+Evaluation is a **measurement** step: by the time it runs, OCR, classification,
+extraction, assessment and summarization have all succeeded and their output
+objects are written. So an evaluation failure is caught and the document
+continues to the normal end of the workflow with an honest
+`EvaluationStatus` (`FAILED` or `TIMED_OUT`) rather than failing the execution
+and throwing away that work.
+
+Two things changed to make that true:
+
+- **A timeout is retried once, not eight times.** An evaluation Lambda timeout is
+  *deterministic* — the document needs more time than the function has, so every
+  retry burns another full timeout and fails identically. It used to share the
+  transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
+  document held a workflow-concurrency slot for **~5.2 hours** before failing.
+  Genuinely transient faults (throttling, Lambda service errors) still get the
+  full retry budget.
+- **Failures are recorded, not silently swallowed.** The caught error routes
+  through a step that stamps the evaluation status, so a document whose
+  evaluation timed out shows `TIMED_OUT` instead of sitting at `RUNNING`
+  indefinitely.
+
+If you see `TIMED_OUT`, the document's extraction results are intact — only its
+score is missing. Re-run evaluation for that document after reducing the
+comparison work (see the warning about `LLM` methods inside lists, above).
 
 ## Troubleshooting Evaluation Issues
 

@@ -25,6 +25,8 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_configs import set_path as _set_path
+
 import lib
 
 BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -128,7 +130,7 @@ def upload_config(stack, version, path, res=None, native=False):
             return False
     r = sh(
         f"PYTHONPATH={REPO}/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload "
-        f'--stack-name {stack} --config-file "{path}" --config-version {version} '
+        f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
     return "uploaded successfully" in (r.stdout + r.stderr)
@@ -192,18 +194,32 @@ def launch(stack, testset_id, version, context):
     return result.get("testRunId")
 
 
-def load_plan(suite, klass):
+def load_plan(suite, klass, overrides=()):
     matrix = yaml.safe_load(open(CFG_MATRIX))
     docm = yaml.safe_load(open(DOC_MATRIX))
     suite_spec = matrix["suites"][suite]
     # cells: read the index written by make_configs.py
-    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}.yaml")
+    # Must match make_configs' namespacing, or a --set run silently reads the
+    # index of a DIFFERENT variant and every result is attributed to the wrong
+    # configuration.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_configs import override_slug
+
+    slug = override_slug(list(overrides))
+    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}{slug}.yaml")
     if not os.path.exists(idx_path):
+        setflags = "".join(f" --set {o}" for o in overrides)
         sys.exit(
-            f"Run make_configs.py --suite {suite} --class {klass} first ({idx_path} missing)"
+            f"Run make_configs.py --suite {suite} --class {klass}{setflags} first "
+            f"({idx_path} missing)"
         )
     cells = yaml.safe_load(open(idx_path))["cells"]
     # docs: may be an explicit list, a named group, or "*"
+    if "docs" not in suite_spec:
+        sys.exit(
+            f"suite '{suite}' declares no `docs:` — a suite with cells but no "
+            f"documents cannot run. Add a docs list or group in config_matrix.yaml."
+        )
     dg = suite_spec["docs"]
     groups = docm["groups"]
     if isinstance(dg, list):
@@ -214,7 +230,119 @@ def load_plan(suite, klass):
         )
     else:
         doc_ids = [dg]
+    doc_ids, skipped = _docs_for_class(doc_ids, docm, klass)
+    if skipped:
+        print(
+            f"note: {len(skipped)} doc(s) in suite '{suite}' belong to another "
+            f"document class and are NOT run here: {skipped}\n"
+            f"      run them with --class <their class> (configs are per class)."
+        )
+    if not doc_ids:
+        sys.exit(
+            f"suite '{suite}' has no docs for class '{klass}' — every doc it names "
+            f"belongs to a different class. Check --class."
+        )
     return cells, doc_ids, int(suite_spec.get("repeats", 1))
+
+
+def _docs_for_class(doc_ids, docm, klass):
+    """Split ``doc_ids`` into (runnable under ``klass``, belonging elsewhere).
+
+    A suite may legitimately name documents of several classes — the enforcement
+    suite runs a transaction-list doc AND a flat form, because the feature it
+    measures behaves differently on each. But configs are built per class, so a
+    document scored under another class's schema produces a meaningless number
+    that looks like a real one. ``run_matrix`` used to run every named doc under
+    whatever ``--class`` was passed, despite a comment claiming otherwise; this is
+    that comment, implemented.
+
+    A synthetic doc's class is its generator (``gen``); a reference doc names its
+    config explicitly. Anything unrecognized is left in rather than dropped —
+    silently skipping a document would be its own kind of wrong answer.
+    """
+    by_id = {d["id"]: d for d in docm.get("synthetic", [])}
+    for d in docm.get("reference", []):
+        by_id[d["id"]] = d
+    keep, other = [], []
+    for doc_id in doc_ids:
+        spec = by_id.get(doc_id)
+        if spec is None:
+            keep.append(doc_id)  # unknown: let the existing missing-PDF error fire
+            continue
+        doc_class = spec.get("gen") or spec.get("config")
+        if doc_class is None or doc_class == klass:
+            keep.append(doc_id)
+        else:
+            other.append(doc_id)
+    return keep, other
+
+
+def _dig(d, dotted):
+    """Fetch a dotted path out of a nested dict, or None."""
+    cur = d
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def verify_config_axes(cells):
+    """Abort unless each config FILE holds the axes its index claims.
+
+    The index (`_index_<suite>_<class>.yaml`) records the resolved axis values
+    for every cell; the file it points at is what actually gets uploaded and
+    run. If the two disagree, every number the run produces is attributed to the
+    wrong configuration — and the report looks perfectly normal.
+
+    This is not hypothetical. Suites share cell names, so an un-namespaced config
+    filename let `make_configs.py --suite B` overwrite suite A's files while
+    leaving A's index untouched. A later `--suite A` run then advertised
+    `extraction_model: sonnet5` in its index while uploading a file pinned to
+    sonnet-4-6, and the resulting "before vs after" comparison silently spanned
+    two different models. Filenames are namespaced per suite now; this check is
+    the belt to that braces, and covers any other way the two can drift
+    (hand-edited file, partial rebuild, stale index).
+    """
+    matrix = yaml.safe_load(open(CFG_MATRIX))
+    axes = matrix.get("axes", {})
+    problems = []
+    for c in cells:
+        path, resolved = c.get("path"), c.get("resolved") or {}
+        if not path or not os.path.exists(path):
+            problems.append(f"{c.get('cell')}: config file missing ({path})")
+            continue
+        cfg = yaml.safe_load(open(path)) or {}
+        for axis, value in resolved.items():
+            expected = (axes.get(axis) or {}).get(value)
+            if not isinstance(expected, dict):
+                continue  # axis not expressed as config paths; nothing to check
+            for dotted, want in expected.items():
+                # Compare against what make_configs.set_path would actually WRITE,
+                # not the raw axis value: some knobs are reshaped on the way in
+                # (ocr.features becomes [{name: X}, ...]). Reusing the generator's
+                # own function means this check can never disagree with it over a
+                # shape transform — only over a real value difference.
+                probe: dict = {}
+                _set_path(probe, dotted, want)
+                want_written = _dig(probe, dotted)
+                got = _dig(cfg, dotted)
+                if str(got) != str(want_written):
+                    problems.append(
+                        f"{c.get('cell')}: index says {axis}={value} "
+                        f"(so {dotted}={want_written!r}) but "
+                        f"{os.path.basename(path)} has {dotted}={got!r}"
+                    )
+    if problems:
+        sys.exit(
+            "Config integrity check FAILED — the index and the config files on "
+            "disk disagree, so this run would attribute its results to the wrong "
+            "configuration:\n  "
+            + "\n  ".join(problems)
+            + "\n\nRe-run make_configs.py for this suite (with the same --set "
+            "overrides) and try again."
+        )
+    print(f"  config integrity: {len(cells)} cell(s) match their index")
 
 
 def main():
@@ -222,6 +350,18 @@ def main():
     ap.add_argument("--stack", required=True)
     ap.add_argument("--suite", default="core")
     ap.add_argument("--class", dest="klass", default="bank_statement")
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="AXIS=VALUE",
+        help=(
+            "The same --set overrides used to build the configs. Required to "
+            "locate the right index: make_configs namespaces its output by "
+            "overrides, so omitting them here reads a different variant's plan."
+        ),
+    )
     ap.add_argument("--estimate", action="store_true")
     ap.add_argument(
         "--native-upload",
@@ -247,7 +387,7 @@ def main():
         if not v:
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
-    cells, doc_ids, repeats = load_plan(a.suite, a.klass)
+    cells, doc_ids, repeats = load_plan(a.suite, a.klass, a.overrides)
     if a.repeats is not None:
         repeats = a.repeats
     # only synthetic docs handled by this class run here; reference docs use their own config
@@ -274,7 +414,9 @@ def main():
         if os.path.exists(pdf):
             register_testset(a.stack, res, d, pdf)
             print(f"  registered bench-{d}")
-    # 2. upload configs (unique versions)
+    # 2. upload configs (unique versions), but only after proving each file on
+    #    disk really holds the axes its index advertises.
+    verify_config_axes(cells)
     for c in {cc["version"]: cc for cc in cells}.values():
         ok = upload_config(
             a.stack, c["version"], c["path"], res=res, native=a.native_upload
