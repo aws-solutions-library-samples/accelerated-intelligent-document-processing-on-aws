@@ -21,13 +21,14 @@ import {
   Popover,
 } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import type { TableProps } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
-import ClassConfidence from '../common/ClassConfidence';
+import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
@@ -119,14 +120,10 @@ const ClassCell = ({
       </SpaceBetween>
     );
   }
-  // Confidence in the section's CLASS, aggregated from its pages as the minimum.
-  // Renders nothing when the classifier produced no score, which is the default.
-  const confidence = <ClassConfidence confidence={item.Confidence} />;
-  if (!mismatch && item.Confidence == null) return <span>{item.Class}</span>;
+  if (!mismatch) return <span>{item.Class}</span>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
       <span>{item.Class}</span>
-      {confidence}
       {mismatch}
     </SpaceBetween>
   );
@@ -696,8 +693,20 @@ const createColumnDefinitions = (
       isResizable: true,
     },
     {
+      id: 'classConfidence',
+      header: 'Class conf.',
+      // Confidence in the section's CLASS — the minimum across its pages. A
+      // static badge, deliberately not clickable: the per-page reasoning lives
+      // in the Document Pages table, and a section aggregate has none of its own.
+      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
+      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
+      minWidth: 130,
+      width: 130,
+      isResizable: true,
+    },
+    {
       id: 'confidenceAlerts',
-      header: 'Low Confidence Fields',
+      header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
       minWidth: 140,
       width: 140,
@@ -796,8 +805,20 @@ const createPattern1EditColumnDefinitions = (
       isResizable: true,
     },
     {
+      id: 'classConfidence',
+      header: 'Class conf.',
+      // Confidence in the section's CLASS — the minimum across its pages. A
+      // static badge, deliberately not clickable: the per-page reasoning lives
+      // in the Document Pages table, and a section aggregate has none of its own.
+      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
+      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
+      minWidth: 130,
+      width: 130,
+      isResizable: true,
+    },
+    {
       id: 'confidenceAlerts',
-      header: 'Low Confidence Fields',
+      header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
       minWidth: 140,
       width: 140,
@@ -1515,6 +1536,18 @@ const SectionsPanel = ({
   // parallel Lambda finishes first. Sorting ensures stable visual ordering.
   const tableItems = isEditMode ? editedSections : sortSectionsByPageId(sections || []);
 
+  // Sorting is opt-in per click and starts unset, so the table still opens in the
+  // existing page-order default (sortSectionsByPageId). Sorted on a copy so the
+  // download/reprocess helpers keep operating on document order.
+  const [sortingColumn, setSortingColumn] = useState<TableProps.SortingColumn<SectionItem> | undefined>(undefined);
+  const [isDescending, setIsDescending] = useState(false);
+  const sortedItems = React.useMemo(() => {
+    const comparator = sortingColumn?.sortingComparator;
+    if (!comparator) return tableItems;
+    const sorted = [...tableItems].sort(comparator as (a: SectionItem, b: SectionItem) => number);
+    return isDescending ? sorted.reverse() : sorted;
+  }, [tableItems, sortingColumn, isDescending]);
+
   // Check if there are any validation errors
   const hasValidationErrors = Object.keys(validationErrors).length > 0;
 
@@ -1587,8 +1620,13 @@ const SectionsPanel = ({
         <div style={{ overflowX: 'auto', position: 'relative' }}>
           <Table
             columnDefinitions={columnDefinitions}
-            items={tableItems}
-            sortingDisabled
+            items={sortedItems}
+            sortingColumn={sortingColumn}
+            sortingDescending={isDescending}
+            onSortingChange={({ detail }) => {
+              setSortingColumn(detail.sortingColumn);
+              setIsDescending(Boolean(detail.isDescending));
+            }}
             variant="embedded"
             resizableColumns
             stickyHeader={false}

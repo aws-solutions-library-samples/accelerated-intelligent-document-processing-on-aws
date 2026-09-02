@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React from 'react';
-import { Box, Popover, SpaceBetween } from '@cloudscape-design/components';
-import ConfidenceDisplay from './ConfidenceDisplay';
+import { Badge, Box, Popover, SpaceBetween } from '@cloudscape-design/components';
 
 interface ClassCandidate {
   Class?: string | null;
@@ -17,43 +16,76 @@ interface ClassConfidenceProps {
   reason?: string | null;
   /**
    * Ranked alternative classes with probabilities, from
-   * `classification.confidence.mode: topk`. Empty/absent in every other mode.
+   * `classification.confidence.mode: topk` (the default).
    */
   candidates?: (ClassCandidate | null)[] | null;
 }
 
+/** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
+const asPercent = (confidence: number): string => `${(confidence * 100).toFixed(1)}%`;
+
 /**
- * The classifier's confidence in a page's or section's Class, plus (for pages)
- * the model's reasoning behind it, rendered beside the class itself.
+ * "Not scored" — deliberately an em-dash rather than a blank cell or a zero.
  *
- * Renders NOTHING when there is no confidence and no reason. That is the common
- * case: a score exists only when the classification prompt asks the model for
- * one and it answers (see docs/classification.md), and several paths never
- * produce one. Absence therefore has to read as absence — a "100%" or "0%"
- * placeholder would invent a certainty the classifier never expressed, which is
- * exactly the defect this replaces (GitHub #673).
- *
- * The percentage is deliberately un-colored: there is no classification
- * confidence threshold to compare against yet, so red/green would imply a
- * judgement the system has not made. `ConfidenceDisplay` handles that by
- * rendering neutrally when no threshold is supplied.
+ * A blank reads as a rendering bug in a column that has values in every other
+ * row, and `0%` would be a lie: not scored is the absence of a measurement, not
+ * a measurement of zero (see the `Page.confidence` docstring in models.py).
  */
-const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProps): React.JSX.Element | null => {
+export const NotScored = (): React.JSX.Element => (
+  <Box color="text-status-inactive" textAlign="left">
+    —
+  </Box>
+);
+
+/**
+ * The classifier's confidence in a page's or section's CLASS, as a table cell.
+ *
+ * Two presentations, because the two tables carry different things behind the
+ * number:
+ *
+ * - `badge` (Document Sections) — a static value. The section score is an
+ *   aggregate (the minimum across its pages); there is no per-section reasoning
+ *   to show, so it must not look clickable.
+ * - `link` (Document Pages) — the number IS the affordance for the model's own
+ *   reasoning and its ranked runner-up classes. Rendered with Cloudscape's
+ *   `Popover triggerType="text"`, which gives link styling, keyboard focus and
+ *   the aria wiring for free — matching the "95% margin" column in Test Studio
+ *   rather than hand-rolling a dotted underline.
+ *
+ * **Deliberately un-colored at every value.** There is no configured
+ * classification confidence threshold (unlike extraction fields, which have
+ * `hitl.confidence_threshold`), so a green/amber/red band would assert a
+ * pass/fail the system has not defined. It would also actively mislead: the
+ * default classifier answers ~0.95 for the large majority of pages including
+ * many of its errors, so banding would paint a coarse two-level flag as a
+ * calibrated traffic light. See docs/benchmarking/classification-confidence.md.
+ */
+const ClassConfidence = ({
+  confidence,
+  reason,
+  candidates,
+  variant = 'link',
+}: ClassConfidenceProps & { variant?: 'badge' | 'link' }): React.JSX.Element => {
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
   const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
-  const hasCandidates = ranked.length > 0;
+  const hasDetail = hasReason || ranked.length > 0;
 
-  if (!hasConfidence && !hasReason && !hasCandidates) {
-    return null;
+  if (!hasConfidence && !hasDetail) {
+    return <NotScored />;
   }
 
-  const confidenceEl = hasConfidence ? (
-    <ConfidenceDisplay confidenceInfo={{ hasConfidenceInfo: true, confidence }} variant="inline" showThreshold={false} />
-  ) : null;
+  // Sections: a plain neutral badge. `grey` rather than blue/green because the
+  // number is information, not a status.
+  if (variant === 'badge') {
+    return hasConfidence ? <Badge color="grey">{asPercent(confidence as number)}</Badge> : <NotScored />;
+  }
 
-  if (!hasReason && !hasCandidates) {
-    return confidenceEl;
+  // Pages: the value opens the model's own account of the decision. When the
+  // model gave a score but no reasoning and no candidates there is nothing to
+  // open, so it stays a plain badge rather than a link that does nothing.
+  if (!hasDetail) {
+    return <Badge color="grey">{asPercent(confidence as number)}</Badge>;
   }
 
   return (
@@ -61,20 +93,20 @@ const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProp
       dismissButton={false}
       position="top"
       size="large"
-      triggerType="custom"
+      triggerType="text"
       header="Why this class?"
       content={
         <SpaceBetween size="xs">
           {hasReason && <Box variant="p">{reason}</Box>}
           {/* The ranked alternatives answer "what else could this have been?",
               which is the question a suspicious classification actually raises. */}
-          {hasCandidates && (
+          {ranked.length > 0 && (
             <SpaceBetween size="xxs">
               <Box variant="awsui-key-label">Considered</Box>
               {ranked.map((candidate) => (
                 <Box key={candidate.Class}>
                   {candidate.Class}
-                  {typeof candidate.Probability === 'number' && ` — ${(candidate.Probability * 100).toFixed(1)}%`}
+                  {typeof candidate.Probability === 'number' && ` — ${asPercent(candidate.Probability)}`}
                 </Box>
               ))}
             </SpaceBetween>
@@ -85,15 +117,26 @@ const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProp
         </SpaceBetween>
       }
     >
-      <span style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}>
-        {confidenceEl ?? (
-          <Box variant="small" color="text-body-secondary" display="inline">
-            why?
-          </Box>
-        )}
-      </span>
+      {hasConfidence ? asPercent(confidence as number) : 'Why?'}
     </Popover>
   );
+};
+
+/**
+ * Sort comparator for a class-confidence column.
+ *
+ * Unscored rows sort LAST in both directions, instead of clumping at the top of
+ * an ascending sort. Sorting least-confident-first is how a reviewer finds the
+ * pages worth a second look, and a wall of "—" at the top of that list defeats
+ * the click — absence of a measurement is not a low measurement.
+ */
+export const compareClassConfidence = (a?: number | null, b?: number | null): number => {
+  const av = typeof a === 'number' ? a : null;
+  const bv = typeof b === 'number' ? b : null;
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
 };
 
 export default ClassConfidence;

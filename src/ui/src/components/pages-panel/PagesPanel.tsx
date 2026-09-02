@@ -14,6 +14,7 @@ import {
   Modal,
   Alert,
 } from '@cloudscape-design/components';
+import type { TableProps } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useAppContext from '../../contexts/app';
@@ -21,7 +22,7 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
-import ClassConfidence from '../common/ClassConfidence';
+import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
@@ -84,7 +85,6 @@ const ClassCell = ({
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
     <span>{item.Class || '-'}</span>
-    <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -141,9 +141,6 @@ const EditableClassCell = ({
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
         <StatusIndicator>{item.Class}</StatusIndicator>
-        {/* Shown in edit mode too: deciding whether to correct a class is
-            exactly when the classifier's own confidence and reasoning matter. */}
-        <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>
@@ -175,6 +172,21 @@ const createViewColumnDefinitions = (
     sortingField: 'Class',
     minWidth: 200,
     width: 200,
+    isResizable: true,
+  },
+  {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
     isResizable: true,
   },
   {
@@ -217,6 +229,21 @@ const createEditColumnDefinitions = (
     cell: (item: PageItem) => <EditableClassCell item={item} onResetClass={onResetClass} classificationIndex={classificationIndex} />,
     minWidth: 250,
     width: 250,
+    isResizable: true,
+  },
+  {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
     isResizable: true,
   },
   {
@@ -538,6 +565,19 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
 
   const tableItems = isEditMode ? editedPages : pages || [];
 
+  // Sorting is opt-in per click and starts unset, so the default view stays in
+  // page order. The table gets a SORTED COPY: `tableItems` also feeds the page
+  // text editor's next/previous navigation, which must stay in document order
+  // regardless of how the table is sorted.
+  const [sortingColumn, setSortingColumn] = useState<TableProps.SortingColumn<PageItem> | undefined>(undefined);
+  const [isDescending, setIsDescending] = useState(false);
+  const sortedItems = React.useMemo(() => {
+    const comparator = sortingColumn?.sortingComparator;
+    if (!comparator) return tableItems;
+    const sorted = [...tableItems].sort(comparator as (a: PageItem, b: PageItem) => number);
+    return isDescending ? sorted.reverse() : sorted;
+  }, [tableItems, sortingColumn, isDescending]);
+
   return (
     <SpaceBetween size="l">
       <Container
@@ -575,8 +615,13 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
       >
         <Table
           columnDefinitions={columnDefinitions}
-          items={tableItems}
-          sortingDisabled
+          items={sortedItems}
+          sortingColumn={sortingColumn}
+          sortingDescending={isDescending}
+          onSortingChange={({ detail }) => {
+            setSortingColumn(detail.sortingColumn);
+            setIsDescending(Boolean(detail.isDescending));
+          }}
           variant="embedded"
           resizableColumns
           stickyHeader
