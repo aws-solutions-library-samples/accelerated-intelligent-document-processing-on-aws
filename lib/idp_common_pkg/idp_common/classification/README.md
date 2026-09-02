@@ -58,6 +58,54 @@ Page 6: type="invoice", boundary="continue"   → Section 3 (Invoice #2)
 
 The system automatically creates three sections, properly separating the two invoices despite them having the same document type.
 
+### Where the `document_boundary` signal lives
+
+The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is also copied onto the declared `Page.document_boundary` field, which **is** persisted — it appears in the `document.json` page dict, in the DynamoDB page record as `Boundary`, in the `create_document_run` snapshot, and on the GraphQL `Page` type. So a merge decision can be inspected after the fact rather than re-derived from Lambda logs.
+
+(Note the older `setattr(page, "metadata", ...)` call next to it stashes the whole metadata dict on an attribute that is *not* a dataclass field, so that one does not survive serialization — `Page.document_boundary` is the durable one.)
+
+To keep merges auditable, `_create_llm_determined_sections` logs the complete page → boundary map on one line before building sections:
+
+```
+Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
+```
+
+`(absent)` means the model omitted the field, in which case the code defaults it to `"continue"`. That is deliberately reported as distinct from an explicit `"continue"`: an omitted signal merges pages *by accident*, while an explicit `"continue"` is the model's judgement. Distinguishing the two is what makes an unexpected merge diagnosable.
+
+### Section splitting strategies
+
+`classification.sectionSplitting` controls how classified pages become sections:
+
+| Value | Behavior |
+|-------|----------|
+| `llm_determined` (default) | Group pages using the `document_boundary` signal described above |
+| `page` | One section per page — no same-type joining is ever possible |
+| `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
+
+### Single-class configurations
+
+When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured strategy genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
+
+| `sectionSplitting` | Single-class behavior | Backend call? |
+|--------------------|-----------------------|---------------|
+| `disabled` | One section over all pages | No |
+| `page` | One section per page | No |
+| `llm_determined`, single-page document | One section | No — one page cannot be split |
+| `llm_determined`, multi-page document | Real boundary detection | **Yes** |
+
+`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate documents of the single class became one section, and extraction then returned only the first record.
+
+**Cost note.** `llm_determined` is the *default*, so a **multi-page** single-class deployment that never set `sectionSplitting` now performs classification inference where it previously performed none. Single-page documents are unaffected (nothing to split, so the call is skipped), which covers the common "one document per file" deployment at zero cost.
+
+If one input file is always exactly one document and you want to keep the zero-cost path on multi-page files, set it explicitly:
+
+```yaml
+classification:
+  sectionSplitting: disabled   # one file is always one document
+```
+
+`page` remains available when you want one section per page without inference.
+
 ## Regex-Based Classification for Enhanced Performance
 
 The classification service now supports optional regex-based pattern matching to provide significant performance improvements and deterministic classification for known document patterns. This feature enables instant classification without LLM API calls when regex patterns match.
@@ -80,8 +128,30 @@ classes:
 **How it works:**
 - Works with any number of document classes defined in configuration
 - When document ID matches the regex pattern, all pages are classified as that class
-- Skips all LLM processing for massive performance gains
+- Skips the LLM *class* decision entirely — the name is authoritative, and it stays authoritative even when the model does run (see below)
 - Provides info-level logging when matches occur
+
+#### …and `sectionSplitting` still applies
+
+A filename tells you **what** the packet holds; it never tells you **where** one record ends and the next begins. So the name match short-circuits the class decision only — section boundaries follow `sectionSplitting`, exactly as for [single-class configurations](#single-class-configurations) (GitHub issue [#705](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/705) — previously this path hard-coded one all-pages section and `sectionSplitting` was silently ignored, the same defect as [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) reached through a different trigger):
+
+| `sectionSplitting` | Name-matched behavior | Backend call? |
+|--------------------|-----------------------|---------------|
+| `disabled` | One section over all pages | No |
+| `page` | One section per page | No |
+| `llm_determined`, single-page document | One section | No — one page cannot be split |
+| `llm_determined`, multi-page document | Real boundary detection, class pinned to the matched class | **Yes** |
+
+In the last row the model is invoked for the per-page `document_boundary` signal (or, under holistic classification, for the segment *ranges*) and its class output is discarded in favour of the regex match — so a packet of five payslips becomes five sections, all classified `Payslip`.
+
+**Cost note.** `llm_determined` is the *default*, so a name-matched **multi-page** document now performs classification inference where it previously performed none: for those documents the regex is no longer a "skip the LLM" shortcut. Single-page matches are unaffected and keep the zero-inference path. To keep multi-page files at zero cost when one file is always one document, set it explicitly:
+
+```yaml
+classification:
+  sectionSplitting: disabled   # one file is always one document
+```
+
+`page` also stays inference-free when you want one section per page.
 
 ### Page Content Regex Classification
 
@@ -394,6 +464,7 @@ The classification service uses the following configuration structure:
     "model": "anthropic.claude-3-sonnet-20240229-v1:0", // Specific model for classification (used if top-level model_id not specified)
     "temperature": 0,
     "top_k": 5,
+    "sectionSplitting": "llm_determined", // "llm_determined" (default) | "page" | "disabled" - see "Section splitting strategies"
     "system_prompt": "You are a document classification expert...",
     "task_prompt": "Classify the following document into one of these types: {CLASS_NAMES_AND_DESCRIPTIONS}...\n\nDocument text:\n{DOCUMENT_TEXT}"
   }

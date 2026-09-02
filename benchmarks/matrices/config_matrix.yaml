@@ -14,6 +14,22 @@
 # =============================================================================
 
 axes:
+  # Schema enforcement added in v0.7: deterministic value coercion and
+  # full JSON-Schema validation of the extraction result. Both are config
+  # toggles, so this axis A/Bs them on ONE deployed stack with identical code —
+  # which isolates the feature far better than a deploy-vs-deploy comparison.
+  enforcement:
+    'off':
+      extraction.coercion.enabled: false
+      extraction.validation.enabled: false
+    warn:
+      extraction.coercion.enabled: true
+      extraction.validation.enabled: true
+      extraction.validation.fail_action: warn
+    escalate:
+      extraction.coercion.enabled: true
+      extraction.validation.enabled: true
+      extraction.validation.fail_action: escalate
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -64,12 +80,17 @@ default_cell:
                                # documented v0.6-only delta, not part of the matrix.
   confidence_model: nova_lite
   reasoning_effort: low
+  enforcement: warn
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
 # These are the "which mode / OCR / assessment should I pick" answers.
 # -----------------------------------------------------------------------------
 core_cells:
+  # A/B pair for the v0.7 schema-enforcement work: identical to
+  # core-tt-simple-sep except for the enforcement axis.
+  - {id: enforce-off,          ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: "off"}
+  - {id: enforce-warn,         ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: warn}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
   - {id: core-tt-simple-off,   ocr: textract_tables, extraction_mode: simple,   assessment: "off"}
@@ -86,6 +107,10 @@ core_cells:
 # Isolates each knob's marginal effect on accuracy/cost/calibration/latency.
 # -----------------------------------------------------------------------------
 sweeps:
+  enforcement:
+  - 'off'
+  - warn
+  - escalate
   ocr:              [textract_layout, textract_tables, bda, bedrock_llm]
   extraction_mode:  [simple, advanced]
   assessment:       ["off", separate, integrated]
@@ -108,6 +133,17 @@ sweeps:
 # repeats=1, so the broad matrices stay at 1 to bound spend; use `cost` (or
 # --repeats) when the question is dollars.
 suites:
+  # A/B for the v0.7 schema-enforcement work. The two cells differ ONLY on the
+  # enforcement axis, on one deployed stack with identical code, so a delta is
+  # attributable to the feature rather than to anything else that shipped.
+  enforcement:
+    cells:
+    - enforce-off
+    - enforce-warn
+    docs:
+    - small_narrow
+    - tiny_form
+    repeats: 1
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

@@ -84,7 +84,6 @@ MODEL_MAPPINGS = {
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
     "us.anthropic.claude-3-haiku-20240307-v1:0": "eu.anthropic.claude-3-haiku-20240307-v1:0",
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -506,16 +505,20 @@ def generate_physical_id(stack_id: str, logical_id: str) -> str:
 
 
 def _parse_format_version(value: Any) -> tuple:
-    """Parse a 'MAJOR.MINOR' config_format_version string into a comparable tuple.
+    """Parse a 'MAJOR.MINOR' config_format_version stamp into a comparable tuple.
 
-    Returns (0,) for missing/unparseable values (treated as the oldest format).
+    Thin adapter over the migration chain's ``parse_version`` so there is ONE
+    implementation of this comparison: rollback detection here and the
+    never-downgrade guard in the migrations must agree about which stamp is
+    newer, and two copies of an ordering rule is how they stop agreeing.
+
+    Differs only in the fallback: missing/unparseable reads as ``(0,)`` — the
+    oldest format — because this caller compares rather than branching on
+    "unknown".
     """
-    if not value:
-        return (0,)
-    try:
-        return tuple(int(p) for p in str(value).split("."))
-    except (ValueError, TypeError):
-        return (0,)
+    from idp_common.config.migrations._version import parse_version
+
+    return parse_version(value) or (0,)
 
 
 def _is_rollback_to_older_format() -> bool:

@@ -176,13 +176,56 @@ table then looks clean for that source. On this dev box the venv `semgrep`
 re-execs `pysemgrep` **from `PATH`** and finds a stray
 `~/.local/bin/pysemgrep` (system python, no `semgrep` module), so every full
 scan died with `ModuleNotFoundError: No module named 'semgrep'` and produced no
-`.srt/semgrep-summary.json`. **Always confirm the summary files exist before
-trusting a clean result:**
+`.srt/semgrep-summary.json`.
+
+**Since 0.6.7 `run.py` checks this automatically** (`scripts/srt/scanner_health.py`)
+and prints a `⚠️ SCANNERS THAT DID NOT COMPLETE` block, failing CI when the loss
+is on a tracked file. To check by hand:
 
 ```bash
 ls .srt/semgrep-summary.json .srt/bandit-summary.json   # missing ⇒ scanner crashed
+ls .srt/*/checkov-summary.json | wc -l                  # one per scanned template
 grep -i error .srt/logs/srt-tool.log.*                  # why
 ```
+
+### checkov's `stdout maxBuffer length exceeded` — caused by `.aws-sam/`, not by size
+
+The other silent-skip cause, and it looks alarming: three
+`Error during Checkov scan {stdout maxBuffer length exceeded}` per scan. Facts,
+all verified against the binary and by reproducing the command:
+
+- SRT scans **per file** (`checkov -f <file> -o json --output-file-path <dir>
+  --soft-fail --quiet`) and its command wrapper calls node's `child_process.exec`
+  with **no `maxBuffer`**, taking node's **1 MiB default**. It is not
+  configurable from outside the binary — no flag, no env var.
+- checkov duplicates its **entire JSON report to stdout** even with `--quiet`
+  *and* `--output-file-path`. So the report size, not the file size, is what
+  overflows.
+- **It is not driven by template size.** The largest file in the repo,
+  `template.yaml` (547 KB), yields 2.7 KB of stdout — 459 passed, **0 failed**,
+  211 skipped — because it carries **218 `# checkov:skip=` comments**.
+  `.aws-sam/idp-main.yaml` is *smaller* (435 KB) but yields **2.6 MB**, because
+  **`sam package` re-serializes YAML and drops comments**, so all 218 skips
+  become failures.
+- Therefore **only `.aws-sam/` artifacts can trigger it.** Measured across a full
+  scan, the largest successfully-scanned report is 127 KB — **12% of the buffer**,
+  8× headroom. CI, which never has `.aws-sam/`, cannot hit this.
+
+**So the fix is `make srt-clean`, not a checkov flag.** `run.py` now warns up
+front when `.aws-sam` dirs are present, and classifies a checkov loss on a
+gitignored path as non-blocking (`ℹ️`) while failing CI on a tracked one.
+
+⚠️ Corollary worth remembering: **`# checkov:skip=` / `cfn_nag` suppressions do
+not survive `sam package`.** Never treat a scan of a packaged template as
+equivalent to a scan of its source — it will report every suppressed check as a
+failure. This is also why suppressing an `.aws-sam` finding in `issues.json` is
+always wrong.
+
+Upstream bugs worth reporting to
+[aws-samples/sample-security-review-tool](https://github.com/aws-samples/sample-security-review-tool)
+if this ever bites a tracked file: `exec` should pass a generous `maxBuffer` (or
+use `spawn` with a stream), and the checkov call already writes
+`--output-file-path`, so stdout should be discarded rather than buffered.
 
 To reproduce just the semgrep half in seconds instead of re-running the whole
 Bedrock-backed assess, invoke the binary directly with the venv **first** on

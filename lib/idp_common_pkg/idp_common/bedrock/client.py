@@ -183,7 +183,6 @@ _CACHEPOINT_BASE_MODELS = set()
 # and do not support Bedrock prompt-prefix caching; <<CACHEPOINT>> markers are
 # stripped for them during request translation.
 CACHEPOINT_SUPPORTED_MODELS = [
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
@@ -249,6 +248,62 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-5:1m",
 ]
+
+# Converse tool-use (``toolConfig`` / ``toolChoice``) capability gate.
+#
+# Verified live across every currently selectable family (Claude 3.5/3.7/4.x/5
+# and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig`` AND all
+# three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the Converse API,
+# and actually emit the ``toolUse`` block. So — unlike CACHEPOINT_SUPPORTED_MODELS
+# above — there is no per-family allow-list to maintain here. The only real
+# question is "does this model reach Converse at all", and exactly two routes in
+# invoke_model do not. They are named here so the exclusions are discoverable
+# and testable rather than buried in an `if`.
+#
+# NOTE: there is no hard-grammar/strict mode available on bedrock-runtime.
+# ``toolSpec.strict``, ``output_config.format`` and ``response_format`` are all
+# rejected ("Extra inputs are not permitted") on BOTH Converse and InvokeModel,
+# so a forced ``toolChoice`` is the strongest schema enforcement available.
+TOOL_CONFIG_UNSUPPORTED_ROUTES: Dict[str, str] = {
+    "LambdaHook": (
+        "the LambdaHook route posts a Converse-shaped payload to a customer-owned "
+        "Lambda function, which is not required to implement tool use"
+    ),
+    "openai-responses": (
+        "OpenAI GPT-5.x models are served by the bedrock-mantle Responses API, "
+        "which does not accept a Converse toolConfig (it has its own tools schema)"
+    ),
+}
+
+
+def tool_config_unsupported_reason(model_id: str) -> Optional[str]:
+    """Explain why ``model_id`` cannot carry a Converse ``toolConfig``.
+
+    Args:
+        model_id: Bedrock model ID, the ``LambdaHook`` sentinel, or an
+            inference profile ARN.
+
+    Returns:
+        A human-readable reason string if this model is routed somewhere other
+        than the Converse API, or None if a ``toolConfig`` can be used.
+    """
+    if model_id == LAMBDA_HOOK_MODEL_ID:
+        return TOOL_CONFIG_UNSUPPORTED_ROUTES["LambdaHook"]
+    if is_openai_responses_model(model_id):
+        return TOOL_CONFIG_UNSUPPORTED_ROUTES["openai-responses"]
+    return None
+
+
+def supports_tool_config(model_id: str) -> bool:
+    """True if ``model_id`` reaches the Converse API and can carry a toolConfig.
+
+    Callers that want to degrade gracefully (e.g. fall back to a prose schema in
+    the prompt) should check this first; passing a ``tool_config`` for a model
+    that returns False raises a ValueError rather than silently dropping the
+    schema.
+    """
+    return tool_config_unsupported_reason(model_id) is None
+
 
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
 # e.g., "us.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6"
@@ -436,6 +491,8 @@ class BedrockClient:
         service_tier: Optional[str] = None,
         model_lambda_hook_arn: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Make the instance callable with the same signature as the original function.
@@ -452,6 +509,8 @@ class BedrockClient:
             max_tokens: Optional max_tokens parameter (int or string)
             max_retries: Optional override for the instance's max_retries setting
             service_tier: Optional service tier (priority, standard, flex)
+            tool_config: Optional Converse toolConfig (see invoke_model)
+            tool_choice: Optional Converse toolChoice (see invoke_model)
 
         Returns:
             Bedrock response object with metering information
@@ -474,6 +533,8 @@ class BedrockClient:
             service_tier=service_tier,
             model_lambda_hook_arn=model_lambda_hook_arn,
             reasoning_effort=reasoning_effort,
+            tool_config=tool_config,
+            tool_choice=tool_choice,
         )
 
     def _preprocess_content_for_cachepoint(
@@ -554,6 +615,66 @@ class BedrockClient:
 
         return processed_content
 
+    @staticmethod
+    def _resolve_tool_config(
+        model_id: str,
+        tool_config: Optional[Dict[str, Any]],
+        tool_choice: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and merge the tool-use parameters into one ``toolConfig``.
+
+        Returns None when neither parameter was supplied, so the Converse request
+        is left exactly as it was before tool support existed.
+
+        Args:
+            model_id: The model ID (or ``LambdaHook`` sentinel) being invoked.
+            tool_config: Converse ``toolConfig`` dict, or None.
+            tool_choice: Converse ``toolChoice`` dict to merge in, or None.
+
+        Returns:
+            The effective ``toolConfig`` to put on the wire, or None.
+
+        Raises:
+            ValueError: If the model does not reach the Converse API, or if
+                ``tool_choice`` was given without ``tool_config``.
+        """
+        if tool_config is None and tool_choice is None:
+            return None
+
+        reason = tool_config_unsupported_reason(model_id)
+        if reason:
+            raise ValueError(
+                f"tool_config/tool_choice is not supported for model "
+                f"'{model_id}': {reason}. Refusing to drop the tool schema "
+                f"silently — check supports_tool_config(model_id) first and use "
+                f"a prompt-based schema for this model."
+            )
+
+        if tool_config is None:
+            raise ValueError(
+                "tool_choice was provided without tool_config. The Converse API "
+                "rejects a toolChoice with no tools; pass the toolConfig that "
+                "declares the tool being chosen."
+            )
+
+        if tool_choice is None:
+            return tool_config
+
+        # Shallow copy: callers are expected to reuse one deterministic,
+        # per-class toolConfig object (see the prompt-cache note in
+        # invoke_model), so never mutate what we were handed.
+        merged = dict(tool_config)
+        existing_choice = merged.get("toolChoice")
+        if existing_choice is not None and existing_choice != tool_choice:
+            logger.warning(
+                "Both tool_config['toolChoice'] (%s) and the tool_choice "
+                "parameter (%s) were provided; the tool_choice parameter wins.",
+                existing_choice,
+                tool_choice,
+            )
+        merged["toolChoice"] = tool_choice
+        return merged
+
     def invoke_model(
         self,
         model_id: str,
@@ -568,6 +689,8 @@ class BedrockClient:
         service_tier: Optional[str] = None,
         model_lambda_hook_arn: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Invoke a Bedrock model or custom Lambda hook with retry logic.
@@ -590,10 +713,70 @@ class BedrockClient:
             model_lambda_hook_arn: Lambda function ARN (required when model_id is 'LambdaHook')
             reasoning_effort: Reasoning effort for OpenAI Responses models
                 (minimal/low/medium/high). Ignored by other model families.
+            tool_config: Optional Converse ``toolConfig`` dict, passed through
+                verbatim, e.g.::
+
+                    {"tools": [{"toolSpec": {
+                        "name": "extract_fields",
+                        "description": "...",
+                        "inputSchema": {"json": {...JSON Schema...}},
+                    }}]}
+
+                Omitted from the request entirely when None (the default), so the
+                request is byte-identical to a call that never passed it.
+            tool_choice: Optional Converse ``toolChoice`` dict, e.g.
+                ``{"tool": {"name": "extract_fields"}}``, ``{"any": {}}`` or
+                ``{"auto": {}}``. This is a *member of* ``toolConfig`` in the
+                Converse API; it is accepted separately here purely as a
+                convenience and is merged into a shallow copy of ``tool_config``
+                (the caller's dict is never mutated). If ``tool_config`` already
+                carries a ``toolChoice``, this parameter wins and a warning is
+                logged. Requires ``tool_config``: passing ``tool_choice`` alone
+                raises ValueError, because Converse rejects a ``toolChoice``
+                with no tools.
 
         Returns:
             Response object with metering information (same format for both Bedrock and Lambda)
+
+        Raises:
+            ValueError: If ``tool_config``/``tool_choice`` is passed for a model
+                that does not reach the Converse API — the ``LambdaHook``
+                sentinel or an OpenAI GPT-5.x Responses model. The schema is
+                never silently dropped; use ``supports_tool_config(model_id)``
+                to branch beforehand if you need a text fallback.
+
+        Tool-use notes (read before adding a caller):
+            * **Response may still be text.** Even with a forced ``toolChoice``,
+              treat a text answer as possible: use
+              ``extract_tool_use_from_response()`` and fall back to
+              ``extract_text_from_response()`` when it returns None.
+            * **No strict mode exists on bedrock-runtime.** ``toolSpec.strict``,
+              ``output_config.format`` and ``response_format`` are all rejected
+              ("Extra inputs are not permitted") on both Converse and
+              InvokeModel. A forced ``toolChoice`` is best-effort constrained
+              decoding, not a grammar guarantee — validate the result.
+            * **Property names must be sanitized by the caller.** Converse
+              rejects *top-level* ``inputSchema.json.properties`` keys that do
+              not match ``^[a-zA-Z0-9_.-]{1,64}$`` — so a key like
+              ``"Account Number"`` fails with
+              ``Property keys should match pattern ...``. Several shipped class
+              schemas contain such names. This method does NOT sanitize; the
+              caller must rename and map back (a shared sanitizer is planned).
+              Sanitize recursively even though only the top level is enforced
+              today.
+            * **Keep the toolConfig deterministic per class.** Tools render
+              *before* ``system`` in the prompt-cache prefix, so changing the
+              tool schema invalidates the entire cached prefix (system prompt
+              included). A per-class, stable ``toolConfig`` caches fine; a
+              per-request one destroys cache hits silently.
         """
+        # Resolve tool-use plumbing BEFORE any routing, so that a caller who
+        # passes a schema to a non-Converse route fails loudly here instead of
+        # getting a plausible-looking free-text answer with no schema applied.
+        effective_tool_config = self._resolve_tool_config(
+            model_id=model_id, tool_config=tool_config, tool_choice=tool_choice
+        )
+
         # Route to Lambda hook if model_id is LambdaHook
         if model_id == LAMBDA_HOOK_MODEL_ID:
             return self._invoke_lambda_hook(
@@ -886,6 +1069,11 @@ class BedrockClient:
             "additionalModelRequestFields": additional_model_fields,
         }
 
+        # Add the tool configuration if one was supplied. Left absent otherwise,
+        # so requests without tool use are unchanged.
+        if effective_tool_config is not None:
+            converse_params["toolConfig"] = effective_tool_config
+
         # Add service tier if specified
         if normalized_service_tier:
             converse_params["serviceTier"] = {"type": normalized_service_tier}
@@ -978,6 +1166,11 @@ class BedrockClient:
             logger.info(
                 f"  - additionalModelRequestFields: {converse_params['additionalModelRequestFields']}"
             )
+
+            # Log the tool configuration when tool use is in play. Only emitted
+            # for tool-enabled calls, so existing log output is unchanged.
+            if "toolConfig" in converse_params:
+                logger.info(f"  - toolConfig: {converse_params['toolConfig']}")
 
             # Log guardrail usage if configured
             if "guardrailConfig" in converse_params:
@@ -1611,6 +1804,65 @@ class BedrockClient:
         ]
         return "".join(text_parts)
 
+    def extract_tool_use_from_response(
+        self, response: Dict[str, Any], tool_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract the structured ``toolUse.input`` dict from a Bedrock response.
+
+        Accepts either the metering-wrapped response returned by
+        ``invoke_model`` or a raw Converse response, matching
+        ``extract_text_from_response``.
+
+        Like that method, this scans **every** content block rather than
+        indexing ``content[0]``: reasoning models (Claude Sonnet 5 / 4.6+, and
+        any model with extended thinking on) emit one or more
+        ``reasoningContent`` blocks BEFORE the answer block, so the ``toolUse``
+        block is frequently not first.
+
+        A None return is a normal, expected outcome — a model can accept a
+        ``toolConfig`` and still answer in prose (``stopReason`` ``end_turn``
+        rather than ``tool_use``), so callers should fall back to
+        ``extract_text_from_response()`` and parse/validate from there.
+
+        Args:
+            response: Bedrock response object (wrapped or raw).
+            tool_name: Optional tool name to match. When given, ``toolUse``
+                blocks for other tools are skipped — useful when the request
+                declared more than one tool.
+
+        Returns:
+            The tool's ``input`` dict, or None if the response contains no
+            matching ``toolUse`` block with a dict input.
+        """
+        response_obj = response.get("response", response)
+        try:
+            content = response_obj["output"]["message"].get("content", []) or []
+        except (KeyError, TypeError):
+            logger.warning(
+                "Response has no output.message.content; cannot extract toolUse"
+            )
+            return None
+
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            tool_use = item.get("toolUse")
+            if not isinstance(tool_use, dict):
+                continue
+            if tool_name is not None and tool_use.get("name") != tool_name:
+                continue
+            tool_input = tool_use.get("input")
+            if isinstance(tool_input, dict):
+                return tool_input
+            logger.warning(
+                "toolUse block for '%s' had a non-dict input (%s); skipping",
+                tool_use.get("name"),
+                type(tool_input).__name__,
+            )
+
+        return None
+
     def format_prompt(
         self,
         prompt_template: str,
@@ -2221,7 +2473,9 @@ Args:
     max_tokens: Optional max_tokens parameter (int or string)
     max_retries: Optional override for the instance's max_retries setting
     context: Context prefix for metering key (default: "Unspecified")
-    
+    tool_config: Optional Converse toolConfig dict (see BedrockClient.invoke_model)
+    tool_choice: Optional Converse toolChoice dict (see BedrockClient.invoke_model)
+
 Returns:
     Bedrock response object with metering information
 """

@@ -446,9 +446,9 @@ def merge_config_with_defaults(
     """
     # Migrate the user config to the current format BEFORE merging (see docstring).
     if migrate:
-        from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
+        from idp_common.config.migrations import migrate_config
 
-        user_config = migrate_v05_to_v06(deepcopy(user_config))
+        user_config = migrate_config(deepcopy(user_config))
 
     # Load system defaults
     defaults = load_system_defaults(pattern)
@@ -1095,6 +1095,7 @@ def _validate_schema_fields(
         "x-aws-idp-list-item-description",
         "x-aws-idp-page-types",
         "x-aws-idp-source-page-types",
+        "x-aws-idp-instance-array",
     }
 
     non_standard_fields = {}

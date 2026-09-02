@@ -30,6 +30,8 @@ import copy
 import logging
 from typing import Any, Dict
 
+from ._version import is_at_or_after, is_newer_than
+
 logger = logging.getLogger(__name__)
 
 TARGET_VERSION = "0.6"
@@ -82,8 +84,13 @@ def _has_legacy_markers(config: Dict[str, Any]) -> bool:
 
 
 def _needs_migration(config: Dict[str, Any]) -> bool:
-    """True when the config is pre-v0.6 or still carries legacy assessment keys."""
-    if str(config.get("config_format_version", "")) != TARGET_VERSION:
+    """True when the config is pre-v0.6 or still carries legacy assessment keys.
+
+    A stamp NEWER than v0.6 does not need this transform: the config has already
+    been through it (and through later hops), so reshaping it again on an older
+    release would be an older format's opinion applied to a newer config.
+    """
+    if not is_at_or_after(config.get("config_format_version"), TARGET_VERSION):
         return True
     return _has_legacy_markers(config)
 
@@ -251,5 +258,10 @@ def migrate_v05_to_v06(config: Dict[str, Any]) -> Dict[str, Any]:
             "(assessment.* -> extraction.confidence/geometry + hitl)"
         )
 
-    result["config_format_version"] = TARGET_VERSION
+    # Never DOWNGRADE the stamp — see the same guard in v06_to_v07. Reaching here
+    # with a newer stamp means only the legacy-marker check brought us in, and
+    # rewriting the stamp backwards would hide that the config came from a newer
+    # format.
+    if not is_newer_than(result.get("config_format_version"), TARGET_VERSION):
+        result["config_format_version"] = TARGET_VERSION
     return result

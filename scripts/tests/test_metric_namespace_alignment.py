@@ -36,11 +36,27 @@ _STACKNAME_REF_BY_TEMPLATE = {
 }
 
 
+class _CfnTagLoader(yaml.SafeLoader):
+    """SafeLoader (never the unsafe ``yaml.Loader``) plus CFN short-form tags.
+
+    This MUST be a dedicated subclass, not ``yaml.SafeLoader`` itself.
+    ``add_constructor`` is a classmethod that mutates the class it is called on,
+    and PyYAML resolves an exact-tag constructor before any multi-constructor —
+    so registering ``!Ref``/``!GetAtt``/… on the global ``SafeLoader`` leaked
+    into every ``SafeLoader`` subclass in the process, including the SDLC
+    harness's ``CfnLoader``. Its ``!``-prefixed multi-constructor was then
+    overridden by the constructors from this file, which wrap values as
+    ``{"!Ref": ...}``, so ``scripts/sdlc/tests`` parsed IAM trust policies into
+    the wrong shape and four GovCloud tests failed with ``KeyError: 'Principal'``
+    — but only when that suite shared a process with this one.
+    """
+
+
 def _cfn_tag_loader() -> Any:
     """A YAML loader that leaves CFN intrinsics (!Ref, !Sub, …) as
     dict values of the form ``{"<tag>": <value>}`` rather than
     rejecting them."""
-    loader = yaml.SafeLoader
+    loader = _CfnTagLoader
 
     def _make_ctor(tag_name: str):
         def _ctor(_loader: Any, node: Any) -> Any:
@@ -73,7 +89,7 @@ def _cfn_tag_loader() -> Any:
         "ImportValue",
         "Condition",
     ):
-        yaml.add_constructor(f"!{tag}", _make_ctor(f"!{tag}"), Loader=loader)
+        loader.add_constructor(f"!{tag}", _make_ctor(f"!{tag}"))
     return loader
 
 
@@ -213,3 +229,47 @@ class TestRound27SpecificFourLambdas:
             "METRIC_NAMESPACE: !Ref AWS::StackName:\n  - "
             + "\n  - ".join(sorted(missing))
         )
+
+
+@pytest.mark.unit
+class TestLoaderIsolation:
+    """The CFN tag constructors must stay off the global ``yaml.SafeLoader``.
+
+    Registering them globally is a cross-suite hazard, not a style nit: PyYAML
+    resolves an exact-tag constructor ahead of any multi-constructor, so the
+    ``!Ref``/``!GetAtt``/… constructors here would override the ``!``-prefixed
+    multi-constructor of every other ``SafeLoader`` subclass in the process. That
+    silently changed how ``scripts/sdlc/tests`` parsed IAM trust policies and
+    failed four GovCloud tests with ``KeyError: 'Principal'`` — but only when the
+    two suites shared a pytest process, so CI (one process per suite) never saw
+    it and it survived as a latent trap for anyone running them together.
+    """
+
+    def test_constructors_do_not_leak_onto_global_safeloader(self) -> None:
+        _cfn_tag_loader()
+        leaked = sorted(
+            str(tag)
+            for tag in yaml.SafeLoader.yaml_constructors
+            if tag and str(tag).startswith("!")
+        )
+        assert not leaked, (
+            "CFN tag constructors were registered on the global yaml.SafeLoader, "
+            "which leaks into every SafeLoader subclass in the process. Register "
+            "them on a dedicated subclass (_CfnTagLoader) instead:\n  "
+            + "\n  ".join(leaked)
+        )
+
+    def test_loader_is_a_dedicated_safeloader_subclass(self) -> None:
+        loader = _cfn_tag_loader()
+        assert loader is not yaml.SafeLoader, (
+            "_cfn_tag_loader() must return a dedicated subclass, not the global "
+            "yaml.SafeLoader"
+        )
+        # Still safe: never yaml.Loader, and no python/* constructors, so a
+        # template cannot instantiate objects. Mirrors the SDLC harness's
+        # tripwire in scripts/sdlc/tests/test_cfn_loader_safety.py.
+        assert issubclass(loader, yaml.SafeLoader)
+        for tag in list(loader.yaml_constructors) + list(
+            loader.yaml_multi_constructors
+        ):
+            assert "python/" not in str(tag), f"{tag!r} can execute code"

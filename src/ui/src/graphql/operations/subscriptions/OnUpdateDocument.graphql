@@ -14,12 +14,20 @@ subscription OnUpdateDocument {
       PageIds
       Class
       OutputJSONUri
+      InstanceCount
       Excluded
       ExclusionReason
       ConfidenceThresholdAlerts {
         attributeName
         confidence
         confidenceThreshold
+      }
+      ProcessingIssues {
+        stage
+        severity
+        code
+        message
+        rootCause
       }
     }
     Pages {

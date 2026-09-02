@@ -171,6 +171,37 @@ back as `resolved`, which is not sticky, so the next scan re-detects it as
 `reopened` and *that* gates. Use `make srt-clean` to match CI exactly.
 `scripts/srt/tests/test_ci_paths.py` enforces this on the committed baseline.
 
+## Detecting a scanner that silently didn't run
+
+`srt assess` catches a scanner crash, logs it to `.srt/logs/srt-tool.log.*`, and
+continues with an empty result — so the findings table looks *clean* for that
+scanner rather than broken. `scanner_health.py` detects this from the output
+files SRT writes (`<scanner>-summary.json` at the `.srt/` root, plus one
+`checkov-summary.json` per scanned template), freshness-checked against the
+current scan so a previous run's output can't mask a new crash. SRT writes `[]`
+for a clean result, so a *missing* file means the scan did not finish.
+
+`run.py` prints a `⚠️ SCANNERS THAT DID NOT COMPLETE` block and, in CI, fails the
+build when the loss is on a tracked file. A loss on a gitignored artifact is
+reported as informational only, for the same reason its findings are.
+
+### Why checkov reports `stdout maxBuffer length exceeded`
+
+Because a build artifact was scanned — not because a template is too big:
+
+- SRT runs checkov **per file** and calls node's `child_process.exec` with **no
+  `maxBuffer`**, so it gets node's 1 MiB default. Not configurable externally.
+- checkov writes its whole JSON report to stdout *as well as* to
+  `--output-file-path`, even under `--quiet`.
+- `template.yaml` is the largest file in the repo (547 KB) but emits only 2.7 KB
+  of stdout: 459 checks pass, 0 fail, 211 are skipped by its 218
+  `# checkov:skip=` comments. **`sam package` drops those comments**, so
+  `.aws-sam/idp-main.yaml` — a *smaller* file — emits 2.6 MB and kills its scan.
+- Across a full scan the largest successful report is 127 KB, 12% of the buffer.
+
+So `make srt-clean` is the fix, and a packaged template is never a valid
+substitute for its source in a security scan: every inline suppression is gone.
+
 ## Best Practices
 
 1. **Local Development**: Run `make srt` before pushing to catch issues early

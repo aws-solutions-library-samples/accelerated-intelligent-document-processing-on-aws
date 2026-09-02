@@ -4266,9 +4266,9 @@ def config_validate(
         # works even when the file is an older format that would otherwise warn about
         # deprecated fields — the whole point is to hand the user a pre-migrated file.
         if emit_migrated:
-            from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
+            from idp_common.config.migrations import migrate_config
 
-            migrated = migrate_v05_to_v06(user_config)
+            migrated = migrate_config(user_config)
             migrated_yaml = yaml.dump(
                 migrated,
                 default_flow_style=False,

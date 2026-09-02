@@ -29,7 +29,8 @@ import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../c
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
-import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
+import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -39,22 +40,17 @@ import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
 
-interface SectionItem {
-  Id: string;
-  Class: string;
-  PageIds: number[];
-  OutputJSONUri?: string;
-  OriginalId?: string | null;
-  isModified?: boolean;
-  isNew?: boolean;
-  // True when the class is marked with x-aws-idp-exclude-from-processing=true
-  // (e.g., static instruction pages). No extraction / assessment / summary
-  // is performed for excluded sections; the UI renders a "Skipped" badge.
-  Excluded?: boolean;
-  ExclusionReason?: string | null;
-  // Structured self-healing / quality issues detected for this section.
-  ProcessingIssues?: ProcessingIssue[] | null;
-}
+/**
+ * The row shape for the sections table.
+ *
+ * Derived from the generated GraphQL `Section` via `EditableSection` (issue
+ * #711) — this used to be a second, hand-written interface, so a field added to
+ * `schema.graphql` was invisible here even after codegen, with nothing failing
+ * to say so. That is why `InstanceCount` needed hand-wiring in two places, and
+ * why `Excluded` / `ExclusionReason` / `ConfidenceThresholdAlerts` had already
+ * drifted between the two Section shapes.
+ */
+type SectionItem = EditableSection;
 
 interface PageItem {
   Id: number;
@@ -132,6 +128,57 @@ const ClassCell = ({
 };
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
+
+// Instance count cell. `InstanceCount` is how many separate documents of this
+// section's Class extraction found in it:
+//   absent / 0 -> undetermined (older documents, or extraction that failed
+//                 before producing a result). Rendered as "-": it is not a
+//                 problem and must not read as "0 instances".
+//   1          -> the normal case. Rendered quietly, in secondary text.
+//   > 1        -> the section holds several distinct documents that
+//                 classification did not split apart. Emphasised with a Badge
+//                 (the same Badge vocabulary ClassCell uses for "Skipped") plus
+//                 a hover Popover, following the StatusCell precedent.
+// The *warning* for the unflagged case is owned by the Status column (backend
+// raises a `extraction_multi_instance_detected` ProcessingIssue), so this
+// column deliberately stays factual rather than alarming — a class configured
+// for multiple instances is working as intended.
+const InstancesCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+  const count = item.InstanceCount ?? 0;
+
+  if (count <= 0) {
+    return <Box color="text-status-inactive">-</Box>;
+  }
+
+  if (count === 1) {
+    return <Box color="text-body-secondary">1</Box>;
+  }
+
+  return (
+    <Popover
+      dismissButton={false}
+      position="top"
+      size="medium"
+      triggerType="custom"
+      header="Multiple documents in one section"
+      content={
+        <SpaceBetween size="xs">
+          <Box variant="p">
+            Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
+            instance.
+          </Box>
+          <Box variant="small" color="text-body-secondary">
+            If these should be separate sections, review the classification settings for this class.
+          </Box>
+        </SpaceBetween>
+      }
+    >
+      <span style={{ cursor: 'pointer' }}>
+        <Badge color="blue">{count}</Badge>
+      </span>
+    </Popover>
+  );
+};
 
 // Confidence alerts cell showing only count
 const ConfidenceAlertsCell = ({
@@ -635,6 +682,15 @@ const createColumnDefinitions = (
       isResizable: true,
     },
     {
+      id: 'instances',
+      header: 'Instances',
+      cell: (item: SectionItem) => <InstancesCell item={item} />,
+      sortingField: 'InstanceCount',
+      minWidth: 110,
+      width: 110,
+      isResizable: true,
+    },
+    {
       id: 'confidenceAlerts',
       header: 'Low Confidence Fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
@@ -723,6 +779,15 @@ const createPattern1EditColumnDefinitions = (
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
       minWidth: 120,
       width: 120,
+      isResizable: true,
+    },
+    {
+      id: 'instances',
+      header: 'Instances',
+      cell: (item: SectionItem) => <InstancesCell item={item} />,
+      sortingField: 'InstanceCount',
+      minWidth: 110,
+      width: 110,
       isResizable: true,
     },
     {

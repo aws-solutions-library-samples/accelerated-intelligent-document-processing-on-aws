@@ -124,6 +124,37 @@ class TestListAndGet:
         assert section["ConfidenceThresholdAlerts"] == []
         assert section["ProcessingIssues"] == []
 
+    def test_sections_carry_exclusion_flags(self, mod):
+        """The "Skipped" badge is the only explanation a user gets for why an
+        excluded section's panels are empty. This shaping is an explicit
+        allow-list, so an omitted key is silently dropped from every historical
+        view (GitHub #704)."""
+        mod.document_service = MagicMock()
+        mod.document_service.list_document_runs.return_value = [
+            {
+                "RunId": "r1",
+                "SK": "run#r1",
+                "ObjectKey": "k",
+                "Sections": [
+                    {
+                        "Id": "1",
+                        "Class": "Instructions",
+                        "OutputJSONUri": "s3://o/k",
+                        "Excluded": True,
+                        "ExclusionReason": "instructions",
+                    },
+                    {"Id": "2", "Class": "W2", "OutputJSONUri": "s3://o/k2"},
+                ],
+            }
+        ]
+        out = mod.handler(_event("listDocumentVersions", objectKey="k"), None)
+        skipped, normal = out[0]["Sections"]
+        assert skipped["Excluded"] is True
+        assert skipped["ExclusionReason"] == "instructions"
+        # Runs recorded before the flags were snapshotted have no such keys.
+        assert normal["Excluded"] is False
+        assert normal["ExclusionReason"] is None
+
     def test_get_document_version_includes_files(self, mod, monkeypatch):
         mod.document_service = MagicMock()
         mod.document_service.get_document_run.return_value = {

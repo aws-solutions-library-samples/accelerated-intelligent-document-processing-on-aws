@@ -20,6 +20,7 @@ import pytest
 from moto import mock_aws
 
 from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.models import CONFIG_FORMAT_VERSION
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _LAMBDA_DIR = _REPO_ROOT / "src" / "lambda" / "update_configuration"
@@ -62,14 +63,14 @@ def _make_table():
 @mock_aws
 def test_detects_rollback_when_stored_format_is_newer(update_config_module):
     _make_table()
-    _seed(TABLE, "Config#default", "0.7")  # newer than code's 0.6
+    _seed(TABLE, "Config#default", "0.9")  # newer than the code's own version
     assert update_config_module._is_rollback_to_older_format() is True
 
 
 @mock_aws
 def test_no_rollback_when_stored_format_matches_code(update_config_module):
     _make_table()
-    _seed(TABLE, "Config#default", "0.6")  # same as code
+    _seed(TABLE, "Config#default", CONFIG_FORMAT_VERSION)  # same as code
     assert update_config_module._is_rollback_to_older_format() is False
 
 

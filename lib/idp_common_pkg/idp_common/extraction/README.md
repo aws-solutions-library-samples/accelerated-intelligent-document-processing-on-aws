@@ -528,6 +528,101 @@ Common issues and solutions:
    - Improve example quality and accuracy
    - Ensure examples demonstrate proper null handling
 
+## Coercion and validation (Simple mode)
+
+Simple extraction used to do a raw `json.loads` and pass whatever came back
+downstream, so a wrong *type* or a non-ISO date reached DynamoDB unchallenged.
+Advanced (agentic) extraction has had full-schema validation and escalation for
+some time; as of v0.7 the simple path gets the same guarantee, in two steps.
+
+**1. Deterministic coercion (always, free).** Before validating, obvious
+type/format mismatches are repaired without a model call: `"$1,234.00"` and
+`"1.234,00"` into a `number` field, named-month and unambiguous numeric dates
+into `format: date`, boolean-ish strings into `boolean`. Every change is recorded
+under `metadata.coercion` and anything ambiguous (`01/02/2024`, a 2-digit year,
+fractional-to-integer) is **refused** rather than guessed. Nothing is ever
+rewritten without a record. See `idp_common.extraction.coercion`.
+
+**2. Full JSON-Schema validation**, then `extraction.validation.fail_action`:
+
+| `fail_action` | Behaviour | Extra inference? |
+|---|---|---|
+| `warn` (default) | Record the outcome in `metadata.validation` and raise a ProcessingIssue | **No — free** |
+| `reject` | Same, plus `parsing_succeeded=False` so downstream/HITL treats the section as failed | **No — free** |
+| `escalate` | Re-extract ONLY the failing top-level fields with `escalation_model`, merged back over the fields that already validated | **Yes** |
+
+Validation is **on by default** precisely because the default action is free: it
+turns an otherwise-silent schema violation into something visible at no cost.
+`escalate` is the opt-in that spends money.
+
+Escalation is deliberately **not** preceded by a same-model retry: re-asking the
+model that just produced invalid output, with the same prompt, mostly buys
+another invalid answer at full document cost. Only the failing fields are
+re-extracted, and only those fields are merged back — an over-eager escalation
+response cannot overwrite fields that already validated. A failed escalation
+returns the original extraction unchanged; a broken repair must never be worse
+than no repair.
+
+## Multi-document sections (`instance_count`)
+
+Classification splits sections on document *type*. When a packet concatenates
+several records of the **same** type with no separator, there is no type change
+to split on, so they land in one section — and extraction, whose class schema
+describes one document, returns one record. See
+[#565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/565).
+
+`Section.instance_count` reports how many documents of the class a section turned
+out to hold: `0` = undetermined, `1` = normal, `> 1` = the section spans several.
+The UI surfaces `> 1` so this is obvious at a glance. It is populated from
+whichever of two sources applies.
+
+### Recovered (automatic, no config)
+
+If the model returns a **JSON array** for the single-object schema — which is
+what it tends to do when it notices several records — every element is kept.
+The first populates `inference_result` (so the output shape is identical to a
+normal extraction and no downstream consumer changes), the rest are recorded in
+`metadata.recovered_instances`, and the section gets an
+`extraction_multi_instance_detected` **warning** because only the first is scored
+and reviewed.
+
+This replaced the previous behaviour, which stored the array under a `raw_array`
+key that nothing read, failed the section, and reported a misleading
+`extraction_sparse`. Note what it does *not* fix: if the model returns a single
+object for a two-document section, only the first record exists in the response
+and there is nothing to recover.
+
+### Declared (`x-aws-idp-instance-array`)
+
+A class whose schema is already modelled as a **packet of records** can name its
+own instance axis:
+
+```yaml
+classes:
+  - $id: patient_packet
+    type: object
+    x-aws-idp-instance-array: records   # each element is one document
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+          properties:
+            patient_name: { type: string }
+            patient_dob:  { type: string, format: date }
+```
+
+`instance_count` becomes `len(inference_result["records"])`. Nothing else
+changes — **no schema transform, no output-shape change, no downstream impact** —
+because the pipeline is only being told which existing array means "one document
+per element". This exists so configs that already solved multi-record packets by
+hand keep working unchanged while still getting the count and the UI badge.
+
+A declared count above 1 is *correct*, not a problem, so it raises **no** warning
+— unlike the recovered case. The declaration is validated at config-validate
+time (the property must exist and be an array of objects), because a typo would
+otherwise fail silently by simply never producing a count.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:
@@ -1092,8 +1187,9 @@ model** generated from the class JSON Schema (`field_constraints=True`), so
 `enum`, `pattern`, numeric bounds and `minItems`/`maxItems` violations are fed
 back to the agent for self-correction during extraction.
 
-The optional `extraction.agentic.validation` block adds **full JSON-Schema
-validation** of the final result — most importantly the `format` keyword
+The `extraction.validation` block (moved up from `extraction.agentic.validation`
+in v0.7, since Simple extraction runs this path too; stored configs migrate
+automatically) adds **full JSON-Schema validation** of the final result — most importantly the `format` keyword
 (`date`, `date-time`, `email`, `uri`, `uuid`, ...), which the generated Pydantic
 model does **not** enforce — and an optional **bounded model escalation** when
 validation still fails.

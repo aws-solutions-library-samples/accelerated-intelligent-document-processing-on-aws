@@ -82,6 +82,33 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
     expect(attr!['x-aws-idp-future-attr-extension']).toBe(42);
   });
 
+  it('exportSchema preserves x-aws-idp-instance-array on a document class', () => {
+    // Regression: the export allow-list is hand-maintained per key, so a
+    // class-level extension missing from it is SILENTLY ERASED the first time a
+    // user opens and saves that class in the Document Schema editor. The key
+    // would work fine via YAML/CLI and then vanish on the next UI edit.
+    const { result } = renderHook(() => useSchemaDesigner());
+
+    let classId = '';
+    act(() => {
+      const cls = result.current.addClass('PatientPacket');
+      classId = cls.id;
+    });
+
+    act(() => {
+      result.current.updateClass(classId, {
+        'x-aws-idp-document-type': true,
+        'x-aws-idp-instance-array': 'records',
+      });
+    });
+
+    const exported = result.current.exportSchema();
+    expect(exported).not.toBeNull();
+    const cls = exported!.find((c) => c['x-aws-idp-instance-array'] !== undefined);
+    expect(cls).toBeDefined();
+    expect(cls!['x-aws-idp-instance-array']).toBe('records');
+  });
+
   it('updateAttribute removes a key when the update value is undefined', () => {
     // Documents the existing semantics so we don't accidentally regress them
     // when changing the preservation behavior above.

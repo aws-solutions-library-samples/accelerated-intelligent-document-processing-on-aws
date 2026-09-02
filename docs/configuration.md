@@ -184,6 +184,37 @@ The `config_library/` directory contains example configurations demonstrating th
 
 See the [config_library README](../config_library/README.md) for available configurations and usage examples.
 
+### Retired and legacy Bedrock models
+
+Bedrock retires model versions over time. A retired model is removed from the
+model picklists (the enums in `patterns/unified/template.yaml` and
+`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+configuration are plain strings, not a closed enum, so **a stored configuration
+that still names a retired model keeps loading** — it just fails at invoke time
+with:
+
+```
+ResourceNotFoundException: This model version has reached the end of its life.
+```
+
+The failing stage's model is named in the Lambda log line and by the Error
+Analyzer agent's `fetch_pipeline_configuration` tool. Repoint the stage at a
+current model to fix it.
+
+Two failure shapes to distinguish:
+
+- **End of life** — the model is gone for everyone. It is removed from the
+  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
+  example.
+- **Provider-legacy, account-scoped** — the model still exists but access is
+  withdrawn per account after inactivity:
+  `ResourceNotFoundException: Access denied. This Model is marked by provider as
+  Legacy and you have not been actively using the model in the last 30 days.`
+  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
+  remains selectable because it works for accounts that have used it recently —
+  if you hit this error, either pick a current model or request access again in
+  the Bedrock console.
+
 ## Summarization Configuration
 
 ### Enable/Disable Summarization
@@ -889,26 +920,29 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
-### Tiered Models for Agentic Extraction (Validation + Escalation)
+### Tiered Models (Validation + Escalation)
 
-Agentic extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.agentic.validation`:
+Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.validation`:
 
 ```yaml
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
-  agentic:
-    enabled: true
-    validation:
-      enabled: true
-      fail_action: escalate
-      escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
+  validation:
+    enabled: true                          # on by default since v0.7
+    fail_action: escalate                  # default is 'warn' (free); escalate costs money
+    escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> `extraction.validation` because Simple extraction runs the same validate-and-retry
+> path, so the setting is no longer agentic-only. Stored configurations are migrated
+> automatically on read — no action is required.
 
 When validation fails, only the failing top-level fields are re-extracted with `escalation_model` (a per-class `x-aws-idp-extraction-escalation-model` override takes precedence) and merged back — typically a small fraction of documents, so the stronger model's cost is incurred only where it's needed. See [Schema validation and model escalation](extraction-and-confidence.md#schema-validation-and-model-escalation) for the full feature, including the deterministic table-parsing tool, the completeness heuristic, and sharding for large documents.
 
-> The agentic options (validation, table parsing, sharding, escalation) are editable in the Web UI under **Configuration → Extraction → Agentic Extraction**, where sub-options are progressively revealed as you enable each feature.
+> Validation and escalation are editable in the Web UI under **Configuration → Extraction → Schema Validation & Escalation**; the Advanced-mode options (table parsing, sharding) are under **Advanced extraction settings**. Sub-options are progressively revealed as you enable each feature.
 
-> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `validation` + `escalation_model` above instead.
+> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `extraction.validation` + `escalation_model` above instead.
 
 ## Cost Tracking and Optimization
 

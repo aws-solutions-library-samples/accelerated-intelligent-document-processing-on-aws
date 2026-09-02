@@ -181,6 +181,14 @@ export const X_AWS_IDP_EXCLUDE_FROM_PROCESSING = 'x-aws-idp-exclude-from-process
 export const X_AWS_IDP_EXCLUSION_REASON = 'x-aws-idp-exclusion-reason';
 
 /**
+ * Class-level: names the top-level array property whose length is the
+ * section's instance count, for a class already modelled as a packet of
+ * records (one element per document). Purely a signal - it does not change
+ * the extraction shape. Must stay in sync with schema_constants.py.
+ */
+export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
+
+/**
  * Declares the named page sub-types a class can include. Each entry has a
  * `name`, optional `description`, and `x-aws-idp-document-page-content-regex`
  * used to detect the page type from per-page OCR text.
