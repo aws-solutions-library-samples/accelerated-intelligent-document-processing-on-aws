@@ -33,6 +33,20 @@ extraction:
                                             # pre-load page images (table path is text-driven;
                                             # view_image fetches on demand). Big cost saver on
                                             # multi-page tables. false = always attach images.
+  # Send the class schema on the wire as a FORCED Converse tool instead of
+  # describing it in the prompt (WS-05). Listed here, alongside its siblings, so it
+  # is visible in Config#default rather than existing only as a Pydantic default.
+  forced_tool:
+    # OFF by default and gated on a measured win: forcing constrains the response
+    # SHAPE, not the values in it, so a model that would have returned a stray key
+    # may instead return a worse value that fits. Routes that cannot carry a
+    # toolConfig (a custom Lambda hook, GPT-5.x) fall back automatically, and the
+    # reason is recorded in the section's metadata.forced_tool.
+    enabled: false
+    # A model can accept the tool and still answer in prose — a normal outcome, not
+    # an error. Keep true in production; set false only to measure how often
+    # forcing is actually honored.
+    fallback_to_prompt: true
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.
   coercion:
