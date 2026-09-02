@@ -51,7 +51,7 @@ import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
-import CreateDiscoveryVersionModal from './CreateDiscoveryVersionModal';
+import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 
 const client = generateClient();
 
@@ -1003,10 +1003,11 @@ const MultiDocDiscoveryPanel = () => {
         }
       />
 
-      <CreateDiscoveryVersionModal
+      <CreateConfigProfileModal
         visible={showCreateVersionModal}
         onDismiss={() => setShowCreateVersionModal(false)}
         defaultSourceVersion={selectedVersion?.value ?? null}
+        infoText="Creates a new configuration profile that inherits its settings and document classes from the selected source profile. Discovered schema will then be saved to this new profile."
         onCreated={async (versionName) => {
           setShowCreateVersionModal(false);
           await fetchVersions();
