@@ -357,6 +357,16 @@ class DocumentDynamoDBService:
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
 
+                # Exclusion flags for a section whose class carries
+                # x-aws-idp-exclude-from-processing. This is the write that makes
+                # the UI's "Skipped" badge possible — the badge is the only
+                # explanation a user gets for why an excluded section's panels are
+                # empty. Omitted when not excluded, per the convention above.
+                if section.excluded:
+                    section_data["Excluded"] = True
+                    if section.exclusion_reason:
+                        section_data["ExclusionReason"] = section.exclusion_reason
+
                 sections_data.append(section_data)
 
             if sections_data:
@@ -621,6 +631,10 @@ class DocumentDynamoDBService:
                         confidence_threshold_alerts=confidence_threshold_alerts,
                         processing_issues=processing_issues,
                         instance_count=int(section_data.get("InstanceCount") or 0),
+                        # Absent on items written before the flags were persisted,
+                        # and on every non-excluded section.
+                        excluded=bool(section_data.get("Excluded", False)),
+                        exclusion_reason=section_data.get("ExclusionReason"),
                     )
                 )
 
@@ -1136,6 +1150,18 @@ class DocumentDynamoDBService:
         if section.instance_count:
             section_data["InstanceCount"] = section.instance_count
 
+        # Exclusion flags, written for the same reason ProcessingIssues are above:
+        # classification sets them, then extraction calls THIS writer for every
+        # section including the excluded ones it short-circuited
+        # (patterns/unified/src/extraction_function/index.py:367). Because this is
+        # a whole-map replace, omitting the keys would erase the flags
+        # classification had already persisted, and the "Skipped" badge would
+        # disappear moments after appearing.
+        if section.excluded:
+            section_data["Excluded"] = True
+            if section.exclusion_reason:
+                section_data["ExclusionReason"] = section.exclusion_reason
+
         # Use SET Sections[index] = :value for atomic section update
         update_expression = f"SET #Sections[{section_index}] = :section"
         expression_names = {"#Sections": "Sections"}
@@ -1266,6 +1292,13 @@ class DocumentDynamoDBService:
                     )
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
+                # Snapshot the exclusion flags too, so a historical version keeps
+                # the "Skipped" badge instead of showing an unexplained empty
+                # section.
+                if section.excluded:
+                    section_data["Excluded"] = True
+                    if section.exclusion_reason:
+                        section_data["ExclusionReason"] = section.exclusion_reason
                 sections_data.append(section_data)
             item["Sections"] = sections_data
 

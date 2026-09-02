@@ -20,6 +20,8 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
       Class
       OutputJSONUri
       InstanceCount
+      Excluded
+      ExclusionReason
       ConfidenceThresholdAlerts {
         attributeName
         confidence
