@@ -373,6 +373,30 @@ class TestDeleteCurrentOutputObjects:
             Bucket="out-bucket", Prefix="foo/pages/"
         )
 
+    def test_subprefix_empty_string_raises_value_error(self):
+        """An entry like ``""`` or ``"/"`` normalizes to empty, which would
+        silently reduce to a no-op — indistinguishable from a fresh-key
+        upload. Since the caller passed a non-empty list they clearly
+        intend to scope-purge; raise so the miss is loud rather than
+        letting stale ``pages/*`` survive."""
+        s3 = MagicMock()
+        for bad in ("", "/"):
+            with pytest.raises(ValueError, match="empty entry"):
+                delete_current_output_objects(
+                    s3, "out-bucket", "doc.pdf", subprefixes=(bad,)
+                )
+        # Even one bad entry among valid ones must raise.
+        with pytest.raises(ValueError, match="empty entry"):
+            delete_current_output_objects(
+                s3, "out-bucket", "doc.pdf", subprefixes=("pages/", "")
+            )
+        # Explicit empty tuple ``()`` remains an intentional no-op.
+        s3.get_paginator.return_value = _paginator_returning([{"Contents": []}])
+        deleted = delete_current_output_objects(
+            s3, "out-bucket", "doc.pdf", subprefixes=()
+        )
+        assert deleted == 0
+
     def test_subprefix_leading_and_trailing_slashes_both_normalized(self):
         """``/pages/`` (leading + trailing) normalizes the same as ``pages``
         or ``pages/`` — a caller cannot accidentally scan a different

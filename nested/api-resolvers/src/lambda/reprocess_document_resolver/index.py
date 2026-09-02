@@ -111,8 +111,14 @@ def _delete_output_data(input_key):
         else:
             logger.info(f"No previous output data found for {input_key}")
     except Exception as e:
-        # Non-fatal: OCR will still run but may recover stale partial data
-        logger.warning(f"Failed to delete previous output data for {input_key}: {e}")
+        # Non-fatal: OCR will still run but may recover stale partial data.
+        # Logged at ERROR so a metric filter can alarm — a partial purge
+        # means reprocess is NOT actually "starting over" cleanly (OCR's
+        # retry-safe recovery only needs one surviving complete 4-file
+        # page to resurrect stale text), so the operator needs to see it.
+        # ``delete_current_output_objects`` raises ``RuntimeError`` on
+        # per-key S3 delete failures for exactly this signal.
+        logger.error(f"Failed to delete previous output data for {input_key}: {e}")
 
 
 def handler(event, context):

@@ -98,13 +98,25 @@ def delete_current_output_objects(
     """
     preserved_prefix = runs_prefix(input_key)
     if subprefixes is not None:
-        # Explicit list (may be empty → no-op) — scan only these
-        # subprefixes. Normalize both leading and trailing slashes so
+        # Explicit list — normalize both leading and trailing slashes so
         # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
-        # — a bare ``<key>/pages`` would match ``<key>/pages_backup/*``.
-        prefixes_to_scan = [
-            f"{input_key}/{sp.strip('/')}/" for sp in subprefixes if sp.strip("/")
-        ]
+        # (a bare ``<key>/pages`` would match ``<key>/pages_backup/*``).
+        # Empty tuple ``()`` is an intentional no-op (see below). But an
+        # entry like ``""`` or ``"/"`` normalizes to empty, which would
+        # silently reduce to a no-op — indistinguishable from a fresh-key
+        # upload. Callers passing a non-empty list clearly intend to
+        # scope-purge; raise so a bad entry is loud rather than a silent
+        # miss that lets stale ``pages/*`` survive.
+        normalized = [sp.strip("/") for sp in subprefixes]
+        if subprefixes and not all(normalized):
+            raise ValueError(
+                f"subprefixes contains an empty entry (after stripping slashes): "
+                f"{list(subprefixes)!r}. Pass an empty tuple ``()`` for no-op "
+                f"or ``None`` for broad purge — an empty string / bare ``/`` "
+                f"would silently reduce to a no-op and let stale artefacts "
+                f"survive."
+            )
+        prefixes_to_scan = [f"{input_key}/{n}/" for n in normalized]
     else:
         # None → broad purge under ``<key>/`` (reprocess semantics).
         prefixes_to_scan = [f"{input_key}/"]
