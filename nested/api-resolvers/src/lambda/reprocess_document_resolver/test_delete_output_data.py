@@ -109,6 +109,34 @@ class TestDeleteOutputDataArgPassing:
         assert metrics[0]["Value"] == 1
         assert metrics[0]["Unit"] == "Count"
 
+    def test_metric_namespace_is_read_from_module_attribute(self):
+        """Regression guard against an env-var rename slipping through:
+        the module-level ``METRIC_NAMESPACE`` binds at import time
+        (before the autouse ``_env`` fixture runs), so
+        ``test_failure_emits_alarmable_metric`` only ever exercises the
+        ``os.environ.get(..., 'IDP')`` fallback branch. A future rename
+        of the env var would silently keep hitting the fallback in
+        prod, emitting under the wrong namespace and the alarm never
+        fires. Patching the module attribute directly to a stack-name-
+        shaped value asserts the emit uses the value ``METRIC_NAMESPACE``
+        actually resolves to at runtime — so the template's
+        ``METRIC_NAMESPACE: !Ref StackName`` wiring is exercised by the
+        assertion path."""
+        import index
+
+        with (
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "METRIC_NAMESPACE", "idp-dev-qs"),
+            patch.object(
+                index,
+                "delete_current_output_objects",
+                side_effect=RuntimeError("purge failed"),
+            ),
+        ):
+            index._delete_output_data("doc.pdf")
+
+        assert mock_cw.put_metric_data.call_args.kwargs["Namespace"] == "idp-dev-qs"
+
     def test_metric_emit_failure_is_swallowed(self):
         """Telemetry must not affect the reprocess flow — if
         PutMetricData itself throws (throttled / network), the outer

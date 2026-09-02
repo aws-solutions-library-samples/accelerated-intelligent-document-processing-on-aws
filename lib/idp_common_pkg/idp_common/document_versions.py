@@ -92,6 +92,12 @@ def delete_current_output_objects(
         empty).
 
     Raises:
+        ValueError: on bad ``subprefixes`` input — a bare ``str``
+        instead of a sequence, or a sequence containing a non-str
+        entry (``None``, int, ...), or a sequence with an entry that
+        normalizes to empty after stripping slashes (``""``, ``"/"``).
+        Each raises with a message naming the fix so a caller
+        typo doesn't silently reduce to a no-op scan.
         RuntimeError: if any batch's ``delete_objects`` returns per-key
         ``Errors`` (visible in the response even with ``Quiet=True``).
         Silently continuing on partial failures would re-open #719 —
@@ -187,7 +193,13 @@ def delete_current_output_objects(
         # Raise so the caller's error path (queue_sender: logger.error;
         # reprocess resolver: caller's try/except) fires visibly rather
         # than logging-and-continuing with a partial success count.
-        sample = ", ".join(f"{e.get('Key')}({e.get('Code')})" for e in total_errors[:5])
+        # ``or '?'`` guards against a malformed error dict missing Key
+        # or Code — a real occurrence when S3 returns a partial error
+        # entry, and rendering ``None(None)`` in triage output is worse
+        # than a labeled unknown.
+        sample = ", ".join(
+            f"{e.get('Key') or '?'}({e.get('Code') or '?'})" for e in total_errors[:5]
+        )
         # Report the exact prefix(es) scanned so triage knows what was
         # actually purged — a narrow subprefixes=("pages/",) scan and a
         # broad reprocess purge report different failure surface even

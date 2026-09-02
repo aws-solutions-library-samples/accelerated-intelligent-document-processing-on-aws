@@ -1900,8 +1900,14 @@ Resources:
           # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
           # on partial-purge failure — parity with queue_sender's #719
           # telemetry so operators can alarm on both ingest and
-          # reprocess paths from a single metric.
-          METRIC_NAMESPACE: !Ref AWS::StackName
+          # reprocess paths from a single metric. Uses the ROOT stack's
+          # name (``!Ref StackName`` — the parameter, passed in by the
+          # root template) NOT ``!Ref AWS::StackName``: this is a
+          # nested template, so the pseudo-parameter would resolve to
+          # the auto-generated nested stack name and the metric would
+          # land in a different namespace than queue_sender's, defeating
+          # the "single-alarm parity" this block sets up.
+          METRIC_NAMESPACE: !Ref StackName
       LoggingConfig:
         LogGroup: !Ref ReprocessDocumentResolverFunctionLogGroup
       Policies:
@@ -1924,7 +1930,9 @@ Resources:
               Resource: "*"
               Condition:
                 StringEquals:
-                  cloudwatch:namespace: !Ref AWS::StackName
+                  # Root-stack name via parameter, NOT ``!Ref AWS::StackName``
+                  # (nested template) — see METRIC_NAMESPACE comment above.
+                  cloudwatch:namespace: !Ref StackName
         - Statement:
             - Effect: Allow
               Action:
