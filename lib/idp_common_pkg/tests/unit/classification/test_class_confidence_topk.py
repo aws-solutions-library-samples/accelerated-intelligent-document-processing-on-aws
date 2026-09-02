@@ -1,15 +1,18 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Opt-in CLASS confidence: prompt assembly + candidate resolution (#673).
+"""CLASS confidence: prompt assembly + candidate resolution (#673).
 
 `classification.confidence.mode` composes an instruction block into the
-classification prompt and resolves what comes back. Three properties matter:
+classification prompt and resolves what comes back. It ships as `topk`; four
+properties matter:
 
-1. `off` (the default) changes the prompt by exactly nothing.
-2. The block lands INSIDE the prompt-cache prefix — classification runs per page,
+1. The shipped default really is `topk` AND its prompt block is populated — a
+   default that asks for nothing would score nothing while looking enabled.
+2. `off` changes the prompt by exactly nothing, so opting out really is free.
+3. The block lands INSIDE the prompt-cache prefix — classification runs per page,
    so a block after the cache point is re-read on every page of every document.
-3. A model that reports a ranked candidate list is scored on the probability of
+4. A model that reports a ranked candidate list is scored on the probability of
    the class actually STORED, and nothing is invented when it does not give one.
 """
 
@@ -20,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from idp_common.classification.class_confidence import (
+    TOP_K_PLACEHOLDER,
     append_class_confidence_block,
     confidence_from_candidates,
     parse_candidates,
@@ -267,9 +271,55 @@ def _service(cfg):
 
 
 @pytest.mark.unit
+class TestShippedDefault:
+    """`topk` is ON by default, and that costs money — pin it deliberately.
+
+    The default was chosen on measured evidence (~0.5 % of total document cost,
+    no consistent accuracy change, 43 % of the default model's own errors caught
+    from 8 % of pages — see docs/benchmarking/classification-confidence.md), so a
+    silent flip in either direction should fail a test rather than surprise a
+    deployment's bill or quietly stop scoring.
+    """
+
+    def test_model_default_is_topk(self):
+        from idp_common.config.models import IDPConfig
+
+        cfg = IDPConfig()
+        assert cfg.classification.confidence.mode == "topk"
+        assert cfg.classification.confidence.top_k_candidates == 3
+
+    def test_system_defaults_agree_with_the_model_default(self):
+        """The stored default and the Pydantic default must not drift apart."""
+        import os
+
+        import yaml as _yaml
+
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "..",
+            "idp_common",
+            "config",
+            "system_defaults",
+            "base-classification.yaml",
+        )
+        stored = _yaml.safe_load(open(os.path.normpath(path)))
+        assert stored["classification"]["confidence"]["mode"] == "topk"
+
+    def test_the_shipped_prompt_block_is_present_and_asks_for_candidates(self):
+        """A default of `topk` with an empty block would silently ask nothing."""
+        from idp_common.config.merge_utils import merge_config_with_defaults
+
+        merged = merge_config_with_defaults({}, validate=False)
+        block = merged["classification"]["confidence"]["task_prompt_topk"]
+        assert "<class-confidence>" in block
+        assert "candidates" in block
+        assert TOP_K_PLACEHOLDER in block
+
+
+@pytest.mark.unit
 class TestPromptComposition:
     def test_off_leaves_the_prompt_untouched(self):
-        """The default must cost exactly nothing."""
+        """Opting out must cost exactly nothing — not a cheaper ask, nothing."""
         service = _service(_config("off"))
         composed = service._get_classification_config()["task_prompt"]
         assert "<class-confidence>" not in composed

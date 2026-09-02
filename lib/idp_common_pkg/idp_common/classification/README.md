@@ -111,8 +111,14 @@ certain than its weakest page; `None`-absorbing because the min of a *scored
 subset* would present a partial aggregate as a whole-section number.
 
 ⚠️ Page-level classification is one inference **per page**, so anything added to
-its output format multiplies by page count — unlike extraction's confidence,
-which is per section.
+its output format multiplies by page count — unlike extraction's confidence, which
+is per section. That is why the default was measured before being turned on:
+`topk` costs +17 % of the classification step, which is ~3 % of total document cost
+on the default model (so ~0.5 % of the bill) and changes accuracy by nothing
+consistent. `mode: off` restores the zero-cost path exactly. See
+`docs/benchmarking/classification-confidence.md`, and note the finding that a
+*small* classifier's score is a coarse two-level flag while a mid-tier one's is
+graded — the mode being on does not make the number equally useful everywhere.
 
 `_apply_page_result` is the single place that copies a result onto the declared
 `Page` fields (class, confidence, reason, candidates, boundary), shared by the
@@ -121,7 +127,7 @@ fewer signals than a miss.
 
 #### Asking for it: `classification.confidence.mode`
 
-`off` (default), `topk`, or `verbalized`. `class_confidence.py` owns both halves:
+`topk` (**default**), `verbalized`, or `off`. `class_confidence.py` owns both halves:
 
 - **Prompt assembly.** `append_class_confidence_block` splices
   `classification.confidence.task_prompt_topk` / `task_prompt_verbalized` into

@@ -1157,31 +1157,43 @@ this one is about the *class*, not the extracted values.
 
 ### Where a score comes from
 
-There is no separate confidence inference for classification: the value comes
-out of the same response as the class. Either switch on
-`classification.confidence.mode`, which composes the instruction into the prompt
-for you, or ask for it in your own prompt's output format — both work, because
-the response parser is not gated on the setting.
+There is no separate confidence inference for classification: the value comes out
+of the same response as the class. `classification.confidence.mode` composes the
+instruction into the prompt for you — it is **on by default** — and a custom
+prompt that asks for `confidence` or `candidates` itself is honoured either way,
+because the response parser is not gated on the setting.
+
+Editable in the Web UI under **Configuration → Classification → Class
+confidence**, or in YAML:
 
 ```yaml
 classification:
   confidence:
-    mode: topk           # off (default) | topk | verbalized
+    mode: topk           # topk (default) | verbalized | off
     top_k_candidates: 3  # topk only
 ```
 
 | Mode | What the model is asked for | Notes |
 |------|-----------------------------|-------|
-| `off` (default) | nothing extra | Costs nothing. A custom prompt that asks for `confidence` or `candidates` anyway is still honoured. |
-| `topk` | ranked candidate classes with probabilities | **Recommended.** Better calibrated, and it answers "what else could this have been?" |
+| `topk` (default) | ranked candidate classes with probabilities | Best calibrated, and it answers "what else could this have been?" |
 | `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+| `off` | nothing extra | Costs nothing at all. |
 
-`topk` is the recommended mode for a reason. Asking for a single number gets
+`topk` is the default for a measured reason. Asking for a single number gets
 ~0.95 on everything; making the model enumerate and rank alternatives forces it
 to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
 EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
 produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
 and shown in the UI.
+
+**What it costs:** measured over 298 pages of a 13-class corpus, `topk` added
+**+17 % to the classification step** — which is only ~3 % of total document cost
+on the default model, so **~0.5 % of the bill**, inside normal run-to-run
+variance. It changed classification accuracy by nothing consistent (+0.013 on
+Nova 2 Lite, −0.007 on Haiku 4.5, opposite signs, single runs). Page-level
+classification is one inference *per page*, so if you process very large packets
+and want none of this, `off` costs exactly nothing. See the
+[classification-confidence benchmark](./benchmarking/classification-confidence.md).
 
 A page is scored on the probability of the class **actually stored**, not simply
 the highest probability in the list — those differ when the model's `class`
@@ -1233,7 +1245,7 @@ number. Nothing invents a value:
 | Situation | Confidence |
 |-----------|-----------|
 | Model asked for a confidence and returned one | the model's value |
-| Prompt asks for no confidence (the default) | *not scored* |
+| Prompt asks for no confidence (`mode: off`, or a custom prompt that asks for none) | *not scored* |
 | **BDA mode**, blueprint matched | BDA's **matched-blueprint confidence** — the blueprint is what determines the class, so this needs no prompt change and costs nothing extra |
 | **BDA mode**, no blueprint match | *not scored* |
 | Class came from a document-name regex, a single-class configuration, or a page-content regex | `1.0` — deterministic assertion, no model involved |

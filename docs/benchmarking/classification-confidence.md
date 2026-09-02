@@ -13,9 +13,10 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Release:** v0.6.7.dev (branch `feature/issue-673-classification-confidence`) ·
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
-· first **20 packets**, **298 pages** per model, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml` + `classification.confidence.mode: topk`
-(`top_k_candidates: 3`), everything else at system defaults; summarization disabled
+· first **20 packets**, **298 pages** per model per mode, one run each, no failures
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.confidence.mode`
+∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
+summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
 
 Reproduce with:
@@ -23,6 +24,7 @@ Reproduce with:
 ```bash
 AWS_PROFILE=default python3 benchmarks/harness/run_classification_bench.py \
     --stack <STACK> --testset docsplit --n 20 --models nova2lite,haiku45 --mode topk
+# ... and again with --mode off for the control
 ```
 
 Raw data: `benchmarks/results/v0.6.7/clsconf/` (`summary.json`, per-page
@@ -33,11 +35,19 @@ Raw data: `benchmarks/results/v0.6.7/clsconf/` (`summary.json`, per-page
 ## Abstract
 
 Classification confidence was added in [#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)
-and shipped **off by default**, on the argument that a self-reported number is
-usually ~0.95 on everything and therefore worse than no score. This study measures
-that argument on a genuinely confusable 13-class corpus, for the default
-classification model (Amazon Nova 2 Lite) and a mid-tier alternative (Anthropic
-Claude Haiku 4.5).
+on the argument that a self-reported number is usually ~0.95 on everything and
+therefore worse than no score. This study measures that argument on a genuinely
+confusable 13-class corpus, for the default classification model (Amazon Nova 2
+Lite) and a mid-tier alternative (Anthropic Claude Haiku 4.5), against an
+`off` control.
+
+**It is also why `topk` now ships ON by default.** The control run answers the two
+questions that decision turned on: asking for ranked candidates costs **~0.5 % of
+total document cost** (+17 % of the classification step, which is only ~3 % of the
+bill on the default model) and changes classification accuracy by **nothing
+consistent** (+0.013 on Nova, −0.007 on Haiku — opposite signs, single runs). A
+signal that catches 43 % of the default model's own errors from 8 % of its pages is
+worth half a percent.
 
 **The two models are equally accurate and not remotely equally calibrated.**
 Accuracy differs by 0.7 points (84.6 % vs 85.2 %, inside noise at this sample size),
@@ -54,7 +64,35 @@ feature is opt-in and why this page exists.
 
 ---
 
-## 1. Headline numbers
+## 1. What turning it on costs (vs. the `off` control)
+
+Same 20 packets, same 298 pages, same config but for the mode:
+
+| | Nova 2 Lite `off` | Nova 2 Lite `topk` | Haiku 4.5 `off` | Haiku 4.5 `topk` |
+|---|---|---|---|---|
+| Page class accuracy | 0.832 | 0.846 | 0.859 | 0.852 |
+| Classification output tokens / page | 154 | 199 | 268 | 353 |
+| Classification cost / page | $0.00077 | $0.00090 (+17.5 %) | $0.00499 | $0.00573 (+14.9 %) |
+| Classification as share of total doc cost | — | **3 %** | — | 16 % |
+| **Total document cost / page** | **$0.03072** | **$0.03062 (−0.3 %)** | $0.03426 | $0.03474 (+1.4 %) |
+
+Two things to read off this:
+
+- **Accuracy is unaffected.** The two deltas have opposite signs and are both
+  within single-run noise, so asking for candidates does not systematically change
+  which class the model picks — it neither helps nor hurts the decision.
+- **The cost is negligible on the default model.** +17.5 % of a step that is 3 % of
+  the bill is ~+0.5 % of total, which is why the *measured* total came out slightly
+  negative: the difference is smaller than run-to-run variance in OCR/extraction.
+  On a classifier that is itself 16 % of the bill the delta is visible (+1.4 %) but
+  still small.
+
+The honest asymmetry: this is where the money goes on *these* documents (~10 pages
+of scans per packet, with extraction and assessment dominating). A deployment with
+very cheap extraction and very long documents will see classification — and this
+setting — take a larger share.
+
+## 2. Headline numbers
 
 | Metric | Nova 2 Lite (default) | Claude Haiku 4.5 |
 |---|---|---|
@@ -74,7 +112,7 @@ Accuracy being equal is itself worth noting: on this corpus the cheaper default
 classifies as well as the 6× model. The difference is entirely in *knowing when it
 is wrong*.
 
-## 2. The failure mode, quantified
+## 3. The failure mode, quantified
 
 Confidence distribution over all 298 pages:
 
@@ -97,7 +135,7 @@ wrong), so the signal is a coarse two-level flag rather than a probability.
 
 Haiku 4.5's distribution is graded, and its errors concentrate in the low bins.
 
-## 3. What it buys you: escalation at a threshold
+## 4. What it buys you: escalation at a threshold
 
 Flag pages below a confidence threshold for review. *Error recall* = share of the
 model's misclassifications caught; *precision* = share of flagged pages that really
@@ -125,7 +163,7 @@ Haiku dominates on both axes at its best operating point: fewer *wasted* reviews
 Nova's ceiling is structural — 23 errors are indistinguishable at 0.95, so no
 threshold can reach them.
 
-## 4. Prompt caching does not engage for Haiku here
+## 5. Prompt caching does not engage for Haiku here
 
 Measured per page: Nova 2 Lite served **~934 input tokens/page from prompt cache**;
 Haiku 4.5 reported **zero** cache reads and zero cache writes, paying its full
@@ -143,11 +181,12 @@ obvious way to test it.
 Practical consequence: on a small class vocabulary, do not assume caching softens the
 cost of an Anthropic classifier. The 6.4× figure above is what you actually pay.
 
-## 5. Guidance
+## 6. Guidance
 
-1. **Leave `classification.confidence.mode` off unless you will act on the score.**
-   It costs output tokens on every page and, on the default model, yields a coarse
-   two-level flag.
+1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill
+   for a signal that catches 43 % of the default model's errors from 8 % of pages.
+   Set `mode: off` if you process very long documents where classification is a
+   large share of your cost and you will not act on the score at all.
 2. **If you want an actionable score, change the classifier, not just the mode.** On
    this corpus Haiku 4.5's confidence supports review routing (73 % of errors from
    11 % of pages); Nova 2 Lite's supports a weak triage at best.
@@ -160,10 +199,11 @@ cost of an Anthropic classifier. The 6.4× figure above is what you actually pay
    The harness prints `class_calibration_separation`, `class_accuracy` and
    `n_class_scored_pages` for exactly this purpose.
 
-## 6. Honesty / limits
+## 7. Honesty / limits
 
-- **One run per model, 20 packets, 298 pages.** No repeats, so the 0.7-point accuracy
-  gap is not a claim of difference; the calibration gap (4.7×, plus a 269-page spike
+- **One run per model per mode, 20 packets, 298 pages.** No repeats, so neither the
+  0.7-point between-model accuracy gap nor the ±1-point off-vs-topk deltas are claims
+  of difference — the latter's *opposite signs* are the point (no systematic effect); the calibration gap (4.7×, plus a 269-page spike
   at one value) is far larger than any plausible single-run noise, but it is still one
   sample of one corpus.
 - **One corpus.** RVL-CDIP-derived scans over 13 classes — deliberately confusable,

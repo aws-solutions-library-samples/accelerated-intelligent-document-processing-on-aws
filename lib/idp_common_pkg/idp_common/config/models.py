@@ -1060,7 +1060,7 @@ class ExtractionConfig(BaseModel):
 
 
 class ClassificationClassConfidenceConfig(BaseModel):
-    """HIDDEN/EXPERIMENTAL — how classification reports confidence in the CLASS.
+    """How classification reports confidence in the CLASS it chose (v0.7).
 
     Nested as ``classification.confidence``. Deliberately NOT the same thing as
     ``extraction.confidence``: that block configures a whole confidence-scoring
@@ -1069,29 +1069,38 @@ class ClassificationClassConfidenceConfig(BaseModel):
     no separate classification confidence pass and no separate model — a
     confidence costs output tokens on the inference that is already happening.
 
-    That difference is why this is opt-in and why it is not surfaced in the
-    config UI yet: page-level classification runs ONE INFERENCE PER PAGE, so
-    output added here multiplies by page count, and a self-reported confidence is
-    usually badly calibrated (see the ``mode`` description). Enable it, measure
-    the calibration on your own documents, then decide.
+    Defaults to ``topk`` on measured evidence rather than on the assumption that
+    more information is better. Over 298 pages of a 13-class corpus, asking for
+    ranked candidates cost ~0.5 % of TOTAL document cost (+17 % of the
+    classification step, which is only ~3 % of the bill on the default model),
+    changed accuracy by nothing consistent, and gave a signal that caught 43 % of
+    the default model's own misclassifications from 8 % of pages. See
+    ``docs/benchmarking/classification-confidence.md``.
+
+    ⚠️ Page-level classification runs ONE INFERENCE PER PAGE, so anything added
+    here multiplies by page count — that is why ``mode: off`` exists and why the
+    cost was measured before this was turned on. And how *useful* the number is
+    depends strongly on the classification model: a small model emits a coarse
+    two-level flag, a mid-tier one a graded distribution. Measure the calibration
+    on your own documents before routing work on the score.
 
     Independent of BDA mode, which always has a real score (BDA's matched
     blueprint confidence) at no extra cost.
     """
 
     mode: str = Field(
-        default="off",
+        default="topk",
         description=(
-            "HIDDEN/EXPERIMENTAL. What the classification prompt asks for beyond "
-            "the class: 'off' (default — nothing; a page is scored only if a "
-            "custom prompt happens to ask for `confidence`), 'topk' (ranked "
-            "candidate classes with probabilities, e.g. 80% W-2 / 15% 1099 — "
-            "better calibrated, because enumerating alternatives forces the model "
-            "to distribute probability mass instead of answering ~0.95 for "
-            "everything; cf. Tian et al., 'Just Ask for Calibration', EMNLP "
-            "2023), or 'verbalized' (a single self-reported 0-1 number — cheapest, "
-            "and the most overconfident). Costs OUTPUT TOKENS PER PAGE in every "
-            "mode but 'off'."
+            "What the classification prompt asks for beyond the class: 'topk' "
+            "(default — ranked candidate classes with probabilities, e.g. 80% W-2 "
+            "/ 15% 1099; better calibrated, because enumerating alternatives "
+            "forces the model to distribute probability mass instead of answering "
+            "~0.95 for everything, cf. Tian et al., 'Just Ask for Calibration', "
+            "EMNLP 2023), 'verbalized' (a single self-reported 0-1 number — "
+            "cheapest, and the most overconfident), or 'off' (nothing; a page is "
+            "then scored only if a custom prompt happens to ask for "
+            "`confidence`). Costs OUTPUT TOKENS PER PAGE in every mode but 'off' "
+            "— measured at ~0.5% of total document cost for 'topk'."
         ),
     )
     top_k_candidates: int = Field(
@@ -1099,7 +1108,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
         ge=2,
         le=10,
         description=(
-            "HIDDEN/EXPERIMENTAL. How many ranked candidate classes to request in "
+            "How many ranked candidate classes to request in "
             "'topk' mode. Must be at least 2 — one candidate is a verbalized "
             "confidence with extra syntax, and the calibration benefit comes "
             "precisely from having to rank alternatives. Capped because the "
@@ -1228,9 +1237,9 @@ class ClassificationConfig(BaseModel):
     confidence: ClassificationClassConfidenceConfig = Field(
         default_factory=ClassificationClassConfidenceConfig,
         description=(
-            "HIDDEN/EXPERIMENTAL. Confidence in the CLASS (see "
-            "ClassificationClassConfidenceConfig). Off by default; unrelated to "
-            "extraction.confidence, which scores extracted fields."
+            "Confidence in the CLASS (see ClassificationClassConfidenceConfig). "
+            "Defaults to 'topk'; unrelated to extraction.confidence, which scores "
+            "extracted fields."
         ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)

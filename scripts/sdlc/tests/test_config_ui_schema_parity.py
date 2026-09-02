@@ -96,13 +96,6 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "Pricing has its own admin page (DefaultPricing/CustomPricing records); "
         "a second writer in the config form would fight it."
     ),
-    "classification.confidence": (
-        "HIDDEN/EXPERIMENTAL per its own description (GitHub #673) — class "
-        "confidence costs output tokens on EVERY page and a self-reported number "
-        "is usually badly calibrated, so it is a YAML-level A/B knob until the "
-        "calibration is measured, not a shipped choice. Promote it to a control "
-        "when it earns a default."
-    ),
     "agents.error_analyzer.parameters": (
         "Error Analyzer fetch/X-Ray/cache limits — SRE tuning, YAML-only; the UI "
         "exposes model_id, lookback_hours and the system prompt."

@@ -9,7 +9,7 @@
   "documents_per_model": 20,
   "pages_per_model": 298,
   "repeats": 1,
-  "mode": "topk",
+  "mode": "topk + off control",
   "top_k_candidates": 3,
   "models": {
     "nova2lite": "us.amazon.nova-2-lite-v1:0",
@@ -26,5 +26,46 @@
     "One corpus (deliberately confusable 13-class scans).",
     "Cost covers the Classification step only, which is what the setting changes.",
     "Haiku 4.5 reported zero prompt-cache reads/writes; probable cause is a cacheable prefix (~934 tokens, measured on Nova) below Anthropic's minimum. Unverified."
-  ]
+  ],
+  "modes": [
+    "topk",
+    "off"
+  ],
+  "files": {
+    "summary.json": "topk runs (both models)",
+    "summary_off_control.json": "off control runs (both models)",
+    "pages_*.json": "per-page (confidence, correct, gt_class, pred_class) rows, topk",
+    "escalation.json": "threshold/precision/recall tables + confidence histograms, topk"
+  },
+  "headline": {
+    "accuracy_off_vs_topk": {
+      "nova2lite": [
+        0.8322,
+        0.8456
+      ],
+      "haiku45": [
+        0.8591,
+        0.8523
+      ]
+    },
+    "total_doc_cost_per_page_off_vs_topk": {
+      "nova2lite": [
+        0.03072,
+        0.03062
+      ],
+      "haiku45": [
+        0.03426,
+        0.03474
+      ]
+    },
+    "classification_share_of_total_cost": {
+      "nova2lite": 0.03,
+      "haiku45": 0.16
+    },
+    "class_calibration_separation_topk": {
+      "nova2lite": 0.044,
+      "haiku45": 0.2066
+    }
+  },
+  "decision": "topk enabled by default on this evidence (~0.5% of total cost, no consistent accuracy change)"
 }

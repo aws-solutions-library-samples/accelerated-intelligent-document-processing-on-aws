@@ -16,18 +16,25 @@ classification:
   enforceValidClasses: true
   maxValidationRetries: "2"
   invalidClassFallback: unclassified
-  # HIDDEN/EXPERIMENTAL — confidence in the CLASS (GitHub #673). OFF by default:
-  # page-level classification is one inference PER PAGE, so anything added to its
-  # output format is paid for on every page of every document, and a
-  # self-reported confidence is usually badly calibrated (a model asked "how sure
-  # are you?" answers ~0.95 almost everywhere). `topk` asks for ranked
-  # alternatives instead, which forces the model to distribute probability mass
-  # (Tian et al., "Just Ask for Calibration", EMNLP 2023). Measure the
-  # calibration on your own documents before acting on the numbers.
-  # multimodalPageLevelClassification only. Unrelated to extraction.confidence,
-  # which scores extracted FIELDS. BDA mode is scored for free either way.
+  # Confidence in the CLASS (GitHub #673). ON in `topk` mode by default: measured
+  # over 298 pages of a 13-class corpus, asking for ranked candidates cost ~0.5%
+  # of TOTAL document cost (+17% of the classification step, which is ~3% of the
+  # bill on the default model) with no consistent accuracy change, and even a
+  # small model's coarse score caught 43% of its own misclassifications from 8% of
+  # pages. See docs/benchmarking/classification-confidence.md.
+  #
+  # `topk` rather than `verbalized` because a model asked "how sure are you?"
+  # answers ~0.95 almost everywhere; ranking alternatives forces it to distribute
+  # probability mass instead (Tian et al., "Just Ask for Calibration", EMNLP
+  # 2023). How USEFUL the number is depends strongly on the model — Nova 2 Lite
+  # emits a coarse two-level flag, Claude Haiku 4.5 a graded distribution — so
+  # measure the calibration on your own documents before routing work on it.
+  #
+  # Set mode: "off" to spend nothing on it. multimodalPageLevelClassification
+  # only. Unrelated to extraction.confidence, which scores extracted FIELDS. BDA
+  # mode is scored for free either way.
   confidence:
-    mode: "off"
+    mode: topk
     top_k_candidates: "3"
     # Spliced in before <document-ocr-data> (inside the prompt-cache prefix) when
     # mode is topk. {TOP_K_CANDIDATES} is substituted with the resolved count.
