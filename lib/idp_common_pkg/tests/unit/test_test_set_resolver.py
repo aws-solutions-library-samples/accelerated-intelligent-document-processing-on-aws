@@ -3277,6 +3277,37 @@ class TestTestSetResolver:
         assert result["snapshotObjectCount"] == 1005
         assert len(self._baseline_keys(s3, "ts1/versions/1/baseline/")) == 1005
 
+    def test_the_queue_reports_the_open_transition(self, labeling_env):
+        """So the workspace can tell "in a transition" from "not started" on entry.
+
+        Without this the only way to find out would be calling
+        openTestSetAnnotationDraft — which snapshots, so probing with it would open a
+        transition merely by visiting the page. That is the silent commitment the whole
+        mechanism exists to remove, so the read has to be a read.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        before = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+        assert before["draftVersion"] is None
+        assert before["baseVersion"] is None
+
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        after = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+        assert after["draftVersion"] == 2
+        assert after["baseVersion"] == 1
+
+    def test_the_queue_stops_reporting_a_transition_once_published(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        queue = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+        assert queue["draftVersion"] is None
+
     def test_an_unknown_test_set_is_refused(self, labeling_env):
         _table, _s3 = labeling_env
 

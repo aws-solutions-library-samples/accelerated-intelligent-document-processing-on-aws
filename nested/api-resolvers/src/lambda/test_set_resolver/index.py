@@ -1867,11 +1867,19 @@ def get_annotation_queue(args, event=None):
     # test_uploaded_ground_truth_is_not_counted_as_review_work forbids.
     queue = [e for e in entries if include_completed or not e["reviewed"]]
 
+    # The open transition, so the workspace does not have to call the mutation to discover
+    # one — that call snapshots, and probing with it would open a transition just by
+    # visiting the page. Bound once: `_as_int` is Optional, so calling it twice leaves the
+    # type checker unable to see that the subtraction is guarded.
+    draft_version = _as_int(meta.get("draftVersion")) or None
+
     result = {
         "testSetId": test_set_id,
         "totalDocs": total,
         "inspectedDocs": inspected,
         "reviewedDocs": reviewed_count,
+        "draftVersion": draft_version,
+        "baseVersion": draft_version - 1 if draft_version else None,
         # Documents beyond the inspected page are unreviewed, so they count here.
         "remainingDocs": max(0, total - reviewed_count),
         "claimedByOthers": sum(

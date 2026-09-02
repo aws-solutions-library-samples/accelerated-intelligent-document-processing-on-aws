@@ -1084,6 +1084,14 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   labelJobStatus: String
   labelJobLabeled: Int
   labelJobTotal: Int
+  # The open version transition, if annotation has begun on this set. Returned here so
+  # the workspace can tell "already in a transition" from "has not started one" on entry,
+  # WITHOUT calling openTestSetAnnotationDraft to find out — that mutation snapshots, so
+  # using it as a probe would open a transition merely by visiting the page, which is the
+  # silent commitment this whole mechanism exists to remove.
+  draftVersion: Int
+  # The version the open transition is moving away from, whose labels are snapshotted.
+  baseVersion: Int
 }
 
 input ReextractTestSetDocumentInput {

@@ -44,7 +44,15 @@ import {
 import type { FlashbarProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getAnnotationQueue, claimReview, releaseReview, completeSectionReview, estimateReviewEffort } from '../../graphql/generated';
+import {
+  getAnnotationQueue,
+  claimReview,
+  releaseReview,
+  completeSectionReview,
+  estimateReviewEffort,
+  openTestSetAnnotationDraft,
+} from '../../graphql/generated';
+import { getErrorMessage } from '../../utils/errorUtils';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
@@ -108,10 +116,26 @@ interface QueueState {
   labelJobStatus?: string | null;
   labelJobLabeled?: number | null;
   labelJobTotal?: number | null;
+  draftVersion?: number | null;
+  baseVersion?: number | null;
   documents: QueueItem[];
 }
 
 type DocView = 'ground-truth' | 'source';
+
+/**
+ * The version transition an annotation session is working within.
+ *
+ * `baseVersion` is the state being left, which the server has snapshotted to
+ * `{testSetId}/versions/{baseVersion}/baseline/`; `draftVersion` is what this session is
+ * producing. Carried in the queue link so a link identifies its own transition.
+ */
+interface AnnotationDraft {
+  baseVersion: number;
+  draftVersion: number;
+  snapshotObjectCount?: number | null;
+  alreadyOpen?: boolean | null;
+}
 
 const QUEUE_PAGE_SIZE = 100;
 
@@ -130,6 +154,10 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   const requestedDoc = searchParams.get('doc');
   // Canonical field path from a shared link, e.g. "?doc=x.pdf&field=LineItems[0].Rate".
   const requestedField = searchParams.get('field');
+  // Which version transition a shared queue link belongs to. Annotating a set that
+  // already has ground truth commits to producing a new version of it, so a link that
+  // does not say which transition it refers to is ambiguous once the next one opens.
+  const requestedVersion = searchParams.get('v');
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
   const { canAnnotate, isAdmin, isAuthor, isReviewer, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
@@ -170,6 +198,16 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   // Reviewed documents are hidden by default so the queue shows only outstanding
   // work; this reopens them so a confirmed label can be re-checked or changed.
   const [showReviewed, setShowReviewed] = useState(false);
+  /**
+   * The open version transition, once one exists.
+   *
+   * Null means annotation has not begun on this set yet and the reviewer has not been
+   * told what beginning it entails. Editing ground truth in place used to be silent —
+   * the point of asking first is that the commitment is Spencer's objection, not the
+   * mechanism.
+   */
+  const [openedDraft, setOpenedDraft] = useState<AnnotationDraft | null>(null);
+  const [isOpeningDraft, setIsOpeningDraft] = useState(false);
 
   /**
    * What the review is buying, refreshed as documents are completed.
@@ -208,6 +246,36 @@ const AnnotationWorkspace = (): React.JSX.Element => {
     } catch (err) {
       // Best-effort: the queue is fully usable without this panel.
       logger.debug('Could not load review impact:', err);
+    }
+  }, [testSetId]);
+
+  /**
+   * Open the version transition this session will work in.
+   *
+   * Asked for rather than done on arrival, because the commitment is the thing Spencer
+   * objected to being invisible: annotating a set that already has ground truth produces
+   * a new version of it whether or not anyone said so. The server snapshots the state
+   * being left, so agreeing here is also what makes the previous labels recoverable.
+   *
+   * Idempotent server-side, so a reviewer returning to a set mid-session re-opens the
+   * same transition and nothing is copied again.
+   */
+  const openDraft = useCallback(async () => {
+    if (!testSetId) return;
+    setIsOpeningDraft(true);
+    setError(null);
+    try {
+      const result = await client.graphql({
+        query: openTestSetAnnotationDraft,
+        variables: { input: { testSetId } },
+      });
+      const opened = result.data.openTestSetAnnotationDraft as AnnotationDraft | null;
+      if (opened) setOpenedDraft(opened);
+    } catch (err) {
+      logger.error('Could not open an annotation draft:', err);
+      setError(`Could not start annotating this set: ${getErrorMessage(err)}`);
+    } finally {
+      setIsOpeningDraft(false);
     }
   }, [testSetId]);
 
@@ -444,7 +512,42 @@ const AnnotationWorkspace = (): React.JSX.Element => {
 
   const progressPct = queue && queue.totalDocs > 0 ? Math.round((queue.reviewedDocs / queue.totalDocs) * 100) : 0;
 
-  const queueLink = `${window.location.origin}/${testSetAnnotateHref(testSetId ?? '')}`;
+  /**
+   * The open transition, preferring what the server reported on the queue.
+   *
+   * Read from `getAnnotationQueue` rather than probed with the mutation: opening a draft
+   * snapshots the baselines, so using it to *find out* whether one exists would open a
+   * transition merely by visiting the page — the silent commitment this exists to remove.
+   * `openedDraft` covers the gap between clicking Start annotating and the next queue
+   * refresh returning the same numbers.
+   */
+  const draft: AnnotationDraft | null =
+    queue?.draftVersion != null
+      ? { baseVersion: queue.baseVersion ?? queue.draftVersion - 1, draftVersion: queue.draftVersion }
+      : openedDraft;
+
+  /**
+   * The queue link, carrying the transition it belongs to.
+   *
+   * Spencer's ask, in his words: "hash the queue link to a version that is a transition
+   * from existing state to next state." Without `?v=`, a link shared in Slack means
+   * "annotate this set" — which silently becomes a different job once the current
+   * transition is published and the next one opens. With it, a stale link can say so.
+   *
+   * No `?v=` before a draft exists, because there is no transition yet to name.
+   */
+  const queueLink = draft
+    ? `${window.location.origin}/${testSetAnnotateHref(testSetId ?? '')}?v=${draft.draftVersion}`
+    : `${window.location.origin}/${testSetAnnotateHref(testSetId ?? '')}`;
+
+  /**
+   * A link from a transition that has since closed.
+   *
+   * Not an error: the set is still annotatable, and the reviewer probably wants to
+   * continue in the current transition. But silently treating v2's link as v5's work
+   * would let someone believe they were adding to a version that had already shipped.
+   */
+  const staleLinkVersion = draft && requestedVersion && Number(requestedVersion) !== draft.draftVersion ? requestedVersion : null;
 
   /**
    * Link to one field of the open document, for "what should this value be?".
@@ -519,7 +622,23 @@ const AnnotationWorkspace = (): React.JSX.Element => {
           )}
           <Header
             variant="h1"
-            description="Review the documents with the most confidence alerts first — each one you correct removes the most likely errors."
+            description={
+              <>
+                Review the documents with the most confidence alerts first — each one you correct removes the most likely errors.
+                {/* The transition, kept in view rather than only at the moment of
+                    agreeing to it: which version you are producing is the thing a
+                    reviewer needs to be able to answer later, when a run's score is
+                    attributed to one. */}
+                {draft && (
+                  <>
+                    {' '}
+                    <Badge color="blue">
+                      v{draft.baseVersion} &rarr; v{draft.draftVersion}
+                    </Badge>
+                  </>
+                )}
+              </>
+            }
             actions={
               !isAnnotatorOnly && (
                 <CopyToClipboard
@@ -782,6 +901,36 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 ]}
               />
               {!selected && <Alert type="info">Choose a document from the queue to start.</Alert>}
+
+              {/* The commitment, stated before it is made rather than discovered later.
+                  Annotating a set that already has ground truth produces a new version of
+                  it — which used to happen silently, in place, with nothing recording what
+                  the labels had been. Agreeing here is also what snapshots them. */}
+              {selected && !draft && (
+                <Alert
+                  type="info"
+                  header="Annotating this set creates a new version of it"
+                  action={
+                    <Button variant="primary" loading={isOpeningDraft} disabled={!canAnnotate} onClick={openDraft}>
+                      Start annotating
+                    </Button>
+                  }
+                >
+                  Its current labels are preserved as a version you can go back to and score against, so a run that was measured against
+                  them stays reproducible. Your corrections go into the next version.
+                  {!canAnnotate && ' Your role cannot start an annotation session on this set.'}
+                </Alert>
+              )}
+
+              {/* A link from a transition that has since been published. Not an error —
+                  the set is still annotatable — but working in v5 while believing you are
+                  adding to v2 is worth interrupting for. */}
+              {staleLinkVersion && (
+                <Alert type="warning" header={`This link refers to version ${staleLinkVersion}, which is closed`}>
+                  That version has been published. You are now annotating toward version {draft?.draftVersion}; the link in your address bar
+                  is out of date. Use <b>Copy queue link</b> for the current one.
+                </Alert>
+              )}
               {/* A missing review key has TWO opposite causes and they need
                   opposite advice. The queue rail beside this already distinguishes
                   them; this pane did not, and told a reviewer whose every document
@@ -821,7 +970,11 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                      promising they could "correct the values" ([#674]). The review
                      record gates the review WORKFLOW — claim, release, mark reviewed,
                      handled by separate props above — not editing. */
-                  isReadOnly={selected.reviewObjectKey ? !canSaveViaReview : !canSaveDirectToBaseline}
+                  /* Read-only until the transition is open, as well as by role. Letting
+                     someone edit first and open the version afterwards would put the
+                     commitment back where it was — implicit, and discovered only once the
+                     labels had already changed. Looking is always allowed. */
+                  isReadOnly={!draft || (selected.reviewObjectKey ? !canSaveViaReview : !canSaveDirectToBaseline)}
                   /* Wider than isReadOnly on purpose. A class correction persists via
                      reextractTestSetDocument (Admin, Author, Annotator), which stamps
                      the baseline server-side and needs no review record — so every

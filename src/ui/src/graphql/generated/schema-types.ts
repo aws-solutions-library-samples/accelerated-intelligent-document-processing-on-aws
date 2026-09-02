@@ -68,8 +68,10 @@ export type AgentJobConnection = {
 };
 
 export type AnnotationQueue = {
+  baseVersion?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
   documents: Array<AnnotationQueueItem>;
+  draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;

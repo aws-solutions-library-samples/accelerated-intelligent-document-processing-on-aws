@@ -1167,6 +1167,30 @@ The same board is available on a processed document, from **Document Sections** 
 the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
+### Annotating creates a new version of the set
+
+Correcting ground truth changes what every previously-scored run was measured against, so
+starting an annotation session is an explicit step: **Start annotating** opens a *version
+transition*, shown in the header as e.g. `v1 → v2`.
+
+Agreeing to it is what preserves the labels you are moving away from. The set's current
+baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
+bytes it meant when a run scored against it. A set that arrived with its own ground truth
+and was never published gets that state captured first, labelled **As uploaded** — without
+it, the labels a set was uploaded with are exactly the ones overwritten with no record of
+what they were.
+
+Until the transition is open the editor is read-only. You can read every document and its
+labels; you cannot change them. That ordering is the point: editing first and versioning
+afterwards would record what the labels *became*, not what they were.
+
+**Copy queue link** includes the transition (`?v=2`). A link from a transition that has
+since been published still works — the set is still annotatable — but the workspace says
+the link is out of date and names the current transition, so nobody spends an afternoon
+believing they are adding to a version that already shipped.
+
+Publishing a version closes the transition. The next session opens the next one.
+
 ### Asking someone about one field
 
 Some values cannot be settled by whoever is reviewing — the reviewer may not know

@@ -407,6 +407,8 @@ export const getAnnotationQueue = /* GraphQL */ `
       labelJobStatus
       labelJobLabeled
       labelJobTotal
+      draftVersion
+      baseVersion
       documents {
         objectKey
         inputKey

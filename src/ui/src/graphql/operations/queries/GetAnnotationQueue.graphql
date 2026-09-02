@@ -10,6 +10,8 @@ query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Bo
     labelJobStatus
     labelJobLabeled
     labelJobTotal
+    draftVersion
+    baseVersion
     documents {
       objectKey
       inputKey

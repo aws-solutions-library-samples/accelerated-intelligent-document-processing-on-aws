@@ -68,8 +68,10 @@ export type AgentJobConnection = {
 };
 
 export type AnnotationQueue = {
+  baseVersion?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
   documents: Array<AnnotationQueueItem>;
+  draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
@@ -2815,7 +2817,7 @@ export type GetAnnotationQueueQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
 
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];
