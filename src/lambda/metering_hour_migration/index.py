@@ -329,8 +329,14 @@ def _iter_old_layout_keys(bucket: str) -> Iterator[str]:
 def _migrate_one(bucket: str, key: str) -> str:
     """Copy ``key`` to its hour-partitioned target, then delete the
     original. Returns ``"moved"``, ``"stray"`` (non-metering key,
-    skipped), or ``"fallback"`` (hour couldn't be inferred, parked at
-    ``hour=00`` — caller escalates).
+    skipped), or ``"fallback"`` (hour couldn't be inferred, so the file is
+    LEFT IN PLACE, uncopied — the caller escalates to a failed migration).
+
+    ``"fallback"`` deliberately does NOT park the file at ``hour=00``: the
+    lister excludes anything already under ``/hour=NN/``, so a mis-placed file
+    could never be re-attempted. Leaving it put keeps a retry possible once the
+    operator fixes the underlying cause. (See the "Files parked at hour=00 by a
+    prior run" note below for the historical behavior this replaced.)
 
     Copy-then-delete is the correct rollback behavior. Athena reads a
     partition location recursively — if we left originals in place and

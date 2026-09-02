@@ -5459,8 +5459,22 @@ Resources:
               Action:
                 - s3:GetObject
                 - s3:PutObject
-                - s3:HeadObject
                 - s3:ListBucket
+                # HeadObject (the `_s3_object_exists` / `_query_wrote_manifest`
+                # probes) is authorized by s3:GetObject — there is no
+                # `s3:HeadObject` IAM action, so the entry that used to sit here
+                # was inert.
+                #
+                # Multipart actions are part of AWS's reference policy for
+                # Athena `INSERT INTO`: the writer switches to a multipart
+                # upload once a result part exceeds its buffer. Today's rollup
+                # output is a few KB so it always takes the single-PUT path,
+                # which is why this has not bitten yet — but a stack with many
+                # (config_version, service_api, unit) combinations per hour
+                # would fail the INSERT rather than degrade.
+                - s3:AbortMultipartUpload
+                - s3:ListBucketMultipartUploads
+                - s3:ListMultipartUploadParts
                 # Required for Athena StartQueryExecution — it calls
                 # GetBucketLocation on the OutputLocation bucket to verify
                 # the workgroup can write results there before running the

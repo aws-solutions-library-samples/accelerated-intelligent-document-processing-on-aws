@@ -850,6 +850,56 @@ class TestControlPlaneDiscovery:
             "arn:aws:lambda:us-east-1:1:function:ConfigResolver",
         }
 
+    def test_stack_tree_and_data_plane_query_run_once_per_invocation(self, rollup):
+        """Both hourly plane rollups need the stack tree and the data-plane ARN
+        set, and neither can change mid-invocation. They used to be re-derived
+        independently — a second ``ListStackResources`` walk across every nested
+        stack plus a second Tagging API query on every hourly fire."""
+        stack_tree = ["idp-test-stack", "idp-test-stack-APIRESOLVERSTACK-abc"]
+        data_plane = ["arn:aws:lambda:us-east-1:1:function:OCRFunction"]
+
+        def fake_get(tags):
+            if "idp:plane" in tags:
+                return list(data_plane)
+            return list(data_plane) + [
+                "arn:aws:lambda:us-east-1:1:function:TestResultsResolver"
+            ]
+
+        with (
+            patch.object(
+                rollup, "_enumerate_stack_tree", return_value=stack_tree
+            ) as walk,
+            patch.object(
+                rollup, "_get_resources_by_tag", side_effect=fake_get
+            ) as tag_query,
+        ):
+            control = rollup._discover_control_plane_lambdas()
+            data = rollup._discover_data_plane_lambdas()
+
+        assert control == ["arn:aws:lambda:us-east-1:1:function:TestResultsResolver"]
+        assert data == data_plane
+        assert walk.call_count == 1, (
+            f"stack tree walked {walk.call_count}x for one invocation — the "
+            f"per-invocation cache is not being used"
+        )
+        # One query for the full set, one for the idp:plane=data subset. Without
+        # the cache the data-plane subset is fetched twice (3 calls total).
+        assert tag_query.call_count == 2, (
+            f"{tag_query.call_count} tag queries for one invocation; expected 2 "
+            f"(all-IDP + data-plane, each fetched once)"
+        )
+
+    def test_handler_clears_the_discovery_caches(self, rollup):
+        """The caches must NOT survive across invocations: a stack update
+        between rollup fires can add or remove Lambdas, and a warm container
+        would otherwise keep reporting the old topology."""
+        rollup._stack_tree_cache = ["stale-stack"]
+        rollup._data_plane_arn_cache = ["arn:aws:lambda:us-east-1:1:function:Stale"]
+        with patch.object(rollup, "_run_hourly", return_value={}):
+            rollup.handler({"mode": "hourly"}, None)
+        assert rollup._stack_tree_cache is None
+        assert rollup._data_plane_arn_cache is None
+
     def test_warns_on_probable_untagged_data_plane(self, rollup, caplog):
         """A Lambda with a doc-processing name that lacks the data tag
         is drift-detector fodder — WARN log for the operator to fix."""

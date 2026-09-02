@@ -105,6 +105,16 @@ lambda_client = boto3.client("lambda")
 # call in ``handler``.
 _lambda_memory_cache: Dict[str, Tuple[int, str]] = {}
 
+# Per-invocation cache of the CFN stack tree and the data-plane ARN set.
+# ``_rollup_control_plane_hourly`` and ``_rollup_data_plane_lambda_hourly`` both
+# need them, and each used to re-walk the tree (``ListStackResources`` across
+# root + every nested stack) and re-run the ``idp:plane=data`` tag query
+# independently — twice the CFN and Tagging API calls per hourly fire for
+# results that cannot change mid-invocation. Cleared alongside the other caches
+# in ``handler`` so a stack update between fires is still picked up.
+_stack_tree_cache: Optional[List[str]] = None
+_data_plane_arn_cache: Optional[List[str]] = None
+
 
 def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     """Route between hourly and daily rollup modes.
@@ -121,9 +131,12 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # editing pricing.yaml must see the change on the next rollup, not
     # after the container recycles.
     global _bedrock_pricing_map, _bedrock_pricing_unavailable
+    global _stack_tree_cache, _data_plane_arn_cache
     _lambda_memory_cache.clear()
     _bedrock_pricing_map = None
     _bedrock_pricing_unavailable = False
+    _stack_tree_cache = None
+    _data_plane_arn_cache = None
 
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
@@ -1225,6 +1238,43 @@ def _require_hourly_matches_raw_metering(
 # ---------------------------------------------------------------------------
 
 
+def _cached_stack_tree() -> List[str]:
+    """The CFN stack tree (root + nested), walked at most once per invocation.
+
+    Both hourly plane rollups need it. The walk is a ``ListStackResources``
+    paginate per stack in the tree, and the topology cannot change while a
+    single rollup runs, so doing it twice was pure duplicate API load.
+    ``handler`` clears the cache so a stack update between fires is picked up.
+    """
+    global _stack_tree_cache
+    if _stack_tree_cache is None:
+        _stack_tree_cache = _enumerate_stack_tree(STACK_NAME)
+        logger.info(
+            f"Stack tree from root {STACK_NAME!r}: "
+            f"{len(_stack_tree_cache)} stack(s) — {_stack_tree_cache}"
+        )
+    return _stack_tree_cache
+
+
+def _cached_data_plane_arns() -> List[str]:
+    """Lambda ARNs tagged ``idp:plane=data`` in this stack tree, fetched at most
+    once per invocation.
+
+    ``_discover_control_plane_lambdas`` subtracts this set and
+    ``_discover_data_plane_lambdas`` returns it, so the same tag query used to
+    run twice per hourly fire.
+    """
+    global _data_plane_arn_cache
+    if _data_plane_arn_cache is None:
+        _data_plane_arn_cache = _get_resources_by_tag(
+            {
+                "aws:cloudformation:stack-name": _cached_stack_tree(),
+                "idp:plane": ["data"],
+            }
+        )
+    return _data_plane_arn_cache
+
+
 def _discover_control_plane_lambdas() -> List[str]:
     """Return control-plane Lambda ARNs (all IDP Lambdas minus data-plane).
 
@@ -1246,19 +1296,12 @@ def _discover_control_plane_lambdas() -> List[str]:
         logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
         return []
 
-    stack_tree = _enumerate_stack_tree(STACK_NAME)
-    logger.info(
-        f"Stack tree from root {STACK_NAME!r}: {len(stack_tree)} stack(s) — {stack_tree}"
-    )
+    stack_tree = _cached_stack_tree()
 
     all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": stack_tree})
     # Scope the data-plane query to the SAME tree — a shared account with
     # multiple IDP stacks would otherwise cross-contaminate.
-    data_plane = set(
-        _get_resources_by_tag(
-            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
-        )
-    )
+    data_plane = set(_cached_data_plane_arns())
 
     control_plane = [arn for arn in all_idp if arn not in data_plane]
 
@@ -1304,12 +1347,7 @@ def _discover_data_plane_lambdas() -> List[str]:
     if not STACK_NAME:
         logger.warning("STACK_NAME env var not set; cannot discover Lambdas")
         return []
-    stack_tree = _enumerate_stack_tree(STACK_NAME)
-    return list(
-        _get_resources_by_tag(
-            {"aws:cloudformation:stack-name": stack_tree, "idp:plane": ["data"]}
-        )
-    )
+    return list(_cached_data_plane_arns())
 
 
 def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
@@ -1709,9 +1747,12 @@ def _get_lambda_memory_mb(function_name: str) -> Tuple[int, str]:
 
     Cached across warm-container invocations so we don't spam
     get_function_configuration — both properties are static per deployed
-    function. Falls back to (128 MB, "x86_64") on lookup failure — x86_64
-    is the AWS default architecture, so this errs on the side of
-    *slightly higher* per-GB-second cost (safer than under-estimating).
+    function. Falls back to (512 MB, "x86_64") on lookup failure: 512 is the
+    median across this stack's Lambdas (see the rationale at the ``except``
+    below — 128, the AWS floor, was up to ~24x under-count on a 3008 MB
+    function), and x86_64 is the AWS default architecture, so the arch half
+    errs toward *slightly higher* per-GB-second cost rather than under-
+    estimating.
 
     On lookup FAILURE the fallback is used for this call but NOT cached
     — a transient throttle should not poison the warm container for its
