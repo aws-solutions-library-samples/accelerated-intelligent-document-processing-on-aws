@@ -316,6 +316,19 @@ const GroundTruthVisualEditor = ({
     (localData?.inference_result as Record<string, unknown> | undefined) ??
     (localData?.inferenceResult as Record<string, unknown> | undefined) ??
     null;
+  /**
+   * Whether there is anything to render, as opposed to an object being present.
+   *
+   * `{}` is truthy, so an empty result took the render path and produced a "Document
+   * Data" heading with no children and no explanation — visually identical to the
+   * renderer having failed. Reported from a live stack, where a draft-labeling run had
+   * extracted no fields for one section of a two-section document.
+   *
+   * Two things reach this state: extraction that returned nothing, and a section added
+   * by re-grouping, which `updateTestSetDocumentSections` deliberately writes with an
+   * empty `inference_result` because nothing has run over those pages as a group.
+   */
+  const hasFieldValues = Boolean(inferenceResult && Object.keys(inferenceResult).length > 0);
 
   // Packet-splitting baselines carry the section's document-absolute page
   // indices (0-based). Use them to restrict the image pane to this section's
@@ -901,7 +914,7 @@ const GroundTruthVisualEditor = ({
                           <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
                         </FormField>
                       )}
-                      {inferenceResult ? (
+                      {hasFieldValues ? (
                         <>
                           <FormField label="Fields to show">
                             <Select
@@ -954,7 +967,21 @@ const GroundTruthVisualEditor = ({
                           />
                         </>
                       ) : (
-                        <Alert type="warning">This baseline has no inference_result — use the JSON editor tab.</Alert>
+                        <Alert type="info" header="No field values for this section">
+                          {/* Distinguished, because the two causes need different advice and
+                              because the reviewer's next move differs. An empty object used
+                              to fall through to the renderer and produce a bare "Document
+                              Data" heading with nothing under it and no explanation —
+                              indistinguishable from a rendering failure. */}
+                          {inferenceResult
+                            ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
+                            : 'This section has no inference_result at all.'}{' '}
+                          {sections.length > 1
+                            ? 'Other sections of this document may still have values — check the section tabs above. '
+                            : ''}
+                          Use <b>Change class &amp; re-extract</b> to have the model populate it, or the <b>JSON Editor</b> tab to enter
+                          values by hand.
+                        </Alert>
                       )}
                     </SpaceBetween>
                   ),
