@@ -60,6 +60,20 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # classification.task_prompt, frozen at two points in history. This is the ONLY
+  # axis whose value is a whole prompt rather than a scalar, so it uses the
+  # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
+  # benchmarks/matrices/prompts/.
+  #
+  # It exists because #653 shipped as a PROMPT-ONLY change that is on by default.
+  # Without a runnable pre-fix arm, "the fixed prompt scores 100% on paginated_3pg"
+  # is unfalsifiable — pagination alone could explain it. `legacy` reproduces the
+  # control instead of leaving it as prose in a FINDINGS file. Keep the frozen file
+  # frozen: it is a historical baseline, not a config to maintain.
+  boundary_prompt:
+    current: {}          # whatever the shipped system default is (the fix)
+    legacy:
+      classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -126,6 +140,7 @@ default_cell:
   forcing: 'off'             # shipped default; the sweep varies it
   schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
+  boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -144,6 +159,9 @@ core_cells:
   - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
   - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
+  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
+  # boundary claim is a measured delta rather than a single post-fix number.
+  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
   # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
   - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
   - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
@@ -280,6 +298,11 @@ suites:
     cells:
     - force-off
     - force-on
+    docs:
+    - valuenoise_100    # typed per-row truth -> cell_accuracy (value fidelity)
+    - longdesc_100      # list-heavy -> completeness_recall (does forcing lose rows?)
+    - kv_form           # typed scalar truth; DIFFERENT class, so run with --class kv_form
+    repeats: 3
   # #710: does dropping the duplicated schema copy cost completeness?
   # The gate is COMPLETENESS, not tokens — #710 warns the prose restatement may be
   # load-bearing for adherence, so a token saving that loses rows is a loss. Run on
