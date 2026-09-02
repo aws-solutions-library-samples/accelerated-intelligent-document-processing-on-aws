@@ -215,6 +215,11 @@ def load_plan(suite, klass, overrides=()):
         )
     cells = yaml.safe_load(open(idx_path))["cells"]
     # docs: may be an explicit list, a named group, or "*"
+    if "docs" not in suite_spec:
+        sys.exit(
+            f"suite '{suite}' declares no `docs:` — a suite with cells but no "
+            f"documents cannot run. Add a docs list or group in config_matrix.yaml."
+        )
     dg = suite_spec["docs"]
     groups = docm["groups"]
     if isinstance(dg, list):

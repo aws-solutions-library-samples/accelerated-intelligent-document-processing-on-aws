@@ -563,6 +563,49 @@ response cannot overwrite fields that already validated. A failed escalation
 returns the original extraction unchanged; a broken repair must never be worse
 than no repair.
 
+## Forced tool use (Simple mode, `extraction.forced_tool`)
+
+Coercion and validation act on a result that already exists. Forced tool use tries
+to prevent one failure mode up front: instead of describing the schema in prose
+and parsing whatever text comes back, the class schema is sent as a Converse
+**tool** and `toolChoice` names it, so the reply arrives as structured tool input.
+Simple mode only — the agentic path already sends a tool schema. Off by default.
+
+`idp_common.extraction.forced_tool` owns the whole surface:
+
+| Helper | Purpose |
+|---|---|
+| `should_force_tool(model_id, enabled, class_schema)` | `(force, skip_reason)`. Refuses routes that cannot carry a `toolConfig` (Lambda hook, GPT-5.x Responses API) and schemas with no properties. |
+| `build_extraction_tool_config(class_schema)` | `(tool_config, name_map)` for the single `emit_extracted_fields` tool. |
+| `forced_tool_choice()` | `{"tool": {"name": ...}}` — must NAME the tool; `any`/`auto` would not be forcing. |
+| `restore_extracted_fields(tool_input, name_map)` | Undoes wire-safe property renaming. |
+
+**Property-name sanitization.** Bedrock enforces `^[a-zA-Z0-9_.-]{1,64}$` on
+**top-level** tool property names, which several shipped presets violate
+(`"Invoice Number"`). `idp_common.bedrock.tool_schema` rewrites those names for the
+request and `restore_extracted_fields` puts the authored names back, so the stored
+result is byte-identical to the un-forced path. `BedrockClient` also *rejects* an
+invalid `toolConfig` outright rather than letting the API return an opaque
+validation error.
+
+**A force is a request, not a guarantee.** A model can accept a `toolConfig` and
+still answer in prose (`stopReason: end_turn`). That falls back to text parsing
+unless `fallback_to_prompt` is off, in which case the section is a parse failure —
+which exists only to measure the honored rate without fallback masking it.
+
+**`metadata.forced_tool`** records `requested`, `honored`, `renamed_properties`,
+and `skipped` (with a reason). This is load-bearing for measurement, not just
+audit: without it a before/after comparison cannot distinguish "forcing had no
+effect" from "forcing never ran", and both look identical in the output.
+
+> **Module-level call sites.** The service reaches the response parsers as
+> `bedrock.extract_tool_use_from_response(...)`. Those are bound methods
+> re-exported at the bottom of `idp_common/bedrock/__init__.py` — a client method
+> missing from that list raises `AttributeError` at runtime, not import time.
+> `tests/unit/bedrock/test_module_level_api.py` sweeps the package for
+> `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
+> whenever you call a new client method that way.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates
