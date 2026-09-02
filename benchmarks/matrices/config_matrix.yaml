@@ -30,6 +30,19 @@ axes:
       extraction.coercion.enabled: true
       extraction.validation.enabled: true
       extraction.validation.fail_action: escalate
+  # classification.sectionSplitting. The ONE genuine cost increase that shipped
+  # on-by-default in v0.7: fixing #686 made `llm_determined` (the default) perform
+  # real boundary detection for SINGLE-CLASS configs, which previously
+  # short-circuited to one all-pages section with zero inference. So a multi-page
+  # single-class deployment that never set this knob starts paying for
+  # classification calls it never made before. This axis measures that, which
+  # nothing else in the matrix does. Only meaningful on a SINGLE-CLASS config
+  # (bank_statement is one) and a MULTI-PAGE document — a single-page document has
+  # nothing to split, so the call is skipped either way.
+  section_splitting:
+    disabled:       {classification.sectionSplitting: disabled}
+    page:           {classification.sectionSplitting: page}
+    llm_determined: {classification.sectionSplitting: llm_determined}
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -81,6 +94,7 @@ default_cell:
   confidence_model: nova_lite
   reasoning_effort: low
   enforcement: warn
+  section_splitting: llm_determined   # the shipped default; the sweep varies it
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -91,6 +105,11 @@ core_cells:
   # core-tt-simple-sep except for the enforcement axis.
   - {id: enforce-off,          ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: "off"}
   - {id: enforce-warn,         ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: warn}
+  - {id: enforce-escalate,     ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: escalate}
+  # Section-splitting cost cells. Identical but for the knob, so the delta is the
+  # classification inference the #686 fix introduced.
+  - {id: split-disabled,       ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: disabled}
+  - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
   - {id: core-tt-simple-off,   ocr: textract_tables, extraction_mode: simple,   assessment: "off"}
@@ -136,14 +155,49 @@ suites:
   # A/B for the v0.7 schema-enforcement work. The two cells differ ONLY on the
   # enforcement axis, on one deployed stack with identical code, so a delta is
   # attributable to the feature rather than to anything else that shipped.
+  # The docs matter as much as the cells here, and the first version of this suite
+  # got them wrong. `small_narrow`/`tiny_form` render values essentially as a model
+  # returns them and their scalar truth is only two plain strings, so coercion fired
+  # 81 times and moved every metric by exactly zero — the suite could not see the
+  # feature it existed to measure. It now runs the two docs where the feature IS
+  # measurable: `valuenoise_100` (typed per-row truth -> cell_accuracy) and
+  # `kv_form` (typed scalar truth -> typed_accuracy). `small_narrow` stays as the
+  # unaffected control, so a delta on it would mean something has gone wrong.
+  #
+  # repeats: 3 because this is a release gate, for the same reason corefast uses 3
+  # (below): at one sample a non-deterministic extraction outcome is
+  # indistinguishable from a regression.
   enforcement:
     cells:
     - enforce-off
     - enforce-warn
     docs:
+    - valuenoise_100
+    - kv_form
     - small_narrow
-    - tiny_form
-    repeats: 1
+    repeats: 3
+  # The cost-bearing arm, separated so it is never run by accident. `escalate`
+  # re-extracts failing fields with a stronger model, so this is the only
+  # enforcement cell that spends money per failure — run it on the doc that
+  # actually produces validation failures.
+  enforcecost:
+    cells:
+    - enforce-warn
+    - enforce-escalate
+    docs:
+    - valuenoise_100
+    repeats: 5
+  # 0.1: the sectionSplitting cost increase (#686 fix). Single-class config, and a
+  # MULTI-PAGE doc so there is something to split. repeats: 5 to satisfy this
+  # file's own rule for cost CLAIMS — the classification call count is
+  # deterministic per page, but total cost includes extraction, which is not.
+  splitcost:
+    cells:
+    - split-disabled
+    - split-llm
+    docs:
+    - small_narrow
+    repeats: 5
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

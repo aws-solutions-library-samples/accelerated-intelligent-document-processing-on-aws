@@ -34,6 +34,14 @@ synthetic:
   - {id: noisy_400,       gen: bank_statement, rows: 400,  cols: 3, lists: 1, ocr_noise: 0.15, tag: shape=noisy}
   # a non-list doc type for breadth (flat key/value form)
   - {id: kv_form,         gen: kv_form,        fields: 25,  tag: doc_type=keyvalue}
+  # value_noise: cells rendered the way real statements render them (currency
+  # symbols, accounting negatives, both thousands conventions, named months) with
+  # the TYPED value as truth. This is the only doc in the corpus where per-row
+  # value handling is measurable — every other doc renders values essentially as
+  # the model returns them, which is why an enforcement A/B on them showed 81
+  # value repairs and an accuracy delta of exactly zero. Scored by cell_accuracy.
+  - {id: valuenoise_100,  gen: bank_statement, rows: 100,  cols: 3, lists: 1, value_noise: true, tag: shape=valuenoise}
+  - {id: valuenoise_400,  gen: bank_statement, rows: 400,  cols: 3, lists: 1, value_noise: true, tag: shape=valuenoise}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
 reference:
