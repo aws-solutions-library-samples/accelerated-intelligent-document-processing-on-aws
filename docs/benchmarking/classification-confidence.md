@@ -25,7 +25,7 @@ AWS_PROFILE=default python3 benchmarks/harness/run_classification_bench.py \
     --stack <STACK> --testset docsplit --n 20 --models nova2lite,haiku45 --mode topk
 ```
 
-Raw data: `benchmarks/results/v0.6.7.dev1/clsconf/` (`summary.json`, per-page
+Raw data: `benchmarks/results/v0.6.7/clsconf/` (`summary.json`, per-page
 `pages_*.json`, `escalation.json`).
 
 ---

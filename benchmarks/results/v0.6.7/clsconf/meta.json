@@ -1,7 +1,7 @@
 {
   "suite": "clsconf",
   "study": "classification confidence calibration (GitHub #673)",
-  "release": "v0.6.7.dev",
+  "release": "v0.6.7",
   "branch": "feature/issue-673-classification-confidence",
   "stack": "IDPBench066",
   "region": "us-west-2",
