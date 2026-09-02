@@ -92,6 +92,12 @@ currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 families
 OpenAI GPT-5.x models are deliberately absent: they are served via the
 bedrock-mantle Responses API and handle caching in `openai_responses.py`.
 
+xAI Grok models are also deliberately absent, for a different reason: explicit
+`cachePoint` blocks raise `AccessDeniedException`. Grok's model card advertises
+*implicit* caching (no request change needed), but that was not observed to
+engage — four back-to-back identical 20,033-token prompts each reported
+`cacheReadInputTokens = 0`. Do not plan cost around a caching discount for Grok.
+
 When using unsupported models, the client will automatically remove `<<CACHEPOINT>>` tags from the content while preserving all text, and log a warning.
 
 ### Using CachePoint in Your Prompts
@@ -467,6 +473,17 @@ per-family allow-list (unlike `CACHEPOINT_SUPPORTED_MODELS`). Two routes in
 | `model_id="LambdaHook"` | posts a Converse-shaped payload to a customer-owned Lambda, which need not implement tool use |
 | OpenAI GPT-5.x (`openai.gpt-5.*`) | served by the bedrock-mantle Responses API, which has its own tools schema |
 
+xAI Grok reaches Converse, so it **does** support `toolConfig` — verified live
+with all three `toolChoice` modes (`auto`/`any`/`tool`), each emitting a
+`toolUse` block. This is the reason Grok is allowed for agentic extraction while
+GPT-5.x is not.
+
+A separate gate, `supports_document_blocks()` /
+`document_blocks_unsupported_reason()`, covers whole-PDF `document` content
+blocks. Both GPT-5.x (text + image only on the Responses API) and xAI Grok
+(*"This model doesn't support documents"*) fail it, which is what excludes them
+from Discovery. Use it the same way as the tool-config gate.
+
 Passing `tool_config`/`tool_choice` for either route raises `ValueError` — the
 schema is never silently dropped. Branch beforehand if you need a text fallback:
 
@@ -612,9 +629,34 @@ Different Bedrock models implement these parameters with varying defaults, namin
     [OpenAI GPT-5.x Models](#openai-gpt-5x-models-bedrock-mantle-responses-api)
     section above
 
+- **xAI Grok models** (`us.xai.grok-4.6`, `global.xai.grok-4.6`):
+  - Reasoning model — `temperature` and `topP` are **hard-rejected** with a 400
+    naming the field, so `strips_sampling_params()` omits the whole sampling
+    group (`top_k` was never forwarded for non-Claude families). This is a
+    stronger contract than GPT-5.x, where the params are merely ignored.
+  - **Reasoning effort**: always on, defaults to `low`. `reasoning_effort` maps
+    to `additionalModelRequestFields.reasoning.effort` and accepts
+    `none`/`low`/`medium`/`high`/`xhigh` — **not** `max` (Grok 400s on it), and
+    **not** Claude's `output_config.effort` carrier (silently ignored here).
+  - **max_tokens** rides in `inferenceConfig.maxTokens`, the Converse-standard
+    field and the default for every non-Claude family. Claude's
+    `additionalModelRequestFields.max_tokens` is *accepted but silently ignored*
+    by Grok, so a wrong carrier fails open (uncapped output) rather than loudly.
+  - Served on Converse, so `toolConfig` works with all three `toolChoice` modes
+    — this is why Grok supports **agentic extraction** and GPT-5.x does not.
+  - Cannot accept `document` content blocks (`supports_document_blocks()` is
+    False), which excludes it from Discovery. See
+    [xAI Grok Models](../../../../docs/grok-models.md).
+  - Not in `CACHEPOINT_SUPPORTED_MODELS`: explicit `cachePoint` blocks raise
+    `AccessDeniedException`, and the advertised implicit caching was not
+    observed to engage. `<<CACHEPOINT>>` markers are stripped from the text.
+
 **Common implementation details**:
-- Temperature is always included in the main `inferenceConfig`
+- Temperature is always included in the main `inferenceConfig`, except for the
+  sampling-param-stripped models (Claude 4.7+, xAI Grok)
 - top_p is added to `inferenceConfig` as "topP"
+- `maxTokens` goes in `inferenceConfig` for every family EXCEPT Claude, which
+  uses `additionalModelRequestFields.max_tokens`
 
 ### Task-Specific Best Practices
 

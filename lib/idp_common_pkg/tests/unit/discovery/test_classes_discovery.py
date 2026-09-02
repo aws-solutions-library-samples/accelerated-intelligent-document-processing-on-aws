@@ -851,22 +851,34 @@ class TestDiscoveryRejectsOpenAI:
 
     def test_reject_helper_raises_for_gpt5(self):
         from idp_common.discovery.classes_discovery import (
-            _reject_openai_responses_model,
+            _reject_model_without_document_blocks,
         )
 
         for model in ("openai.gpt-5.4", "openai.gpt-5.5"):
             with pytest.raises(ValueError, match="not supported for discovery"):
-                _reject_openai_responses_model(model)
+                _reject_model_without_document_blocks(model)
+
+    def test_reject_helper_raises_for_grok(self):
+        """xAI Grok reaches Converse but rejects ``document`` blocks outright
+        ("This model doesn't support documents"), so discovery must refuse it
+        for the same reason it refuses GPT-5.x."""
+        from idp_common.discovery.classes_discovery import (
+            _reject_model_without_document_blocks,
+        )
+
+        for model in ("us.xai.grok-4.6", "global.xai.grok-4.6"):
+            with pytest.raises(ValueError, match="not supported for discovery"):
+                _reject_model_without_document_blocks(model)
 
     def test_reject_helper_allows_supported_models(self):
         from idp_common.discovery.classes_discovery import (
-            _reject_openai_responses_model,
+            _reject_model_without_document_blocks,
         )
 
         # Should not raise.
-        _reject_openai_responses_model("us.anthropic.claude-opus-4-8")
-        _reject_openai_responses_model("us.amazon.nova-pro-v1:0")
-        _reject_openai_responses_model(None)
+        _reject_model_without_document_blocks("us.anthropic.claude-opus-4-8")
+        _reject_model_without_document_blocks("us.amazon.nova-pro-v1:0")
+        _reject_model_without_document_blocks(None)
 
 
 # ---------------------------------------------------------------------------

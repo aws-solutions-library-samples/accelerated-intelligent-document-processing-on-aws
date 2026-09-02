@@ -64,6 +64,22 @@ be called.
 
 See [OpenAI GPT-5.x model support](#openai-gpt-5x-models-bedrock-mantle) below.
 
+### xAI Grok in EU regions
+
+Grok 4.6 has **no `eu.` inference profile**. It is reachable in EU regions only
+through the **global** cross-region profile:
+
+| Model | EU availability |
+|-------|-----------------|
+| `us.xai.grok-4.6` | **None** — `us.`-prefixed IDs return *"The provided model identifier is invalid"* in `eu-west-1` / `eu-central-1` (verified live) |
+| `global.xai.grok-4.6` | ✅ All EU regions (also APAC, Canada, and more) |
+
+No special-case filtering was needed: the existing region filter already drops
+`us.`-prefixed IDs outside US regions and keeps `global.`-prefixed ones
+everywhere, so EU deployments see exactly `global.xai.grok-4.6` in the model
+dropdowns. The global profile is also the cheaper of the two
+($2.00/$6.00 vs $2.20/$6.60 per 1M). See [xAI Grok Models](grok-models.md).
+
 ### Available EU Models
 
 Based on the mappings above, the following EU models are supported:

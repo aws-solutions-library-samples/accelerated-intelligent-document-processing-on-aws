@@ -103,8 +103,9 @@ extraction:
 > here. (`classification` / `summarization` keep their `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`) and OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`) — `reasoning_effort` controls how much
+> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -159,6 +160,16 @@ Agentic extraction requires models with tool-use support:
 > `idp-cli config-validate` and raises at runtime. OpenAI models are fully
 > supported for **Simple (non-agentic) extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
+
+> **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) is served on the standard Converse
+> API and accepts a `toolConfig` with all three `toolChoice` modes, so the Strands
+> agent loop works — making it the only non-Claude/non-Nova option for Advanced
+> extraction. Its 500K context also yields a larger shard budget (~90K tokens)
+> than a 200K-context Claude model (~18K). Note that `temperature` / `top_p` are
+> rejected by Grok and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
+> [xAI Grok Models](grok-models.md).
 
 #### Cost considerations
 

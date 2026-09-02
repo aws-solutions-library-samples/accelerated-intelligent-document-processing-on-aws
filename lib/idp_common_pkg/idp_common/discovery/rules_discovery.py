@@ -21,7 +21,7 @@ import os
 from typing import Any, Dict, List, Optional, cast
 
 from idp_common import bedrock, image
-from idp_common.bedrock.openai_responses import is_openai_responses_model
+from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
@@ -362,13 +362,12 @@ class RulesDiscovery:
             List of validated rule_class dicts, or None on failure
         """
         model_id = self.rules_config.model
-        if is_openai_responses_model(model_id):
+        reason = document_blocks_unsupported_reason(model_id)
+        if reason:
             raise ValueError(
-                f"OpenAI Responses model '{model_id}' is not supported for rule "
-                "discovery. Discovery sends whole-PDF document blocks (and agentic "
-                "rule discovery uses the Converse-based Strands path), neither of "
-                "which the bedrock-mantle Responses API supports. Choose an "
-                "Anthropic or Nova model."
+                f"Model '{model_id}' is not supported for rule discovery: "
+                f"{reason}. Rule discovery sends whole-PDF document blocks. "
+                "Choose an Anthropic or Nova model."
             )
         system_prompt = (
             self.rules_config.system_prompt

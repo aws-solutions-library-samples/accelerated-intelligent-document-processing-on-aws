@@ -52,6 +52,25 @@ _CONF_ROW_TOKENS_BBOX = 120
 _FALLBACK_INPUT_TOKENS = 180_000
 _FALLBACK_OUTPUT_TOKENS = 8_000
 
+# Ceiling on the output reserve, as a fraction of the USABLE INPUT window.
+#
+# The input budget reserves room for the model's own response by subtracting the
+# full usable output window. That is only sensible while a model's output cap is
+# small relative to its context window — which held for every Claude/Nova/GPT
+# family. xAI Grok 4.6 breaks it: a 524,288-token output cap against a 500,000
+# input window means the naive reserve (367,001) EXCEEDS the usable input
+# (350,000), driving the shard budget negative and clamping it to
+# _MIN_SHARD_TOKEN_BUDGET — so the model with the largest context window would
+# shard into 2,000-token pieces.
+#
+# 0.65 is deliberate, not arbitrary: it is the largest fraction that leaves the
+# derived shard budget of EVERY pre-existing model row in
+# model_config_limits.yaml bit-identical (the binding case is the 200K/128K
+# Claude families, whose usable output is 91,750 = 65.5% of their 140,000 usable
+# input). Raising the reserve cap above this would silently re-shard those
+# models; see test_sizing_output_reserve_clamp.
+_MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT = 0.65
+
 # Floors/ceilings so derived values stay sane regardless of arithmetic.
 _MIN_SHARD_TOKEN_BUDGET = 2_000
 _MIN_LIST_BATCH = 1
@@ -156,8 +175,12 @@ def compute_sizing_plan(
 
     # --- Input (shard) budget ---
     # Reserve room for the model's own output and for page images, then the rest
-    # is the per-shard OCR-text budget.
-    output_reserve = usable_output  # the agent may emit up to a full response
+    # is the per-shard OCR-text budget. The agent may emit up to a full response,
+    # but the reserve is capped so a model whose output cap rivals its context
+    # window cannot starve its own shard budget (see the constant's comment).
+    output_reserve = min(
+        usable_output, int(usable_input * _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT)
+    )
     image_reserve = int(max_images_per_agent) * _TOKENS_PER_IMAGE
     derived_shard_budget = max(
         _MIN_SHARD_TOKEN_BUDGET, usable_input - output_reserve - image_reserve

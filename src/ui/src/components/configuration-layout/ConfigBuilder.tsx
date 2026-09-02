@@ -64,10 +64,15 @@ function getFieldLabel(key: string, property: { title?: unknown }): string {
 }
 
 // Whether a model ID exposes a reasoning-effort control. Mirrors the backend
-// gate (idp_common/bedrock/client.py::is_claude_effort_model + the OpenAI
-// Responses path): OpenAI GPT-5.x, and Claude Sonnet 5 / Sonnet 4.6 / Opus
-// 4.5-4.8 / Fable 5 (NOT Sonnet 4.5 or Haiku 4.5). Handles us./eu./global.
-// prefixes, the :1m suffix, and dated/versioned foundation IDs via substring.
+// gate (idp_common/bedrock/client.py::is_claude_effort_model + is_grok_model +
+// the OpenAI Responses path): OpenAI GPT-5.x, xAI Grok, and Claude Sonnet 5 /
+// Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (NOT Sonnet 4.5 or Haiku 4.5). Handles
+// us./eu./global. prefixes, the :1m suffix, and dated/versioned foundation IDs
+// via substring.
+//
+// The effort picklist is a superset across families and each backend drops the
+// values its model rejects: Claude has no 'minimal', GPT-5.x has no
+// 'xhigh'/'max', and Grok accepts none/low/medium/high/xhigh but NOT 'max'.
 const _CLAUDE_EFFORT_TOKENS = [
   'claude-sonnet-5',
   'claude-sonnet-4-6',
@@ -83,7 +88,7 @@ function modelSupportsReasoningEffort(modelId: unknown): boolean {
     return false;
   }
   const id = modelId.toLowerCase();
-  if (id.includes('openai.gpt-5')) {
+  if (id.includes('openai.gpt-5') || id.includes('xai.grok')) {
     return true;
   }
   return _CLAUDE_EFFORT_TOKENS.some((t) => id.includes(t));
