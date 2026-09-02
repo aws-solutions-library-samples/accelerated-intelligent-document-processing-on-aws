@@ -140,17 +140,6 @@ pricing:
       - name: outputTokens
         price: "1.25E-6"
   
-  - name: bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0
-    units:
-      - name: inputTokens
-        price: "8.0E-7"
-      - name: outputTokens
-        price: "4.0E-6"
-      - name: cacheReadInputTokens
-        price: "8.0E-8"
-      - name: cacheWriteInputTokens
-        price: "1.0E-6"
-  
   - name: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
     units:
       - name: inputTokens

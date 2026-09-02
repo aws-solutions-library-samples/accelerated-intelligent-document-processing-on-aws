@@ -29,7 +29,8 @@ import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../c
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
-import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
+import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -39,27 +40,17 @@ import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
 
-interface SectionItem {
-  Id: string;
-  Class: string;
-  PageIds: number[];
-  OutputJSONUri?: string;
-  OriginalId?: string | null;
-  isModified?: boolean;
-  isNew?: boolean;
-  // True when the class is marked with x-aws-idp-exclude-from-processing=true
-  // (e.g., static instruction pages). No extraction / assessment / summary
-  // is performed for excluded sections; the UI renders a "Skipped" badge.
-  Excluded?: boolean;
-  ExclusionReason?: string | null;
-  // Structured self-healing / quality issues detected for this section.
-  ProcessingIssues?: ProcessingIssue[] | null;
-  // How many separate documents (instances) of this section's Class extraction
-  // found here. Absent/0 = undetermined (older documents, or extraction that
-  // failed before producing a result), 1 = normal, >1 = the section spans
-  // several distinct documents that classification did not split apart.
-  InstanceCount?: number | null;
-}
+/**
+ * The row shape for the sections table.
+ *
+ * Derived from the generated GraphQL `Section` via `EditableSection` (issue
+ * #711) — this used to be a second, hand-written interface, so a field added to
+ * `schema.graphql` was invisible here even after codegen, with nothing failing
+ * to say so. That is why `InstanceCount` needed hand-wiring in two places, and
+ * why `Excluded` / `ExclusionReason` / `ConfidenceThresholdAlerts` had already
+ * drifted between the two Section shapes.
+ */
+type SectionItem = EditableSection;
 
 interface PageItem {
   Id: number;

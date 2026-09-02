@@ -79,12 +79,18 @@ Prompt caching is a powerful feature in Amazon Bedrock that significantly reduce
 
 ### Supported Models
 
-CachePoint functionality is only available for specific Bedrock model IDs:
+CachePoint functionality is only available for specific Bedrock model IDs.
+`CACHEPOINT_SUPPORTED_MODELS` in `client.py` is the authoritative list; it
+currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 families
+(including the `:1m` variants) and the Nova models — for example:
 
-- `us.anthropic.claude-3-5-haiku-20241022-v1:0`
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-sonnet-5`
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
+
+OpenAI GPT-5.x models are deliberately absent: they are served via the
+bedrock-mantle Responses API and handle caching in `openai_responses.py`.
 
 When using unsupported models, the client will automatically remove `<<CACHEPOINT>>` tags from the content while preserving all text, and log a warning.
 

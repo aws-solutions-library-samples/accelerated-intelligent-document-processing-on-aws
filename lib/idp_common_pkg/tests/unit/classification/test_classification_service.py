@@ -1144,6 +1144,193 @@ class TestClassificationService:
         # Pages 1-2 merge (continue), page 3 starts a new document.
         assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
 
+    # ------------------------------------------------------------------
+    # GitHub issue #705 - the document-name-regex short-circuit is the same
+    # defect as #686 reached by a different trigger: it hard-coded ONE section
+    # spanning every page and never consulted sectionSplitting. A filename
+    # tells you WHAT the packet holds, never WHERE each record starts, so the
+    # match cannot stand in for boundary detection.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _regex_service(mock_config, section_splitting):
+        """Multi-class service where the `invoice` class matches document names.
+
+        Deliberately multi-class: `has_single_class` is False, so the only
+        short-circuit under test is the document-name-regex one.
+        """
+        config = json.loads(json.dumps(mock_config))
+        config["classification"]["sectionSplitting"] = section_splitting
+        config["classes"][0]["x-aws-idp-document-name-regex"] = "(?i).*invoice.*"
+        with patch("boto3.Session"):
+            service = ClassificationService(
+                region="us-west-2", config=config, backend="bedrock"
+            )
+        assert not service.has_single_class
+        return service
+
+    @staticmethod
+    def _regex_named_document(page_count=3):
+        """A document whose NAME matches the `invoice` class regex."""
+        doc = Document(
+            id="ACME-invoice-packet.pdf",
+            input_key="ACME-invoice-packet.pdf",
+            status=Status.CLASSIFYING,
+        )
+        for page_id in (str(i) for i in range(1, page_count + 1)):
+            doc.pages[page_id] = Page(
+                page_id=page_id,
+                image_uri=f"s3://bucket/image{page_id}.jpg",
+                parsed_text_uri=f"s3://bucket/text{page_id}.txt",
+            )
+        return doc
+
+    def test_regex_match_section_splitting_page(self, mock_config):
+        """`page` yields one section per page - and still calls no backend."""
+        service = self._regex_service(mock_config, "page")
+        doc = self._regex_named_document()
+
+        with patch.object(service, "classify_page") as spy_classify_page:
+            result = service.classify_document(doc)
+            # The class came from the name, and `page` needs no boundary signal.
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+        assert all(s.classification == "invoice" for s in result.sections)
+        assert all(p.classification == "invoice" for p in result.pages.values())
+
+    def test_regex_match_section_splitting_disabled(self, mock_config):
+        """`disabled` keeps the original one-section-over-all-pages behavior."""
+        service = self._regex_service(mock_config, "disabled")
+        doc = self._regex_named_document()
+
+        with patch.object(service, "classify_page") as spy_classify_page:
+            result = service.classify_document(doc)
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 1
+        assert result.sections[0].classification == "invoice"
+        assert result.sections[0].page_ids == ["1", "2", "3"]
+        assert all(p.confidence == 1.0 for p in result.pages.values())
+
+    def test_regex_match_llm_determined_actually_detects_boundaries(self, mock_config):
+        """`llm_determined` runs real boundary detection on a name-matched packet.
+
+        The name fixes the class, not the boundaries. Returning one all-pages
+        section instead is the #705 bug, and for a packet of several invoices it
+        silently discarded every record after the first. The model's own class
+        guess is overridden by the regex match, as the feature documents - only
+        its per-page boundary signal is used.
+        """
+        service = self._regex_service(mock_config, "llm_determined")
+        doc = self._regex_named_document()
+
+        # Three pages, each its own invoice. The model reports a *different*
+        # class to prove the regex match stays authoritative.
+        def fake_classify_page(page_id, *args, **kwargs):
+            return PageClassification(
+                page_id=page_id,
+                classification=DocumentClassification(
+                    doc_type="receipt",
+                    confidence=0.42,
+                    metadata={"document_boundary": "start"},
+                ),
+            )
+
+        with patch.object(
+            service, "classify_page", side_effect=fake_classify_page
+        ) as spy_classify_page:
+            result = service.classify_document(doc)
+            # The backend IS called now - that is the whole point.
+            assert spy_classify_page.call_count == 3
+
+        assert len(result.sections) == 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+        # Class from the regex, boundaries from the model.
+        assert all(s.classification == "invoice" for s in result.sections)
+        assert all(p.classification == "invoice" for p in result.pages.values())
+        assert all(p.confidence == 1.0 for p in result.pages.values())
+        assert [p.document_boundary for p in result.pages.values()] == [
+            "start",
+            "start",
+            "start",
+        ]
+
+    def test_regex_match_llm_determined_merges_when_model_says_continue(
+        self, mock_config
+    ):
+        """The model's judgement is respected in both directions."""
+        service = self._regex_service(mock_config, "llm_determined")
+        doc = self._regex_named_document()
+
+        boundaries = {"1": "start", "2": "continue", "3": "start"}
+
+        def fake_classify_page(page_id, *args, **kwargs):
+            return PageClassification(
+                page_id=page_id,
+                classification=DocumentClassification(
+                    doc_type="invoice",
+                    confidence=1.0,
+                    metadata={"document_boundary": boundaries[page_id]},
+                ),
+            )
+
+        with patch.object(service, "classify_page", side_effect=fake_classify_page):
+            result = service.classify_document(doc)
+
+        assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
+        assert all(s.classification == "invoice" for s in result.sections)
+
+    def test_regex_match_llm_determined_skips_backend_for_one_page(self, mock_config):
+        """One page cannot be split, so inference would be pure waste.
+
+        This keeps the headline use of the regex feature - name the file, skip
+        the LLM - at zero cost for single-page documents.
+        """
+        service = self._regex_service(mock_config, "llm_determined")
+        doc = self._regex_named_document(page_count=1)
+
+        with patch.object(service, "classify_page") as spy_classify_page:
+            result = service.classify_document(doc)
+            spy_classify_page.assert_not_called()
+
+        assert len(result.sections) == 1
+        assert result.sections[0].page_ids == ["1"]
+        assert result.sections[0].classification == "invoice"
+
+    @patch("idp_common.s3.get_text_content")
+    def test_regex_match_holistic_llm_determined_uses_segment_ranges(
+        self, mock_get_text, mock_config
+    ):
+        """Holistic segment RANGES are the boundary detection; the class is pinned."""
+        service = self._regex_service(mock_config, "llm_determined")
+        service.classification_method = service.TEXTBASED_HOLISTIC
+        doc = self._regex_named_document()
+        mock_get_text.side_effect = ["Page 1", "Page 2", "Page 3"]
+
+        segments = {
+            "segments": [
+                # Model's types are wrong for a name-matched document; the ranges
+                # are what it was invoked for.
+                {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "receipt"},
+                {"ordinal_start_page": 3, "ordinal_end_page": 3, "type": "letter"},
+            ]
+        }
+        with patch.object(service, "_invoke_bedrock_model") as mock_invoke:
+            mock_invoke.return_value = {
+                "response": {
+                    "output": {"message": {"content": [{"text": json.dumps(segments)}]}}
+                },
+                "metering": {"tokens": 300},
+            }
+            result = service.classify_document(doc)
+            assert mock_invoke.call_count == 1
+
+        assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
+        assert all(s.classification == "invoice" for s in result.sections)
+        assert all(p.classification == "invoice" for p in result.pages.values())
+
     @patch("idp_common.classification.service.ClassificationService.classify_page")
     def test_document_boundary_signals_are_logged(
         self, mock_classify_page, mock_config
