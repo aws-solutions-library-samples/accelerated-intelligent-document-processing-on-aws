@@ -417,6 +417,39 @@ a separate parameter here purely as a convenience:
 Valid modes: `{"auto": {}}`, `{"any": {}}`, `{"tool": {"name": "..."}}`. All
 three are accepted by every currently selectable Claude and Nova family.
 
+### Property names: sanitize before you send (#709)
+
+Bedrock enforces `^[a-zA-Z0-9_.-]{1,64}$` on `toolSpec.inputSchema` property
+keys. Document classes are authored for humans, so `"Account Number"` and
+`"Purchase Date and Time"` are normal — **4 of the 152 shipped preset classes
+contain names Bedrock would reject** (`bank-statement-sample`,
+`lending-package-sample`, `lending-package-sample-govcloud`,
+`rvl-cdip-package-sample`).
+
+`invoke_model` **refuses** such a schema with a `ValueError` naming the offending
+paths. It deliberately does not sanitize for you: renaming here would return a
+response keyed by names you never asked for, with no map to reverse it — silently
+renaming every field of every extraction. Do both halves yourself:
+
+```python
+from idp_common.bedrock.tool_schema import restore_names, sanitize_tool_schema
+
+clean, name_map = sanitize_tool_schema(class_schema)   # "Account Number" -> "Account_Number"
+response = client.invoke_model(..., tool_config=tool_config_for(clean))
+fields = restore_names(model_output, name_map)          # and back again
+```
+
+`sanitize_tool_schema` leaves an already-valid name **byte-identical** (so a
+working schema is unaffected and `name_map.is_empty()` makes `restore_names` a
+no-op), resolves collisions with a deterministic numeric suffix rather than
+merging two fields into one, and truncates to 64 characters.
+
+> **It sanitizes recursively, and that is deliberate.** Bedrock's own check is
+> **top level only** — a bad key inside an object property, inside `array.items`,
+> or inside a `$defs` entry is accepted *today*. Relying on that would break the
+> moment a class is wrapped in a list, and the day AWS makes the check recursive.
+> The `ValueError` reports nested offenders for the same reason.
+
 ### Capability gate
 
 Every model that reaches the Converse API supports tool use, so there is no

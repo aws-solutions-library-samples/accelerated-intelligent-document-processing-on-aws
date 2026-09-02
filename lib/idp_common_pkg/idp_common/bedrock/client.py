@@ -617,6 +617,58 @@ class BedrockClient:
         return processed_content
 
     @staticmethod
+    def _reject_invalid_tool_property_names(tool_config: Dict[str, Any]) -> None:
+        """Fail locally on property names Bedrock will reject, naming the fix.
+
+        Bedrock enforces ``^[a-zA-Z0-9_.-]{1,64}$`` on ``inputSchema`` property
+        keys, so a document class authored for humans (``"Account Number"``) is
+        rejected — four shipped presets contain such names (GitHub #709). Left to
+        the service, that surfaces as a ``ValidationException`` from deep inside a
+        retry ladder, naming a JSON path rather than a config field.
+
+        This does NOT sanitize on the caller's behalf. Renaming here would hand
+        back a response keyed by names the caller never asked for, with no map to
+        reverse it — silently renaming every field of every extraction. The caller
+        must sanitize *and* keep the map, so it can restore the authored names:
+
+            from idp_common.bedrock.tool_schema import (
+                restore_names, sanitize_tool_schema,
+            )
+            clean, name_map = sanitize_tool_schema(class_schema)
+            ...  # send `clean` as the toolSpec inputSchema
+            fields = restore_names(model_output, name_map)
+
+        Raises:
+            ValueError: naming the offending property paths and the helper.
+        """
+        from idp_common.bedrock.tool_schema import find_invalid_property_names
+
+        offenders: List[str] = []
+        for tool in tool_config.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            spec = tool.get("toolSpec")
+            if not isinstance(spec, dict):
+                continue
+            schema = (spec.get("inputSchema") or {}).get("json")
+            for path in find_invalid_property_names(schema):
+                offenders.append(f"{spec.get('name', '?')}::{path}")
+
+        if offenders:
+            shown = ", ".join(offenders[:8])
+            more = f" (+{len(offenders) - 8} more)" if len(offenders) > 8 else ""
+            raise ValueError(
+                f"tool_config contains {len(offenders)} property name(s) Bedrock "
+                f"will reject (must match ^[a-zA-Z0-9_.-]{{1,64}}$): {shown}{more}. "
+                f"Run idp_common.bedrock.tool_schema.sanitize_tool_schema() on the "
+                f"class schema and idp_common.bedrock.tool_schema.restore_names() "
+                f"on the response — refusing to rename fields silently, which "
+                f"would change every extracted field name with no way back. Note "
+                f"Bedrock only validates the TOP level, so nested offenders listed "
+                f"here would be accepted today and break later."
+            )
+
+    @staticmethod
     def _resolve_tool_config(
         model_id: str,
         tool_config: Optional[Dict[str, Any]],
@@ -657,6 +709,8 @@ class BedrockClient:
                 "rejects a toolChoice with no tools; pass the toolConfig that "
                 "declares the tool being chosen."
             )
+
+        BedrockClient._reject_invalid_tool_property_names(tool_config)
 
         if tool_choice is None:
             return tool_config
