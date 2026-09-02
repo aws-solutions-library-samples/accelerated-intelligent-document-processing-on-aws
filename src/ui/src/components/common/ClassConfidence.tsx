@@ -19,6 +19,11 @@ interface ClassConfidenceProps {
    * `classification.confidence.mode: topk` (the default).
    */
   candidates?: (ClassCandidate | null)[] | null;
+  /**
+   * `badge` for a static value (sections), `link` where the number opens the
+   * model's account of the decision (pages). Defaults to `link`.
+   */
+  variant?: 'badge' | 'link';
 }
 
 /** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
@@ -31,7 +36,7 @@ const asPercent = (confidence: number): string => `${(confidence * 100).toFixed(
  * row, and `0%` would be a lie: not scored is the absence of a measurement, not
  * a measurement of zero (see the `Page.confidence` docstring in models.py).
  */
-export const NotScored = (): React.JSX.Element => (
+const NotScored = (): React.JSX.Element => (
   <Box color="text-status-inactive" textAlign="left">
     —
   </Box>
@@ -60,12 +65,7 @@ export const NotScored = (): React.JSX.Element => (
  * many of its errors, so banding would paint a coarse two-level flag as a
  * calibrated traffic light. See docs/benchmarking/classification-confidence.md.
  */
-const ClassConfidence = ({
-  confidence,
-  reason,
-  candidates,
-  variant = 'link',
-}: ClassConfidenceProps & { variant?: 'badge' | 'link' }): React.JSX.Element => {
+const ClassConfidence = ({ confidence, reason, candidates, variant = 'link' }: ClassConfidenceProps): React.JSX.Element => {
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
   const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
@@ -125,10 +125,17 @@ const ClassConfidence = ({
 /**
  * Sort comparator for a class-confidence column.
  *
- * Unscored rows sort LAST in both directions, instead of clumping at the top of
- * an ascending sort. Sorting least-confident-first is how a reviewer finds the
- * pages worth a second look, and a wall of "—" at the top of that list defeats
- * the click — absence of a measurement is not a low measurement.
+ * Unscored rows sort LAST when ASCENDING — the direction that matters, since
+ * least-confident-first is how a reviewer finds the pages worth a second look and
+ * a block of "—" at the top of that list defeats the click. Absence of a
+ * measurement is not a low measurement, so they are not treated as zero.
+ *
+ * Descending puts them first, because `useCollection` negates the comparator for
+ * the reverse direction — there is no single ordering that keeps nulls last both
+ * ways. Two attempts to beat that (reversing the sorted array, then swapping the
+ * comparator's arguments) each produced the bug they were meant to avoid, and the
+ * cost of the remaining wart is one direction of one column, so this defers to the
+ * design system's behaviour instead of hand-rolling sorting for every column.
  */
 export const compareClassConfidence = (a?: number | null, b?: number | null): number => {
   const av = typeof a === 'number' ? a : null;

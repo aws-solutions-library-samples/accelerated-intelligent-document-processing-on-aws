@@ -14,7 +14,7 @@ import {
   Modal,
   Alert,
 } from '@cloudscape-design/components';
-import type { TableProps } from '@cloudscape-design/components';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useAppContext from '../../contexts/app';
@@ -565,18 +565,13 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
 
   const tableItems = isEditMode ? editedPages : pages || [];
 
-  // Sorting is opt-in per click and starts unset, so the default view stays in
-  // page order. The table gets a SORTED COPY: `tableItems` also feeds the page
-  // text editor's next/previous navigation, which must stay in document order
-  // regardless of how the table is sorted.
-  const [sortingColumn, setSortingColumn] = useState<TableProps.SortingColumn<PageItem> | undefined>(undefined);
-  const [isDescending, setIsDescending] = useState(false);
-  const sortedItems = React.useMemo(() => {
-    const comparator = sortingColumn?.sortingComparator;
-    if (!comparator) return tableItems;
-    const sorted = [...tableItems].sort(comparator as (a: PageItem, b: PageItem) => number);
-    return isDescending ? sorted.reverse() : sorted;
-  }, [tableItems, sortingColumn, isDescending]);
+  // Sorting via the design system's own collection hook rather than a hand-rolled
+  // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
+  // the direction, so every column that declares a sort works. Starts unsorted,
+  // so the default view keeps its existing order. `sortedItems` feeds the table
+  // ONLY — `tableItems` still feeds everything else, which must stay in document
+  // order however the table is sorted.
+  const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
 
   return (
     <SpaceBetween size="l">
@@ -616,12 +611,7 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
         <Table
           columnDefinitions={columnDefinitions}
           items={sortedItems}
-          sortingColumn={sortingColumn}
-          sortingDescending={isDescending}
-          onSortingChange={({ detail }) => {
-            setSortingColumn(detail.sortingColumn);
-            setIsDescending(Boolean(detail.isDescending));
-          }}
+          {...collectionProps}
           variant="embedded"
           resizableColumns
           stickyHeader

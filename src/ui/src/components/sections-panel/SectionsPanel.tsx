@@ -21,7 +21,7 @@ import {
   Popover,
 } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
-import type { TableProps } from '@cloudscape-design/components';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -1536,17 +1536,13 @@ const SectionsPanel = ({
   // parallel Lambda finishes first. Sorting ensures stable visual ordering.
   const tableItems = isEditMode ? editedSections : sortSectionsByPageId(sections || []);
 
-  // Sorting is opt-in per click and starts unset, so the table still opens in the
-  // existing page-order default (sortSectionsByPageId). Sorted on a copy so the
-  // download/reprocess helpers keep operating on document order.
-  const [sortingColumn, setSortingColumn] = useState<TableProps.SortingColumn<SectionItem> | undefined>(undefined);
-  const [isDescending, setIsDescending] = useState(false);
-  const sortedItems = React.useMemo(() => {
-    const comparator = sortingColumn?.sortingComparator;
-    if (!comparator) return tableItems;
-    const sorted = [...tableItems].sort(comparator as (a: SectionItem, b: SectionItem) => number);
-    return isDescending ? sorted.reverse() : sorted;
-  }, [tableItems, sortingColumn, isDescending]);
+  // Sorting via the design system's own collection hook rather than a hand-rolled
+  // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
+  // the direction, so every column that declares a sort works. Starts unsorted,
+  // so the default view keeps its existing order. `sortedItems` feeds the table
+  // ONLY — `tableItems` still feeds everything else, which must stay in document
+  // order however the table is sorted.
+  const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
 
   // Check if there are any validation errors
   const hasValidationErrors = Object.keys(validationErrors).length > 0;
@@ -1621,12 +1617,7 @@ const SectionsPanel = ({
           <Table
             columnDefinitions={columnDefinitions}
             items={sortedItems}
-            sortingColumn={sortingColumn}
-            sortingDescending={isDescending}
-            onSortingChange={({ detail }) => {
-              setSortingColumn(detail.sortingColumn);
-              setIsDescending(Boolean(detail.isDescending));
-            }}
+            {...collectionProps}
             variant="embedded"
             resizableColumns
             stickyHeader={false}
