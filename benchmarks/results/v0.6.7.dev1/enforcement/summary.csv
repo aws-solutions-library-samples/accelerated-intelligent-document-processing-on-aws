@@ -1,5 +1,0 @@
-cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,weighted_accuracy,parse_failures,mean_confidence,pct_conf_below_0.9,calibration_separation,wall_s,cost
-enforce-off,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,0.5,,,0.9744,2.8,,64.461094,0.1622
-enforce-off,tiny_form.pdf,0,COMPLETED,True,1.0,1.0,5,1.0,,,0.9986,0.0,,39.739339,0.0285
-enforce-warn,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,0.5,,,0.973,2.8,,51.346772,0.1477
-enforce-warn,tiny_form.pdf,0,COMPLETED,True,1.0,1.0,5,1.0,,,0.9986,0.0,,15.64679,0.0283

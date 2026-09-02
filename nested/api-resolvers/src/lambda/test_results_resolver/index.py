@@ -60,6 +60,7 @@ class DecimalEncoder(json.JSONEncoder):
 
 logger = logging.getLogger()
 
+
 def _as_int(value):
     """DynamoDB returns numbers as Decimal; the GraphQL Int field needs an int."""
     if value is None:
@@ -68,6 +69,7 @@ def _as_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
 
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -1611,8 +1613,157 @@ def _get_evaluation_metrics_from_athena(test_run_id):
     }
 
 
-def _get_cost_data_from_athena(test_run_id):
-    """Get cost data from Athena metering table"""
+# Hard ceiling on how many `metering` date partitions the cost query may span.
+# The window is normally derived from the run's own lifecycle (see
+# `_cost_query_date_filter`), so this only bites on a pathological run — one
+# abandoned mid-flight, or whose `CompletedAt` is far in the future because of a
+# clock problem. Without it, such a run would scan months of raw metering,
+# re-triggering the HIVE_S3_THROTTLING / poll-timeout failure that emptied the
+# UI's cost section before.
+#
+# Not exposed as a CFN parameter — it's a support escape hatch, settable on the
+# deployed function without a stack update if a customer legitimately has runs
+# spanning more than a week. Parsed defensively so a bad value degrades to the
+# default instead of failing Lambda init for every request.
+def _cost_query_max_partition_days():
+    raw = os.environ.get("COST_QUERY_MAX_PARTITION_DAYS", "7")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"COST_QUERY_MAX_PARTITION_DAYS={raw!r} is not an integer; "
+            f"using the default of 7 date partitions"
+        )
+        return 7
+    if value < 1:
+        logger.warning(
+            f"COST_QUERY_MAX_PARTITION_DAYS={value} is below the 1-day floor; using 1"
+        )
+        return 1
+    return value
+
+
+_COST_QUERY_MAX_PARTITION_DAYS = _cost_query_max_partition_days()
+
+
+def _lookup_test_run_completed_at(test_run_id):
+    """Return the run's `CompletedAt` (ISO string) or None.
+
+    Single-key `get_item` on the run's metadata row. Best-effort: any failure
+    returns None and the caller falls back to the fixed 2-day window.
+    """
+    try:
+        table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+        item = table.get_item(
+            Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
+            ProjectionExpression="CompletedAt",
+        ).get("Item")
+        value = (item or {}).get("CompletedAt")
+        # Only a real ISO string is usable. Anything else (absent, None, or a
+        # non-string left by a stubbed client in tests) falls back rather than
+        # reaching the parser and logging a spurious warning.
+        return value if isinstance(value, str) else None
+    except Exception as e:
+        logger.warning(
+            f"Could not read CompletedAt for {test_run_id} ({e}); cost query "
+            f"falls back to the fixed 2-day partition window"
+        )
+        return None
+
+
+def _cost_query_date_filter(test_run_id, completed_at=None):
+    """Build the `AND date IN (...)` partition filter for the cost query.
+
+    The selective predicate on the cost query is `document_id LIKE '<run>/%'`;
+    this filter exists only to bound how much of the `metering` lake Athena has
+    to open. Getting it wrong in either direction has bitten us:
+
+    - Too wide (an unbounded upper edge, round-7) scanned days of raw metering,
+      hit `HIVE_S3_THROTTLING`, timed out the resolver's poll loop, and left
+      Test Studio's "Estimated cost" section empty for every run.
+    - Too narrow (a fixed `run_date`, `run_date+1`, round-25) is correct only
+      while `metering.date` means *queue* time. Since the Phase-1 partitioning
+      change it means **completion** time, so any run whose documents finish
+      more than ~24h after the date embedded in its ID — HITL review, a
+      throttled or very large batch — silently drops out of the total.
+
+    So bound it by the run's actual lifecycle instead of guessing: from the
+    run's start date (parsed from `test_run_id`) through the day its last
+    document completed, plus one day. The `+1` covers a metering row written
+    just after a `CompletionTime` that sat close to midnight UTC. For a run that
+    completes the same day — the overwhelming majority — this yields exactly the
+    same two partitions as before, so the common case costs nothing extra.
+
+    Falls back to `run_date`, `run_date+1` when `CompletedAt` is missing or
+    unparseable (a still-running run, or a row predating the attribute).
+
+    Returns "" when `test_run_id` carries no parseable date, which leaves the
+    query unpruned — pre-existing behavior, unchanged.
+    """
+    date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
+    if not date_match:
+        return ""
+
+    year, month, day = date_match.groups()
+    run_date = datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
+
+    end_date = run_date + timedelta(days=1)
+    reason = "no CompletedAt; fixed 2-day fallback window"
+    if completed_at:
+        try:
+            parsed = datetime.fromisoformat(str(completed_at).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            # +1 day: a document completing at 23:58 has its metering row
+            # written moments later, possibly in the next date partition.
+            candidate = parsed.astimezone(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) + timedelta(days=1)
+            # A CompletedAt *before* the run's start date means the ID's date
+            # and the tracking row disagree; trust the wider of the two rather
+            # than emitting an empty range.
+            end_date = max(end_date, candidate)
+            reason = f"derived from CompletedAt={completed_at}"
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Unparseable CompletedAt={completed_at!r} for {test_run_id} "
+                f"({e}); using the fixed 2-day fallback window"
+            )
+
+    span_days = (end_date - run_date).days
+    if span_days > _COST_QUERY_MAX_PARTITION_DAYS:
+        end_date = run_date + timedelta(days=_COST_QUERY_MAX_PARTITION_DAYS)
+        logger.warning(
+            f"Cost query window for {test_run_id} clamped from {span_days} to "
+            f"{_COST_QUERY_MAX_PARTITION_DAYS} date partitions "
+            f"(COST_QUERY_MAX_PARTITION_DAYS). Documents completing after "
+            f"{end_date.strftime('%Y-%m-%d')} are NOT counted in the reported "
+            f"cost — it is an under-estimate for this run."
+        )
+        reason = f"clamped to {_COST_QUERY_MAX_PARTITION_DAYS} days"
+
+    dates = []
+    cursor = run_date
+    while cursor <= end_date:
+        dates.append(cursor.strftime("%Y-%m-%d"))
+        cursor += timedelta(days=1)
+
+    rendered = ", ".join(f"'{d}'" for d in dates)
+    logger.info(
+        f"Using date filter for cost query: date IN ({rendered}) — {reason}. "
+        f"metering.date is COMPLETION time, so the window must reach the run's "
+        f"last document completion, not just its start date."
+    )
+    return f"AND date IN ({rendered})"
+
+
+def _get_cost_data_from_athena(test_run_id, completed_at=None):
+    """Get cost data from Athena metering table.
+
+    ``completed_at`` is the run's `CompletedAt` timestamp, used to size the
+    partition window (see `_cost_query_date_filter`). Looked up from the
+    tracking table when not supplied.
+    """
     database = os.environ.get("ATHENA_DATABASE")
     if not database:
         logger.warning("ATHENA_DATABASE environment variable not set")
@@ -1623,39 +1774,9 @@ def _get_cost_data_from_athena(test_run_id):
     like_prefix = _sql_like_prefix(test_run_id, "test_run_id")
     _validate_sql_input(database, "database")
 
-    # Date filter: partition-prune metering to a TIGHT window around
-    # run_date. Round-25 revert: go back to the pre-Phase-1 bounded
-    # 2-day window (run_date, run_date+1). The round-7 review fix
-    # opened this up to an unbounded upper edge to catch HITL
-    # long-tail completions, but at scale that scanned 3-4 days of
-    # raw ``metering`` parquet, hit ``HIVE_S3_THROTTLING``, and
-    # timed out the resolver's poll loop — leaving Test Studio's
-    # "Estimated cost" section empty for every run.
-    #
-    # As of Phase 1, ``metering.date`` is COMPLETION time. A doc
-    # queued at 23:59 UTC on run_date and completed at 00:01 UTC
-    # lands in run_date+1's partition — that's what the second date
-    # covers. Docs delayed >24h by HITL will NOT appear in this
-    # bounded window; that's a Phase-2 refinement (either a wider
-    # on-demand "refresh cost" affordance, or migrating this query
-    # to hit ``metering_hourly`` once that table gains a
-    # per-doc-id-prefix filterable column).
-    date_match = re.search(r"-(\d{4})(\d{2})(\d{2})-", test_run_id)
-    date_filter = ""
-    if date_match:
-        from datetime import datetime, timedelta
-
-        year, month, day = date_match.groups()
-        run_date = datetime(int(year), int(month), int(day))
-        run_date_str = run_date.strftime("%Y-%m-%d")
-        next_date_str = (run_date + timedelta(days=1)).strftime("%Y-%m-%d")
-        date_filter = f"AND date IN ('{run_date_str}', '{next_date_str}')"
-        logger.info(
-            f"Using date filter for cost query: date IN "
-            f"('{run_date_str}', '{next_date_str}') — bounded 2-day "
-            f"window prevents raw-metering S3 throttling; HITL "
-            f"long-tail completions are a Phase-2 refinement"
-        )
+    if completed_at is None:
+        completed_at = _lookup_test_run_completed_at(test_run_id)
+    date_filter = _cost_query_date_filter(test_run_id, completed_at)
 
     query = f"""
     SELECT

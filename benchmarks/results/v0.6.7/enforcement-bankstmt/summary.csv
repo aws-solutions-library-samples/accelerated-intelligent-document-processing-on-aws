@@ -1,0 +1,13 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,weighted_accuracy,parse_failures,mean_confidence,pct_conf_below_0.9,calibration_separation,wall_s,cost
+enforce-off,valuenoise_100.pdf,0,COMPLETED,True,3.0,1.0,100,0.5,,,0.9845,1.6,,76.019318,0.1641
+enforce-off,valuenoise_100.pdf,1,COMPLETED,True,3.0,1.0,100,0.5,,,0.973,2.9,,100.732763,0.1554
+enforce-off,valuenoise_100.pdf,2,COMPLETED,True,3.0,1.0,100,0.5,,,0.9845,1.6,,44.174545,0.1484
+enforce-off,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.9741,2.2,,116.915965,0.1527
+enforce-off,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,0.5,,,0.9728,2.2,,59.885656,0.1456
+enforce-off,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,0.5,,,0.9736,2.8,,42.443946,0.1468
+enforce-warn,valuenoise_100.pdf,0,COMPLETED,True,3.0,1.0,100,0.5,,,0.9844,1.6,,97.046571,0.1551
+enforce-warn,valuenoise_100.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.9882,1.0,,115.667495,0.1547
+enforce-warn,valuenoise_100.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,0.0,,63.355307,0.1442
+enforce-warn,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.9993,0.0,,365.502535,0.164
+enforce-warn,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.9746,2.2,,132.574615,0.1626
+enforce-warn,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,0.5,,,0.9736,2.8,,43.313687,0.1474

@@ -850,6 +850,56 @@ class TestControlPlaneDiscovery:
             "arn:aws:lambda:us-east-1:1:function:ConfigResolver",
         }
 
+    def test_stack_tree_and_data_plane_query_run_once_per_invocation(self, rollup):
+        """Both hourly plane rollups need the stack tree and the data-plane ARN
+        set, and neither can change mid-invocation. They used to be re-derived
+        independently — a second ``ListStackResources`` walk across every nested
+        stack plus a second Tagging API query on every hourly fire."""
+        stack_tree = ["idp-test-stack", "idp-test-stack-APIRESOLVERSTACK-abc"]
+        data_plane = ["arn:aws:lambda:us-east-1:1:function:OCRFunction"]
+
+        def fake_get(tags):
+            if "idp:plane" in tags:
+                return list(data_plane)
+            return list(data_plane) + [
+                "arn:aws:lambda:us-east-1:1:function:TestResultsResolver"
+            ]
+
+        with (
+            patch.object(
+                rollup, "_enumerate_stack_tree", return_value=stack_tree
+            ) as walk,
+            patch.object(
+                rollup, "_get_resources_by_tag", side_effect=fake_get
+            ) as tag_query,
+        ):
+            control = rollup._discover_control_plane_lambdas()
+            data = rollup._discover_data_plane_lambdas()
+
+        assert control == ["arn:aws:lambda:us-east-1:1:function:TestResultsResolver"]
+        assert data == data_plane
+        assert walk.call_count == 1, (
+            f"stack tree walked {walk.call_count}x for one invocation — the "
+            f"per-invocation cache is not being used"
+        )
+        # One query for the full set, one for the idp:plane=data subset. Without
+        # the cache the data-plane subset is fetched twice (3 calls total).
+        assert tag_query.call_count == 2, (
+            f"{tag_query.call_count} tag queries for one invocation; expected 2 "
+            f"(all-IDP + data-plane, each fetched once)"
+        )
+
+    def test_handler_clears_the_discovery_caches(self, rollup):
+        """The caches must NOT survive across invocations: a stack update
+        between rollup fires can add or remove Lambdas, and a warm container
+        would otherwise keep reporting the old topology."""
+        rollup._stack_tree_cache = ["stale-stack"]
+        rollup._data_plane_arn_cache = ["arn:aws:lambda:us-east-1:1:function:Stale"]
+        with patch.object(rollup, "_run_hourly", return_value={}):
+            rollup.handler({"mode": "hourly"}, None)
+        assert rollup._stack_tree_cache is None
+        assert rollup._data_plane_arn_cache is None
+
     def test_warns_on_probable_untagged_data_plane(self, rollup, caplog):
         """A Lambda with a doc-processing name that lacks the data tag
         is drift-detector fodder — WARN log for the operator to fix."""
@@ -1017,20 +1067,82 @@ class TestComponentMapping:
         )
 
     def test_data_plane_bda_labeled_correctly(self, rollup):
-        """Word-boundary check: ``BDAOCRProjectFunction`` labels as
-        ``bda`` but a bare ``Lambda`` (which contains substring ``bda``)
-        must NOT match, else every unlabeled function would be misclassified.
+        """Every BDA Lambda labels as ``bda``, and a function whose name merely
+        contains the substring ``bda`` (as ``lambda`` does) must NOT.
+
+        The rules name each BDA Lambda explicitly rather than relying on a
+        ``(^|[^a-z])bda`` word boundary. That boundary was added in round-24 to
+        stop ``lambda`` matching, but it also rejected ``InvokeBDAFunction`` —
+        lowercased, ``invoke*bda*function`` has the letter ``e`` before ``bda``
+        — so the BDA-mode invoke Lambda fell through to ``other-control``.
         """
-        assert (
-            rollup._component_for_function(
-                "idp-dev-qs1-PATTERNSTACK-2UB-BDAOCRProjectFunction-oMD38Jhsv6C0"
-            )
-            == "bda"
-        )
+        for logical_id in (
+            "InvokeBDAFunction",
+            "BDAProcessResultsFunction",
+            "BDACompletionFunction",
+            "BDAOCRProjectFunction",
+        ):
+            name = f"idp-dev-qs1-PATTERNSTACK-2UB-{logical_id}-oMD38Jhsv6C0"
+            assert rollup._component_for_function(name) == "bda", logical_id
         # Regression pin for the failed round-24 attempt where a bare
         # ``bda`` substring matched ``lambda`` and everything unlabeled
         # got labeled as "bda".
         assert rollup._component_for_function("SomeNewFeatureLambda") != "bda"
+        assert rollup._component_for_function("idp-dev-qs1-GetDomainLambda-x") != "bda"
+
+    def test_bda_process_results_beats_the_process_results_stage_rule(self, rollup):
+        """``BDAProcessResultsFunction`` contains ``processresultsfunction``, so
+        the pipeline ``process-results`` rule would claim it if it were ordered
+        first. BDA rules are placed above the pipeline stages for this reason."""
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-BDAProcessResultsFunction-oMD38J"
+            )
+            == "bda"
+        )
+        # …while the genuine pipeline stage still resolves to process-results.
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-ProcessResultsFunction-oMD38J"
+            )
+            == "process-results"
+        )
+
+    def test_rule_validation_beats_the_classification_stage_rule(self, rollup):
+        """``RuleValidationPolicyClassificationFunction`` contains
+        ``classificationfunction`` — the ``rulevalidation`` rule must be ordered
+        above ``classificationfunction`` or it is labelled ``classification``."""
+        for logical_id in (
+            "RuleValidationFunction",
+            "RuleValidationOrchestrationFunction",
+            "RuleValidationPolicyClassificationFunction",
+        ):
+            name = f"idp-dev-qs1-PATTERNSTACK-2UB-{logical_id}-oMD38Jhsv6C0"
+            assert rollup._component_for_function(name) == "rule-validation", logical_id
+        # …while the genuine classification stage is unaffected.
+        assert (
+            rollup._component_for_function(
+                "idp-dev-qs1-PATTERNSTACK-2UB-ClassificationFunction-oMD38J"
+            )
+            == "classification"
+        )
+
+    def test_remaining_ingest_lambdas_are_labeled(self, rollup):
+        """The four data-plane Lambdas round-24 missed. Their
+        ``data_plane_lambda_hourly`` rows used to carry
+        ``component='other-control'`` — a label saying "control" inside the
+        data-plane table. See
+        ``scripts/tests/test_data_plane_component_labels.py`` for the full
+        allowlist ↔ label invariant."""
+        expected = {
+            "BatchPreProcessorFunction": "batch-ingest",
+            "JobTracker": "job-tracker",
+            "PostProcessingDecompressor": "post-processing",
+            "CompleteSectionReviewFunction": "hitl-review",
+        }
+        for logical_id, component in expected.items():
+            name = f"idp-dev-qs1-{logical_id}-jZQqRb0JT5pj"
+            assert rollup._component_for_function(name) == component, logical_id
 
 
 @pytest.mark.unit
