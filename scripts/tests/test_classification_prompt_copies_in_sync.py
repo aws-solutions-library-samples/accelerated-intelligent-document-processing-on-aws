@@ -101,9 +101,7 @@ def _text_excluding_notebook_outputs(path: Path) -> str:
         nb = json.loads(path.read_text())
     except (json.JSONDecodeError, UnicodeDecodeError):
         return ""
-    return "\n".join(
-        "".join(cell.get("source", [])) for cell in nb.get("cells", [])
-    )
+    return "\n".join("".join(cell.get("source", [])) for cell in nb.get("cells", []))
 
 
 def test_no_committed_copy_still_asks_the_unanswerable_question():

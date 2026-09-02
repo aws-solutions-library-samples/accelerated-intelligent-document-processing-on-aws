@@ -202,9 +202,44 @@ and is not re-billed per page.
 
 > `contextPagesCount: 1` is not a substitute. It fixes the simple two-page case but
 > biases the model toward `continue`, which then merges genuinely separate
-> back-to-back documents — trading over-splitting for over-merging. It remains the
-> right answer for one case the rules cannot cover: **pages scanned out of order**,
-> where a page has no way to know it is physically second.
+> back-to-back documents — trading over-splitting for over-merging. Measured on a
+> 4-page packet holding two copies of one form, `contextPagesCount: 1` **on its own
+> scores 0/5** — it merges all four pages. It remains the right answer for one case
+> the rules cannot cover: **pages scanned out of order**, where a page has no way to
+> know it is physically second.
+
+###### Measured effect
+
+On **DocSplit-Poly-Seq** — 500 packets, 7,330 pages, 2,027 sections, 5,000
+packet-runs — split accuracy on multi-section packets, rules vs. the prior prompt:
+
+| Model | Δ split accuracy | |
+|---|---|---|
+| Qwen3-VL | +0.117 | p<0.05 |
+| Claude Opus 5 | +0.040 | p<0.05 |
+| Amazon Nova 2 Lite (default) | +0.030 | p<0.05 |
+| Claude Sonnet 5 | +0.013 | p<0.05 |
+| gpt-5.6-sol | +0.004 | not significant |
+
+Paired bootstrap + Wilcoxon; **no model regresses**. Under-split rate is 0.000 in
+all ten cells, so the over-merge guard holds. Page-level *class* accuracy moves at
+most 0.015 — the rules affect boundaries only, not classification. On #653's
+reported two-page form, Sonnet 5 goes from 6/24 to 10/10.
+
+Two limits worth knowing before you rely on this:
+
+- **It leans on pagination markers.** Corpora whose scans mostly lack them (for
+  example RVL-CDIP) see much less benefit — the header-block and continuation
+  heuristics are softer signals than `Page 2 of 3`.
+- **`llm_determined` over-splits 1.5×–2.3× on real-world packets regardless of
+  prompt.** That is a separate and larger problem than the one these rules fix; the
+  rules narrow the gap, they do not close it. If exact section counts matter to you,
+  measure on your own documents.
+
+⚠️ **A stored or preset `classification.task_prompt` overrides the default, so it
+does not get these rules.** If you customized the prompt, re-apply the block or
+reset to the default. The presets shipped in `config_library/` are kept in sync by
+`scripts/tests/test_classification_prompt_copies_in_sync.py`.
 
 ##### Enforcing a Valid Class Vocabulary (Validation + Retry)
 
