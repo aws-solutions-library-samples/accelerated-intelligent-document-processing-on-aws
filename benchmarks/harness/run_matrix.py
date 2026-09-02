@@ -194,18 +194,32 @@ def launch(stack, testset_id, version, context):
     return result.get("testRunId")
 
 
-def load_plan(suite, klass):
+def load_plan(suite, klass, overrides=()):
     matrix = yaml.safe_load(open(CFG_MATRIX))
     docm = yaml.safe_load(open(DOC_MATRIX))
     suite_spec = matrix["suites"][suite]
     # cells: read the index written by make_configs.py
-    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}.yaml")
+    # Must match make_configs' namespacing, or a --set run silently reads the
+    # index of a DIFFERENT variant and every result is attributed to the wrong
+    # configuration.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_configs import override_slug
+
+    slug = override_slug(list(overrides))
+    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}{slug}.yaml")
     if not os.path.exists(idx_path):
+        setflags = "".join(f" --set {o}" for o in overrides)
         sys.exit(
-            f"Run make_configs.py --suite {suite} --class {klass} first ({idx_path} missing)"
+            f"Run make_configs.py --suite {suite} --class {klass}{setflags} first "
+            f"({idx_path} missing)"
         )
     cells = yaml.safe_load(open(idx_path))["cells"]
     # docs: may be an explicit list, a named group, or "*"
+    if "docs" not in suite_spec:
+        sys.exit(
+            f"suite '{suite}' declares no `docs:` — a suite with cells but no "
+            f"documents cannot run. Add a docs list or group in config_matrix.yaml."
+        )
     dg = suite_spec["docs"]
     groups = docm["groups"]
     if isinstance(dg, list):
@@ -336,6 +350,18 @@ def main():
     ap.add_argument("--stack", required=True)
     ap.add_argument("--suite", default="core")
     ap.add_argument("--class", dest="klass", default="bank_statement")
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="AXIS=VALUE",
+        help=(
+            "The same --set overrides used to build the configs. Required to "
+            "locate the right index: make_configs namespaces its output by "
+            "overrides, so omitting them here reads a different variant's plan."
+        ),
+    )
     ap.add_argument("--estimate", action="store_true")
     ap.add_argument(
         "--native-upload",
@@ -361,7 +387,7 @@ def main():
         if not v:
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
-    cells, doc_ids, repeats = load_plan(a.suite, a.klass)
+    cells, doc_ids, repeats = load_plan(a.suite, a.klass, a.overrides)
     if a.repeats is not None:
         repeats = a.repeats
     # only synthetic docs handled by this class run here; reference docs use their own config

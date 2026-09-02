@@ -44,6 +44,36 @@ BASE_CONFIG = {
 }
 
 
+def override_slug(overrides):
+    """A short deterministic suffix identifying a set of ``--set`` overrides.
+
+    Empty when there are none, so every path and version name is byte-identical
+    to what this script produced before overrides were namespaced.
+
+    Why this exists: the FILE was namespaced by suite but nothing was namespaced
+    by ``--set``, and the uploaded config VERSION name was namespaced by neither.
+    So two runs of one suite differing only in ``--set`` overwrote the same file,
+    the same index, AND the same ``Config#<version>`` on the stack — the second
+    silently relabelling the first. That is the same silent-cross-model-comparison
+    failure the suite namespacing was added to fix (see the comment on `path`
+    below), reached through a different door: `verify_config_axes` cannot catch it,
+    because the file and the index are rewritten together and therefore agree.
+
+    Args:
+        overrides: the raw ``AXIS=VALUE`` strings from ``--set``.
+
+    Returns:
+        ``""`` or ``"__axis-value[-axis-value...]"``, sorted so it is stable.
+    """
+    if not overrides:
+        return ""
+    parts = []
+    for ov in sorted(overrides):
+        axis, _, value = ov.partition("=")
+        parts.append(f"{axis}-{value}".replace("_", "-").replace(".", "-"))
+    return "__" + "-".join(parts)
+
+
 def set_path(cfg, dotted, value):
     """Set a dotted config path, creating dicts as needed. Special-cases the
     knobs whose real shape differs from a plain scalar."""
@@ -65,12 +95,34 @@ def _norm(v):
     return str(v)
 
 
+def _resolve_value(value):
+    """Expand an ``@file:<path>`` axis value to the file's contents.
+
+    Some knobs are whole PROMPTS, not scalars — the pre-#653 classification
+    task_prompt is one, and it is the control arm of the `boundaryctl` suite. A
+    frozen prompt pasted into this matrix would be unreadable and would silently
+    rot next to the live one, so the value names a file under
+    ``benchmarks/matrices/prompts/`` instead. Relative to that directory, so a
+    matrix entry cannot reach outside the repo.
+    """
+    if not (isinstance(value, str) and value.startswith("@file:")):
+        return value
+    name = value[len("@file:") :].strip()
+    if os.path.sep in name or ".." in name:
+        raise ValueError(f"@file: value must be a bare filename, got {name!r}")
+    path = os.path.join(BENCH, "matrices", "prompts", name)
+    if not os.path.exists(path):
+        raise SystemExit(f"axis value {value!r} names a missing file: {path}")
+    with open(path) as fh:
+        return fh.read().strip()
+
+
 def apply_axis(cfg, axes, axis_name, choice):
     # axis choice map may have bool keys (off/on) due to YAML; index tolerantly
     amap = {_norm(k): kv for k, kv in axes[axis_name].items()}
     knobs = amap[_norm(choice)]
     for dotted, value in knobs.items():
-        set_path(cfg, dotted, value)
+        set_path(cfg, dotted, _resolve_value(value))
     # derive agentic.enabled from extraction_mode
     if axis_name == "extraction_mode":
         cfg.setdefault("extraction", {}).setdefault("agentic", {})["enabled"] = (
@@ -183,7 +235,18 @@ def cells_for_suite(matrix, suite):
             for ch in choices:
                 out.append({"id": f"sweep-{axis}-{_norm(ch)}", axis: _norm(ch)})
     elif isinstance(spec, list):
-        out = [core[i] for i in spec if i in core]
+        # Fail on an unknown id rather than dropping it. Every A/B suite in this
+        # matrix is a COMPARISON, so silently discarding an arm does not shrink
+        # the run — it produces a one-armed "A/B" whose delta is undefined, and
+        # nothing downstream can tell that from a suite that was declared with
+        # one cell. A typo'd cell id is exactly how a control arm disappears.
+        missing = [i for i in spec if i not in core]
+        if missing:
+            raise SystemExit(
+                f"suite '{suite}' names cell(s) not defined in core_cells: "
+                f"{missing}. Add them to core_cells or fix the suite."
+            )
+        out = [core[i] for i in spec]
     return out
 
 
@@ -233,11 +296,14 @@ def main():
         default_cell[axis] = value
         print(f"  [override] default_cell.{axis} = {value}")
     base_path = BASE_CONFIG[args.klass]
+    slug = override_slug(args.overrides)
     cells = cells_for_suite(matrix, args.suite)
     written = []
     for cell in cells:
         cfg, resolved = build_cell(base_path, axes, default_cell, cell)
-        name = f"{cell['id']}__{args.klass}"
+        # The slug keeps two --set variants of one suite from colliding, on disk
+        # AND in the stack's config table.
+        name = f"{cell['id']}__{args.klass}{slug}"
         # The FILE is namespaced by suite; the config VERSION name is not.
         #
         # Suites share cell names (`core_cells` is used by corefast, core,
@@ -260,9 +326,14 @@ def main():
             }
         )
         print(f"  {name}: {resolved}")
-    idx = os.path.join(OUT, f"_index_{args.suite}_{args.klass}.yaml")
+    idx = os.path.join(OUT, f"_index_{args.suite}_{args.klass}{slug}.yaml")
     yaml.safe_dump(
-        {"suite": args.suite, "class": args.klass, "cells": written},
+        {
+            "suite": args.suite,
+            "class": args.klass,
+            "overrides": list(args.overrides),
+            "cells": written,
+        },
         open(idx, "w"),
         sort_keys=False,
     )

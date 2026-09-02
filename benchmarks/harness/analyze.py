@@ -118,6 +118,78 @@ def score_cells(sections, rows_typed, list_key):
     return hits, total, len(by_seq)
 
 
+def score_audit_metadata(sections):
+    """What the extraction stage RECORDED about itself, aggregated per document.
+
+    The extraction service writes an audit block into each section's
+    ``result.json`` under ``metadata`` — ``forced_tool`` (WS-05), ``validation``
+    (schema enforcement) and ``coercion`` (deterministic value repair). Nothing in
+    this harness read it, which left three shipped features with no instrument:
+
+    * A forcing A/B could not tell "forcing changed nothing" from "forcing never
+      ran" — a model that answers in prose, or a route that cannot carry a
+      toolConfig, both fall back silently and score identically to the off arm.
+    * An enforcement A/B could not report how often validation or coercion
+      actually FIRED, so a delta of zero was uninterpretable: no effect, or no
+      opportunity? (That exact ambiguity wasted a whole enforcement run.)
+
+    Returned keys are ``None`` when the feature left no record, so every existing
+    baseline stays comparable — a document that ran with forcing off gets
+    ``forced_tool_attempted: None``, not ``0``.
+    """
+    forced_attempted = forced_honored = 0
+    forced_skips: dict[str, int] = {}
+    val_seen = val_valid = val_errors = 0
+    coercions = refusals = 0
+    coercion_seen = False
+    for sec in sections:
+        md = sec.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        ft = md.get("forced_tool")
+        if isinstance(ft, dict):
+            # `skipped` names a route that cannot carry a toolConfig at all (a
+            # Lambda hook, the GPT-5.x route, a class with no properties). That is
+            # NOT an unhonored force and must not dilute the honored rate — it
+            # means the arm never ran on this section.
+            skipped = ft.get("skipped")
+            if skipped:
+                forced_skips[str(skipped)] = forced_skips.get(str(skipped), 0) + 1
+            elif ft.get("requested"):
+                forced_attempted += 1
+                if ft.get("honored"):
+                    forced_honored += 1
+        val = md.get("validation")
+        if isinstance(val, dict):
+            val_seen += 1
+            if val.get("valid"):
+                val_valid += 1
+            val_errors += int(val.get("error_count") or 0)
+        co = md.get("coercion")
+        if isinstance(co, dict):
+            coercion_seen = True
+            coercions += int(co.get("coercion_count") or 0)
+            # Refusals are the interesting half: a value coercion DECLINED to
+            # rewrite (an ambiguous date, a leading zero) is a field the model got
+            # wrong that enforcement deliberately did not touch.
+            refusals += int(co.get("refusal_count") or 0)
+    return {
+        "forced_tool_attempted": forced_attempted or None,
+        "forced_tool_honored": forced_honored if forced_attempted else None,
+        # THE number a forcing A/B is judged on: forcing that is not honored is
+        # not being tested.
+        "forced_tool_honored_rate": round(forced_honored / forced_attempted, 4)
+        if forced_attempted
+        else None,
+        "forced_tool_skips": forced_skips or None,
+        "validation_sections": val_seen or None,
+        "validation_valid_rate": round(val_valid / val_seen, 4) if val_seen else None,
+        "validation_errors": val_errors if val_seen else None,
+        "coercions": coercions if coercion_seen else None,
+        "coercion_refusals": refusals if coercion_seen else None,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values."""
     seqs, confs = [], []
@@ -163,7 +235,24 @@ def score_synthetic(bucket, doc_prefix, truth):
     cell_accuracy = (
         round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
     )
+    # Section count vs the truth's expectation. This is the metric boundary
+    # detection is judged on, and nothing else can see it: a document split into
+    # 3 sections instead of 1 still reports completeness_recall 1.0 and status
+    # COMPLETED, because every row came back — just distributed across sections
+    # that should not exist (#653/#726). Reported as a 1.0/0.0 so the mean over
+    # repeats IS the pass rate, which is what a non-deterministic failure needs.
+    audit = score_audit_metadata(sections)
+    expected_sections = truth.get("expected_sections")
+    sections_correct = (
+        (1.0 if len(sections) == int(expected_sections) else 0.0)
+        if expected_sections is not None
+        else None
+    )
     return {
+        **audit,
+        "sections": len(sections),
+        "sections_expected": expected_sections,
+        "sections_correct": sections_correct,
         "rows_truth": n_truth,
         "rows_extracted": len(extracted),
         "completeness_recall": round(recall, 4) if recall is not None else None,
@@ -256,9 +345,11 @@ def score_reference(bucket, doc_prefix):
                 sum(corr_conf) / len(corr_conf) - sum(wrong_conf) / len(wrong_conf), 4
             )
     confs = []
-    for sec in lib.iter_section_results(bucket, doc_prefix):
+    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    for sec in sections:
         lib.walk_confidence(sec.get("explainability_info"), confs)
     return {
+        **score_audit_metadata(sections),
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,

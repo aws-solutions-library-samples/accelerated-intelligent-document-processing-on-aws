@@ -322,6 +322,24 @@ class AgenticConfig(BaseModel):
             "confidence.mode == 'integrated' AND agentic extraction is active."
         ),
     )
+    restate_schema_in_system_prompt: bool = Field(
+        default=True,
+        description=(
+            "Append the generated JSON Schema to the agent's SYSTEM prompt "
+            "('Expected Schema: ...'). The class schema is already on the wire as "
+            "the extraction tool's inputSchema, derived from the same "
+            "model_json_schema(), so this is a byte-for-byte duplicate — measured "
+            "at ~2,595 of ~5,692 schema tokens per request on the lending "
+            "Payslip class (#710). Turning it OFF reclaims that. It defaults ON "
+            "because restating a schema in prose often improves adherence, so the "
+            "duplication may be load-bearing rather than accidental — this is an "
+            "A/B knob, not a recommendation. The agent can still fetch the schema "
+            "on demand via get_extraction_schema_reminder, which is unaffected. "
+            "Both copies sit inside the prompt-cache prefix, so the dollar saving "
+            "is roughly a tenth of the token count; the real win is context-window "
+            "headroom, which is what pushes a document into sharding early."
+        ),
+    )
     review_agent: bool = Field(default=False, description="Enable review agent")
     review_agent_model: str | None = Field(
         default=None,
@@ -406,6 +424,51 @@ class AgenticConfig(BaseModel):
                 f"or 'topk', got {v!r}"
             )
         return v
+
+
+class ForcedToolConfig(BaseModel):
+    """Put the class schema on the wire as a forced Converse tool (WS-05 / #710).
+
+    Simple extraction asks for JSON in prose and parses the reply. This declares
+    the class schema as a tool and forces the model to call it, so the response
+    SHAPE is enforced by the API rather than requested in text.
+
+    **Off by default, and gated on evidence.** Forcing constrains shape, not
+    values: a model that would have returned a stray key may instead return a
+    worse value that happens to fit the schema. Whether that trade is a net win is
+    an empirical question the benchmark ``forcing`` suite exists to answer, and it
+    is entirely possible the answer is no — in which case this stays off.
+
+    What it buys regardless of accuracy is that a malformed-JSON parse failure
+    becomes structurally impossible for the declared fields. Note Anthropic
+    ``strict`` tool use and structured outputs are rejected by Bedrock on Converse,
+    InvokeModel and Mantle Messages alike, so a forced ``toolChoice`` is the
+    strongest enforcement available on Claude and Nova.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Send the document schema as a forced Converse tool instead of "
+            "describing it in the prompt. OFF by default: forcing constrains the "
+            "response SHAPE, not the values in it, so it is not self-evidently an "
+            "improvement and is gated on a measured win. Routes that cannot carry "
+            "a toolConfig (a custom Lambda hook, GPT-5.x) fall back to the prompt "
+            "automatically, and the reason is recorded in the section metadata. "
+            "Property names Bedrock rejects are sanitized on the way out and "
+            "restored on the way back, so no extracted field is renamed."
+        ),
+    )
+    fallback_to_prompt: bool = Field(
+        default=True,
+        description=(
+            "When the model accepts the tool but answers in prose anyway (a normal "
+            "outcome, not an error), parse the text response as before. Turn this "
+            "OFF only to make such a response a hard parse failure — useful for "
+            "measuring how often forcing is actually honored, and a bad idea in "
+            "production."
+        ),
+    )
 
 
 class CoercionConfig(BaseModel):
@@ -972,6 +1035,14 @@ class ExtractionConfig(BaseModel):
         description=(
             "Field bounding-box (geometry) configuration (v0.6 — replaces "
             "'assessment.geometry_mode')."
+        ),
+    )
+    forced_tool: ForcedToolConfig = Field(
+        default_factory=ForcedToolConfig,
+        description=(
+            "Send the class schema as a forced Converse tool rather than "
+            "describing it in the prompt. Off by default and gated on a measured "
+            "win — see ForcedToolConfig."
         ),
     )
     coercion: CoercionConfig = Field(

@@ -47,10 +47,10 @@ const ToolsPanel = (): React.JSX.Element => (
 
       <h3>Versions</h3>
       <p>
-        Each configuration is a self-contained <strong>version</strong>. The <strong>default</strong> version is managed by the stack and is
-        read-only — it is overwritten on stack upgrades. To customize it, open it and click <strong>Save as Version</strong> to create an
-        editable copy. Use the <strong>Configuration Profiles</strong> table at the top of the page to open, activate, compare, import, or
-        delete versions.
+        Each configuration is a self-contained <strong>profile</strong>. The <strong>default</strong> profile is managed by the stack and is
+        read-only — it is overwritten on stack upgrades. To customize it, click <strong>Create profile</strong> in the{' '}
+        <strong>Configuration Profiles</strong> table and copy <strong>default</strong> (or any other profile) into a new, editable one. Use
+        that same table to open, activate, compare, import, or delete profiles.
       </p>
 
       <h3>Editing</h3>

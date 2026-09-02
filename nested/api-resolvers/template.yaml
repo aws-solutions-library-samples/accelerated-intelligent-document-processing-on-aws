@@ -1897,6 +1897,17 @@ Resources:
           # enforce config-version scope on the `version` argument. Empty
           # string in single-user / pre-RBAC deployments (fail-open).
           USERS_TABLE_NAME: !Ref UsersTableName
+          # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
+          # on partial-purge failure — parity with queue_sender's #719
+          # telemetry so operators can alarm on both ingest and
+          # reprocess paths from a single metric. Uses the ROOT stack's
+          # name (``!Ref StackName`` — the parameter, passed in by the
+          # root template) NOT ``!Ref AWS::StackName``: this is a
+          # nested template, so the pseudo-parameter would resolve to
+          # the auto-generated nested stack name and the metric would
+          # land in a different namespace than queue_sender's, defeating
+          # the "single-alarm parity" this block sets up.
+          METRIC_NAMESPACE: !Ref StackName
       LoggingConfig:
         LogGroup: !Ref ReprocessDocumentResolverFunctionLogGroup
       Policies:
@@ -1908,6 +1919,20 @@ Resources:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
+        # #719 parity: emit ``StaleOutputPurgeFailed`` on partial-purge
+        # failure so operators can alarm on the metric rather than
+        # scraping ERROR logs. Namespace-scoped to prevent this Lambda
+        # from writing under any other stack's metrics.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter, NOT ``!Ref AWS::StackName``
+                  # (nested template) — see METRIC_NAMESPACE comment above.
+                  cloudwatch:namespace: !Ref StackName
         - Statement:
             - Effect: Allow
               Action:

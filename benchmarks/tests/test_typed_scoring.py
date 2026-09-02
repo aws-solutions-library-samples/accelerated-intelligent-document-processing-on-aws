@@ -420,3 +420,97 @@ class TestDocsForClass:
         docs = ["valuenoise_100", "small_narrow"]
         keep, other = self._fn()(docs, self.DOCM, "bank_statement")
         assert keep == docs and other == []
+
+
+# --------------------------------------------------------------------------- #
+# sections_correct -- the only metric that can see a boundary-detection failure
+#
+# A document split into 3 sections instead of 1 still reports
+# completeness_recall 1.0 and status COMPLETED, because every row came back --
+# just distributed across sections that should not exist (#653/#726). Reported as
+# 1.0/0.0 so the MEAN over repeats is the pass rate, which is the only meaningful
+# reading of a non-deterministic failure.
+# --------------------------------------------------------------------------- #
+class TestSectionCountScoring:
+    @staticmethod
+    def _gen():
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "bs", "benchmarks/corpus/generators/bank_statement.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_generator_declares_the_expected_section_count(self, tmp_path):
+        bs = self._gen()
+        import json
+
+        for docs in (1, 2, 3):
+            out = str(tmp_path / f"d{docs}.pdf")
+            bs.build(rows=10, documents=docs, out=out)
+            truth = json.load(open(out + ".truth.json"))
+            assert truth["expected_sections"] == docs
+
+    def test_rows_are_per_document_not_a_shared_budget(self, tmp_path):
+        """The first version consumed the whole row budget on copy 1, leaving the
+        second statement empty — which would have made the over-merge test
+        meaningless (an empty second document cannot be merged wrongly)."""
+        bs = self._gen()
+        import json
+
+        out = str(tmp_path / "two.pdf")
+        bs.build(rows=20, documents=2, out=out)
+        truth = json.load(open(out + ".truth.json"))
+        assert len(truth["seq_ids"]) == 40
+        assert len(set(truth["seq_ids"])) == 40, "SEQ tags must stay globally unique"
+
+    def test_default_is_a_single_document(self, tmp_path):
+        """Every existing corpus doc must be unaffected."""
+        bs = self._gen()
+        import json
+
+        out = str(tmp_path / "one.pdf")
+        bs.build(rows=10, out=out)
+        assert json.load(open(out + ".truth.json"))["expected_sections"] == 1
+
+    def test_absent_expectation_yields_none_not_a_failure(self):
+        """A truth file that does not declare it must report None, not 0.0 —
+        0.0 would read as a boundary failure on every historical document."""
+        assert (
+            analyze.score_synthetic.__doc__ is not None
+        )  # sanity: the function exists
+        # exercised through the real scorer with a stubbed section reader
+        import types
+
+        secs = [{"inference_result": {}}]
+        orig = analyze.lib.iter_section_results
+        analyze.lib.iter_section_results = lambda *a, **k: iter(secs)
+        try:
+            out = analyze.score_synthetic("b", "p/", {"fields": {}, "seq_ids": []})
+            assert out["sections_correct"] is None
+            assert out["sections_expected"] is None
+            assert out["sections"] == 1
+        finally:
+            analyze.lib.iter_section_results = orig
+        assert isinstance(types, types.ModuleType)
+
+    @pytest.mark.parametrize(
+        ("expected", "actual", "want"),
+        [(1, 1, 1.0), (1, 3, 0.0), (2, 2, 1.0), (2, 1, 0.0), (2, 3, 0.0)],
+    )
+    def test_scored_one_or_zero_so_the_mean_is_a_pass_rate(
+        self, expected, actual, want
+    ):
+        secs = [{"inference_result": {}} for _ in range(actual)]
+        orig = analyze.lib.iter_section_results
+        analyze.lib.iter_section_results = lambda *a, **k: iter(secs)
+        try:
+            out = analyze.score_synthetic(
+                "b", "p/", {"fields": {}, "seq_ids": [], "expected_sections": expected}
+            )
+        finally:
+            analyze.lib.iter_section_results = orig
+        assert out["sections_correct"] == want
+        assert out["sections"] == actual

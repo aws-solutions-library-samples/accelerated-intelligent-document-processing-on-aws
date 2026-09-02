@@ -86,8 +86,22 @@ CSV_COLS = [
     "completeness_recall",
     "truncation_prefix",
     "scalar_accuracy",
+    "typed_accuracy",
+    "cell_accuracy",
+    # Mean over repeats IS the boundary-detection pass rate.
+    "sections_correct",
     "weighted_accuracy",
     "parse_failures",
+    # Audit metadata the extraction stage recorded about itself. Without these a
+    # feature A/B cannot distinguish "no effect" from "never ran" — see
+    # analyze.score_audit_metadata.
+    "forced_tool_attempted",
+    "forced_tool_honored",
+    "forced_tool_honored_rate",
+    "validation_valid_rate",
+    "validation_errors",
+    "coercions",
+    "coercion_refusals",
     "mean_confidence",
     "pct_conf_below_0.9",
     "calibration_separation",
@@ -145,7 +159,22 @@ def cell_stats(rows):
             "cost": _stats([r.get("cost") for r in succ]),
             "completeness_recall": _stats([r.get("completeness_recall") for r in succ]),
             "scalar_accuracy": _stats([r.get("scalar_accuracy") for r in succ]),
+            "typed_accuracy": _stats([r.get("typed_accuracy") for r in succ]),
+            "cell_accuracy": _stats([r.get("cell_accuracy") for r in succ]),
+            # The mean here is the boundary-detection PASS RATE over repeats,
+            # which is the only meaningful reading of a non-deterministic failure.
+            "sections_correct": _stats([r.get("sections_correct") for r in succ]),
             "weighted_accuracy": _stats([r.get("weighted_accuracy") for r in succ]),
+            # Did the feature under test actually engage? A forcing arm whose
+            # honored rate is 0 has measured nothing, and a delta of zero on an
+            # enforcement arm that coerced nothing is not evidence about coercion.
+            "forced_tool_honored_rate": _stats(
+                [r.get("forced_tool_honored_rate") for r in succ]
+            ),
+            "coercions": _stats([r.get("coercions") for r in succ]),
+            "validation_valid_rate": _stats(
+                [r.get("validation_valid_rate") for r in succ]
+            ),
             "wall_s": _stats([r.get("wall_s") for r in succ]),
         }
     return out

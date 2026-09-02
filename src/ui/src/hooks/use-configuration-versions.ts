@@ -159,6 +159,20 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
         };
       }
 
+      // Reject a name that is already taken. The backend's saveAsVersion path
+      // writes straight to the named version, so without this check a typo'd or
+      // reused name silently overwrites that profile's configuration with the
+      // one being saved. (The overwrite does cut a revision, so the previous
+      // state stays recoverable from revision history — but the user gets no
+      // warning at all, which is the bug.) Callers that legitimately want to
+      // replace an existing profile should use updateConfiguration instead.
+      if (versions.some((v) => v.versionName === versionName)) {
+        return {
+          success: false,
+          error: `A configuration profile named "${versionName}" already exists. Please choose a different name.`,
+        };
+      }
+
       // Add saveAsVersion flag to the configuration
       const configWithFlag = {
         ...configuration,

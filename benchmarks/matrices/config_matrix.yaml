@@ -43,6 +43,37 @@ axes:
     disabled:       {classification.sectionSplitting: disabled}
     page:           {classification.sectionSplitting: page}
     llm_determined: {classification.sectionSplitting: llm_determined}
+  # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
+  # Converse tool instead of describing it in the prompt. The task prompt is
+  # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
+  # are separate questions, and varying both at once would confound each.
+  forcing:
+    'off': {extraction.forced_tool.enabled: false}
+    'on':  {extraction.forced_tool.enabled: true}
+  # extraction.agentic.restate_schema_in_system_prompt (#710). Advanced extraction
+  # sends the class schema THREE times per request; copies 2 and 3 are the same
+  # JSON string, so copy 2 (the system-prompt restatement) is pure duplication —
+  # measured at 2,600 of 6,680 schema tokens on the lending Payslip class (38%).
+  # A config toggle, so this A/Bs on ONE stack with identical code. It is NOT a
+  # free win: restating a schema in prose often improves adherence, so the gate is
+  # "no completeness regression", not "fewer tokens".
+  schema_restatement:
+    'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
+    'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # classification.task_prompt, frozen at two points in history. This is the ONLY
+  # axis whose value is a whole prompt rather than a scalar, so it uses the
+  # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
+  # benchmarks/matrices/prompts/.
+  #
+  # It exists because #653 shipped as a PROMPT-ONLY change that is on by default.
+  # Without a runnable pre-fix arm, "the fixed prompt scores 100% on paginated_3pg"
+  # is unfalsifiable — pagination alone could explain it. `legacy` reproduces the
+  # control instead of leaving it as prose in a FINDINGS file. Keep the frozen file
+  # frozen: it is a historical baseline, not a config to maintain.
+  boundary_prompt:
+    current: {}          # whatever the shipped system default is (the fix)
+    legacy:
+      classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -68,6 +99,17 @@ axes:
     sonnet5_1m:   {extraction.model: us.anthropic.claude-sonnet-5:1m}
     nova_pro:     {extraction.model: us.amazon.nova-pro-v1:0}
     nova_lite:    {extraction.model: us.amazon.nova-lite-v1:0}
+  # classification.model. Added for #653: that bug was reported on Sonnet 5 and
+  # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
+  # fix has to be verified on the model it was reported against, not only on the
+  # default. Sonnet 5 also REJECTS temperature/top_p/top_k (they are stripped, see
+  # _CLAUDE_4_7_BASE_NAMES), so it samples where Nova receives temperature: 0 —
+  # which makes it the stricter test of a prompt-only fix.
+  classification_model:
+    nova_2_lite: {classification.model: us.amazon.nova-2-lite-v1:0}
+    nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
+    sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
+    sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
@@ -92,9 +134,13 @@ default_cell:
                                # BOTH v0.5.16 and v0.6 run. Sonnet-5 capability is a
                                # documented v0.6-only delta, not part of the matrix.
   confidence_model: nova_lite
+  classification_model: nova_2_lite   # the shipped default
   reasoning_effort: low
   enforcement: warn
+  forcing: 'off'             # shipped default; the sweep varies it
+  schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
+  boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -109,7 +155,16 @@ core_cells:
   # Section-splitting cost cells. Identical but for the knob, so the delta is the
   # classification inference the #686 fix introduced.
   - {id: split-disabled,       ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: disabled}
+  # #710 pair. ADVANCED mode: the restatement only exists on the agentic path.
+  - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
+  - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
+  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
+  # boundary claim is a measured delta rather than a single post-fix number.
+  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
+  # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
+  - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
+  - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
   - {id: core-tt-simple-off,   ocr: textract_tables, extraction_mode: simple,   assessment: "off"}
@@ -126,6 +181,8 @@ core_cells:
 # Isolates each knob's marginal effect on accuracy/cost/calibration/latency.
 # -----------------------------------------------------------------------------
 sweeps:
+  forcing: ['off', 'on']
+  schema_restatement: ['on', 'off']
   enforcement:
   - 'off'
   - warn
@@ -137,6 +194,7 @@ sweeps:
   escalation:       ["off", "on"]           # run on the low-confidence corpus to expose cost
   extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
+  classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]
 
 # -----------------------------------------------------------------------------
@@ -198,6 +256,67 @@ suites:
     docs:
     - small_narrow
     repeats: 5
+  # One-off CONTROL for #653: the SAME paginated document under the PRE-FIX
+  # prompt. Without it, `paginated_3pg` scoring 100% with the fix is ambiguous —
+  # pagination alone could explain it, and the prompt change would be taking
+  # credit for the document. Its config is written by hand (the prompt is not an
+  # axis) and namespaced under its own suite so it cannot collide.
+  boundaryctl:
+    cells:
+    - split-llm-legacyprompt
+    docs:
+    - paginated_3pg      # control: does pagination alone explain the 100%?
+    - twodocs_2x20       # control: what does the OLD prompt score on over-merge?
+    - small_narrow       # control: the pre-fix over-split rate, same doc/model
+    repeats: 5
+
+  # Boundary detection, BOTH directions (#653). The two docs pull opposite ways
+  # and a fix must satisfy both at once:
+  #   small_narrow  = ONE 3-page statement  -> must yield 1 section (over-SPLIT)
+  #   twodocs_2x20  = TWO complete statements -> must yield 2 sections (over-MERGE)
+  # `split-disabled` runs as the control: it is correct on small_narrow by
+  # construction and WRONG on twodocs_2x20 by construction (one all-pages
+  # section), which is exactly why `disabled` is not a workaround for packets.
+  # Non-deterministic, so repeats: 5 — a single passing run does not clear it.
+  boundary:
+    cells:
+    - split-llm
+    - split-disabled
+    docs:
+    - small_narrow      # ONE 3-page statement, NO pagination -> 1 section (hard)
+    - paginated_3pg     # ONE 3-page statement, WITH pagination -> 1 section (common)
+    - twodocs_2x20      # TWO statements -> 2 sections (the over-merge direction)
+    repeats: 5
+  # WS-05: does forcing the schema as a tool actually improve extraction?
+  # The null hypothesis is live — forcing constrains the response SHAPE, not the
+  # values in it, so a model that would have emitted a stray key may instead emit
+  # a worse value that fits. Judged on cell_accuracy and typed_accuracy (values),
+  # completeness_recall (rows), and the forced_tool.honored rate in metadata, NOT
+  # on "did it parse". Docs chosen so both value fidelity and list completeness
+  # are measurable; kv_form runs separately (different class).
+  forcing:
+    cells:
+    - force-off
+    - force-on
+    docs:
+    - valuenoise_100    # typed per-row truth -> cell_accuracy (value fidelity)
+    - longdesc_100      # list-heavy -> completeness_recall (does forcing lose rows?)
+    - kv_form           # typed scalar truth; DIFFERENT class, so run with --class kv_form
+    repeats: 3
+  # #710: does dropping the duplicated schema copy cost completeness?
+  # The gate is COMPLETENESS, not tokens — #710 warns the prose restatement may be
+  # load-bearing for adherence, so a token saving that loses rows is a loss. Run on
+  # list-heavy docs where adherence actually shows: if the agent drifts from the
+  # schema, rows go missing. repeats: 3 because the agentic path is
+  # non-deterministic (turn counts have varied ~4x run to run).
+  restatement:
+    cells:
+    - restate-on
+    - restate-off
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

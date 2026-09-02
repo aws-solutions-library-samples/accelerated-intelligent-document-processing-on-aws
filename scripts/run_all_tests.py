@@ -117,6 +117,11 @@ RUN_ROOTS = [
     # Configuration-revision pinning on a test run.
     "nested/api-resolvers/src/lambda/test_runner",
     "nested/api-resolvers/src/lambda/test_set_resolver",
+    # Reprocess resolver: output-data deletion on reprocess (nested-stack
+    # namespace handling). Arrived with #719 unregistered, which made `make test`
+    # fail on develop and — the reason this guard exists — meant its 5 tests were
+    # never actually run. Verified green headless.
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook",

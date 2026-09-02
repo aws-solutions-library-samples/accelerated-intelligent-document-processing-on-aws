@@ -117,3 +117,62 @@ def test_generated_configs_are_suite_namespaced():
         "the config filename must include the suite, or two suites sharing a cell "
         "name will overwrite each other's files and desync from their indexes"
     )
+
+
+# --------------------------------------------------------------------------- #
+# --set overrides must namespace the output
+#
+# The FILE was namespaced by suite, but nothing was namespaced by `--set`, and the
+# uploaded config VERSION name was namespaced by neither. So two runs of one suite
+# differing only in `--set` overwrote the same file, the same index, AND the same
+# `Config#<version>` on the stack -- the second silently relabelling the first.
+#
+# This is the same silent-cross-model-comparison failure the suite namespacing was
+# added to fix, reached through a different door. `verify_config_axes` cannot catch
+# it: the file and the index are rewritten together and therefore agree with each
+# other while both disagree with the run that is already in flight. Hit live while
+# building a two-model boundary A/B; caught before any config was uploaded.
+# --------------------------------------------------------------------------- #
+class TestOverrideSlug:
+    @staticmethod
+    def _slug():
+        mc = pytest.importorskip("make_configs")
+        return mc.override_slug
+
+    def test_no_overrides_is_byte_identical_to_before(self):
+        """Every existing path and version name must be unchanged."""
+        assert self._slug()([]) == ""
+        assert self._slug()(()) == ""
+
+    def test_an_override_produces_a_distinct_suffix(self):
+        assert self._slug()(["classification_model=sonnet5"]) == (
+            "__classification-model-sonnet5"
+        )
+
+    def test_two_different_overrides_cannot_collide(self):
+        a = self._slug()(["classification_model=sonnet5"])
+        b = self._slug()(["classification_model=nova_2_lite"])
+        assert a != b and a and b
+
+    def test_it_is_order_independent(self):
+        """Otherwise the same run invoked two ways reads two different indexes."""
+        one = self._slug()(["a=1", "b=2"])
+        two = self._slug()(["b=2", "a=1"])
+        assert one == two
+
+    def test_the_slug_is_filename_safe(self):
+        slug = self._slug()(["extraction_model=sonnet5_1m", "ocr=textract_tables"])
+        assert "/" not in slug and " " not in slug
+        assert "_" not in slug.lstrip("_"), slug  # only the leading separator
+
+    def test_run_matrix_uses_the_same_helper(self):
+        """A second implementation would drift, and the failure is silent."""
+        import pathlib
+
+        src = pathlib.Path("benchmarks/harness/run_matrix.py").read_text()
+        assert "from make_configs import override_slug" in src, (
+            "run_matrix must reuse make_configs.override_slug, not reimplement it"
+        )
+        assert 'ap.add_argument(\n        "--set"' in src, (
+            "run_matrix needs a matching --set so it can find the right index"
+        )
