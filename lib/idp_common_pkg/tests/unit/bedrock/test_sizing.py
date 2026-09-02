@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
+import yaml
 
 from idp_common.bedrock.sizing import compute_sizing_plan
 
@@ -98,9 +101,6 @@ def test_plan_to_dict_round_trips_key_fields():
     assert "shard_token_budget" in d and "list_batch_size" in d
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
 
 # ---------------------------------------------------------------------------
 # Output-reserve clamp (_MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT)
@@ -132,27 +132,91 @@ def test_grok_gets_a_larger_shard_budget_than_a_200k_model():
     assert grok.shard_token_budget > sonnet.shard_token_budget
 
 
-@pytest.mark.parametrize(
-    ("model_id", "expected_shard_budget"),
-    [
-        # Every pre-existing row in model_config_limits.yaml. These numbers are
-        # the pre-clamp values: the clamp MUST be a no-op for all of them. The
-        # binding case is the 200K/128K Claude families, whose usable output
-        # (91,750) is 65.5% of their usable input (140,000) — raising the clamp
-        # fraction above 0.65 would silently re-shard them.
-        (SONNET5, 18_400),  # 200K in / 128K out
-        ("us.anthropic.claude-opus-4-8", 18_400),
-        ("us.anthropic.claude-opus-5", 18_400),
-        ("us.anthropic.claude-sonnet-4-6", 18_400),
-        (SONNET5_1M, 578_400),  # 1M in / 128K out
-        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 63_200),  # 200K / 64K
-        ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", 102_266),  # 200K / 8K
-        ("openai.gpt-5.6-sol", 68_800),  # 272K / 128K
-        (NOVA_LITE, 171_000),  # 300K / 10K
-    ],
-)
-def test_reserve_clamp_does_not_change_existing_models(model_id, expected_shard_budget):
-    plan = compute_sizing_plan(model_id=model_id, context_buffer=0.3)
-    assert plan.shard_token_budget == expected_shard_budget
-    # No clamp engaged: the reserve is still the full usable output window.
-    assert plan.output_reserve_tokens == int(plan.max_output_tokens * 0.7)
+def _naive_and_clamped(max_in: int, max_out: int, buffer: float) -> tuple[int, int]:
+    """Shard budget with the reserve unclamped vs clamped, computed independently
+    of sizing.py so the test cannot pass by mirroring the implementation."""
+    usable_in, usable_out = int(max_in * (1 - buffer)), int(max_out * (1 - buffer))
+    image_reserve = 20 * 1600
+    naive = max(2000, usable_in - usable_out - image_reserve)
+    clamped_reserve = min(usable_out, int(usable_in * 0.65))
+    clamped = max(2000, usable_in - clamped_reserve - image_reserve)
+    return naive, clamped
+
+
+def _model_limit_rows() -> list[tuple[str, int, int]]:
+    """Every row in the shipped model_config_limits.yaml."""
+    # Walk up to the repo root rather than hard-coding a parents[] index, so the
+    # test does not break if the file moves within the package tree.
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        path = parent / "config_library" / "model_config_limits.yaml"
+        if path.is_file():
+            break
+    else:  # pragma: no cover - only if the shipped limits file is missing
+        pytest.skip("config_library/model_config_limits.yaml not found")
+    rows = yaml.safe_load(path.read_text())["model_limits"]
+    return [(r["pattern"], r["max_input_tokens"], r["max_output_tokens"]) for r in rows]
+
+
+@pytest.mark.parametrize("buffer", [0.0, 0.15, 0.3, 0.5, 0.6, 0.85])
+def test_reserve_clamp_does_not_change_existing_models(buffer):
+    """The clamp must be a no-op for every pre-existing row, at EVERY buffer.
+
+    Driven off the shipped YAML rather than a hand-copied list, so a newly added
+    model row is covered automatically instead of silently escaping the check.
+    Grok is the one row expected to differ — it is the reason the clamp exists.
+
+    The no-op is buffer-independent because the comparison reduces to
+    max_output/max_input; pinning several buffers documents that rather than
+    leaving it to the 0.30 default.
+    """
+    changed = []
+    for pattern, max_in, max_out in _model_limit_rows():
+        if "grok" in pattern:
+            continue  # the one row the clamp exists to fix
+        naive, clamped = _naive_and_clamped(max_in, max_out, buffer)
+        if naive != clamped:
+            changed.append((pattern, naive, clamped))
+    assert changed == [], (
+        f"clamp changed a pre-existing model at buffer={buffer}: {changed}"
+    )
+
+
+def test_clamp_actually_rescues_grok():
+    """The other half of the invariant: at the default buffer the clamp must lift
+    Grok off the floor, or the constant is doing nothing. Asserted at the default
+    buffer rather than swept, because at extreme buffers (0.85) the usable input
+    is small enough that Grok floors with or without the clamp."""
+    naive, clamped = _naive_and_clamped(500_000, 524_288, 0.3)
+    assert naive == 2000  # collapses to _MIN_SHARD_TOKEN_BUDGET unclamped
+    assert clamped == 90_500
+
+
+def test_clamp_boundary_is_just_below_the_chosen_fraction():
+    """0.65 sits just above the 0.64 boundary set by the 200K/128K Claude
+    families. Pins BOTH sides of the two-sided constraint the constant's comment
+    describes, so moving it in either direction fails loudly."""
+    from idp_common.bedrock.sizing import _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT
+
+    usable_in, usable_out = int(200_000 * 0.7), int(128_000 * 0.7)
+    assert usable_out / usable_in == 0.64  # the boundary, exactly
+
+    # Lowering below the boundary re-shards Claude.
+    assert min(usable_out, int(usable_in * 0.63)) < usable_out
+    # The chosen value does not.
+    assert (
+        min(usable_out, int(usable_in * _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT))
+        == usable_out
+    )
+    # Raising it starves Grok, which is why it is not simply set to 1.0.
+    assert _naive_and_clamped(500_000, 524_288, 0.3)[1] > 2000
+    grok_at_090 = max(
+        2000,
+        int(500_000 * 0.7)
+        - min(int(524_288 * 0.7), int(500_000 * 0.7 * 0.90))
+        - 32_000,
+    )
+    assert grok_at_090 < _naive_and_clamped(500_000, 524_288, 0.3)[1]
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

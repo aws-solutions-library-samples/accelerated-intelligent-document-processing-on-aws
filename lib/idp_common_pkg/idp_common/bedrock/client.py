@@ -30,6 +30,7 @@ from .model_utils import (
     get_model_max_output_tokens,
     parse_max_tokens_limit_from_error,
     parse_model_id,
+    resolve_model_id_from_arn,
 )
 from .openai_responses import invoke_responses_api, is_openai_responses_model
 from .session import get_bedrock_session
@@ -106,9 +107,17 @@ def is_claude_4_7_model(model_id: str) -> bool:
     Args:
         model_id: Bedrock model ID (e.g., 'us.anthropic.claude-opus-4-7:1m')
 
+    Inference-profile ARNs are resolved first. Without this, a config naming
+    ``arn:...:inference-profile/us.anthropic.claude-sonnet-5`` — the form
+    docs/configuration.md recommends for cost allocation, and the only form
+    available in GovCloud — would not be recognized, so ``temperature`` would be
+    sent to a model that rejects it with a 400. Opaque
+    ``application-inference-profile`` ARNs still cannot be resolved offline.
+
     Returns:
         True if the model is a Claude 4.7+ variant
     """
+    model_id = resolve_model_id_from_arn(model_id)
     # Strip region prefix (us., eu., global.)
     parts = model_id.split(".", 1)
     if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
@@ -220,10 +229,23 @@ def is_grok_model(model_id: str) -> bool:
     rejected ("Invocation of model ID xai.grok-4.6 with on-demand throughput
     isn't supported") — but the bare name is matched anyway so the predicate is
     about the family, not the routing.
+
+    Inference-profile **ARNs** are resolved first. This matters more here than
+    for the Claude predicates: docs/configuration.md actively recommends passing
+    an inference-profile ARN for cost-allocation tagging, and an ARN is the only
+    form available in GovCloud. Because Grok's rejections are unconditional (a
+    400 on temperature, a hard refusal of document blocks), missing the ARN form
+    would fail 100% of requests rather than degrade quietly.
+
+    LIMITATION: ``application-inference-profile/<uuid>`` ARNs are opaque — the
+    underlying foundation model cannot be determined without a
+    GetInferenceProfile call — so those still return False. A Grok application
+    inference profile will therefore bypass these gates.
     """
     if not model_id:
         return False
-    return _strip_region_and_1m(model_id).startswith(_GROK_BASE_PREFIX)
+    resolved = resolve_model_id_from_arn(model_id)
+    return _strip_region_and_1m(resolved).startswith(_GROK_BASE_PREFIX)
 
 
 def strips_sampling_params(model_id: str) -> bool:

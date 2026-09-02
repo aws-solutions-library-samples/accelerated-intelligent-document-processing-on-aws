@@ -115,9 +115,11 @@ Grok's effort vocabulary is **not** the same as Claude's:
 | OpenAI GPT-5.x | `minimal`, `low`, `medium`, `high` | Responses `reasoning.effort` |
 
 Grok **rejects `max`**, and `none` is Grok-only. The configuration picklist is a
-superset across all families; each backend drops values its model does not
-accept, logging a warning. So selecting `max` for Grok is safe but has no effect
-— pick `xhigh` for maximum reasoning depth instead.
+superset across all families — `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max` — and each backend drops values its model does not accept, logging
+a warning. So selecting `max` for Grok is safe but has no effect; pick `xhigh`
+for maximum reasoning depth instead. Likewise `none` is available in the picklist
+but is ignored by Claude and GPT-5.x.
 
 Note that Bedrock also ignores *unrecognized* `additionalModelRequestFields`
 keys silently for Grok, which is why the accelerator sends the exact carrier

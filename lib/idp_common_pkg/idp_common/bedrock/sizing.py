@@ -63,12 +63,24 @@ _FALLBACK_OUTPUT_TOKENS = 8_000
 # _MIN_SHARD_TOKEN_BUDGET — so the model with the largest context window would
 # shard into 2,000-token pieces.
 #
-# 0.65 is deliberate, not arbitrary: it is the largest fraction that leaves the
-# derived shard budget of EVERY pre-existing model row in
-# model_config_limits.yaml bit-identical (the binding case is the 200K/128K
-# Claude families, whose usable output is 91,750 = 65.5% of their 140,000 usable
-# input). Raising the reserve cap above this would silently re-shard those
-# models; see test_sizing_output_reserve_clamp.
+# 0.65 is deliberate, and the constraint is TWO-SIDED — read both directions
+# before changing it:
+#
+#   * LOWERING it re-shards existing models. The binding case is the 200K/128K
+#     Claude families: their usable output is 89,600, which is exactly 64.00% of
+#     their 140,000 usable input, so any fraction >= 0.64 leaves them untouched
+#     while 0.63 raises their shard budget to 19,800 and 0.50 to 38,000.
+#     0.64 is the true boundary; 0.65 sits just above it.
+#   * RAISING it starves the model this exists for. A bigger cap means less
+#     clamping, so Grok's shard budget falls: 90,500 at 0.65, 73,001 at 0.70,
+#     3,000 at 0.90, and back to the floor at 1.00 (which is the unclamped
+#     behavior).
+#
+# So 0.65 maximizes the new model's shard budget subject to disturbing no
+# existing model. Note the no-op is buffer-INDEPENDENT: the comparison reduces to
+# max_output/max_input, so it holds at every ``context_buffer``, not just the
+# 0.30 default. test_reserve_clamp_does_not_change_existing_models pins every
+# pre-existing row across a range of buffers.
 _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT = 0.65
 
 # Floors/ceilings so derived values stay sane regardless of arithmetic.

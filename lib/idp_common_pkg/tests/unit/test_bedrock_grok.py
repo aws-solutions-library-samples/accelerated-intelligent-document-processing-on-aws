@@ -94,6 +94,49 @@ class TestGrokIdentification:
 
 
 @pytest.mark.unit
+class TestGrokInferenceProfileArns:
+    """docs/configuration.md recommends inference-profile ARNs for cost
+    allocation, and an ARN is the only form available in GovCloud. Grok's
+    rejections are unconditional, so a gate that misses the ARN form fails 100%
+    of requests rather than degrading quietly."""
+
+    ARNS = [
+        "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.xai.grok-4.6",
+        "arn:aws:bedrock:us-west-2:123456789012:inference-profile/global.xai.grok-4.6",
+        "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:inference-profile/us.xai.grok-4.6",
+        "arn:aws:bedrock:us-east-1::foundation-model/xai.grok-4.6",
+    ]
+
+    @pytest.mark.parametrize("arn", ARNS)
+    def test_grok_recognized_through_an_arn(self, arn):
+        assert is_grok_model(arn) is True
+        assert strips_sampling_params(arn) is True
+        assert supports_document_blocks(arn) is False
+
+    def test_claude_arn_is_not_grok_but_still_strips_params(self):
+        """Regression guard for the adjacent pre-existing gap: Sonnet 5 rejects
+        temperature, and must be recognized through an ARN too."""
+        arn = (
+            "arn:aws:bedrock:us-west-2:123456789012:"
+            "inference-profile/us.anthropic.claude-sonnet-5"
+        )
+        assert is_grok_model(arn) is False
+        assert strips_sampling_params(arn) is True
+        assert supports_document_blocks(arn) is True
+
+    def test_opaque_application_profile_is_a_known_limitation(self):
+        """An application-inference-profile ARN cannot be resolved offline (it
+        needs GetInferenceProfile), so the gates cannot see through it. Pinned so
+        the limitation is explicit rather than a surprise."""
+        arn = (
+            "arn:aws:bedrock:us-west-2:123456789012:"
+            "application-inference-profile/abc123uuid"
+        )
+        assert is_grok_model(arn) is False
+        assert supports_document_blocks(arn) is True
+
+
+@pytest.mark.unit
 class TestGrokCapabilityGates:
     def test_grok_reaches_converse_so_tool_config_is_supported(self):
         """Unlike GPT-5.x, Grok can carry a toolConfig — this is what makes

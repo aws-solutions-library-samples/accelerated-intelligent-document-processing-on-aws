@@ -484,6 +484,20 @@ blocks. Both GPT-5.x (text + image only on the Responses API) and xAI Grok
 (*"This model doesn't support documents"*) fail it, which is what excludes them
 from Discovery. Use it the same way as the tool-config gate.
 
+**Inference-profile ARNs.** `is_grok_model()`, `strips_sampling_params()`,
+`is_claude_4_7_model()` and `document_blocks_unsupported_reason()` resolve
+inference-profile ARNs (via `resolve_model_id_from_arn`) before matching, so a
+config that names
+`arn:aws:bedrock:...:inference-profile/us.anthropic.claude-sonnet-5` — the form
+recommended for cost-allocation tagging, and the only form GovCloud accepts — is
+gated the same as the bare ID. **Opaque
+`application-inference-profile/<uuid>` ARNs are the exception**: the underlying
+foundation model cannot be determined without a `GetInferenceProfile` call, so
+these gates return the permissive answer for them. A Grok application inference
+profile will therefore bypass the sampling-param strip and the document-block
+refusal and fail at the Bedrock call instead. (`_is_model_cachepoint_supported`
+does make the control-plane call, if you need a model for how to resolve one.)
+
 Passing `tool_config`/`tool_choice` for either route raises `ValueError` — the
 schema is never silently dropped. Branch beforehand if you need a text fallback:
 
