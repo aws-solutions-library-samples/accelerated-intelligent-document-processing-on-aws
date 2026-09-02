@@ -225,6 +225,12 @@ def handler(event, context):
         # the exact revision the run says it scored.
         if effective_config_revision is not None:
             message_body["configRevision"] = int(effective_config_revision)
+        # The version this run scores against, so the copier stages that version's
+        # baseline snapshot rather than the set's current labels. Same reasoning as
+        # configVersion above: the run records what it scored against, so it has to read
+        # what it recorded.
+        if test_set_version is not None:
+            message_body["testSetVersion"] = int(test_set_version)
 
         # The copier must not stage baselines for a draft-labeling run: the baseline
         # is what the run is creating, so scoring against it would compare the
@@ -399,10 +405,7 @@ def _resolve_active_config_key(table):
         "FilterExpression": (
             "begins_with(Configuration, :config_prefix) AND IsActive = :active"
         ),
-        "ExpressionAttributeValues": {
-            ":config_prefix": "Config#",
-            ":active": True
-        },
+        "ExpressionAttributeValues": {":config_prefix": "Config#", ":active": True},
         "ProjectionExpression": "Configuration",
     }
     # Bounded: an unbounded paging loop spins forever if the table ever returns a
@@ -410,12 +413,12 @@ def _resolve_active_config_key(table):
     # table, which is far harder to diagnose than a wrong answer.
     for _ in range(_MAX_CONFIG_SCAN_PAGES):
         response = table.scan(**scan_kwargs)
-        for item in response.get('Items', []):
-            return item['Configuration']
-        last_key = response.get('LastEvaluatedKey')
-        if not last_key or last_key == scan_kwargs.get('ExclusiveStartKey'):
+        for item in response.get("Items", []):
+            return item["Configuration"]
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key or last_key == scan_kwargs.get("ExclusiveStartKey"):
             return None
-        scan_kwargs['ExclusiveStartKey'] = last_key
+        scan_kwargs["ExclusiveStartKey"] = last_key
     logger.warning(
         "No active config version found within %d scan pages; giving up",
         _MAX_CONFIG_SCAN_PAGES,
@@ -447,10 +450,13 @@ def _published_revision(config_table, config_version):
     """
     try:
         table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
-        item = table.get_item(
-            Key={"Configuration": f"Config#{config_version}"},
-            ProjectionExpression="PublishedRevision",
-        ).get("Item") or {}
+        item = (
+            table.get_item(
+                Key={"Configuration": f"Config#{config_version}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item")
+            or {}
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Could not resolve the published revision: {e}")
         return None
@@ -528,9 +534,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
             if not key:
                 logger.warning("No active config version found after a full scan")
                 return config
-        response = table.get_item(Key={'Configuration': key})
-        if 'Item' in response:
-            config['Config'] = _decompress_config_item(response['Item'])
+        response = table.get_item(Key={"Configuration": key})
+        if "Item" in response:
+            config["Config"] = _decompress_config_item(response["Item"])
         else:
             logger.warning(f"Config {key} not found")
 

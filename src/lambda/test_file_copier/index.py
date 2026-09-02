@@ -43,6 +43,9 @@ def handler(event, context):
             # Revision of that profile the run pinned, stamped onto every copied
             # object so the documents process under exactly what the run recorded.
             config_revision = message.get("configRevision")
+            # Which test-set version this run scores against, so it can read that
+            # version's baseline snapshot rather than whatever the labels are now.
+            test_set_version = message.get("testSetVersion")
             object_keys = message.get("objectKeys") or []
             # "draft-labeling" runs create ground truth; anything else is scored
             # against it. Absent on messages enqueued before this field existed.
@@ -62,8 +65,11 @@ def handler(event, context):
 
             # List files from test set bucket
             input_files = _list_test_set_files(test_set_bucket, test_set_id, "input")
+            baseline_folder = _resolve_baseline_folder(
+                test_set_bucket, test_set_id, test_set_version
+            )
             baseline_files = _list_test_set_files(
-                test_set_bucket, test_set_id, "baseline"
+                test_set_bucket, test_set_id, baseline_folder
             )
 
             if not input_files:
@@ -168,7 +174,7 @@ def handler(event, context):
             else:
                 successful_baseline_files = _copy_files_to_bucket(
                     test_set_bucket,
-                    f"{test_set_id}/baseline/",
+                    f"{test_set_id}/{baseline_folder}/",
                     baseline_bucket,
                     f"{test_run_id}/",
                     baseline_files,
@@ -198,6 +204,42 @@ def handler(event, context):
             _update_test_run_status(tracking_table, test_run_id, "FAILED", str(e))
 
     return {"statusCode": 200}
+
+
+def _resolve_baseline_folder(test_set_bucket, test_set_id, test_set_version):
+    """Which baseline folder this run should score against.
+
+    A run records the test-set version it was measured against, but a version used to be
+    a DynamoDB row that copied nothing: annotation wrote straight to
+    ``{id}/baseline/``, so the labels a run had scored could change afterwards and the
+    recorded version number meant nothing you could go back to.
+
+    Annotation sessions now snapshot the state they move away from to
+    ``{id}/versions/{n}/baseline/``. A run pinned to version *n* reads that snapshot, so
+    it scores against the labels the version actually names.
+
+    Falls back to the live folder whenever there is no snapshot — an unpinned run, a
+    version published before snapshots existed, or a set nobody has annotated. That
+    fallback is what keeps every existing set and every historical run behaving exactly
+    as before.
+    """
+    if not test_set_version:
+        return "baseline"
+
+    versioned = f"{test_set_id}/versions/{int(test_set_version)}/baseline/"
+    listing = s3.list_objects_v2(Bucket=test_set_bucket, Prefix=versioned, MaxKeys=1)
+    if listing.get("KeyCount"):
+        logger.info(
+            f"Test set {test_set_id} run pinned to version {test_set_version}; "
+            f"scoring against its baseline snapshot"
+        )
+        return f"versions/{int(test_set_version)}/baseline"
+
+    logger.info(
+        f"Test set {test_set_id} version {test_set_version} has no baseline snapshot; "
+        f"using the current baselines"
+    )
+    return "baseline"
 
 
 def _list_test_set_files(test_set_bucket, test_set_id, folder_type):
