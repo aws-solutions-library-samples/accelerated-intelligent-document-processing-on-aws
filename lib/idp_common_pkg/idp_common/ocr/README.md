@@ -195,9 +195,12 @@ ocr:
     - name: "TABLES"
     - name: "FORMS"
   image:
-    dpi: 150  # DPI for PDF page extraction (default: 150)
-    target_width: 1024
-    target_height: 1024
+    dpi: 300  # DPI for PDF page extraction (default: 300)
+    # Out-of-memory ceiling, not a cost control (defaults: 2600x3600).
+    # Cannot raise resolution -- the page renders at `dpi` first and is
+    # never upscaled, so raising this without raising `dpi` is a no-op.
+    target_width: 2600
+    target_height: 3600
     preprocessing: false  # Enable adaptive binarization
   # For BDA backend only (optional): use a specific standard-output SYNC
   # project instead of the per-stack <stackname>_OCR_StdOutput project the
@@ -216,8 +219,8 @@ The OCR service uses advanced memory optimization to prevent OutOfMemory errors 
 **Direct Size Extraction**: When resize configuration is provided (`target_width` and `target_height`), images are extracted directly at the target dimensions using pypdfium2 matrix transformations. This completely eliminates memory spikes from creating oversized images.
 
 **Example for Large Document:**
-- **Original approach**: Extract 7469×9623 (101MB) → Resize to 951×1268 (5MB) → Memory spike
-- **Optimized approach**: Extract directly at 951×1268 (5MB) → No memory spike
+- **Original approach**: Extract 7469×9623 (101MB) → Resize to 2482×3510 (26MB) → Memory spike
+- **Optimized approach**: Extract directly at 2482×3510 (26MB) → No memory spike
 
 **Preserved Logic**: The optimization maintains all existing resize behavior:
 - ✅ Never upscales images (only applies scaling when scale_factor < 1.0)
@@ -227,19 +230,35 @@ The OCR service uses advanced memory optimization to prevent OutOfMemory errors 
 
 ### DPI Configuration
 
-The DPI (dots per inch) setting controls the base resolution when extracting images from PDF pages:
-- **Default**: 150 DPI (good balance of quality and file size)
-- **Range**: 72-300 DPI  
-- **Location**: `ocr.image.dpi` in the configuration
-- **Behavior**: 
-  - Only applies to PDF files (image files maintain their original resolution)
-  - Combined with resize configuration for optimal memory usage
-  - Higher DPI = better quality but larger file sizes (use with resize config for large documents)
-  - 150 DPI is recommended for most OCR use cases
-  - 300 DPI for documents with small text or fine details (ensure resize config is set)
-  - 100 DPI for simple documents to reduce processing time
+The DPI (dots per inch) setting controls the base resolution when extracting images from PDF pages. It is the setting that actually governs OCR fidelity — `target_width`/`target_height` can only shrink what `dpi` produced.
 
-**Memory Considerations**: For large documents with high DPI settings, always configure `target_width` and `target_height` to prevent memory issues. The service will intelligently extract at the optimal size.
+- **Default**: 300 DPI (`DEFAULT_DPI` in `service.py`)
+- **Range**: 72-300 DPI
+- **Location**: `ocr.image.dpi` in the configuration
+- **Behavior**:
+  - Only applies to PDF files (image files maintain their original resolution)
+  - Combined with the resize ceiling for memory safety
+  - Never upscales, so the ceiling cannot recover resolution `dpi` did not produce
+
+**Do not lower DPI to save tokens.** Bedrock downscales images to its own
+long-edge ceiling before tokenizing, so LLM token spend saturates — measured end
+to end, moving the stored page image from 897×1269 to 2000×2829 changed total
+input tokens by 1.4% (22,598 → 22,914). To cut LLM cost, downscale for the
+prompt via `classification.image` / `extraction.image` /
+`extraction.confidence.image` and leave OCR at full fidelity.
+
+**Below ~200 DPI Textract drops small glyphs silently.** Small, faint or skewed
+characters — page numbers, box numbers, hand-filled values — are omitted from
+the response entirely, with no low-confidence block and no signal to the caller.
+This caused issue #729: a `Page 2` indicator on a photographed form was absent
+at 150 DPI and read at 98% confidence at 300 DPI. Measured per-page word
+confidence on that document improved on every page going from 897×1269 to
+2482×3510 (98.36→98.92, 93.46→95.11, 95.86→96.83).
+
+**Memory Considerations**: at 300 DPI an A4 page is ~26 MB in memory. With the
+default `max_workers: 20` that is ~520 MB concurrent against the OCR function's
+4096 MB. If you raise `max_workers`, watch the memory metric; prefer lowering
+`max_workers` over lowering `dpi`.
 
 
 ## Migration Guide

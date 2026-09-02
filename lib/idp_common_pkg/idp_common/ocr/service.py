@@ -31,6 +31,25 @@ from idp_common.ocr.document_converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
 
+# Render resolution used when ocr.image.dpi is not configured. Textract's ability
+# to detect small, faint or skewed glyphs (page numbers, box numbers, hand-filled
+# values) degrades sharply below ~200 dpi: at 150 dpi it silently drops them from
+# its response entirely, with no signal to the caller. See issue #729.
+DEFAULT_DPI = 300
+
+# Ceiling on the rendered page image, applied when ocr.image.target_width /
+# target_height are not configured. This is an out-of-memory guard, NOT a cost
+# control: it is deliberately set high enough that it does not bind for A4 or US
+# Letter at DEFAULT_DPI, so those render at full 300 dpi.
+#
+# Raising the render resolution costs almost nothing downstream. Bedrock
+# downscales images to its own long-edge ceiling before tokenizing, so the LLM
+# token spend saturates - measured end to end, moving from 897x1269 to 2000x2829
+# changed total input tokens by 1.4% (22,598 -> 22,914). What it does buy is OCR
+# accuracy, which improves consistently with resolution.
+DEFAULT_TARGET_WIDTH = 2600
+DEFAULT_TARGET_HEIGHT = 3600
+
 
 class OcrService:
     """Service for OCR processing of documents using AWS Textract or Amazon Bedrock."""
@@ -119,10 +138,6 @@ class OcrService:
             else:
                 self.enhanced_features = False
 
-            # Apply sensible defaults for image sizing when not specified
-            DEFAULT_TARGET_WIDTH = 951
-            DEFAULT_TARGET_HEIGHT = 1268
-
             # Extract resize configuration (type-safe access)
             target_width = self.config.ocr.image.target_width
             target_height = self.config.ocr.image.target_height
@@ -141,8 +156,9 @@ class OcrService:
                     "target_height": DEFAULT_TARGET_HEIGHT,
                 }
                 logger.info(
-                    f"No image sizing configured, applying default limits: "
-                    f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} to optimize resource usage and token consumption"
+                    f"No image sizing configured, applying default ceiling: "
+                    f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} (out-of-memory guard; "
+                    f"does not bind for A4/Letter at {DEFAULT_DPI} dpi)"
                 )
             else:
                 # Handle empty strings by converting to None for validation
@@ -184,8 +200,8 @@ class OcrService:
                         "target_height": DEFAULT_TARGET_HEIGHT,
                     }
                     logger.info(
-                        f"Invalid image sizing configuration provided, applying default limits: "
-                        f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} to optimize resource usage and token consumption"
+                        f"Invalid image sizing configuration provided, applying default ceiling: "
+                        f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} (out-of-memory guard)"
                     )
 
             # Extract preprocessing configuration (type-safe)
@@ -347,7 +363,7 @@ class OcrService:
         )
 
         # Initialize document converter for non-PDF formats
-        self.document_converter = DocumentConverter(dpi=self.dpi or 150)
+        self.document_converter = DocumentConverter(dpi=self.dpi or DEFAULT_DPI)
 
     def process_document(self, document: Document) -> Document:
         """
@@ -1570,8 +1586,8 @@ class OcrService:
                     page_height = page.get_height()
 
                     if is_pdf:
-                        # For PDF files, calculate dimensions at specified DPI (default to 150 if None)
-                        dpi = self.dpi or 150
+                        # For PDF files, calculate dimensions at specified DPI
+                        dpi = self.dpi or DEFAULT_DPI
                         original_width = int(page_width * (dpi / 72))
                         original_height = int(page_height * (dpi / 72))
                     else:
@@ -1591,7 +1607,7 @@ class OcrService:
                         # Extract at reduced size using matrix transformation
                         if is_pdf:
                             # For PDF, combine DPI scaling with size reduction
-                            dpi = self.dpi or 150
+                            dpi = self.dpi or DEFAULT_DPI
                             base_scale = dpi / 72  # Convert PDF points to pixels
                             final_scale = base_scale * scale_factor
                             matrix = final_scale
@@ -1609,7 +1625,7 @@ class OcrService:
                     else:
                         # No resize needed - image is already smaller than targets
                         if is_pdf:
-                            dpi = self.dpi or 150
+                            dpi = self.dpi or DEFAULT_DPI
                             pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                         else:
                             pil_img = page.render().to_pil()  # type: ignore[attr-defined]
@@ -1622,7 +1638,7 @@ class OcrService:
                 else:
                     # No valid target dimensions - use original extraction
                     if is_pdf:
-                        dpi = self.dpi or 150
+                        dpi = self.dpi or DEFAULT_DPI
                         pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                     else:
                         pil_img = page.render().to_pil()  # type: ignore[attr-defined]
@@ -1635,7 +1651,7 @@ class OcrService:
             else:
                 # No resize config - extract at original size
                 if is_pdf:
-                    dpi = self.dpi or 150
+                    dpi = self.dpi or DEFAULT_DPI
                     pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                 else:
                     pil_img = page.render().to_pil()  # type: ignore[attr-defined]

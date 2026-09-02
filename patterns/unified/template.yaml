@@ -386,20 +386,20 @@ Resources:
                 properties:
                   dpi:
                     type: number
-                    description: "DPI (dots per inch) for extracting images from PDF pages. Higher values produce better quality but larger images. Default: 150"
+                    description: "DPI (dots per inch) for extracting images from PDF pages. Higher values produce better quality but larger images. Lowering this below 200 makes Textract likely to silently drop small, faint or skewed characters such as page numbers and hand-filled values. Default: 300"
                     minimum: 72
                     maximum: 300
-                    default: 150
+                    default: 300
                     order: 0
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. If not specified, automatic default of 951 pixels is applied to optimize resource usage and token consumption."
+                    description: "Target image width in pixels. Images larger than this will be resized. If not specified, an automatic ceiling of 2600 pixels is applied as an out-of-memory guard; it does not bind for A4 or US Letter at 300 DPI. Note that lowering this only takes effect if it is smaller than the page rendered at the configured DPI - images are never upscaled."
                     minimum: 100
                     maximum: 3500
                     order: 1
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. If not specified, automatic default of 1268 pixels is applied to optimize resource usage and token consumption."
+                    description: "Target image height in pixels. Images larger than this will be resized. If not specified, an automatic ceiling of 3600 pixels is applied as an out-of-memory guard; it does not bind for A4 or US Letter at 300 DPI. Note that lowering this only takes effect if it is smaller than the page rendered at the configured DPI - images are never upscaled."
                     minimum: 100
                     maximum: 3500
                     order: 2
@@ -933,13 +933,13 @@ Resources:
                 properties:
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. Default: 951"
+                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 0
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. Default: 1268"
+                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 1
@@ -1455,13 +1455,13 @@ Resources:
                 properties:
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. Default: 951"
+                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 0
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. Default: 1268"
+                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 1
@@ -1837,13 +1837,13 @@ Resources:
                     properties:
                       target_width:
                         type: number
-                        description: "Target image width in pixels. Default: 951"
+                        description: "Target image width in pixels. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                         minimum: 100
                         maximum: 3500
                         order: 0
                       target_height:
                         type: number
-                        description: "Target image height in pixels. Default: 1268"
+                        description: "Target image height in pixels. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                         minimum: 100
                         maximum: 3500
                         order: 1
