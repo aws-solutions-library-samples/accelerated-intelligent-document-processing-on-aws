@@ -183,7 +183,6 @@ _CACHEPOINT_BASE_MODELS = set()
 # and do not support Bedrock prompt-prefix caching; <<CACHEPOINT>> markers are
 # stripped for them during request translation.
 CACHEPOINT_SUPPORTED_MODELS = [
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "us.anthropic.claude-opus-4-5-20251101-v1:0",

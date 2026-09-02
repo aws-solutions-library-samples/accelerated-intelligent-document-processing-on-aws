@@ -19,7 +19,6 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-3-haiku-20240307-v1:0` | Direct mapping |
-| `us.anthropic.claude-3-5-haiku-20241022-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-3-5-sonnet-20241022-v2:0` | Direct mapping |
 | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-3-7-sonnet-20250219-v1:0` | Direct mapping |
@@ -110,7 +109,6 @@ The UpdateConfiguration lambda processes default configurations as follows:
 **⚠️ Critical**: Some US models are not directly available in EU regions and use fallback mappings:
 
 - **Nova Premier**: `us.amazon.nova-premier-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- **Claude 3.5 Haiku**: `us.anthropic.claude-3-5-haiku-20241022-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - **Claude Opus Models**: Both Opus variants → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 
 ### Implications of Fallback Mappings
