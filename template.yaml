@@ -7413,11 +7413,20 @@ Resources:
       DisplayName: Workflow Alerts
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  # The metric name is `ExecutionsFailed`, NOT `ExecutionsFailedCount` -- the
+  # latter does not exist in AWS/States, so an alarm pointed at it can never
+  # receive a datapoint and never fires. This alarm silently did exactly that,
+  # which is the worst failure mode an alarm has: it reports OK-by-absence while
+  # executions fail. `TreatMissingData: notBreaching` is what makes the absence
+  # legible -- without it the alarm sits in INSUFFICIENT_DATA whenever there is
+  # no traffic, which is indistinguishable from a wrong metric name and is how
+  # the original bug stayed hidden. See test_cloudwatch_alarms.py, which pins
+  # both properties.
   WorkflowErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmDescription: !Sub "Alert when workflow errors exceed ${ErrorThreshold} in 5 minutes"
-      MetricName: ExecutionsFailedCount
+      MetricName: ExecutionsFailed
       Namespace: AWS/States
       Statistic: Sum
       Period: 300
@@ -7429,6 +7438,7 @@ Resources:
           Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
       AlarmActions:
         - !Ref AlertsTopic
+      TreatMissingData: notBreaching
 
   SlowExecutionsAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -7446,6 +7456,7 @@ Resources:
           Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
       AlarmActions:
         - !Ref AlertsTopic
+      TreatMissingData: notBreaching
 
   # A leaked workflow-concurrency counter is otherwise INVISIBLE: the queue stops
   # draining and every other metric looks idle rather than broken, so the first
