@@ -86,6 +86,34 @@ X_AWS_IDP_SOURCE_PAGE_TYPES = "x-aws-idp-source-page-types"
 # Must name an existing top-level property whose type is an array of objects.
 X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
 
+# On a class modelled as ONE record (the normal case): replace its EFFECTIVE
+# schema with a List-of-Class wrapper
+#
+#     {"instances": {"type": "array", "items": <the original class schema>}}
+#
+# so a section holding several documents of this class extracts every one of them
+# instead of silently returning only the first (GitHub #715 / #565).
+#
+# This is "Synthesize mode", the counterpart to Designate mode above. It is a
+# schema TRANSFORM, not an output envelope: because the wrapper is declared in
+# the class schema, inference_result stays a valid instance of its own declared
+# schema and every consumer that just reads "the class schema" — the prompt, the
+# generated Pydantic model, the JSON-Schema validator, the off-schema filter,
+# assessment's list branch, Stickler's Hungarian row matching — keeps working.
+# The transform itself lives in idp_common.schema.multi_instance and is applied
+# by every stage that loads a class schema.
+#
+# Opt-in per class, NEVER auto-detected: auto-detection would move #565's
+# detection problem one stage later and make every single-document section pay
+# for a wrapper level. Detection is #753 and only ever warns.
+#
+# Mutually exclusive with X_AWS_IDP_INSTANCE_ARRAY (that key is for a class
+# whose schema is ALREADY a packet of records; this one creates the packet).
+#
+# ⚠ Changes the shape of inference_result, so evaluation baselines for the class
+# must be migrated to the wrapped shape — see docs/multi-instance-sections.md.
+X_AWS_IDP_MULTI_INSTANCE = "x-aws-idp-multi-instance"
+
 # ============================================================================
 # AWS IDP Policy/Rule Type Extensions
 # ============================================================================

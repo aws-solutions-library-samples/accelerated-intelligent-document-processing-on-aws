@@ -3008,6 +3008,8 @@ class IDPConfig(BaseModel):
         Note ``_validate_schema_fields`` only walks ``properties``/``$defs`` and
         never inspects class-level keys, hence this validator.
         """
+        import logging
+
         from idp_common.config.schema_constants import (
             SCHEMA_ITEMS,
             SCHEMA_PROPERTIES,
@@ -3016,18 +3018,99 @@ class IDPConfig(BaseModel):
             TYPE_OBJECT,
             X_AWS_IDP_DOCUMENT_TYPE,
             X_AWS_IDP_INSTANCE_ARRAY,
+            X_AWS_IDP_MULTI_INSTANCE,
         )
         from idp_common.config.schema_utils import deref_schema
+        from idp_common.schema.multi_instance import (
+            INSTANCES_KEY,
+            is_multi_instance,
+            is_wrapped,
+        )
+
+        logger = logging.getLogger(__name__)
 
         for doc_class in v:
             if not isinstance(doc_class, dict):
                 continue
-            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
-            if prop_name is None:
-                continue
             label = (
                 doc_class.get("$id") or doc_class.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
             )
+            properties_map = doc_class.get(SCHEMA_PROPERTIES)
+            properties_map = properties_map if isinstance(properties_map, dict) else {}
+
+            # An ALREADY-TRANSFORMED schema legitimately carries both keys (the
+            # wrapper sets instance-array: instances so #694's count machinery
+            # applies to it). The transform is applied at runtime and never
+            # persisted to config, so this should not happen — but rejecting a
+            # schema this code produced itself would be a nasty trap for anyone
+            # who round-trips one, so recognise and skip it.
+            if is_wrapped(doc_class):
+                continue
+
+            if is_multi_instance(doc_class):
+                # The two modes answer opposite questions — Designate names an
+                # array the class ALREADY has, Synthesize creates one — so
+                # setting both is not a stronger request, it is a contradiction.
+                if doc_class.get(X_AWS_IDP_INSTANCE_ARRAY) is not None:
+                    raise ValueError(
+                        f"Class '{label}' sets both {X_AWS_IDP_MULTI_INSTANCE} and "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY}, which are mutually exclusive. "
+                        f"Use {X_AWS_IDP_MULTI_INSTANCE} when the class describes "
+                        f"ONE record and you want a list of them synthesized; use "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY} when the class is already a "
+                        f"packet of records and you only want to name its existing "
+                        f"instance axis."
+                    )
+
+                # Wrapper-key collision: the transform adds a top-level
+                # 'instances' property, which would shadow the user's own field
+                # of that name and make the original unreachable. Rejected, not
+                # renamed — a silent rename changes the extraction contract under
+                # the user.
+                if INSTANCES_KEY in properties_map:
+                    raise ValueError(
+                        f"Class '{label}' sets {X_AWS_IDP_MULTI_INSTANCE} but "
+                        f"already declares a top-level property named "
+                        f"'{INSTANCES_KEY}', which the synthesized wrapper would "
+                        f"shadow. Rename that property, or use "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY}: {INSTANCES_KEY} instead if it "
+                        f"is already the class's record array."
+                    )
+
+                # WARN ONLY when the class looks like it is already a list
+                # wrapper. Deliberately narrow: having an internal array is NOT
+                # evidence of this. An invoice with line_items[] is a
+                # single-instance document with an internal list, and
+                # multi-instance on it is perfectly correct — three invoices in
+                # one section becomes instances[i].line_items[j]. Erroring here
+                # would block a legitimate and common case, so this is a log
+                # line, never a failure.
+                array_props = [
+                    name
+                    for name, spec in properties_map.items()
+                    if isinstance(spec, dict)
+                    and deref_schema(spec, doc_class).get(SCHEMA_TYPE) == TYPE_ARRAY
+                ]
+                if len(array_props) == 1 and len(properties_map) == 1:
+                    only = array_props[0]
+                    logger.warning(
+                        "Class '%s' sets %s but its top level is nothing but the "
+                        "array property '%s', so it already looks like a packet of "
+                        "records — the transform would produce instances[i].%s[j], "
+                        "one level too many. If '%s' is the record array, use "
+                        "%s: %s instead.",
+                        label,
+                        X_AWS_IDP_MULTI_INSTANCE,
+                        only,
+                        only,
+                        only,
+                        X_AWS_IDP_INSTANCE_ARRAY,
+                        only,
+                    )
+
+            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
+            if prop_name is None:
+                continue
             if not isinstance(prop_name, str) or not prop_name:
                 raise ValueError(
                     f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' must be the "

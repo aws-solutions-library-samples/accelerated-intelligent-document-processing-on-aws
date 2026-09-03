@@ -187,3 +187,135 @@ def test_unresolvable_ref_falls_back_to_checking_the_node_itself():
             ]
         )
     assert "it must be an array" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# Synthesize mode: ``x-aws-idp-multi-instance`` (#715)
+#
+# The transform replaces the class's EFFECTIVE schema with an instances[]
+# wrapper. Three config-validate rules, and the third is deliberately only a
+# warning — see the invoice/line_items case below.
+# --------------------------------------------------------------------------
+
+MULTI = "x-aws-idp-multi-instance"
+
+
+def _record_class(**overrides):
+    """A class describing ONE record — the shape Synthesize mode is for."""
+    base = {
+        "$id": "Pay-Statement",
+        "type": "object",
+        "properties": {
+            "CheckNumber": {"type": "string"},
+            "NetPay": {"type": "number"},
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_multi_instance_alone_is_accepted():
+    cfg = IDPConfig(classes=[_record_class(**{MULTI: True})])
+    assert cfg.classes[0][MULTI] is True
+
+
+def test_multi_instance_absent_is_the_untouched_default():
+    cfg = IDPConfig(classes=[_record_class()])
+    assert MULTI not in cfg.classes[0]
+
+
+def test_both_modes_on_one_class_is_rejected():
+    """They answer opposite questions — Designate names an array the class ALREADY
+    has, Synthesize creates one — so setting both is a contradiction, not a
+    stronger request."""
+    with pytest.raises(ValidationError) as exc:
+        IDPConfig(classes=[_klass(**{MULTI: True, KEY: "records"})])
+    message = str(exc.value)
+    assert "mutually exclusive" in message
+    assert MULTI in message and KEY in message
+
+
+def test_multi_instance_on_a_class_that_already_has_an_instances_property_is_rejected():
+    """The wrapper's own key would shadow the user's field and make the original
+    unreachable. Rejected rather than renamed: a silent rename would change the
+    extraction contract under the user."""
+    with pytest.raises(ValidationError) as exc:
+        IDPConfig(
+            classes=[
+                _record_class(
+                    **{
+                        MULTI: True,
+                        "properties": {
+                            "instances": {"type": "string"},
+                            "CheckNumber": {"type": "string"},
+                        },
+                    }
+                )
+            ]
+        )
+    assert "already declares a top-level property named 'instances'" in str(exc.value)
+
+
+def test_a_class_with_an_internal_array_is_accepted_not_warned_about():
+    """THE case the heuristic must not break. An invoice with line_items[] is a
+    single-instance document with an internal list; multi-instance on it is
+    perfectly correct and yields instances[i].line_items[j]. Having an internal
+    array is NOT evidence of already being a list wrapper."""
+    cfg = IDPConfig(
+        classes=[
+            {
+                "$id": "Invoice",
+                "type": "object",
+                MULTI: True,
+                "properties": {
+                    "InvoiceNumber": {"type": "string"},
+                    "line_items": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {}},
+                    },
+                },
+            }
+        ]
+    )
+    assert cfg.classes[0][MULTI] is True
+
+
+def test_a_class_that_is_nothing_but_one_array_only_warns(caplog):
+    """It probably wanted Designate mode, but erroring would be wrong: the author
+    may genuinely want instances[i].records[j]. Warn and carry on."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        cfg = IDPConfig(
+            classes=[
+                {
+                    "$id": "PatientPacket",
+                    "type": "object",
+                    MULTI: True,
+                    "properties": {
+                        "records": {"type": "array", "items": {"type": "object"}}
+                    },
+                }
+            ]
+        )
+    assert cfg.classes[0][MULTI] is True
+    assert "already looks like a packet of records" in caplog.text
+    assert KEY in caplog.text  # names the suggested alternative
+
+
+def test_an_already_transformed_wrapper_round_trips_without_error():
+    """The transform is applied at runtime and never persisted — but the wrapper
+    legitimately carries BOTH keys, so rejecting a schema this code produced
+    itself would be a nasty trap for anyone who round-trips one."""
+    from idp_common.schema.multi_instance import wrap_class_schema
+
+    wrapped = wrap_class_schema(_record_class(**{MULTI: True}))
+    cfg = IDPConfig(classes=[wrapped])
+    assert cfg.classes[0]["properties"]["instances"]["type"] == "array"
+
+
+def test_string_true_from_a_config_round_trip_is_still_honoured():
+    """YAML/DynamoDB round-trips can stringify booleans; the rules must fire on
+    the stringified form too or they silently stop applying after a save."""
+    with pytest.raises(ValidationError):
+        IDPConfig(classes=[_klass(**{MULTI: "true", KEY: "records"})])
