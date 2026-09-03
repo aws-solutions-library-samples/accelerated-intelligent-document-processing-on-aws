@@ -177,8 +177,8 @@ ocr_service = ocr.OcrService(
     region='us-east-1',
     max_workers=20,
     enhanced_features=False,  # or ["TABLES", "FORMS"]
-    dpi=150,
-    resize_config={"target_width": 1024, "target_height": 1024},
+    dpi=300,  # the shipped default since #729; 150 loses faint characters
+    resize_config={"target_width": 2600, "target_height": 3600},
     backend='textract'
 )
 ```

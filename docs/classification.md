@@ -303,6 +303,22 @@ copies of the same form — it fixes both over-split directions with the shipped
 prompt, at the cost of the over-merge direction and roughly 3× the image tokens
 per classification call.
 
+Two notes on reading that table next to the *Measured effect* numbers above:
+
+- It is **Nova 2 Lite**, the shipped default and the model on which the rules have
+  the most headroom to move. `small_narrow` at 7/10 for the shipped rules is
+  consistent with the independent 0/5 → 3/5 on the same unpaginated shape. The
+  Sonnet-5 factorial in
+  `benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md` scores 1.00 on all
+  three fixtures for **both** prompts — Sonnet 5's true effect is +0.013, which
+  three synthetic documents at n=5 cannot resolve, so that null says nothing about
+  this failure mode either way.
+- The running-header column is **not** one of the synthetic fixtures. A synthetic
+  reproduction was attempted (running header + as-of date + bare page number, at 3
+  and 12 pages) and scored 10/10 correct, i.e. it does **not** reproduce; the
+  trigger needs more of the real document than the generator emits. The 0/10 is
+  measured on `samples/Nuveen.pdf` itself, and CI Step 8 is the standing guard.
+
 ⚠️ **A stored or preset `classification.task_prompt` overrides the default, so it
 does not get these rules.** If you customized the prompt, re-apply the block or
 reset to the default. The presets shipped in `config_library/` are kept in sync by

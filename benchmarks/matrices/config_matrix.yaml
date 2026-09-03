@@ -60,6 +60,30 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # ocr.image.dpi. Raised 150 -> 300 by #729/#740, and base-ocr.yaml records the
+  # mechanism: "below ~200 dpi Textract silently omits small, faint or skewed
+  # characters - PAGE NUMBERS, box numbers, hand-filled values - from its response
+  # entirely". Page numbers are the primary boundary signal, which makes this axis
+  # a candidate explanation for boundary behaviour that looks like a prompt effect.
+  # 150 is the pre-#740 default and is here to reproduce that world, NOT as a
+  # setting to recommend - see the "Do NOT lower dpi to save cost" note in
+  # base-ocr.yaml.
+  ocr_dpi:
+    '150': {ocr.image.dpi: 150}
+    '300': {ocr.image.dpi: 300}
+  # classification.confidence.mode (#731/#673). Turned ON by default (`topk`) in
+  # v0.7, so every existing deployment starts paying per-page classification
+  # output tokens on upgrade — this axis is how that cost gets measured.
+  #
+  # It is ALSO a confound for any classification study: `topk` rewrites the
+  # classification prompt to ask the model to rank alternative classes with
+  # probabilities. That extra reasoning can improve the boundary decision on its
+  # own, which masks a boundary-prompt comparison — the #653 pre/post control
+  # measured +0.00 on all three shapes with `topk` on, having measured a real
+  # deficit before #731 landed. Hold it `off` to isolate a prompt change.
+  class_confidence:
+    topk: {classification.confidence.mode: topk}
+    'off': {classification.confidence.mode: "off"}
   # classification.task_prompt, frozen at two points in history. This is the ONLY
   # axis whose value is a whole prompt rather than a scalar, so it uses the
   # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
@@ -141,6 +165,8 @@ default_cell:
   schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
+  class_confidence: topk              # the shipped default since #731
+  ocr_dpi: '300'                      # the shipped default since #740
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -159,9 +185,6 @@ core_cells:
   - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
   - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
-  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
-  # boundary claim is a measured delta rather than a single post-fix number.
-  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
   # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
   - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
   - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
@@ -175,6 +198,20 @@ core_cells:
   - {id: core-bda-simple-sep,  ocr: bda,             extraction_mode: simple,   assessment: separate}
   - {id: core-bda-adv-sep,     ocr: bda,             extraction_mode: advanced, assessment: separate}
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
+
+# -----------------------------------------------------------------------------
+# CONTROL cells — deliberately WRONG or historical configurations that exist only
+# as the control arm of a specific study. They are referenceable by name from a
+# suite, but they are NOT part of `core_cells`, because every suite that says
+# `cells: "core_cells"` (core, corefast, coresynth, full) would otherwise run them
+# as if they were a configuration a user might pick. `split-llm-legacyprompt` first
+# landed in core_cells and put a known-defective classification prompt into the
+# release regression grid.
+# -----------------------------------------------------------------------------
+control_cells:
+  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
+  # boundary claim is a measured delta rather than a single post-fix number.
+  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
 
 # -----------------------------------------------------------------------------
 # ONE-AXIS sweeps — vary a single knob, everything else = default_cell.

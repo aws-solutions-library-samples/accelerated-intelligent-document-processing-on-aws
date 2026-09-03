@@ -762,9 +762,13 @@ class BedrockClient:
         Raises:
             ValueError: naming the offending property paths and the helper.
         """
-        from idp_common.bedrock.tool_schema import find_invalid_property_names
+        from idp_common.bedrock.tool_schema import (
+            find_document_metadata_keywords,
+            find_invalid_property_names,
+        )
 
         offenders: List[str] = []
+        metadata: List[str] = []
         for tool in tool_config.get("tools") or []:
             if not isinstance(tool, dict):
                 continue
@@ -774,6 +778,23 @@ class BedrockClient:
             schema = (spec.get("inputSchema") or {}).get("json")
             for path in find_invalid_property_names(schema):
                 offenders.append(f"{spec.get('name', '?')}::{path}")
+            for path in find_document_metadata_keywords(schema):
+                metadata.append(f"{spec.get('name', '?')}::{path}")
+
+        if metadata:
+            # Bedrock meta-validates the schema itself: `$id` must be an RFC 3986
+            # URI-reference, and an IDP class schema sets `$id` to the class NAME,
+            # so a class like "Policy Application Form" fails on the spaces. That
+            # surfaced as a ValidationException naming a JSON path, from inside the
+            # retry ladder, after the request was already billed.
+            raise ValueError(
+                f"tool_config carries schema-DOCUMENT metadata that Bedrock "
+                f"meta-validates and will reject: {', '.join(metadata[:8])}. "
+                f"These keywords ($id/$schema/$anchor/$comment and x-aws-idp-* "
+                f"extensions) constrain nothing, so strip them with "
+                f"idp_common.bedrock.tool_schema.strip_non_wire_keywords() (already "
+                f"applied by sanitize_tool_schema)."
+            )
 
         if offenders:
             shown = ", ".join(offenders[:8])

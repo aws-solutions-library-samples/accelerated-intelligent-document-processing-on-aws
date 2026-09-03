@@ -29,6 +29,7 @@ import pytest
 
 from idp_common.bedrock.tool_schema import (
     MAX_PROPERTY_NAME_LENGTH,
+    find_document_metadata_keywords,
     find_invalid_property_names,
     is_valid_tool_property_name,
     restore_names,
@@ -439,3 +440,127 @@ class TestClientRejectsUnsanitizedSchema:
             except ValueError as e:
                 failures.append(f"{preset} :: {label} :: {e}")
         assert not failures, "\n".join(failures)
+
+
+@pytest.mark.unit
+class TestDocumentMetadataIsStripped:
+    """Bedrock META-validates the tool schema, not just its property names.
+
+    An IDP class schema sets ``$id`` to the document-class NAME, so a class called
+    ``"Policy Application Form"`` yields ``$id: "Policy Application Form"`` —
+    spaces, therefore not an RFC 3986 URI-reference. Converse rejects the entire
+    request:
+
+        ValidationException: The json schema definition at
+        toolConfig.tools.0.toolSpec.inputSchema is invalid ...
+        $.$id: does not match the uri-reference pattern
+
+    This was not caught by the property-name work (#709) because ``$id`` is not a
+    property name, and not by any unit test because none asserted what the WIRE
+    schema's top-level keys were. It failed on a live stack, on every section.
+    """
+
+    CLASS = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "Policy Application Form",  # the exact shape that failed
+        "x-aws-idp-document-type": "form",
+        "x-aws-idp-examples": [{"x-aws-idp-class-prompt": "big payload"}],
+        "type": "object",
+        "description": "kept: describes the value",
+        "properties": {
+            "Policy Number": {"type": "string", "x-aws-idp-hint": "drop me"},
+            "Items": {
+                "type": "array",
+                "items": {
+                    "$id": "nested-id",
+                    "type": "object",
+                    "properties": {"amount": {"type": "number"}},
+                },
+            },
+        },
+    }
+
+    def _wire(self):
+        clean, _ = sanitize_tool_schema(self.CLASS)
+        return clean
+
+    def test_the_failing_id_never_reaches_the_wire(self):
+        assert "$id" not in self._wire()
+
+    def test_schema_dialect_and_idp_extensions_are_dropped(self):
+        wire = self._wire()
+        assert "$schema" not in wire
+        assert not [k for k in wire if k.startswith("x-aws-idp-")]
+
+    def test_nested_metadata_is_stripped_too(self):
+        """`$id` is legal on any subschema and would fail the same validation."""
+        assert "$id" not in self._wire()["properties"]["Items"]["items"]
+
+    def test_per_property_extensions_are_dropped(self):
+        prop = next(iter(self._wire()["properties"].values()))
+        assert "x-aws-idp-hint" not in prop
+
+    def test_constraints_and_descriptions_survive(self):
+        """Stripping must not remove anything that constrains the value — that
+        would silently change what the model is asked for."""
+        wire = self._wire()
+        assert wire["type"] == "object"
+        assert wire["description"] == "kept: describes the value"
+        assert len(wire["properties"]) == 2
+        items = wire["properties"]["Items"]["items"]
+        assert items["properties"]["amount"]["type"] == "number"
+
+    def test_a_field_named_like_a_keyword_is_not_stripped(self):
+        """`properties` keys are user-authored field names. A document with a
+        field genuinely called "$id" or "id" must keep it — filtering inside
+        `properties` would delete real extracted data."""
+        clean, _ = sanitize_tool_schema(
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "$id": {"type": "string"}},
+            }
+        )
+        assert set(clean["properties"]) == {"id", "_id"}, clean["properties"]
+
+    def test_the_finder_reports_what_the_stripper_removes(self):
+        """The client guard and the stripper must agree, or the guard fires on
+        schemas the stripper already fixed (or misses ones it does not)."""
+        assert find_document_metadata_keywords(self.CLASS)
+        assert find_document_metadata_keywords(self._wire()) == []
+
+
+@pytest.mark.unit
+class TestEveryShippedPresetProducesAWireValidSchema:
+    """The regression net: every class in every shipped preset, end to end."""
+
+    def test_no_preset_leaks_metadata(self):
+        import glob
+        from pathlib import Path
+
+        import yaml
+
+        # Resolved from __file__, not the cwd: pytest may run from the repo root
+        # or from lib/idp_common_pkg, and a relative glob silently matched NOTHING
+        # from the latter — the sweep passed while checking zero classes.
+        repo = Path(__file__).resolve().parents[5]
+        assert (repo / "config_library").is_dir(), (
+            f"repo root mis-resolved to {repo}; fix the parents[] index"
+        )
+
+        checked = 0
+        for path in glob.glob(
+            str(repo / "config_library/**/config.yaml"), recursive=True
+        ):
+            with open(path) as fh:
+                try:
+                    cfg = yaml.safe_load(fh)
+                except yaml.YAMLError:
+                    continue
+            for cls in (cfg or {}).get("classes") or []:
+                if not isinstance(cls, dict) or not cls.get("properties"):
+                    continue
+                clean, _ = sanitize_tool_schema(cls)
+                leaks = find_document_metadata_keywords(clean)
+                assert not leaks, f"{path} :: {cls.get('$id')} leaks {leaks}"
+                checked += 1
+        assert checked > 5, f"expected to check many preset classes, checked {checked}"
