@@ -481,13 +481,32 @@ configPreset:
 ```
 
 **2. Apply at install.** The feature stack's ui-deployer downloads the preset
-and calls the host's `applyFeatureConfigPreset` mutation, which writes it as a
-**new, non-active** configuration version named `<featureId>-v<version>`.
+and calls the host's `applyFeatureConfigPreset` operation, which writes it as a
+**non-active [Configuration Profile](configuration-profiles.md) named after the
+feature**: `<featureId>`, with no version suffix.
+
+**One profile per feature, one revision per release.** This used to be
+`<featureId>-v<version>` — a new *profile* for every release, and a profile is an
+access-control object (an admin has to add it to every scoped user's
+`allowedConfigVersions`), a document-visibility partition, and a permanent row in
+the Configuration Profiles table. Twelve releases meant twelve of those. Your
+feature's releases are now revisions of one profile, visible in its **Revision
+history**, and an upgrade that does not change the preset records nothing.
+
+The preset is merged over the host's `Config#default` at install time and stored
+as a full configuration, so the recorded revision is the same shape a later admin
+edit produces — otherwise the first diff after an admin's edit would show the
+entire configuration as new.
+
 Installation **never changes the active configuration** — an admin reviews the
 preset on the **Configuration** page and activates it deliberately. On uninstall
-the feature calls `removeFeatureConfigPreset`, which deletes the feature's
-preset versions **except** one that is currently active (it is preserved so
-in-flight documents keep resolving their configuration).
+the feature calls `removeFeatureConfigPreset`, which deletes `<featureId>` and any
+legacy `<featureId>-v*` profiles together with their revision history. If the
+feature's profile is active, `default` is activated first — a feature's config
+carries its hooks inline, so leaving it active after uninstall would leave every
+document pointing at deleted Lambdas. The one case where the profile survives is
+an active profile with no `default` to fall back to: no active configuration fails
+*all* processing, which is worse than dangling hooks.
 
 This pairs naturally with pipeline hooks: ship the configuration the vertical
 needs *and* the hook that reacts to its results.

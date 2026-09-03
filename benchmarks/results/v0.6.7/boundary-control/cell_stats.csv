@@ -1,0 +1,2 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+split-llm-legacyprompt,15,0,0.12478,0.0337,0.2701,0.0789,0.1536,1.0,0.93333,66.50676

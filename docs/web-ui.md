@@ -514,6 +514,8 @@ The Chat panel includes a **Model** selector that defaults to the `chat.model` c
 
 > **OpenAI GPT-5.x in chat:** `openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6 (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are supported for Chat-with-Document and **stream** token-by-token like other models. They run on the `bedrock-mantle` Responses API (US regions only) and are tuned via `chat.reasoning_effort` rather than temperature/top_p. They are hidden from the model selector in EU-region deployments. Note: chat sends the document as **text** (extracted full text), so the PDF-document-block limitation that excludes GPT-5.x from Discovery does not apply here. See [OpenAI GPT-5.x Models](./openai-models.md).
 
+> **xAI Grok in chat:** `us.xai.grok-4.6` and `global.xai.grok-4.6` are supported for Chat-with-Document. They run on the standard Converse API and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) rather than temperature/top_p, which Grok rejects. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Grok profile. A large-context model is recommended for chat and Grok's 500K window is the largest available. See [xAI Grok Models](./grok-models.md).
+
 If a document is "too large for chat context window" — i.e. Bedrock returns an `Input Tokens Exceeded` error — pick a larger-context model in the Chat panel's Model selector and retry. For documents that are larger than any single-prompt model can fit, use the [Knowledge Base](./knowledge-base.md) feature instead.
 
 ### Chat history

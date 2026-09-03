@@ -8,6 +8,7 @@ Tests for configuration validation functions.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from idp_common.config.merge_utils import (
@@ -888,6 +889,23 @@ class TestValidateAgenticOpenAI:
         assert "invoice" in result["errors"][0]
         assert "openai.gpt-5.5" in result["errors"][0]
 
+    def test_grok_with_agentic_extraction_is_allowed(self):
+        """The deliberate difference from GPT-5.x: Grok DOES reach Converse and
+        accepts a toolConfig (verified live with all three toolChoice modes), so
+        agentic/advanced extraction is supported. Guards against someone later
+        broadening this validator to reject all third-party models.
+        """
+        config = {
+            "extraction": {
+                "model": "us.xai.grok-4.6",
+                "agentic": {"enabled": True},
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_agentic_openai(config, result)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
 
 class TestValidateDiscoveryOpenAI:
     """Test _validate_discovery_openai (OpenAI unsupported for discovery)."""
@@ -910,6 +928,27 @@ class TestValidateDiscoveryOpenAI:
         _validate_discovery_openai(config, result)
         assert result["valid"] is False
         assert "discovery.rules.model" in result["errors"][0]
+
+    @pytest.mark.parametrize(
+        ("section", "field"),
+        [
+            ("without_ground_truth", "model_id"),
+            ("with_ground_truth", "model_id"),
+            ("auto_split", "model_id"),
+            ("rules", "model"),
+        ],
+    )
+    def test_grok_discovery_errors(self, section, field):
+        """xAI Grok rejects Converse ``document`` blocks, so it is invalid for
+        every discovery section even though it is a valid Converse model."""
+        from idp_common.config.merge_utils import _validate_discovery_openai
+
+        config = {"discovery": {section: {field: "us.xai.grok-4.6"}}}
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_discovery_openai(config, result)
+        assert result["valid"] is False
+        assert f"discovery.{section}.{field}" in result["errors"][0]
+        assert "us.xai.grok-4.6" in result["errors"][0]
 
     def test_gpt_5_6_variant_discovery_errors(self):
         from idp_common.config.merge_utils import _validate_discovery_openai

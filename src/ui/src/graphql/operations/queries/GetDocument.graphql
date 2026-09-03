@@ -13,7 +13,9 @@ query GetDocument($objectKey: ID!) {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
+      InstanceCount
       Excluded
       ExclusionReason
       ConfidenceThresholdAlerts {
@@ -32,6 +34,12 @@ query GetDocument($objectKey: ID!) {
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       TextConfidenceUri

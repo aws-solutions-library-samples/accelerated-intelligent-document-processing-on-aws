@@ -550,7 +550,9 @@ export const getDocument = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
+        InstanceCount
         Excluded
         ExclusionReason
         ConfidenceThresholdAlerts {
@@ -569,6 +571,12 @@ export const getDocument = /* GraphQL */ `
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri
@@ -629,7 +637,11 @@ export const getDocumentVersion = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
+        InstanceCount
+        Excluded
+        ExclusionReason
         ConfidenceThresholdAlerts {
           attributeName
           confidence
@@ -646,6 +658,12 @@ export const getDocumentVersion = /* GraphQL */ `
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         OcrPageDataUri
@@ -1121,6 +1139,12 @@ export const listDocuments = /* GraphQL */ `
 ` as GeneratedQuery<ListDocumentsQueryVariables, ListDocumentsQuery>;
 
 export const listDocumentsByDateRange = /* GraphQL */ `
+  # Issue #712: no web-UI consumer today (the document list uses listDocuments).
+  # Retained deliberately, not by oversight: this is a live API operation with a
+  # backend resolver (nested/api-resolvers/.../list_documents_range_resolver), an
+  # entry in the dispatcher api_validation_spec.json, and an authorization case in
+  # scripts/api_rbac_expectations.yaml exercised by "make api-test". Retiring it is
+  # a backend decision, not a UI cleanup.
   query ListDocumentsByDateRange($startDateTime: AWSDateTime!, $endDateTime: AWSDateTime!, $limit: Int, $nextToken: String) {
     listDocumentsByDateRange(startDateTime: $startDateTime, endDateTime: $endDateTime, limit: $limit, nextToken: $nextToken) {
       Documents {
@@ -1139,7 +1163,9 @@ export const listDocumentsByDateRange = /* GraphQL */ `
           Id
           PageIds
           Class
+          Confidence
           OutputJSONUri
+          InstanceCount
           Excluded
           ExclusionReason
           ConfidenceThresholdAlerts {
@@ -1147,10 +1173,23 @@ export const listDocumentsByDateRange = /* GraphQL */ `
             confidence
             confidenceThreshold
           }
+          ProcessingIssues {
+            stage
+            severity
+            code
+            message
+            rootCause
+          }
         }
         Pages {
           Id
           Class
+          ClassConfidence
+          ClassReason
+          ClassCandidates {
+            Class
+            Probability
+          }
           ImageUri
           TextUri
           TextConfidenceUri
@@ -1381,7 +1420,9 @@ export const onUpdateDocument = /* GraphQL */ `
         Id
         PageIds
         Class
+        Confidence
         OutputJSONUri
+        InstanceCount
         Excluded
         ExclusionReason
         ConfidenceThresholdAlerts {
@@ -1389,10 +1430,23 @@ export const onUpdateDocument = /* GraphQL */ `
           confidence
           confidenceThreshold
         }
+        ProcessingIssues {
+          stage
+          severity
+          code
+          message
+          rootCause
+        }
       }
       Pages {
         Id
         Class
+        ClassConfidence
+        ClassReason
+        ClassCandidates {
+          Class
+          Probability
+        }
         ImageUri
         TextUri
         TextConfidenceUri

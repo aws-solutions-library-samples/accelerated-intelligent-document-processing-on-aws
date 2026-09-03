@@ -220,3 +220,185 @@ def test_integrated_retry_noop_when_nothing_missing():
     assert fake.calls == []
     assert split_stats is None
     assert out["Items"][0]["rate"]["confidence"] == 0.95
+
+
+# --------------------------------------------------------------------------
+# Ordering: the confidence split must run BEFORE coercion + validation
+#
+# Found in review of #694. Coercion and validation were invoked one block too
+# early, so on the simple + `confidence.mode: integrated` combination they saw
+# the raw 1S-TopK dict -- {field: {"G1": ..., "P1": ...}} -- instead of resolved
+# values. Consequences on the SHIPPED defaults (validation on, fail_action=warn):
+# coercion refused every field as a type-family mismatch (a silent no-op that
+# also filled metadata.coercion with junk), and validation reported 100% of
+# fields as failing, burying the real violations it exists to surface. Under
+# `reject` every section failed; under `escalate` every field of every section
+# was re-extracted with the stronger model.
+#
+# These tests exercise the real ordering through _invoke_extraction_model rather
+# than asserting on the two helpers in isolation, because the bug WAS the order.
+# --------------------------------------------------------------------------
+
+TOPK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vendor": {"type": "string"},
+        "amount": {"type": "number"},
+        "due_date": {"type": "string", "format": "date"},
+    },
+}
+
+
+def _integrated_svc(**validation):
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "mode": "simple",
+                "agentic": {"enabled": False},
+                "confidence": {"mode": "integrated"},
+                "validation": validation or {},
+            }
+        }
+    )
+    svc = ExtractionService(config=cfg)
+    svc._class_schema = TOPK_SCHEMA
+    svc._class_label = "invoice"
+    return svc
+
+
+def _bedrock_response(payload: str):
+    return {
+        "response": {
+            "output": {"message": {"content": [{"text": payload}]}},
+            "stopReason": "end_turn",
+        },
+        "metering": {"x/bedrock/m": {"inputTokens": 1, "outputTokens": 1}},
+    }
+
+
+def _section_info():
+    from idp_common.extraction.service import SectionInfo
+
+    return SectionInfo(
+        class_label="invoice",
+        sorted_page_ids=["1"],
+        page_indices=[0],
+        output_bucket="b",
+        output_key="k",
+        output_uri="s3://b/k",
+        start_page=1,
+        end_page=1,
+    )
+
+
+# A realistic 1S-TopK response: every field is a candidate object, and the top
+# guesses carry exactly the formatting problems coercion exists to repair.
+TOPK_PAYLOAD = (
+    '{"vendor": {"G1": "ACME", "P1": 0.95, "G2": "ACNE", "P2": 0.05},'
+    ' "amount": {"G1": "$1,234.00", "P1": 0.9},'
+    ' "due_date": {"G1": "March 15, 2024", "P1": 0.8}}'
+)
+
+
+def test_coercion_repairs_the_resolved_values_not_the_candidate_objects():
+    svc = _integrated_svc(enabled=True)
+    with patch(
+        "idp_common.bedrock.invoke_model", return_value=_bedrock_response(TOPK_PAYLOAD)
+    ):
+        result = svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+
+    # The split resolved G1 -> value, then coercion repaired the values.
+    assert result.extracted_fields == {
+        "vendor": "ACME",
+        "amount": 1234.0,
+        "due_date": "2024-03-15",
+    }
+    coercion = svc._pending_coercion_metadata
+    assert coercion is not None, "coercion must actually run in integrated mode"
+    # And it repaired rather than refused: a type_family_mismatch on every field
+    # was the signature of running before the split.
+    assert not coercion.get("refusals"), coercion
+
+
+def test_validation_is_clean_in_integrated_mode():
+    """Before the fix this reported every field as failing on every section."""
+    svc = _integrated_svc(enabled=True)
+    with patch(
+        "idp_common.bedrock.invoke_model", return_value=_bedrock_response(TOPK_PAYLOAD)
+    ):
+        svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+
+    validation = svc._pending_validation_metadata
+    assert validation is not None
+    assert validation["valid"] is True, validation
+
+
+def test_reject_does_not_fail_every_integrated_section():
+    """`reject` on the pre-split dict failed 100% of sections, every document."""
+    svc = _integrated_svc(enabled=True, fail_action="reject")
+    with patch(
+        "idp_common.bedrock.invoke_model", return_value=_bedrock_response(TOPK_PAYLOAD)
+    ):
+        result = svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+    assert result.parsing_succeeded is True
+
+
+def test_escalate_spends_nothing_when_the_resolved_values_are_valid():
+    """The costly one: every field of every section was being re-extracted."""
+    svc = _integrated_svc(
+        enabled=True, fail_action="escalate", escalation_model="us.big-model"
+    )
+    with patch(
+        "idp_common.bedrock.invoke_model", return_value=_bedrock_response(TOPK_PAYLOAD)
+    ) as spy:
+        svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+        # Exactly one call: the extraction itself. No escalation.
+        assert spy.call_count == 1, [
+            c.kwargs.get("model_id") for c in spy.call_args_list
+        ]
+    assert svc._pending_validation_metadata is not None
+    assert svc._pending_validation_metadata["escalated"] is False
+
+
+def test_confidence_still_reaches_metering_after_the_reorder():
+    """Moving the split earlier must not lose what it was there to produce."""
+    svc = _integrated_svc(enabled=True)
+    with patch(
+        "idp_common.bedrock.invoke_model", return_value=_bedrock_response(TOPK_PAYLOAD)
+    ):
+        result = svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+    assessed = result.metering["_integrated_field_assessment"]
+    assert assessed["vendor"]["confidence"] == 0.95
+    assert assessed["amount"]["confidence"] == 0.9
+    # The unresolved candidates are still stashed for audit.
+    assert result.metering["_topk_candidates"]["vendor"]["G2"] == "ACNE"
+
+
+def test_escalation_answering_in_candidate_shape_is_discarded():
+    """The escalation prompt asks for plain values, but the model may not comply.
+
+    The original content carries the top-K task prompt, so a candidate-shaped
+    answer is a realistic failure. Merging it would write an object over an
+    already-resolved value with the split long past, so the field would reach
+    storage as {"G1": ...} and nothing downstream would unwrap it.
+    """
+    svc = _integrated_svc(
+        enabled=True, fail_action="escalate", escalation_model="us.big-model"
+    )
+    # An unparseable date survives coercion, so validation fails and escalates.
+    bad = (
+        '{"vendor": {"G1": "ACME", "P1": 0.9},'
+        ' "amount": {"G1": "10", "P1": 0.9},'
+        ' "due_date": {"G1": "whenever", "P1": 0.5}}'
+    )
+    responses = [
+        _bedrock_response(bad),
+        # The escalation answers in the candidate shape instead of a plain value.
+        _bedrock_response('{"due_date": {"G1": "2024-03-15", "P1": 0.99}}'),
+    ]
+    with patch("idp_common.bedrock.invoke_model", side_effect=responses):
+        result = svc._invoke_extraction_model([{"text": "p"}], "sys", _section_info())
+
+    # Original kept: a wrong-but-flat value beats a shape nothing can read.
+    assert result.extracted_fields["due_date"] == "whenever"
+    assert not isinstance(result.extracted_fields["due_date"], dict)

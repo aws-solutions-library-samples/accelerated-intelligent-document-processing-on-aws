@@ -16,6 +16,13 @@ Two things live here:
   ``None`` on failure (metrics are supplemental — the exact-match counters
   above them stand on their own and the pipeline must not fail because these
   couldn't be computed).
+
+- ``attach_page_confidence(page_details, document)`` — annotates each per-page
+  row with the classifier's own confidence in the class it predicted, which is
+  what makes classification confidence *measurable*: paired with the row's
+  existing ``correct`` flag it gives the separation between confident-and-right
+  and confident-and-wrong. Without it a reported confidence can only be trusted
+  on faith (GitHub #673).
 """
 
 import logging
@@ -84,6 +91,53 @@ def load_sections_for_doc_split(
         # renders).
         loaded.append({"section_id": section.section_id, **data})
     return loaded
+
+
+def attach_page_confidence(
+    page_details: List[Dict[str, Any]], document: Any
+) -> List[Dict[str, Any]]:
+    """Annotate each page-level row with the predicted class's confidence.
+
+    Adds ``predicted_confidence`` (a float, or ``None`` for a page the classifier
+    did not score) to each row of upstream's ``page_details``, which already
+    carries ``ground_truth_class`` / ``predicted_class`` / ``correct``. Those two
+    together are the calibration measurement: does a high confidence actually
+    coincide with a correct class on YOUR documents? A self-reported number that
+    is ~0.95 on right and wrong pages alike is worse than none, and this is what
+    makes that visible instead of assumed.
+
+    ``page_index`` is 0-based relative to the document's FIRST page (that is what
+    ``_calculate_and_store_page_indices`` writes into each section's
+    ``split_document.page_indices``), while ``document.pages`` is keyed by the
+    1-based page id — so the offset is derived from the document rather than
+    assumed to be 1. A page whose index has no matching page is left unannotated
+    rather than mismatched.
+
+    Mutates and returns ``page_details`` — the rows are freshly built by the
+    calculator on every call, so there is nothing shared to protect.
+    """
+    pages = getattr(document, "pages", None) or {}
+    numeric_ids = []
+    for page_id in pages:
+        try:
+            numeric_ids.append(int(page_id))
+        except (TypeError, ValueError):
+            continue
+    if not numeric_ids:
+        return page_details
+
+    offset = min(numeric_ids)
+    for row in page_details:
+        if not isinstance(row, dict):
+            continue
+        index = row.get("page_index")
+        if not isinstance(index, int):
+            continue
+        page = pages.get(str(index + offset))
+        if page is None:
+            continue
+        row["predicted_confidence"] = getattr(page, "confidence", None)
+    return page_details
 
 
 def compute_graded_packet_metrics(

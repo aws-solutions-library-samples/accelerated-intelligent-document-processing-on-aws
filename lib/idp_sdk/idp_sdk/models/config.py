@@ -113,6 +113,16 @@ class ConfigVersionInfo(BaseModel):
     description: Optional[str] = Field(
         default=None, description="Optional description for this version"
     )
+    managed: bool = Field(
+        default=False,
+        description=(
+            "True when the profile is owned by a stack — a built-in preset from "
+            "config_library, or one an extension installed. The Web UI refuses to "
+            "delete a managed profile because the owning stack would recreate it; "
+            "`idp-cli config-delete` can still remove one, which is how an "
+            "extension's profiles are cleaned up after the extension is gone."
+        ),
+    )
     latest_revision: Optional[int] = Field(
         default=None,
         description=(

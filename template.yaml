@@ -261,6 +261,17 @@ Parameters:
       (Optional) Existing bucket used for analytics. (Currently used for evaluation analytics)
       Provide the name of an existing bucket here or leave blank to automatically create a new bucket.
 
+  ReportingBucketKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) KMS key ARN that encrypts the existing ReportingBucketName. Required when
+      ReportingBucketName is provided AND that bucket is encrypted with a customer-owned KMS
+      key different from this stack's CustomerManagedEncryptionKey. The MeteringHour migration
+      Lambda needs kms:Decrypt/GenerateDataKey on this key to read historical metering parquet
+      files during upgrade. Leave blank if using the auto-created reporting bucket or if the
+      existing bucket uses SSE-S3 / a key this stack's role already accesses.
+
   DocumentSectionsCrawlerFrequency:
     Type: String
     Default: "EveryDay"
@@ -325,7 +336,6 @@ Parameters:
       - "global.amazon.nova-2-lite-v1:0:priority"
       - "global.amazon.nova-2-lite-v1:0:flex"
       - "us.anthropic.claude-3-haiku-20240307-v1:0"
-      - "us.anthropic.claude-3-5-haiku-20241022-v1:0"
       - "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
       - "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -1163,6 +1173,7 @@ Conditions:
   ShouldCreateEvaluationBaselineBucket:
     !Equals [ !Ref EvaluationBaselineBucketName, "" ]
   ShouldCreateReportingBucket: !Equals [ !Ref ReportingBucketName, "" ]
+  HasReportingBucketKmsKey: !Not [!Equals [!Ref ReportingBucketKmsKeyArn, ""]]
   # NOTE: the old WAF apparatus (IsWafEnabled / IsWafEnabledAndApi) and the
   # private DNS condition (IsPrivateApiAndApi) existed solely to protect /
   # expose the former GraphQL API and were removed along with it. The REST API
@@ -1229,6 +1240,26 @@ Conditions:
   #      redirectSignOut. This keeps the API Gateway URL and the custom domain
   #      working side-by-side instead of pinning OAuth to a single host.
   HasCustomDomain: !Not [!Equals [!Ref CustomDomainUrl, ""]]
+  # True when the custom domain fronts the REST API ITSELF, so the SPA must call
+  # the API on that same origin instead of the raw execute-api hostname.
+  #
+  # Only APIGateway hosting qualifies: there the SPA and the /op transport are
+  # the same REST API (the SPA is an S3 proxy on the `api` stage), so a custom
+  # domain with a base-path mapping to that stage serves both. Under CloudFront
+  # hosting the distribution has a single S3 origin and no /api behaviour, so a
+  # custom domain in front of it cannot reach the API — the bundle must keep the
+  # execute-api URL there.
+  #
+  # Why this matters (and why it is worse than merely cosmetic in PRIVATE mode):
+  # VITE_API_BASE_URL is frozen into the JS bundle. Left as the execute-api URL
+  # while the browser is on the custom domain, every /op call is cross-origin
+  # (extra preflight) and, with ApiGatewayVisibility=PRIVATE, the execute-api
+  # hostname usually does not resolve for the client at all — the private DNS
+  # override lives only in the VPC that owns the endpoint. See
+  # docs/deployment-private-network.md.
+  UseCustomDomainForApi: !And
+    - !Condition HasCustomDomain
+    - !Condition UseApiGatewayHosting
   # True when an S3 VPC Interface Endpoint EXISTS (customer-provided via the
   # override params). Used for:
   #   - Backend Lambda S3 access (HasS3VpcEndpointAndVpc)
@@ -1821,6 +1852,10 @@ Resources:
       Timeout: 900
       EphemeralStorage:
         Size: 5120
+      Tags:
+        # Data plane — Jobs API batch ingest. Cost scales with doc volume through
+        # the batch path. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       # See ApiHandlerFunction for rationale — JobsApiRequiresVPC rule gates
@@ -2267,6 +2302,20 @@ Resources:
               - ShouldCreateReportingBucket
               - !Ref ReportingBucket
               - !Ref ReportingBucketName
+        - Statement:
+            - Effect: Allow
+              Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls (via analytics_tool). Scoped
+                # to the IDPControlPlane namespace via condition. Round-6
+                # review fix — was missing, so every analytics-agent query
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
         - Statement:
             - Effect: Allow
               Action:
@@ -3004,6 +3053,10 @@ Resources:
         # ConfigurationCopyFunction). listCatalogFeatures / getFeatureLaunchUrl
         # read it at runtime — the catalog source, no artifacts-bucket dependency.
         ConfigurationBucketName: !Ref ConfigurationBucket
+        # So applyFeatureConfigPreset can record a feature's config preset as a
+        # REVISION of the feature's profile instead of minting a new profile per
+        # feature release (issue #697).
+        IDPCommonBaseLayerArn: !Ref IDPCommonBaseLayer
         LogLevel: !Ref LogLevel
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
@@ -4584,14 +4637,31 @@ Resources:
           - Name: date
             Type: string
 
+  # Metering table. Partitioned by (date, hour) using WRITE TIME (= document
+  # completion time, since save_reporting_data runs at end of workflow).
+  # See docs/reporting-sql-layer.md §2.3 for the partitioning rationale.
   MeteringTable:
     Type: AWS::Glue::Table
+    # DependsOn the migration custom resource so, on stack upgrade from a
+    # pre-hour-partition version, historical `metering/date=X/*.parquet`
+    # files are relocated into `date=X/hour=HH/` subdirs BEFORE this
+    # table's new projection template takes effect. Without the barrier,
+    # dashboards would show a data hole for the duration of the migration.
+    # See docs/reporting-sql-layer.md §2.3.
+    #
+    # Round-10 note: the DependsOn also applies on FRESH installs (no
+    # legacy files), where the migration Lambda is a ~2-second no-op —
+    # accepted tradeoff. A CFN-native alternative (Condition on
+    # "IsFreshInstall") would need an operator-supplied parameter
+    # since CFN can't infer bucket contents at template time. The
+    # cost/benefit doesn't justify the parameter's UX friction.
+    DependsOn: MeteringHourMigrationCustomResource
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering"
-        Description: "Table for document metering data"
+        Description: "Table for document metering data. Partitioned by (date, hour) using write time (= completion time)."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -4599,16 +4669,20 @@ Resources:
           projection.enabled: "true"
           projection.date.type: "date"
           projection.date.format: "yyyy-MM-dd"
-          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
           projection.date.interval: "1"
           projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
           storage.location.template: !Sub
-            - "s3://${Bucket}/metering/date=${date}/"
+            - "s3://${Bucket}/metering/date=${date}/hour=${hour}/"
             - Bucket: !If
                 - ShouldCreateReportingBucket
                 - !Ref ReportingBucket
                 - !Ref ReportingBucketName
               date: "${date}"
+              hour: "${hour}"
         StorageDescriptor:
           Location: !Sub
             - "s3://${Bucket}/metering/"
@@ -4639,12 +4713,951 @@ Resources:
               Type: double
             - Name: timestamp
               Type: timestamp
+            - Name: initial_event_time
+              Type: timestamp
             - Name: config_version
               Type: string
           Compressed: true
         PartitionKeys:
           - Name: date
             Type: string
+          - Name: hour
+            Type: string
+
+  # Hourly metering rollup — dashboard's KPI cards, cost-by-stage, cost trend
+  # charts read from here for the 2h-24h tier. Populated by the DataMartRollupFunction.
+  MeteringHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_hourly"
+        Description: "Hourly rollup of metering data. Append-only. See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_hourly/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_hourly/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: config_version
+              Type: string
+            - Name: service_api
+              Type: string
+            - Name: unit
+              Type: string
+            - Name: sum_value
+              Type: double
+            - Name: sum_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  # Daily metering rollup — dashboard's >24h tier reads from here. One row
+  # per (day, dimensions). Written once/day (at 00:15 UTC) by the rollup Lambda.
+  MeteringDailyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_daily"
+        Description: "Daily rollup of metering data. Append-only. See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_daily/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_daily/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: day
+              Type: date
+            - Name: config_version
+              Type: string
+            - Name: service_api
+              Type: string
+            - Name: unit
+              Type: string
+            - Name: sum_value
+              Type: double
+            - Name: sum_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Doc-grain hourly rollup — n_docs + sum_pages at (hour, config_version)
+  # grain. Kept in a separate table from metering_hourly because pages and
+  # doc counts fan out across (service_api, unit) — SUM(number_of_pages)
+  # grouped by service_api overcounts by the number of metering rows per
+  # doc (a 10-page doc with 6 service rows would report 60 pages).
+  # See docs/reporting-sql-layer.md §2.
+  MeteringDocsHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_docs_hourly"
+        Description: "Hourly doc-grain rollup — n_docs + sum_pages per (hour, config_version). See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_docs_hourly/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_docs_hourly/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: config_version
+              Type: string
+            - Name: n_docs
+              Type: bigint
+            - Name: sum_pages
+              Type: bigint
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  # Doc-grain daily rollup — n_docs + sum_pages at (day, config_version).
+  # SUM from metering_docs_hourly, so a document reprocessed across N hours
+  # is counted N times (each hour it appeared in — a "doc-hours" count).
+  # For strict cross-day unique-doc counts, query raw metering with
+  # COUNT(DISTINCT document_id).
+  MeteringDocsDailyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "metering_docs_daily"
+        Description: "Daily doc-grain rollup — n_docs + sum_pages per (day, config_version). See docs/reporting-sql-layer.md §2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/metering_docs_daily/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/metering_docs_daily/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: day
+              Type: date
+            - Name: config_version
+              Type: string
+            - Name: n_docs
+              Type: bigint
+            - Name: sum_pages
+              Type: bigint
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Control-plane cost rollup — dashboard's Control Plane Cost KPI reads from
+  # here. Populated by the rollup Lambda from CloudWatch metrics
+  # (AWS/Lambda/Duration + Invocations, IDPControlPlane/* custom metrics).
+  # See docs/reporting-sql-layer.md §10.2.
+  ControlPlaneHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "control_plane_hourly"
+        Description: "Hourly rollup of control-plane Lambda cost. See docs/reporting-sql-layer.md §10.2."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/control_plane/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/control_plane/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: function_name
+              Type: string
+            - Name: component
+              Type: string
+            - Name: bedrock_model
+              Type: string
+            - Name: invocations
+              Type: bigint
+            - Name: duration_ms_sum
+              Type: bigint
+            - Name: athena_bytes_sum
+              Type: bigint
+            - Name: bedrock_tokens_in
+              Type: bigint
+            - Name: bedrock_tokens_out
+              Type: bigint
+            - Name: est_lambda_cost
+              Type: double
+            - Name: est_athena_cost
+              Type: double
+            - Name: est_bedrock_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  # Data-plane Lambda compute cost — sibling of ControlPlaneHourlyTable.
+  # ``metering_hourly`` already tracks per-doc external API costs
+  # (Textract pages, Bedrock tokens) for data-plane processing, but the
+  # Lambda compute time hosting those API calls (OCR/Classification/
+  # Extraction/Assessment/Summarization/Evaluation Lambdas, all tagged
+  # ``idp:plane=data``) had no home in the reporting layer. This table
+  # closes the gap so dashboards can show total compute cost across both
+  # planes consistently. Same Duration/Invocations math as
+  # control_plane_hourly. Bedrock/Athena columns are OMITTED — data-plane
+  # Bedrock cost already flows through ``metering_hourly``, and
+  # data-plane Lambdas don't call Athena.
+  DataPlaneLambdaHourlyTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "data_plane_lambda_hourly"
+        Description: "Hourly rollup of data-plane Lambda compute cost. See docs/reporting-sql-layer.md §2 (Tables) — row #6."
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,NOW+1YEARS"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          projection.hour.type: "integer"
+          projection.hour.range: "0,23"
+          projection.hour.digits: "2"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/data_plane_lambda/date=${date}/hour=${hour}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+              hour: "${hour}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/data_plane_lambda/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: hour_ts
+              Type: timestamp
+            - Name: function_name
+              Type: string
+            - Name: component
+              Type: string
+            - Name: invocations
+              Type: bigint
+            - Name: duration_ms_sum
+              Type: bigint
+            - Name: est_lambda_cost
+              Type: double
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+          - Name: hour
+            Type: string
+
+  ##########################################################################
+  # Metering hour-partition migration — on stack upgrade from a pre-hour-
+  # partition version, relocates historical `date=X/*.parquet` files into
+  # `date=X/hour=HH/` subdirs so the new Glue projection can see them.
+  # Fresh installs no-op immediately (empty bucket). See §2.3.
+  ##########################################################################
+
+  MeteringHourMigrationFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency (one-shot CFN custom resource)"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for Cfn Custom Resource function"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables contain non-sensitive configuration values"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/metering_hour_migration
+      Description: >-
+        One-shot migration for the metering hour-partition upgrade. Runs as a
+        CFN custom resource; blocks stack update until historical Parquet files
+        are relocated into date=X/hour=HH/ subdirs.
+      MemorySize: 3008
+      Timeout: 900
+      # Layer supplies pyarrow (needed to read the hour from each Parquet's
+      # timestamp column). MUST be the reporting layer — the base layer does
+      # NOT include pyarrow, and picking the wrong one causes every file to
+      # fall through to the hour=00 park path, silently losing hour precision.
+      Layers:
+        - !Ref IDPCommonReportingLayer
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref MeteringHourMigrationFunctionLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !GetAtt ReportingBucket.Arn
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
+            - Effect: Allow
+              Action:
+                # Copy-then-delete migration: reads the source parquet's
+                # timestamp column to infer the hour, PutObject at the new
+                # `date=X/hour=HH/` key, then DeleteObject on the original.
+                # Athena reads a partition location recursively, so leaving
+                # originals in place would cause a rolled-back Glue table
+                # (reverted to `date=X/`) to double-scan; the delete is what
+                # makes rollback correct.
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering/*"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              # Round-11 review fix: also grant on a customer-supplied
+              # KMS key when ReportingBucketName is a BYO bucket
+              # encrypted with the customer's own key. We can't inline
+              # ``!If`` inside a list-of-strings in a SAM Statement
+              # cleanly, so we use ``AWS::NoValue`` — the resulting
+              # Resource list drops the extra ARN when it's empty.
+              Resource:
+                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If
+                  - HasReportingBucketKmsKey
+                  - !Ref ReportingBucketKmsKeyArn
+                  - !Ref AWS::NoValue
+
+  MeteringHourMigrationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  MeteringHourMigrationCustomResource:
+    Type: Custom::MeteringHourMigration
+    # DependsOn the metering WRITER, not just the reader. The migration takes a
+    # one-shot snapshot of the old-layout key list; any metering row written
+    # AFTER that listing but BEFORE the writer is upgraded lands at
+    # `metering/date=X/*.parquet` (old layout) and is then unreachable by the
+    # new `date=X/hour=HH/` projection — a silent, permanent hole in cost and
+    # volume data for every document processed during the update.
+    #
+    # `SaveReportingDataFunctionV2` is the SOLE writer of `metering/` parquet
+    # (`idp_common.reporting.save_reporting_data.save_metering_data` has exactly
+    # one caller), and CFN gave it no ordering relationship to this resource, so
+    # that window was the whole stack update — tens of minutes on this stack.
+    # Forcing the writer to update first makes the new layout live before the
+    # snapshot is taken. Full ordering is now:
+    #   SaveReportingDataFunctionV2 → this migration → MeteringTable projection
+    #
+    # Residual window: Lambda finishes in-flight invocations on the PREVIOUS
+    # code version, so a container that started just before the update can
+    # still emit one old-layout file (seconds to minutes, not the whole
+    # update). A deployment that ingests continuously should re-run
+    # `scripts/migrate_metering_hour_partition.py` once the update completes —
+    # it is idempotent. See docs/reporting-sql-layer.md §2.3.
+    DependsOn: SaveReportingDataFunctionV2
+    Properties:
+      ServiceToken: !GetAtt MeteringHourMigrationFunction.Arn
+      # Match the Lambda's own Timeout (900s) — the CFN default is 3600s,
+      # so if the Lambda died mid-migration the stack update would stall
+      # for up to an hour waiting for a response the dead worker never
+      # sent. Round-8 review fix.
+      ServiceTimeout: 900
+      # Reporting bucket the migration walks.
+      ReportingBucket: !If
+        - ShouldCreateReportingBucket
+        - !Ref ReportingBucket
+        - !Ref ReportingBucketName
+      # MigrationVersion — CFN only sends an Update to a custom resource
+      # when one of its properties changes. Bump this string when the
+      # migration logic itself changes so existing stacks re-run against
+      # NEW old-layout files (those still lacking ``/hour=`` in their
+      # key). The migration is idempotent for those — ``_iter_old_layout_keys``
+      # uses S3 ``Delimiter="/hour="`` to server-side-exclude any key
+      # already under a ``/hour=NN/`` subprefix.
+      #
+      # 1.1: bumped alongside the layer fix (Base → Reporting). The 1.0
+      # deploy silently parked every file at hour=00 because pyarrow
+      # was absent from the base layer; the handler now fails loudly if
+      # pyarrow is missing (round-3 fix). Round-11 review clarification:
+      # a bump does NOT rescue files ALREADY parked at hour=00 by a bad
+      # 1.0 run — the same ``Delimiter="/hour="`` filter that makes
+      # re-runs idempotent excludes those files. Since 1.0 never shipped
+      # to any customer, this is a documented Phase-2 hardening gap
+      # rather than a live-fire recovery path. If a customer ever needs
+      # to rescue hour=00 files, they will need a purpose-built script
+      # that lists the ``hour=00`` prefix and re-infers hour from each
+      # file's own timestamp column (not shipped today).
+      MigrationVersion: "1.1-hour-partition-inference-fix"
+
+  ##########################################################################
+  # Data Mart Rollup Lambda — hourly + daily aggregations for the IDP Monitor
+  # dashboard. See docs/reporting-sql-layer.md.
+  ##########################################################################
+
+  DataMartRollupFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function only interacts with AWS APIs (Athena, Glue, CloudWatch, S3) — no VPC needed"
+          - id: W92
+            reason: "ReservedConcurrentExecutions=1 already pins concurrency; the setting is present, not absent"
+          - id: W12
+            reason: "cloudwatch:GetMetricData and resourcegroupstaggingapi:GetResources require * resource — no partition-level scoping available"
+      # checkov:skip=CKV_AWS_116: "Not SQS-triggered; DLQ not applicable to EventBridge scheduled invocations"
+      # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+      # checkov:skip=CKV_AWS_115: "Concurrency pinned to 1 to prevent idempotency check race — no headroom desired"
+      # checkov:skip=CKV_AWS_173: "Environment variables contain only configuration"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/data_mart_rollup
+      Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, control_plane_hourly, and data_plane_lambda_hourly tables.
+      MemorySize: 512
+      Timeout: 900
+      Tracing: Active
+      Layers:
+        # pyarrow + boto3 + idp_common (metrics helper etc.). Same layer the
+        # migration Lambda uses. Bundling pyarrow in this function too would
+        # blow the 250 MB "code + layers" limit on any in-place update that
+        # already had bundled pyarrow deployed — for a fresh install
+        # (every external customer's first deploy of this Phase 1 feature)
+        # CreateFunction is called with new code + new layer only, so
+        # 171 MB (layer) + tiny code = well under 250 MB.
+        - !Ref IDPCommonReportingLayer
+      # Pin to 1 concurrent execution so a scheduled invocation racing with
+      # an async retry cannot both pass the pre-INSERT idempotency check
+      # (SELECT ... LIMIT 1) and double-write metering_hourly rows.
+      #
+      # This is LOAD-BEARING, not belt-and-braces — do not remove it without
+      # replacing the guarantee. Reserved concurrency itself is free (only
+      # PROVISIONED concurrency is billed), so there is no cost argument for
+      # dropping it. What it covers that nothing else does:
+      #
+      # 1. The Athena `ClientRequestToken` dedup in `_run_athena` protects the
+      #    four INSERT-INTO tables, EXCEPT on the cached-failure restart path,
+      #    which appends a wall-clock-second salt (`-r<unix seconds>`). Two
+      #    concurrent restarts landing in different seconds get different
+      #    tokens and would both write. The salt cannot be made
+      #    invocation-stable: it must DIFFER across sequential retries (that is
+      #    what breaks Athena's cached-failure lock) while being the SAME for
+      #    concurrent duplicates of one attempt. See the `fresh_salt` comment
+      #    in src/lambda/data_mart_rollup/index.py.
+      # 2. It serializes the 00:05 hourly against the 00:15 daily. The hourly's
+      #    900s timeout makes that overlap reachable, and a daily reading a
+      #    half-written hour 23 trips `_require_hourly_matches_raw_metering`.
+      #
+      # (The two parquet tables can't double-count regardless — both write a
+      # fixed `data.parquet` key per partition, so a second writer overwrites
+      # rather than appending.)
+      #
+      # Deploy-time caveat: Lambda rejects a reservation that would drop the
+      # ACCOUNT's unreserved concurrency below 100, so on an account already
+      # carrying heavy reservations this makes stack update fail with
+      # "decreases account's UnreservedConcurrentExecution below its minimum
+      # value of [100]". Raise the account concurrency limit rather than
+      # removing this property.
+      ReservedConcurrentExecutions: 1
+      # Async failures (Athena down for all 3 async retries) land in the
+      # DLQ so an operator sees the data-hole instead of the hour silently
+      # disappearing forever behind the per-partition idempotency skip.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        # Cap async retry age at 1h so a throttled invocation
+        # (ReservedConcurrentExecutions: 1 + a still-running previous
+        # invoke) doesn't silently retry against Lambda's 6h default
+        # MaximumEventAge — that would push a data-hole DLQ signal
+        # hours past when the operator needs to see it.
+        MaximumEventAgeInSeconds: 3600
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt DataMartRollupDLQ.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          REPORTING_DATABASE: !Ref ReportingDatabase
+          ATHENA_WORKGROUP: primary
+          ATHENA_QUERY_OUTPUT_LOCATION: !Sub
+            - "s3://${Bucket}/athena_query_results/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          REPORTING_BUCKET: !If
+            - ShouldCreateReportingBucket
+            - !Ref ReportingBucket
+            - !Ref ReportingBucketName
+          STACK_NAME: !Ref AWS::StackName
+          # Rollup reads Bedrock per-token pricing from here — the same
+          # source of truth as data-plane cost math — instead of a
+          # hardcoded map that would drift as new models ship.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+      LoggingConfig:
+        LogGroup: !Ref DataMartRollupFunctionLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+              Resource:
+                - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:CreatePartition
+                - glue:BatchCreatePartition
+              Resource:
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${ReportingDatabase}"
+                - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${ReportingDatabase}/*"
+            - Effect: Allow
+              Action:
+                - cloudwatch:GetMetricData
+                - cloudwatch:ListMetrics
+              # GetMetricData does not support resource-level scoping.
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                # PutMetricData for the rollup Lambda's own self-cost emission
+                # (idp_common.metrics.emit_control_plane_cost_metric with
+                # component='rollup-lambda'). Without this, the metric never
+                # lands and control_plane_hourly has no rollup-lambda row —
+                # the rollup's own Athena spend goes invisible. cloudwatch
+                # PutMetricData does not support resource-level scoping.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
+            - Effect: Allow
+              Action:
+                - tag:GetResources
+              # Tag API is account-scoped; no resource-level scoping available.
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - cloudformation:ListStackResources
+              # Rollup walks the CFN stack tree (root + nested) to discover
+              # all IDP Lambdas — nested-stack Lambdas carry the nested
+              # stack's aws:cloudformation:stack-name tag, not the root's,
+              # so a tag query on just STACK_NAME misses 57 of 68 Lambdas
+              # on a typical topology. Scoped to this stack's tree.
+              #
+              # Round-10 note: the ``${AWS::StackName}-*`` wildcard is
+              # necessary — CFN generates nested-stack names as
+              # ``<parent>-<LogicalId>-<random>`` and we don't know the
+              # random suffixes at IaC time. Side effect: any
+              # co-existing TOP-LEVEL stack whose name starts with
+              # ``${AWS::StackName}-`` would also be listable by this
+              # role. There's no cleaner IAM alternative (ListStack-
+              # Resources doesn't support resource conditions), and the
+              # blast radius is read-only listing of resource names.
+              # Deploy convention: don't name coexisting stacks with the
+              # same prefix.
+              Resource:
+                - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+                - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-*/*"
+            - Effect: Allow
+              Action:
+                - lambda:GetFunctionConfiguration
+              # Rollup reads MemorySize from each control-plane Lambda in the
+              # stack to compute an accurate GB-second Lambda cost estimate
+              # (vs. the previous fixed 512 MB assumption). Scoped to functions
+              # in this account/region; the rollup's tag-based discovery
+              # bounds the actual call set to this stack.
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+                # HeadObject (the `_s3_object_exists` / `_query_wrote_manifest`
+                # probes) is authorized by s3:GetObject — there is no
+                # `s3:HeadObject` IAM action, so the entry that used to sit here
+                # was inert.
+                #
+                # Multipart actions are part of AWS's reference policy for
+                # Athena `INSERT INTO`: the writer switches to a multipart
+                # upload once a result part exceeds its buffer. Today's rollup
+                # output is a few KB so it always takes the single-PUT path,
+                # which is why this has not bitten yet — but a stack with many
+                # (config_version, service_api, unit) combinations per hour
+                # would fail the INSERT rather than degrade.
+                - s3:AbortMultipartUpload
+                - s3:ListBucketMultipartUploads
+                - s3:ListMultipartUploadParts
+                # Required for Athena StartQueryExecution — it calls
+                # GetBucketLocation on the OutputLocation bucket to verify
+                # the workgroup can write results there before running the
+                # query. Without this, StartQueryExecution fails at the
+                # "verify/create output bucket" precheck.
+                - s3:GetBucketLocation
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !GetAtt ReportingBucket.Arn
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}"
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/*"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              # Round-13 review fix: match the sibling
+              # MeteringHourMigrationFunction grant — a BYO
+              # ReportingBucketName encrypted with a customer-owned
+              # KMS key needs decrypt on that key for the rollup to
+              # write control_plane_hourly parquet and read the query
+              # output. AWS::NoValue drops the extra Resource entry
+              # when no BYO key is supplied.
+              Resource:
+                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If
+                  - HasReportingBucketKmsKey
+                  - !Ref ReportingBucketKmsKeyArn
+                  - !Ref AWS::NoValue
+        # Read pricing from the ConfigurationTable (same source data-plane
+        # cost math uses) so Bedrock per-token prices in control_plane_hourly
+        # cannot drift from a hardcoded rollup-side map.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTable
+
+  DataMartRollupFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Dead-letter queue for the rollup Lambda's async invocations. Async
+  # retries at ~1min and ~5min: if all fail (e.g., Athena outage), the
+  # event lands here and the CloudWatch alarm below pages the operator.
+  # Without this, that hour's data would be silently missing forever,
+  # since the per-partition idempotency check would skip on any manual
+  # retry.
+  DataMartRollupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-data-mart-rollup-dlq"
+      MessageRetentionPeriod: 1209600  # 14 days (SQS max)
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  DataMartRollupDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DataMartRollupDLQ
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sqs:SendMessage
+            Resource: !GetAtt DataMartRollupDLQ.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt DataMartRollupFunction.Arn
+
+  DataMartRollupDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-data-mart-rollup-dlq-depth"
+      AlarmDescription: >-
+        Data-mart rollup Lambda's async retries all failed for at least
+        one scheduled invocation. Historical cost/volume data for that
+        hour or day is missing. Check the rollup Lambda log for the root
+        cause and re-invoke manually once resolved.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DataMartRollupDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # Hourly rollup: writes metering_hourly and control_plane_hourly for the
+  # previous fully-sealed UTC hour. Fires at minute 5 to give in-flight
+  # doc-completions a moment to land in metering before the aggregation reads.
+  DataMartRollupHourlySchedule:
+    Type: AWS::Events::Rule
+    # Guard against a race during stack UPDATE: this rule stays ACTIVE across
+    # the entire update, so its cron can fire while the MeteringTable's new
+    # ``hour`` partition-key change (and the raw-file migration) is still in
+    # progress — the rollup's INSERT queries reference ``metering.hour`` and
+    # would fail with "column not found". Round-11 review fix: also wait
+    # for every rollup TARGET table (fresh install can otherwise fire the
+    # first cron before the write-target tables commit — INSERT would
+    # then fail with TABLE_NOT_FOUND which fail-open masks, then re-INSERT
+    # against the freshly-created table on the retry).
+    DependsOn:
+      - MeteringHourMigrationCustomResource
+      - MeteringTable
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+      - ControlPlaneHourlyTable
+      - DataPlaneLambdaHourlyTable
+    Properties:
+      Description: Hourly trigger for the data-mart rollup Lambda.
+      ScheduleExpression: "cron(5 * * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: DataMartRollupHourly
+          Arn: !GetAtt DataMartRollupFunction.Arn
+          # InputTransformer (not literal Input) so ``$.time`` from the
+          # scheduled event reaches the handler. Without this the handler's
+          # anchor-time logic degrades to ``datetime.now()`` on every
+          # invocation, and an async retry crossing an hour boundary silently
+          # rolls up the WRONG partition. Round-5 review fix.
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: '{"mode": "hourly", "time": <time>}'
+
+  DataMartRollupHourlyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataMartRollupFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub events.${AWS::URLSuffix}
+      SourceArn: !GetAtt DataMartRollupHourlySchedule.Arn
+
+  # Daily rollup: writes metering_daily for the previous fully-sealed UTC day.
+  # Fires at 00:15 to allow the 23:xx hourly rollup to complete first.
+  DataMartRollupDailySchedule:
+    Type: AWS::Events::Rule
+    # See the hourly schedule above for the DependsOn rationale.
+    DependsOn:
+      - MeteringHourMigrationCustomResource
+      - MeteringTable
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+      - ControlPlaneHourlyTable
+      - DataPlaneLambdaHourlyTable
+    Properties:
+      Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
+      ScheduleExpression: "cron(15 0 * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: DataMartRollupDaily
+          Arn: !GetAtt DataMartRollupFunction.Arn
+          # See the hourly schedule above for the InputTransformer rationale.
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: '{"mode": "daily", "time": <time>}'
+
+  DataMartRollupDailyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataMartRollupFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub events.${AWS::URLSuffix}
+      SourceArn: !GetAtt DataMartRollupDailySchedule.Arn
 
   DocumentSectionsCrawlerSecurityConfigurationV2:
     Type: AWS::Glue::SecurityConfiguration
@@ -5615,6 +6628,9 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — one invocation per doc-arrival S3 event.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5647,6 +6663,10 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
+          # Namespace for the ``StaleOutputPurgeFailed`` telemetry metric
+          # (issue #719). Matches every other IDP Lambda's convention:
+          # stack-name isolates per-deployment.
+          METRIC_NAMESPACE: !Ref AWS::StackName
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
@@ -5657,6 +6677,36 @@ Resources:
             TableName: !Ref ConfigurationTable
         - S3ReadPolicy:
             BucketName: !Ref InputBucket
+        # Issue #719: purge stale <key>/pages/* from a prior upload of the
+        # same key before the pipeline runs (defeats OCR retry-safe recovery
+        # on re-upload). Scoped to exactly what the purge needs — ListBucket
+        # to enumerate, DeleteObject to remove. Tighter than the S3CrudPolicy
+        # SAM template (which also grants Put/Get/Restore/ACL/tagging that
+        # this function never uses), matching least-privilege on a data-plane
+        # function invoked once per document upload.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}"
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
+        # Issue #719: emit ``StaleOutputPurgeFailed`` on partial-purge
+        # failure so operators can alarm on the metric rather than
+        # scraping ERROR logs. Matches the pattern in
+        # queue_processor._put_drift_sample. Fire-and-forget — the emit
+        # is wrapped in its own try/except so telemetry can't affect
+        # document ingest.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace: !Ref AWS::StackName
         - Statement:
             - Effect: Allow
               Action:
@@ -5710,6 +6760,9 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — SQS batch trigger from the doc queue.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5861,6 +6914,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
+      Tags:
+        # Data plane — invoked per doc-workflow state change. See
+        # docs/reporting-sql-layer.md §10.3 / §10.4.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -5952,6 +7009,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
@@ -6052,6 +7116,9 @@ Resources:
       MemorySize: 3008
       EphemeralStorage:
         Size: 5120
+      Tags:
+        # Data plane — SQS per-doc status-change events. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       Tracing: Active
@@ -6146,6 +7213,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 300
+      Tags:
+        # Data plane — SQS per-doc dispatcher for custom post-processor.
+        # See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig:
         !If
           - DeployInVPC
@@ -6252,6 +7323,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 300
+      Tags:
+        # Data plane — invoked async per doc by evaluation / rule-validation
+        # / metering writer Lambdas.
+        idp:plane: data
 
       Layers:
         - !Ref IDPCommonReportingLayer
@@ -6285,6 +7360,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -6409,6 +7491,41 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       # The metric is only published when the processor is at the limit, so
       # "no data" means "not blocked" — which is healthy, not unknown.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Issue #719: before processing an upload, the queue sender purges
+  # <key>/pages/ so OCR's retry-safe recovery cannot resurrect a PREVIOUS
+  # document's page results under a reused filename; the reprocess resolver
+  # purges more broadly for the same reason. A purge that only partly succeeds
+  # is invisible otherwise — the document processes, reports success, and
+  # silently carries text from the old document, because
+  # discover_existing_ocr_pages needs just ONE surviving complete page
+  # (rawText+result+textConfidence+image) to skip OCR for it. Both paths
+  # therefore raise on a per-key delete failure and publish this metric;
+  # ingest deliberately continues (a possibly-stale extraction beats a dropped
+  # upload), which is exactly why the operator needs an alarm and not a log
+  # line. The metric carries no dimensions and both emitters publish into the
+  # ROOT stack's namespace (the nested resolver uses the StackName parameter,
+  # not AWS::StackName), so this single alarm covers the ingest path and the
+  # reprocess path alike.
+  StaleOutputPurgeFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not purge a document's stale OCR output (<key>/pages/) before processing it — on re-upload of an existing filename, or on Reprocess. The document still processes, but OCR may reuse the PREVIOUS document's page results, so its extraction can reflect the old document (issue #719). Find the affected keys in the QueueSender logs (ingest path, 'Failed to purge previous output data') or the ReprocessDocumentResolver logs (reprocess path, 'Failed to delete previous output data'), delete s3://<OutputBucket>/<key>/pages/ manually, then re-upload or reprocess."
+      MetricName: StaleOutputPurgeFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      # Threshold 0 / GreaterThanThreshold: alarm on the FIRST failure. Unlike
+      # concurrency drift there is no self-healing path here — the stale pages
+      # sit in S3 until someone removes them, and every later upload of that
+      # key inherits the same wrong results.
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means "every purge succeeded".
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -6993,6 +8110,43 @@ Resources:
                     ]
                   }
                 }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 36,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "StaleOutputPurgeFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Purges that failed (ingest + reprocess)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Stale Output Purge Failures (issue #719 — a non-zero value means a document may have been processed with a PREVIOUS document's OCR text; the paired log widget lists the affected keys on the ingest path)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "stat": "Sum"
+                }
+              },
+              {
+                "type": "log",
+                "x": 12,
+                "y": 36,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "query": "SOURCE '${QueueSenderLogGroup}' | fields @timestamp, @logStream, @message | filter @message like /Failed to purge previous output data/ | sort @timestamp desc | limit 20",
+                  "region": "${AWS::Region}",
+                  "title": "Stale Output Purge Failures — affected keys (ingest path; for the Reprocess path see the ReprocessDocumentResolver log group)",
+                  "view": "table"
+                }
               }
             ]
           }
@@ -7234,6 +8388,11 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -7296,6 +8455,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -7469,6 +8635,19 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+            - Effect: Allow
+              Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls. Scoped to the
+                # IDPControlPlane namespace. Round-6 review fix — was
+                # missing on Agent*ProcessorFunction, so every Athena call
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -7667,6 +8846,11 @@ Resources:
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: "8080"
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           # --- Shared / doc-chat processor env (mirrors ChatWithDocumentProcessorFunction) ---
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -7777,6 +8961,20 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-23 review fix (#8671): the round-22 hardening
+              # scoped this grant ONLY to <StackName>, but the vendored
+              # agent-chat-processor in this Lambda runs the analytics
+              # agent whose athena_tool.py emits AthenaBytesScanned to
+              # IDPControlPlane (round-5 fix). A pure-<StackName>
+              # Condition silently DENIED that emit and zeroed the
+              # analytics-agent Athena cost row in control_plane_hourly.
+              # Fix: permit both namespaces this Lambda legitimately
+              # writes to.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - athena:StartQueryExecution
@@ -8297,6 +9495,19 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+            - Effect: Allow
+              Action:
+                # PutMetricData for emit_control_plane_cost_metric on the
+                # analytics agent's Athena calls. Scoped to the
+                # IDPControlPlane namespace. Round-6 review fix — was
+                # missing on Agent*ProcessorFunction, so every Athena call
+                # AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent's Athena spend.
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -10107,6 +11318,11 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # Bedrock throttle/latency/token emits from
+          # idp_common.bedrock.client._put_metric match the
+          # PutMetricData IAM Condition below (round-27 review fix).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           DISCOVERY_BUCKET: !Ref DiscoveryBucket
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -10134,6 +11350,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -10362,6 +11585,14 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # future Bedrock emits from idp_common.bedrock.client match
+          # the PutMetricData IAM Condition below. BlueprintOptimization
+          # currently only calls BDA APIs (which don't emit via
+          # _put_metric), but any future call through the Bedrock
+          # client would silently AccessDenied without this pin
+          # (round-27 review fix, defensive alignment).
+          METRIC_NAMESPACE: !Ref AWS::StackName
           APPSYNC_API_URL: ""
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           STACK_NAME: !Ref AWS::StackName
@@ -10380,6 +11611,13 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -10779,8 +12017,27 @@ Resources:
           # REST API endpoint. VITE_API_BASE_URL is the REST API base; the thin
           # REST client posts to ${VITE_API_BASE_URL}/op/<field>. (GraphQL API
           # removed, so the old GraphQL URL / API_TRANSPORT vars are no longer emitted.)
+          #
+          # When a custom domain fronts this same REST API (APIGateway hosting —
+          # see UseCustomDomainForApi), the bundle must call the API on the
+          # custom origin the user is actually browsing. Pointing it at the raw
+          # execute-api hostname makes every data operation cross-origin, and in
+          # PRIVATE mode that hostname typically does not resolve for the client
+          # at all (the private DNS override exists only in the endpoint's own
+          # VPC) — so Test Studio and every other page fail while the SPA shell,
+          # served by the custom domain, loads fine.
+          #
+          # "/api" is the stage name on the raw URL and the base-path mapping to
+          # that same stage on the custom domain, so both forms resolve
+          # POST {base}/op/<field> to the dispatcher identically. The custom
+          # domain needs BOTH the empty and the "api" base-path mapping (the
+          # empty one anchors the OAuth return at the domain root); see
+          # docs/deployment-private-network.md.
           - Name: VITE_API_BASE_URL
-            Value: !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
+            Value: !If
+              - UseCustomDomainForApi
+              - !Sub "${CustomDomainUrl}/api"
+              - !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
           # Chat streaming Function URL (IAM-authed, response streaming). The
           # signed stream client (src/api/stream-client.ts) reads this.
           - Name: VITE_STREAM_URL
@@ -11146,6 +12403,11 @@ Resources:
       Description: Lambda function to mark HITL section review as complete
       MemorySize: 512
       Timeout: 60
+      Tags:
+        # Data plane — per-doc pipeline callback. Fires once per doc that
+        # needs review, resuming the paused Step Function via task-token
+        # callback. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
       Environment:

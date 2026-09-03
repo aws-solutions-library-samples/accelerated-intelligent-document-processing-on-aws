@@ -109,6 +109,9 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'us.anthropic.claude-opus-4-8:1m', value: 'us.anthropic.claude-opus-4-8:1m' },
   { label: 'us.anthropic.claude-opus-5', value: 'us.anthropic.claude-opus-5' },
   { label: 'us.anthropic.claude-opus-5:1m', value: 'us.anthropic.claude-opus-5:1m' },
+  // xAI Grok (Converse). Cross-region inference profiles only — there is no
+  // in-region or eu. form, so EU deployments use the global. entry below.
+  { label: 'us.xai.grok-4.6', value: 'us.xai.grok-4.6' },
   // OpenAI GPT-5.x (bedrock-mantle Responses API) - US regions only
   { label: 'openai.gpt-5.4', value: 'openai.gpt-5.4' },
   { label: 'openai.gpt-5.5', value: 'openai.gpt-5.5' },
@@ -158,6 +161,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'global.anthropic.claude-opus-4-8:1m', value: 'global.anthropic.claude-opus-4-8:1m' },
   { label: 'global.anthropic.claude-opus-5', value: 'global.anthropic.claude-opus-5' },
   { label: 'global.anthropic.claude-opus-5:1m', value: 'global.anthropic.claude-opus-5:1m' },
+  { label: 'global.xai.grok-4.6', value: 'global.xai.grok-4.6' },
 ];
 
 // Per-class extraction prompt overrides (override extraction.system_prompt /
@@ -179,6 +183,14 @@ export const X_AWS_IDP_EXCLUDE_FROM_PROCESSING = 'x-aws-idp-exclude-from-process
  * and in evaluation report annotations.
  */
 export const X_AWS_IDP_EXCLUSION_REASON = 'x-aws-idp-exclusion-reason';
+
+/**
+ * Class-level: names the top-level array property whose length is the
+ * section's instance count, for a class already modelled as a packet of
+ * records (one element per document). Purely a signal - it does not change
+ * the extraction shape. Must stay in sync with schema_constants.py.
+ */
+export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
 
 /**
  * Declares the named page sub-types a class can include. Each entry has a

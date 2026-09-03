@@ -52,6 +52,37 @@ _CONF_ROW_TOKENS_BBOX = 120
 _FALLBACK_INPUT_TOKENS = 180_000
 _FALLBACK_OUTPUT_TOKENS = 8_000
 
+# Ceiling on the output reserve, as a fraction of the USABLE INPUT window.
+#
+# The input budget reserves room for the model's own response by subtracting the
+# full usable output window. That is only sensible while a model's output cap is
+# small relative to its context window — which held for every Claude/Nova/GPT
+# family. xAI Grok 4.6 breaks it: a 524,288-token output cap against a 500,000
+# input window means the naive reserve (367,001) EXCEEDS the usable input
+# (350,000), driving the shard budget negative and clamping it to
+# _MIN_SHARD_TOKEN_BUDGET — so the model with the largest context window would
+# shard into 2,000-token pieces.
+#
+# 0.65 is deliberate, and the constraint is TWO-SIDED — read both directions
+# before changing it:
+#
+#   * LOWERING it re-shards existing models. The binding case is the 200K/128K
+#     Claude families: their usable output is 89,600, which is exactly 64.00% of
+#     their 140,000 usable input, so any fraction >= 0.64 leaves them untouched
+#     while 0.63 raises their shard budget to 19,800 and 0.50 to 38,000.
+#     0.64 is the true boundary; 0.65 sits just above it.
+#   * RAISING it starves the model this exists for. A bigger cap means less
+#     clamping, so Grok's shard budget falls: 90,500 at 0.65, 73,001 at 0.70,
+#     3,000 at 0.90, and back to the floor at 1.00 (which is the unclamped
+#     behavior).
+#
+# So 0.65 maximizes the new model's shard budget subject to disturbing no
+# existing model. Note the no-op is buffer-INDEPENDENT: the comparison reduces to
+# max_output/max_input, so it holds at every ``context_buffer``, not just the
+# 0.30 default. test_reserve_clamp_does_not_change_existing_models pins every
+# pre-existing row across a range of buffers.
+_MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT = 0.65
+
 # Floors/ceilings so derived values stay sane regardless of arithmetic.
 _MIN_SHARD_TOKEN_BUDGET = 2_000
 _MIN_LIST_BATCH = 1
@@ -156,8 +187,12 @@ def compute_sizing_plan(
 
     # --- Input (shard) budget ---
     # Reserve room for the model's own output and for page images, then the rest
-    # is the per-shard OCR-text budget.
-    output_reserve = usable_output  # the agent may emit up to a full response
+    # is the per-shard OCR-text budget. The agent may emit up to a full response,
+    # but the reserve is capped so a model whose output cap rivals its context
+    # window cannot starve its own shard budget (see the constant's comment).
+    output_reserve = min(
+        usable_output, int(usable_input * _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT)
+    )
     image_reserve = int(max_images_per_agent) * _TOKENS_PER_IMAGE
     derived_shard_budget = max(
         _MIN_SHARD_TOKEN_BUDGET, usable_input - output_reserve - image_reserve

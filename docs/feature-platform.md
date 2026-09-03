@@ -628,16 +628,35 @@ edit a config version's `postHook` lists directly. See the
 A feature can bundle an accelerator configuration (custom classes, prompts,
 rule-validation policy classes, …) and apply it at install via the manifest's
 `configPreset` field. The feature stack calls the host's
-`applyFeatureConfigPreset` mutation, which writes the preset as a **new,
-non-active** configuration version named `<featureId>-v<version>`. Installation
-never changes the active configuration — an admin reviews and activates the
-preset from the **Configuration** page. Uninstall calls
-`removeFeatureConfigPreset`, which removes the feature's preset versions but
-preserves one that is currently active.
+`applyFeatureConfigPreset` operation, which writes the preset as a **non-active
+[Configuration Profile](configuration-profiles.md) named after the feature** —
+`<featureId>`, no version suffix. Each release of the feature is recorded as a
+**revision** of that one profile, so an upgrade produces a diff an admin can read
+instead of a second profile. (An upgrade that does not change the preset records
+nothing at all.) Installation never changes the active configuration — an admin
+reviews and activates the preset from the **Configuration** page.
+
+Uninstall calls `removeFeatureConfigPreset`, which deletes `<featureId>` **and**
+any legacy `<featureId>-v*` profiles from before this changed, along with their
+revision history. If the feature's profile is the active one, `default` is
+activated first: a feature's configuration carries that feature's pipeline hooks
+inline, so leaving it active after uninstall would point every subsequent document
+at deleted hook Lambdas.
 
 This is how a vertical feature ships "the configuration it needs" alongside its
 UI and hooks. See the
 [Developer Guide → ship a configuration preset](feature-platform-developer-guide.md#optional-ship-a-configuration-preset).
+
+> **Extensions that write the ConfigurationTable directly** (rather than calling
+> `applyFeatureConfigPreset`) did not get this fix, and a Delete handler that
+> removes only the version being uninstalled leaves every earlier release's profile
+> orphaned — undeletable from the Web UI if it was written `Managed`. Such an
+> extension should write `Config#<featureId>` (no version suffix) and, on Delete,
+> remove that profile **and** any legacy `<featureId>-v*` rows — preferably by
+> invoking the host's `removeFeatureConfigPreset`, which also drops each profile's
+> revision history. To clear profiles already orphaned, use
+> `idp-cli config-delete` (the Web UI refuses stack-managed profiles; the CLI warns
+> and proceeds).
 
 ## Two reference samples
 

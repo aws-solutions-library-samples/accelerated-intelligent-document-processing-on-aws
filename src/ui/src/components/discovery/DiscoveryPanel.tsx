@@ -44,7 +44,7 @@ import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import { SUPPORTED_DISCOVERY_EXTENSIONS } from '../common/constants';
 import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
-import CreateDiscoveryVersionModal from './CreateDiscoveryVersionModal';
+import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 
 const client = generateClient();
 
@@ -1137,10 +1137,11 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
         }
       />
 
-      <CreateDiscoveryVersionModal
+      <CreateConfigProfileModal
         visible={showCreateVersionModal}
         onDismiss={() => setShowCreateVersionModal(false)}
         defaultSourceVersion={selectedVersion?.value ?? null}
+        infoText="Creates a new configuration profile that inherits its settings and document classes from the selected source profile. Discovered schema will then be saved to this new profile."
         onCreated={async (versionName) => {
           setShowCreateVersionModal(false);
           await fetchVersions();

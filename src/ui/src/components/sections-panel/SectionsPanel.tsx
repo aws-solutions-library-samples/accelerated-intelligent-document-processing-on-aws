@@ -21,6 +21,7 @@ import {
   Popover,
 } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -34,7 +35,8 @@ import type { GroupedSection } from '../common/section-grouping';
 import { updateDocumentSections } from '../../graphql/generated';
 import usePageThumbnails from '../../hooks/use-page-thumbnails';
 import { getErrorMessage } from '../../utils/errorUtils';
-import { getSectionIssueStatus, type ProcessingIssue } from '../common/processing-issues-utils';
+import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -44,22 +46,17 @@ import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
 
-interface SectionItem {
-  Id: string;
-  Class: string;
-  PageIds: number[];
-  OutputJSONUri?: string;
-  OriginalId?: string | null;
-  isModified?: boolean;
-  isNew?: boolean;
-  // True when the class is marked with x-aws-idp-exclude-from-processing=true
-  // (e.g., static instruction pages). No extraction / assessment / summary
-  // is performed for excluded sections; the UI renders a "Skipped" badge.
-  Excluded?: boolean;
-  ExclusionReason?: string | null;
-  // Structured self-healing / quality issues detected for this section.
-  ProcessingIssues?: ProcessingIssue[] | null;
-}
+/**
+ * The row shape for the sections table.
+ *
+ * Derived from the generated GraphQL `Section` via `EditableSection` (issue
+ * #711) — this used to be a second, hand-written interface, so a field added to
+ * `schema.graphql` was invisible here even after codegen, with nothing failing
+ * to say so. That is why `InstanceCount` needed hand-wiring in two places, and
+ * why `Excluded` / `ExclusionReason` / `ConfidenceThresholdAlerts` had already
+ * drifted between the two Section shapes.
+ */
+type SectionItem = EditableSection;
 
 interface PageItem {
   Id: number;
@@ -119,6 +116,10 @@ const ClassCell = ({
     <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
   );
 
+  // Only rendered when the section holds more than one document, so a normal
+  // section is just its class name.
+  const instances = <MultiInstanceBadge item={item} />;
+
   if (item.Excluded) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
@@ -127,16 +128,67 @@ const ClassCell = ({
       </SpaceBetween>
     );
   }
-  if (!mismatch) return <span>{item.Class}</span>;
+  if (!mismatch && !instances) return <span>{item.Class}</span>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
       <span>{item.Class}</span>
+      {instances}
       {mismatch}
     </SpaceBetween>
   );
 };
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
+
+// Multi-instance annotation, rendered INSIDE the class cell rather than in a
+// column of its own. `InstanceCount` is how many separate documents of this
+// section's Class extraction found in it, and it is worth screen space in
+// exactly one case:
+//   > 1        -> the section holds several distinct documents that
+//                 classification did not split apart. A Badge (the same Badge
+//                 vocabulary the "Skipped" annotation uses) plus a hover Popover.
+//   1, 0, absent -> nothing at all. A column showed "1" on every row of a normal
+//                 document and cost width the table did not have (it wrapped its
+//                 own header to "Instanc/es" and pushed Actions off the panel).
+//                 It also distinguished "1" from "undetermined" — a diagnostic
+//                 distinction, still available on the API and in the Processing
+//                 Report, that no reader of this table was acting on.
+// The *warning* for the unflagged case is owned by the Status column (backend
+// raises a `extraction_multi_instance_detected` ProcessingIssue), so this stays
+// factual rather than alarming — a class configured for multiple instances is
+// working as intended.
+const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element | null => {
+  const count = item.InstanceCount ?? 0;
+
+  if (count <= 1) {
+    return null;
+  }
+
+  return (
+    <Popover
+      dismissButton={false}
+      position="top"
+      size="medium"
+      triggerType="custom"
+      header="Multiple documents in one section"
+      content={
+        <SpaceBetween size="xs">
+          <Box variant="p">
+            Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
+            instance.
+          </Box>
+          <Box variant="small" color="text-body-secondary">
+            If these should be separate sections, review the classification settings for this class.
+          </Box>
+        </SpaceBetween>
+      }
+    >
+      <span style={{ cursor: 'pointer' }}>
+        <Badge color="blue">{count}</Badge>
+      </span>
+    </Popover>
+  );
+};
 
 // Confidence alerts cell showing only count
 const ConfidenceAlertsCell = ({
@@ -641,7 +693,7 @@ const createColumnDefinitions = (
     },
     {
       id: 'confidenceAlerts',
-      header: 'Low Confidence Fields',
+      header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
       minWidth: 140,
       width: 140,
@@ -732,7 +784,7 @@ const createPattern1EditColumnDefinitions = (
     },
     {
       id: 'confidenceAlerts',
-      header: 'Low Confidence Fields',
+      header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
       minWidth: 140,
       width: 140,
@@ -1515,6 +1567,14 @@ const SectionsPanel = ({
   // parallel Lambda finishes first. Sorting ensures stable visual ordering.
   const tableItems = isEditMode ? editedSections : sortSectionsByPageId(sections || []);
 
+  // Sorting via the design system's own collection hook rather than a hand-rolled
+  // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
+  // the direction, so every column that declares a sort works. Starts unsorted,
+  // so the default view keeps its existing order. `sortedItems` feeds the table
+  // ONLY — `tableItems` still feeds everything else, which must stay in document
+  // order however the table is sorted.
+  const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
+
   // Check if there are any validation errors
   const hasValidationErrors = Object.keys(validationErrors).length > 0;
 
@@ -1623,8 +1683,8 @@ const SectionsPanel = ({
         <div style={{ overflowX: 'auto', position: 'relative' }}>
           <Table
             columnDefinitions={columnDefinitions}
-            items={tableItems}
-            sortingDisabled
+            items={sortedItems}
+            {...collectionProps}
             variant="embedded"
             resizableColumns
             stickyHeader={false}

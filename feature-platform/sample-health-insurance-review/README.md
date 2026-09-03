@@ -63,7 +63,8 @@ summary's `overall_statistics.recommendation_counts`:
 — the canonical, maintained copy. If you update the rule-validation preset
 there, refresh this snapshot and bump the feature version. At install the
 ui-deployer applies it as a **non-active** config version
-(`sample-health-insurance-review-v<version>`) for an admin to activate.
+(`sample-health-insurance-review` — one profile per feature, a revision per release)
+for an admin to activate.
 
 ## Host contracts this feature relies on
 

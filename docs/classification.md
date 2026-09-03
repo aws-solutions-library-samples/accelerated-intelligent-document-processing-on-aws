@@ -161,11 +161,85 @@ The boundary detection is automatically included in the classification results. 
     "doc_type": "invoice",
     "confidence": 0.95,
     "metadata": {
-      "document_boundary": "start"  // New document begins
+      "document_boundary": "start",  // New document begins
+      "classification_reason": "Invoice number and remittance block present"
     }
   }
 }
 ```
+
+`confidence` and `classification_reason` appear only when the model returned
+them — see [Classification Confidence](#classification-confidence) below.
+
+The value is also **persisted** on the page record and exposed on the API, so an
+unexpected split or merge can be inspected after the fact instead of re-derived
+from Lambda logs.
+
+###### How the model is asked to decide it
+
+Each page is classified in an **independent** LLM call that sees only that page
+(plus any neighbours from `contextPagesCount`) and is never told its position in
+the packet. So "does this continue the previous document?" is a question the model
+often cannot answer from what it was given — and the prompt used to ask exactly
+that. Failing runs said so in their own reasoning: *"Since no prior page 1 has been
+established in this sequence, this is treated as the start of the document."* The
+result was intermittent over-splitting of multi-page documents
+([#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)).
+
+`classification.task_prompt` now carries a `<boundary-detection-rules>` block that
+asks a question a single page **can** answer — is this page a *first* page? — from
+its own evidence, in priority order: pagination (`Page 2 of 2` ⇒ `continue`), then
+the presence of an opening identity block, then continuation evidence. Two clauses
+in it are a matched pair and must not be removed independently:
+
+| Clause | Prevents |
+|---|---|
+| *no preceding page shown* — absence of page 1 in the input says nothing about the document | **over-splitting** (every page reported as `start`) |
+| *consecutive documents of the same type* — a genuine first page is `start` even when the previous page has the same class | **over-merging** (back-to-back copies of one form collapsing into one section) |
+
+The block sits **before `<<CACHEPOINT>>`**, so it is part of the cacheable prefix
+and is not re-billed per page.
+
+> `contextPagesCount: 1` is not a substitute. It fixes the simple two-page case but
+> biases the model toward `continue`, which then merges genuinely separate
+> back-to-back documents — trading over-splitting for over-merging. Measured on a
+> 4-page packet holding two copies of one form, `contextPagesCount: 1` **on its own
+> scores 0/5** — it merges all four pages. It remains the right answer for one case
+> the rules cannot cover: **pages scanned out of order**, where a page has no way to
+> know it is physically second.
+
+###### Measured effect
+
+On **DocSplit-Poly-Seq** — 500 packets, 7,330 pages, 2,027 sections, 5,000
+packet-runs — split accuracy on multi-section packets, rules vs. the prior prompt:
+
+| Model | Δ split accuracy | |
+|---|---|---|
+| Qwen3-VL | +0.117 | p<0.05 |
+| Claude Opus 5 | +0.040 | p<0.05 |
+| Amazon Nova 2 Lite (default) | +0.030 | p<0.05 |
+| Claude Sonnet 5 | +0.013 | p<0.05 |
+| gpt-5.6-sol | +0.004 | not significant |
+
+Paired bootstrap + Wilcoxon; **no model regresses**. Under-split rate is 0.000 in
+all ten cells, so the over-merge guard holds. Page-level *class* accuracy moves at
+most 0.015 — the rules affect boundaries only, not classification. On #653's
+reported two-page form, Sonnet 5 goes from 6/24 to 10/10.
+
+Two limits worth knowing before you rely on this:
+
+- **It leans on pagination markers.** Corpora whose scans mostly lack them (for
+  example RVL-CDIP) see much less benefit — the header-block and continuation
+  heuristics are softer signals than `Page 2 of 3`.
+- **`llm_determined` over-splits 1.5×–2.3× on real-world packets regardless of
+  prompt.** That is a separate and larger problem than the one these rules fix; the
+  rules narrow the gap, they do not close it. If exact section counts matter to you,
+  measure on your own documents.
+
+⚠️ **A stored or preset `classification.task_prompt` overrides the default, so it
+does not get these rules.** If you customized the prompt, re-apply the block or
+reset to the default. The presets shipped in `config_library/` are kept in sync by
+`scripts/tests/test_classification_prompt_copies_in_sync.py`.
 
 ##### Enforcing a Valid Class Vocabulary (Validation + Retry)
 
@@ -180,10 +254,20 @@ classifications:
    class vocabulary.
 2. If the class is **not** valid, the model is **re-prompted** — the original
    request content is re-sent with an appended correction message that lists
-   the allowed classes. (This matters: classification runs at `temperature=0`,
-   so re-sending an identical request would return the identical invalid
-   answer. The correction changes the input and steers the model back to the
-   allowed set.)
+   the allowed classes. (This matters: on a model that honors it, classification
+   runs at `temperature=0`, so re-sending an identical request would return the
+   identical invalid answer. The correction changes the input and steers the
+   model back to the allowed set.)
+
+   > **`temperature=0` is not universal.** Claude Opus 4.7/4.8, Opus 5 and
+   > Sonnet 5 **reject** `temperature`/`top_p`/`top_k` (HTTP 400), so
+   > `idp_common` strips them before the request (`_CLAUDE_4_7_BASE_NAMES` in
+   > `idp_common/bedrock/client.py`). On those models classification **samples**,
+   > and identical inputs can return different answers run to run. This
+   > documentation previously stated the parameter applied everywhere, and that
+   > assumption is what made [#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)
+   > — intermittent page-boundary misdetection — look like a model defect rather
+   > than a prompt one.
 3. The retry repeats up to `maxValidationRetries` times.
 4. If all retries are exhausted, the page is assigned `invalidClassFallback`
    (default `unclassified`) and flagged with a `validation_error` entry in its
@@ -1138,6 +1222,212 @@ The classification service uses the new `extract_structured_data_from_text()` fu
 - Provides robust parsing with multiple extraction strategies
 - Handles malformed content gracefully
 - Returns both parsed data and detected format for logging
+
+## Classification Confidence
+
+Classification can report **how confident it is in the class it chose**, per page
+and per section. This is separate from the per-field confidence that extraction
+produces (see [extraction-and-confidence.md](./extraction-and-confidence.md));
+this one is about the *class*, not the extracted values.
+
+> **Two of the keys in the examples above — `confidence` and
+> `classification_reason` — used to be parsed by nothing.** A prompt could ask
+> for them, the model would answer, and the values were discarded. They are now
+> read and persisted ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+
+### Where a score comes from
+
+There is no separate confidence inference for classification: the value comes out
+of the same response as the class. `classification.confidence.mode` composes the
+instruction into the prompt for you — it is **on by default** — and a custom
+prompt that asks for `confidence` or `candidates` itself is honoured either way,
+because the response parser is not gated on the setting.
+
+Editable in the Web UI under **Configuration → Classification → Class
+confidence**, or in YAML:
+
+```yaml
+classification:
+  confidence:
+    mode: topk           # topk (default) | verbalized | off
+    top_k_candidates: 3  # topk only
+```
+
+| Mode | What the model is asked for | Notes |
+|------|-----------------------------|-------|
+| `topk` (default) | ranked candidate classes with probabilities | Best calibrated, and it answers "what else could this have been?" |
+| `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+| `off` | nothing extra | Costs nothing at all. |
+
+`topk` is the default for a measured reason. Asking for a single number gets
+~0.95 on everything; making the model enumerate and rank alternatives forces it
+to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
+EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
+produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
+and shown in the UI.
+
+**What it costs:** measured over 298 pages of a 13-class corpus, `topk` added
+**+17 % to the classification step** — which is only ~3 % of total document cost
+on the default model, so **~0.5 % of the bill**, inside normal run-to-run
+variance. It changed classification accuracy by nothing consistent (+0.013 on
+Nova 2 Lite, −0.007 on Haiku 4.5, opposite signs, single runs). Page-level
+classification is one inference *per page*, so if you process very large packets
+and want none of this, `off` costs exactly nothing. See the
+[classification-confidence benchmark](./benchmarking/classification-confidence.md).
+
+A page is scored on the probability of the class **actually stored**, not simply
+the highest probability in the list — those differ when the model's `class`
+disagrees with its own ranking, and the top probability would then describe a
+class the page was not given. Candidate classes outside your configured
+vocabulary are dropped (they cannot be stored, so they cannot be reported), and
+probabilities are rescaled only if they sum to **more** than 1.0; mass left
+unassigned below 1.0 legitimately means "possibly some other class".
+
+The instruction block is spliced in before the document content so it stays
+inside the prompt-cache prefix, and it is skipped for a prompt that already
+carries a `<class-confidence>` block. Both blocks are editable config
+(`classification.confidence.task_prompt_topk` /
+`task_prompt_verbalized`), like every other prompt here.
+
+Writing it into your own prompt works too, and is the only option for
+`textbasedHolisticClassification` (whose response is a segment list, not one
+object per page — the setting logs a warning and composes nothing there, but a
+per-segment `confidence` key is parsed if your prompt asks for one):
+
+```yaml
+classification:
+  task_prompt: |
+    ...
+    <output-format>
+    {
+      "classification_reason": "Evidence that led to this classification",
+      "class": "exact_document_type_from_list",
+      "confidence": <probability between 0.0 and 1.0>,
+      "document_boundary": "start or continue"
+    }
+    </output-format>
+```
+
+The parse is tolerant: `0.95`, `"0.95"`, `95`, and `"95%"` all read as 0.95. A
+value that is unparseable or out of range is ignored (the page is simply
+unscored) rather than failing the classification.
+
+⚠️ **Confidence multiplies output tokens per PAGE.** Page-level classification
+runs one inference per page, so anything added to its output format is paid for
+on every page of every document — unlike extraction's confidence, which is per
+section. Reasoning text in particular is not free.
+
+### Not scored vs. scored 1.0
+
+An **absent** confidence means NOT SCORED, and it is stored as null, not as a
+number. Nothing invents a value:
+
+| Situation | Confidence |
+|-----------|-----------|
+| Model asked for a confidence and returned one | the model's value |
+| Prompt asks for no confidence (`mode: off`, or a custom prompt that asks for none) | *not scored* |
+| **BDA mode**, blueprint matched | BDA's **matched-blueprint confidence** — the blueprint is what determines the class, so this needs no prompt change and costs nothing extra |
+| **BDA mode**, no blueprint match | *not scored* |
+| Class came from a document-name regex, a single-class configuration, or a page-content regex | `1.0` — deterministic assertion, no model involved |
+| Class was corrected by a human in the Web UI | `1.0` — the operator's assertion |
+| Model returned an invalid class and the fallback was applied | *not scored* (the class is no longer the model's) |
+| Pages beyond `maxPagesForClassification` | *not scored* (the class is extrapolated) |
+| SageMaker/UDOP backend | *not scored* (the endpoint returns no score) |
+| Page classification errored | `0.0` |
+
+This distinction matters because the aggregated value reaches the reporting lake
+as `section_confidence`: a fabricated `1.0` there would be indistinguishable
+from a genuinely confident classification and would silently corrupt any
+analysis of it.
+
+### Section confidence is the weakest page
+
+A section's confidence is the **minimum** across its pages, and *not scored* if
+any of its pages is unscored. A mean would hide the one page the classifier was
+unsure about — which is the page a reviewer needs — and a section's class cannot
+be more certain than its least certain page.
+
+### Where it shows up
+
+- **Web UI** — a **Class conf.** column in the **Document Pages** table on the
+  document detail page, beside `Class/Type` rather than inside it. It **sorts**,
+  so you can put the least-confident pages first — which is how you find the ones
+  worth a second look. The percentage is a link: click it for **"Why this
+  class?"**, the model's own reasoning plus the ranked alternatives it considered
+  with their probabilities. A page the model scored but did not explain shows the
+  number as plain text; an unscored page shows `—`, never `0%`.
+
+  The **Document Sections** table deliberately does not show a section's class
+  confidence. It is an aggregate (the minimum across the section's pages) of
+  numbers already listed per page in the table directly below, and two extra
+  columns squeezed that table until its own headers wrapped. `Section.Confidence`
+  is still on the API and still lands in the reporting lake as
+  `section_confidence`. The **Low-conf. fields** column there is a different
+  measurement entirely — per-extracted-field confidence, not the class.
+
+  The number is deliberately shown the same way at every value. There is no
+  configured classification confidence threshold (unlike extraction fields), so a
+  green/amber/red band would assert a pass/fail the system has not defined — and
+  on a classifier that answers ~0.95 for most pages it would paint a coarse flag
+  as a calibrated traffic light.
+- **API** — `Page.ClassConfidence`, `Page.ClassReason`, `Page.ClassCandidates`
+  and `Section.Confidence` on `getDocument`, `getDocumentVersion` and the
+  document subscription. Named `ClassConfidence` on a page because
+  `TextConfidenceUri` there is *OCR* confidence — a different measurement.
+- **Reporting / analytics** — the existing `section_confidence` column, which
+  now carries a real value when one exists and null when it does not.
+- **Document JSON** — `pages.<id>.confidence`, `pages.<id>.classification_reason`
+  and `sections[].confidence`, each omitted when absent.
+
+### Calibration: measure it before you act on it
+
+A single self-reported confidence is usually poorly calibrated — models asked
+"how sure are you?" answer ~0.95 almost everywhere, which is worse than no score
+because it invites automated escalation on noise. Smaller models are the most
+overconfident, and the default classification model is a small one. That is why
+`topk` is recommended over `verbalized`, and why the whole block is off by
+default.
+
+**This is measured, not asserted.** On 298 pages of a deliberately confusable
+13-class corpus, in `topk` mode ([full study](./benchmarking/classification-confidence.md)):
+
+| | Nova 2 Lite (default) | Claude Haiku 4.5 |
+|---|---|---|
+| Page classification accuracy | 0.846 | 0.852 |
+| Calibration separation | +0.044 | **+0.207** |
+| Mean confidence when **wrong** | 0.903 | 0.741 |
+| Distinct confidence values emitted | **6** (90 % of pages at exactly 0.95) | 11 |
+| Errors caught / pages reviewed at the best threshold | 43 % / 8 % | **73 % / 11 %** |
+| Classification cost per page | $0.00090 | $0.00573 |
+
+Equally accurate; not equally *informative*. Nova 2 Lite answered 0.95 for 90 % of
+pages including half its own errors, so its score is a coarse triage flag at best.
+Haiku 4.5's is actionable — and costs 6.4× more per page. Decide that trade
+deliberately; do not assume the number is useful because it exists.
+
+**You can measure this directly, and you should before wiring it to anything
+automatic.** With ground truth available, the evaluation report's per-page
+classification details now record the classifier's own confidence next to whether
+the class was correct:
+
+```json
+{"page_index": 5, "ground_truth_class": "W2", "predicted_class": "Receipt",
+ "correct": false, "predicted_confidence": 0.48}
+```
+
+The number that matters is the **separation**: mean confidence on correctly
+classified pages minus mean confidence on incorrectly classified ones. A healthy
+signal separates them clearly; near zero means the model is equally confident
+when it is right and when it is wrong, and the score should not be used to route
+work no matter how reasonable the individual values look. The benchmark harness
+reports this as `class_calibration_separation` alongside `class_accuracy` and
+`n_class_scored_pages`, and treats a drop of 0.03 as a regression.
+
+Two cheap signals are already reliable and cost nothing extra:
+
+- a page whose class came back **invalid** and needed a re-prompt (or fell back
+  to `invalidClassFallback`) — the classifier demonstrably struggled;
+- a page classified as `unclassified` or a blank-page class.
 
 ## Regex-Based Classification for Performance Optimization
 

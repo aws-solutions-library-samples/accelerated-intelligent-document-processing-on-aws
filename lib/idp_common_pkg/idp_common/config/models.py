@@ -35,8 +35,11 @@ from typing_extensions import Self
 # Current config schema/shape version. Bump when the stored config shape changes
 # in a way that requires a migration (see config/migrations/). v0.6 folded the
 # top-level `assessment` block into `extraction.confidence` / `extraction.geometry`
-# and introduced the top-level `hitl` block.
-CONFIG_FORMAT_VERSION = "0.6"
+# and introduced the top-level `hitl` block. v0.7 moved
+# `extraction.agentic.validation` up to `extraction.validation`, because simple
+# extraction now runs the same validate-and-retry path and the knob is no longer
+# agentic-only.
+CONFIG_FORMAT_VERSION = "0.7"
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -219,10 +222,12 @@ class ValidationConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable full JSON-Schema constraint validation of the "
         "extraction result (in addition to the Pydantic type validation that "
-        "always runs).",
+        "always runs). ON by default as of v0.7 — previously off, which left the "
+        "guard against silent schema violations disabled on exactly the "
+        "configurations that needed it. Free when paired with fail_action='warn'.",
     )
     check_formats: bool = Field(
         default=True,
@@ -231,11 +236,15 @@ class ValidationConfig(BaseModel):
         "uses 'format: date' for non-ISO values such as MM/DD/YYYY.",
     )
     fail_action: str = Field(
-        default="escalate",
-        description="What to do when validation fails after the agent's own "
-        "retries: 'warn' (record alert only), 'escalate' (re-extract with "
-        "escalation_model, then warn if still invalid), or 'reject' (mark "
-        "parsing_succeeded=false).",
+        default="warn",
+        description="What to do when validation fails after the model's own "
+        "retries: 'warn' (record a ProcessingIssue only), 'escalate' (re-extract "
+        "the failing fields with escalation_model, then warn if still invalid), "
+        "or 'reject' (mark parsing_succeeded=false). Defaults to 'warn' as of "
+        "v0.7 because 'warn' is FREE, and validation is now enabled by default — "
+        "pairing an on-by-default guard with a default action that spends money "
+        "on every failure would be a cost surprise. Opt into 'escalate' "
+        "deliberately.",
     )
     escalation_model: str | None = Field(
         default=None,
@@ -267,9 +276,19 @@ class ValidationConfig(BaseModel):
     @field_validator("fail_action", mode="before")
     @classmethod
     def validate_fail_action(cls, v: Any) -> str:
-        """Reject unknown actions early so misconfiguration fails fast."""
+        """Reject unknown actions early so misconfiguration fails fast.
+
+        An absent/blank value resolves to ``warn`` — the same as the field
+        default. It previously resolved to ``escalate``, which was left behind
+        when the default was changed and quietly defeated the whole cost-safety
+        argument for enabling validation by default: any stored config,
+        hand-written YAML or CLI path carrying a null/blank ``fail_action`` would
+        have paid for a stronger-model re-extraction on every validation failure.
+        A null here is not hypothetical — the config editor has persisted nulls
+        for scalar fields before (the ``int(None)`` upgrade-rollback bug).
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
-            return "escalate"
+            return "warn"
         v_str = str(v).lower()
         if v_str not in ("warn", "escalate", "reject"):
             raise ValueError(
@@ -303,14 +322,28 @@ class AgenticConfig(BaseModel):
             "confidence.mode == 'integrated' AND agentic extraction is active."
         ),
     )
+    restate_schema_in_system_prompt: bool = Field(
+        default=True,
+        description=(
+            "Append the generated JSON Schema to the agent's SYSTEM prompt "
+            "('Expected Schema: ...'). The class schema is already on the wire as "
+            "the extraction tool's inputSchema, derived from the same "
+            "model_json_schema(), so this is a byte-for-byte duplicate — measured "
+            "at ~2,595 of ~5,692 schema tokens per request on the lending "
+            "Payslip class (#710). Turning it OFF reclaims that. It defaults ON "
+            "because restating a schema in prose often improves adherence, so the "
+            "duplication may be load-bearing rather than accidental — this is an "
+            "A/B knob, not a recommendation. The agent can still fetch the schema "
+            "on demand via get_extraction_schema_reminder, which is unaffected. "
+            "Both copies sit inside the prompt-cache prefix, so the dollar saving "
+            "is roughly a tenth of the token count; the real win is context-window "
+            "headroom, which is what pushes a document into sharding early."
+        ),
+    )
     review_agent: bool = Field(default=False, description="Enable review agent")
     review_agent_model: str | None = Field(
         default=None,
         description="Model used for reviewing and correcting extraction work",
-    )
-    validation: ValidationConfig = Field(
-        default_factory=ValidationConfig,
-        description="Schema-constraint validation and model-escalation settings.",
     )
     max_concurrent_batches: int = Field(
         default=1,
@@ -391,6 +424,100 @@ class AgenticConfig(BaseModel):
                 f"or 'topk', got {v!r}"
             )
         return v
+
+
+class ForcedToolConfig(BaseModel):
+    """Put the class schema on the wire as a forced Converse tool (WS-05 / #710).
+
+    Simple extraction asks for JSON in prose and parses the reply. This declares
+    the class schema as a tool and forces the model to call it, so the response
+    SHAPE is enforced by the API rather than requested in text.
+
+    **Off by default, and gated on evidence.** Forcing constrains shape, not
+    values: a model that would have returned a stray key may instead return a
+    worse value that happens to fit the schema. Whether that trade is a net win is
+    an empirical question the benchmark ``forcing`` suite exists to answer, and it
+    is entirely possible the answer is no — in which case this stays off.
+
+    What it buys regardless of accuracy is that a malformed-JSON parse failure
+    becomes structurally impossible for the declared fields. Note Anthropic
+    ``strict`` tool use and structured outputs are rejected by Bedrock on Converse,
+    InvokeModel and Mantle Messages alike, so a forced ``toolChoice`` is the
+    strongest enforcement available on Claude and Nova.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Send the document schema as a forced Converse tool instead of "
+            "describing it in the prompt. OFF by default: forcing constrains the "
+            "response SHAPE, not the values in it, so it is not self-evidently an "
+            "improvement and is gated on a measured win. Routes that cannot carry "
+            "a toolConfig (a custom Lambda hook, GPT-5.x) fall back to the prompt "
+            "automatically, and the reason is recorded in the section metadata. "
+            "Property names Bedrock rejects are sanitized on the way out and "
+            "restored on the way back, so no extracted field is renamed."
+        ),
+    )
+    fallback_to_prompt: bool = Field(
+        default=True,
+        description=(
+            "When the model accepts the tool but answers in prose anyway (a normal "
+            "outcome, not an error), parse the text response as before. Turn this "
+            "OFF only to make such a response a hard parse failure — useful for "
+            "measuring how often forcing is actually honored, and a bad idea in "
+            "production."
+        ),
+    )
+
+
+class CoercionConfig(BaseModel):
+    """Deterministic type/format repair of extraction output before validation.
+
+    Fixes the mismatches that actually occur in otherwise well-formed output —
+    ``"$1,234.00"`` in a ``number`` field, ``"03/15/2024"`` under
+    ``format: date`` — without a model call. Every change is recorded in
+    ``metadata.coercion`` and anything ambiguous is refused rather than guessed.
+    See ``idp_common.extraction.coercion``.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Repair type/format mismatches in the extraction result before "
+            "validating it. Free — no model call. On by default because the "
+            "alternative is a wrongly-typed value reaching storage, but it does "
+            "REWRITE extracted values (always recorded under "
+            "metadata.coercion), so set false to disable it entirely and leave "
+            "the model's output exactly as returned."
+        ),
+    )
+    date_order: str = Field(
+        default="auto",
+        description=(
+            "How to read an all-numeric date whose day/month order is ambiguous "
+            "(e.g. '01/02/2024'). 'auto' (default) REFUSES to guess and leaves "
+            "such values untouched; 'MDY' or 'DMY' resolves them for a corpus "
+            "you know the convention for. Never overrides a value that is "
+            "already unambiguous (a 15 cannot be a month whatever this says)."
+        ),
+    )
+
+    @field_validator("date_order", mode="before")
+    @classmethod
+    def validate_date_order(cls, v: Any) -> str:
+        """Normalize/reject date_order early rather than at extraction time."""
+        if v is None or v == "":
+            return "auto"
+        value = str(v).strip()
+        upper = value.upper()
+        if upper in ("MDY", "DMY"):
+            return upper
+        if value.lower() == "auto":
+            return "auto"
+        raise ValueError(
+            f"extraction.coercion.date_order must be 'auto', 'MDY' or 'DMY', got '{v}'"
+        )
 
 
 class MissingFieldHandlingConfig(BaseModel):
@@ -616,7 +743,9 @@ class ConfidenceConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -871,7 +1000,9 @@ class ExtractionConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -908,6 +1039,32 @@ class ExtractionConfig(BaseModel):
         description=(
             "Field bounding-box (geometry) configuration (v0.6 — replaces "
             "'assessment.geometry_mode')."
+        ),
+    )
+    forced_tool: ForcedToolConfig = Field(
+        default_factory=ForcedToolConfig,
+        description=(
+            "Send the class schema as a forced Converse tool rather than "
+            "describing it in the prompt. Off by default and gated on a measured "
+            "win — see ForcedToolConfig."
+        ),
+    )
+    coercion: CoercionConfig = Field(
+        default_factory=CoercionConfig,
+        description=(
+            "Deterministic type/format repair of the extraction result, applied "
+            "before validation. Free (no model call) and fully recorded; set "
+            "enabled=false to leave the model's output exactly as returned."
+        ),
+    )
+    validation: ValidationConfig = Field(
+        default_factory=ValidationConfig,
+        description=(
+            "Full JSON-Schema validation of the extraction result, and the "
+            "optional model escalation that follows a failure (v0.7 — moved up "
+            "from 'extraction.agentic.validation', because simple extraction "
+            "now runs the same validate-and-retry path and the setting is no "
+            "longer agentic-only)."
         ),
     )
     missing_field_handling: MissingFieldHandlingConfig = Field(
@@ -977,6 +1134,108 @@ class ExtractionConfig(BaseModel):
         return self
 
 
+class ClassificationClassConfidenceConfig(BaseModel):
+    """How classification reports confidence in the CLASS it chose (v0.7).
+
+    Nested as ``classification.confidence``. Deliberately NOT the same thing as
+    ``extraction.confidence``: that block configures a whole confidence-scoring
+    *inference* over extracted fields, whereas this one only decides what the
+    classification prompt asks the model to return alongside the class. There is
+    no separate classification confidence pass and no separate model — a
+    confidence costs output tokens on the inference that is already happening.
+
+    Defaults to ``topk`` on measured evidence rather than on the assumption that
+    more information is better. Over 298 pages of a 13-class corpus, asking for
+    ranked candidates cost ~0.5 % of TOTAL document cost (+17 % of the
+    classification step, which is only ~3 % of the bill on the default model),
+    changed accuracy by nothing consistent, and gave a signal that caught 43 % of
+    the default model's own misclassifications from 8 % of pages. See
+    ``docs/benchmarking/classification-confidence.md``.
+
+    ⚠️ Page-level classification runs ONE INFERENCE PER PAGE, so anything added
+    here multiplies by page count — that is why ``mode: off`` exists and why the
+    cost was measured before this was turned on. And how *useful* the number is
+    depends strongly on the classification model: a small model emits a coarse
+    two-level flag, a mid-tier one a graded distribution. Measure the calibration
+    on your own documents before routing work on the score.
+
+    Independent of BDA mode, which always has a real score (BDA's matched
+    blueprint confidence) at no extra cost.
+    """
+
+    mode: str = Field(
+        default="topk",
+        description=(
+            "What the classification prompt asks for beyond the class: 'topk' "
+            "(default — ranked candidate classes with probabilities, e.g. 80% W-2 "
+            "/ 15% 1099; better calibrated, because enumerating alternatives "
+            "forces the model to distribute probability mass instead of answering "
+            "~0.95 for everything, cf. Tian et al., 'Just Ask for Calibration', "
+            "EMNLP 2023), 'verbalized' (a single self-reported 0-1 number — "
+            "cheapest, and the most overconfident), or 'off' (nothing; a page is "
+            "then scored only if a custom prompt happens to ask for "
+            "`confidence`). Costs OUTPUT TOKENS PER PAGE in every mode but 'off' "
+            "— measured at ~0.5% of total document cost for 'topk'."
+        ),
+    )
+    top_k_candidates: int = Field(
+        default=3,
+        ge=2,
+        le=10,
+        description=(
+            "How many ranked candidate classes to request in "
+            "'topk' mode. Must be at least 2 — one candidate is a verbalized "
+            "confidence with extra syntax, and the calibration benefit comes "
+            "precisely from having to rank alternatives. Capped because the "
+            "instruction is repeated per page and a document set rarely has more "
+            "than a handful of plausible confusions per page. Automatically "
+            "reduced to the number of configured classes when that is smaller."
+        ),
+    )
+
+    task_prompt_topk: str = Field(
+        default="",
+        description=(
+            "Instruction block spliced into classification.task_prompt in 'topk' "
+            "mode (populated from system defaults). Editable like every other "
+            "prompt here. `{TOP_K_CANDIDATES}` is substituted with the resolved "
+            "candidate count. Inserted BEFORE the document/cache-point marker so "
+            "it stays inside the prompt-cache prefix — which matters because "
+            "classification runs per page."
+        ),
+    )
+    task_prompt_verbalized: str = Field(
+        default="",
+        description=(
+            "Instruction block spliced into classification.task_prompt in "
+            "'verbalized' mode (populated from system defaults), on the same "
+            "splice rules as task_prompt_topk."
+        ),
+    )
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_mode(cls, v: Any) -> str:
+        """Normalize the mode; reject unknown values loudly."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "off"
+        v_str = str(v).strip().lower()
+        if v_str not in ("off", "topk", "verbalized"):
+            raise ValueError(
+                "classification.confidence.mode must be 'off', 'topk', or "
+                f"'verbalized', got {v!r}"
+            )
+        return v_str
+
+    @field_validator("top_k_candidates", mode="before")
+    @classmethod
+    def parse_top_k(cls, v: Any) -> int:
+        """Parse from a string (stored configs are string-typed) or number."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 3
+        return int(v)
+
+
 class ClassificationConfig(BaseModel):
     """Document classification configuration"""
 
@@ -1007,7 +1266,9 @@ class ClassificationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1049,6 +1310,14 @@ class ClassificationConfig(BaseModel):
         description="Class label assigned when all validation retries are exhausted. "
         "Should be one of the configured classes or the built-in 'unclassified'. "
         "Only used when enforceValidClasses is True.",
+    )
+    confidence: ClassificationClassConfidenceConfig = Field(
+        default_factory=ClassificationClassConfidenceConfig,
+        description=(
+            "Confidence in the CLASS (see ClassificationClassConfidenceConfig). "
+            "Defaults to 'topk'; unrelated to extraction.confidence, which scores "
+            "extracted fields."
+        ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
 
@@ -1171,7 +1440,9 @@ class SummarizationConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1268,7 +1539,9 @@ class ChatConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -1335,7 +1608,9 @@ class OCRConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -2244,7 +2519,9 @@ class EvaluationLLMMethodConfig(BaseModel):
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort). Ignored by models "
+            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
@@ -2665,6 +2942,94 @@ class IDPConfig(BaseModel):
     classes: List[Dict[str, Any]] = Field(
         default_factory=list, description="Document class definitions (JSON Schema)"
     )
+
+    @field_validator("classes", mode="after")
+    @classmethod
+    def validate_instance_array(cls, v: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Validate ``x-aws-idp-instance-array`` names a real array-of-object.
+
+        The key tells the pipeline which top-level array means "one document per
+        element", so ``Section.instance_count`` can be populated for a class whose
+        schema is already modelled as a packet of records. A typo would otherwise
+        fail silently at runtime (the count simply never appears), which is
+        exactly the class of silent-no-op bug this whole workstream exists to
+        remove — so it is caught here instead.
+
+        Note ``_validate_schema_fields`` only walks ``properties``/``$defs`` and
+        never inspects class-level keys, hence this validator.
+        """
+        from idp_common.config.schema_constants import (
+            SCHEMA_ITEMS,
+            SCHEMA_PROPERTIES,
+            SCHEMA_TYPE,
+            TYPE_ARRAY,
+            TYPE_OBJECT,
+            X_AWS_IDP_DOCUMENT_TYPE,
+            X_AWS_IDP_INSTANCE_ARRAY,
+        )
+        from idp_common.config.schema_utils import deref_schema
+
+        for doc_class in v:
+            if not isinstance(doc_class, dict):
+                continue
+            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
+            if prop_name is None:
+                continue
+            label = (
+                doc_class.get("$id") or doc_class.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
+            )
+            if not isinstance(prop_name, str) or not prop_name:
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' must be the "
+                    f"name of a top-level array property, got {prop_name!r}"
+                )
+            properties = doc_class.get(SCHEMA_PROPERTIES)
+            if not isinstance(properties, dict) or prop_name not in properties:
+                available = sorted(properties) if isinstance(properties, dict) else []
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', which is not a top-level property of that "
+                    f"class. Available properties: {available}"
+                )
+            prop_schema = properties[prop_name]
+            if not isinstance(prop_schema, dict):
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', whose schema is not an object"
+                )
+            # Resolve a local $ref first. Declaring the record list as
+            # {"$ref": "#/$defs/RecordList"} is the idiom the UI schema editor and
+            # several shipped presets use for a reusable record type, and the
+            # runtime resolver does not care (it just reads the extracted list's
+            # length). Type-checking the un-dereferenced node would reject a
+            # perfectly valid schema — and reject it as a HARD config-load
+            # failure, which is worse than the silent no-op this validator exists
+            # to prevent. deref_schema returns the node as-is when the $ref cannot
+            # be resolved, so an unresolvable ref is still type-checked.
+            prop_schema = deref_schema(prop_schema, doc_class)
+            if prop_schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', which is type "
+                    f"'{prop_schema.get(SCHEMA_TYPE)}' — it must be an array, "
+                    f"since each element is one document instance"
+                )
+            items = prop_schema.get(SCHEMA_ITEMS)
+            # Allow $ref'd items (resolved at runtime); only reject an inline
+            # items schema that is explicitly a non-object.
+            if (
+                isinstance(items, dict)
+                and "$ref" not in items
+                and items.get(SCHEMA_TYPE) not in (None, TYPE_OBJECT)
+            ):
+                raise ValueError(
+                    f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' names "
+                    f"'{prop_name}', whose items are type "
+                    f"'{items.get(SCHEMA_TYPE)}' — each element must be an "
+                    f"object representing one document instance"
+                )
+        return v
+
     policy_classes: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Policy class definitions for rule validation (JSON Schema). Also receives rule classes extracted by Policy Discovery.",
@@ -2744,12 +3109,19 @@ class IDPConfig(BaseModel):
         logger = logging.getLogger(__name__)
 
         if isinstance(data, dict):
-            # Migrate v0.5 config shape → v0.6 (assessment.* → extraction.confidence
-            # / extraction.geometry / top-level hitl). Idempotent: a no-op once the
-            # config is already stamped config_format_version == CONFIG_FORMAT_VERSION.
-            from .migrations.v05_to_v06 import migrate_v05_to_v06
+            # Apply the whole migration chain (v0.5 → v0.6 → v0.7): assessment.*
+            # → extraction.confidence / extraction.geometry / top-level hitl, then
+            # extraction.agentic.validation → extraction.validation. Idempotent:
+            # a no-op once the config is already stamped with
+            # CONFIG_FORMAT_VERSION and carries no legacy-shaped keys.
+            #
+            # This is why every path that builds an IDPConfig is covered without
+            # its own migrate call — including config paths added later, e.g.
+            # ConfigurationManager._load_revision_config loading a stored revision
+            # written before the upgrade.
+            from .migrations import migrate_config
 
-            data = migrate_v05_to_v06(data)
+            data = migrate_config(data)
 
             # Migrate rule_classes → policy_classes (renamed in v0.5.9)
             if "rule_classes" in data and "policy_classes" not in data:
@@ -2763,9 +3135,7 @@ class IDPConfig(BaseModel):
                 # how hand-written and notebook-produced configs ended up with
                 # rule validation that never fired.
                 discarded = data.get("rule_classes")
-                count = (
-                    len(discarded) if isinstance(discarded, (list, dict)) else 1
-                )
+                count = len(discarded) if isinstance(discarded, (list, dict)) else 1
                 logger.warning(
                     "Both 'rule_classes' (deprecated) and 'policy_classes' are "
                     "present in this configuration; DISCARDING 'rule_classes' "

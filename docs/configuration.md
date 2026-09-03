@@ -21,6 +21,7 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Model Selection**: Choose between available Bedrock models for classification and extraction
   > **💡 Cost Attribution Tip:** You can replace standard model IDs with [Bedrock Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) ARNs to enable cost-allocation tagging (e.g., for MAP migration tracking). This is a configuration-only change — no code modifications required. See [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles) for step-by-step instructions.
   > **🤖 OpenAI GPT-5.x:** `openai.gpt-5.4`, `openai.gpt-5.5`, and the GPT-5.6 family (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are selectable for OCR, classification, extraction, assessment, summarization, evaluation, and chat (US regions only), and are tuned via a `reasoning_effort` field instead of temperature/top_p. They are **not** supported for agentic extraction or Discovery. See [OpenAI GPT-5.x Models](./openai-models.md) for the full support matrix and caveats.
+  > **🤖 xAI Grok:** `us.xai.grok-4.6` (US regions) and `global.xai.grok-4.6` (EU/APAC too, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, chat, and the rule-validation/agent paths. Grok runs on the standard Converse API, is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) instead of temperature/top_p, and is **not** supported for Discovery or Policy Discovery. Flex/Priority tiers and prompt caching do **not** work despite being advertised. See [xAI Grok Models](./grok-models.md) for the full support matrix and caveats.
 - **Prompt Engineering**: Customize system and task prompts for optimal results
 - **OCR Features**: Configure Textract features (TABLES, FORMS, SIGNATURES, LAYOUT) for enhanced data capture
 - **Evaluation Methods**: Set evaluation methods and thresholds for each attribute
@@ -44,7 +45,7 @@ The stack automatically deploys **managed configuration versions** for each pre-
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the Save button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
-- **Editable copies** — use "Save as Profile" to create a custom, editable copy
+- **Editable copies** — use **Create profile** in the Configuration Profiles table to create a custom, editable copy
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
 - **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
 
@@ -52,7 +53,7 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
 
 ### Configuration Management Features
 
-- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save as Profile, and BDA sync) are grouped under an **Actions** menu next to Save changes.
+- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
 - **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all versions, including the stack-managed `default`).
 - **Browser Navigation Guard**: The browser warns before leaving the page when unsaved configuration changes exist (both on browser close/refresh and SPA navigation).
 - **Save as Default**: Save your current version's configuration as the new default baseline. This replaces the existing default configuration. **Warning**: Default configurations may be overwritten during solution upgrades - export your configuration first for backup.
@@ -183,6 +184,37 @@ The `config_library/` directory contains example configurations demonstrating th
 - **Overrides** - Only settings that differ from system defaults
 
 See the [config_library README](../config_library/README.md) for available configurations and usage examples.
+
+### Retired and legacy Bedrock models
+
+Bedrock retires model versions over time. A retired model is removed from the
+model picklists (the enums in `patterns/unified/template.yaml` and
+`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+configuration are plain strings, not a closed enum, so **a stored configuration
+that still names a retired model keeps loading** — it just fails at invoke time
+with:
+
+```
+ResourceNotFoundException: This model version has reached the end of its life.
+```
+
+The failing stage's model is named in the Lambda log line and by the Error
+Analyzer agent's `fetch_pipeline_configuration` tool. Repoint the stage at a
+current model to fix it.
+
+Two failure shapes to distinguish:
+
+- **End of life** — the model is gone for everyone. It is removed from the
+  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
+  example.
+- **Provider-legacy, account-scoped** — the model still exists but access is
+  withdrawn per account after inactivity:
+  `ResourceNotFoundException: Access denied. This Model is marked by provider as
+  Legacy and you have not been actively using the model in the last 30 days.`
+  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
+  remains selectable because it works for accounts that have used it recently —
+  if you hit this error, either pick a current model or request access again in
+  the Bedrock console.
 
 ## Summarization Configuration
 
@@ -889,26 +921,29 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
-### Tiered Models for Agentic Extraction (Validation + Escalation)
+### Tiered Models (Validation + Escalation)
 
-Agentic extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.agentic.validation`:
+Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.validation`:
 
 ```yaml
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
-  agentic:
-    enabled: true
-    validation:
-      enabled: true
-      fail_action: escalate
-      escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
+  validation:
+    enabled: true                          # on by default since v0.7
+    fail_action: escalate                  # default is 'warn' (free); escalate costs money
+    escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> `extraction.validation` because Simple extraction runs the same validate-and-retry
+> path, so the setting is no longer agentic-only. Stored configurations are migrated
+> automatically on read — no action is required.
 
 When validation fails, only the failing top-level fields are re-extracted with `escalation_model` (a per-class `x-aws-idp-extraction-escalation-model` override takes precedence) and merged back — typically a small fraction of documents, so the stronger model's cost is incurred only where it's needed. See [Schema validation and model escalation](extraction-and-confidence.md#schema-validation-and-model-escalation) for the full feature, including the deterministic table-parsing tool, the completeness heuristic, and sharding for large documents.
 
-> The agentic options (validation, table parsing, sharding, escalation) are editable in the Web UI under **Configuration → Extraction → Agentic Extraction**, where sub-options are progressively revealed as you enable each feature.
+> Validation and escalation are editable in the Web UI under **Configuration → Extraction → Schema Validation & Escalation**; the Advanced-mode options (table parsing, sharding) are under **Advanced extraction settings**. Sub-options are progressively revealed as you enable each feature.
 
-> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `validation` + `escalation_model` above instead.
+> **Deprecated:** the older `extraction.agentic.review_agent` / `review_agent_model` fields are no-ops retained only for backward compatibility — use `extraction.validation` + `escalation_model` above instead.
 
 ## Cost Tracking and Optimization
 

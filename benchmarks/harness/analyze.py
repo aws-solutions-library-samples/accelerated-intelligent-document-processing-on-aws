@@ -34,13 +34,172 @@ def _wall(row):
         return None
 
 
+def typed_match(expected, got):
+    """Does ``got`` match a SCHEMA-TYPED expectation, in both type and value?
+
+    This is deliberately stricter than ``scalar_accuracy``'s string compare, and
+    the difference is the whole point of the metric. ``fields`` in a truth file
+    records the text the document RENDERS (``"$685.50"``); ``fields_typed``
+    records what a correctly-typed extraction must produce (``685.5``). Comparing
+    a typed field by ``str()`` scores the *rendered* form as correct, so a
+    pipeline that correctly returns the number looks WRONG — which is exactly
+    backwards, and is how a value-normalization feature would be measured as a
+    regression.
+
+    So: a string in a ``number`` field is a MISS, because that is the failure
+    under test. Numbers compare by value (``1234`` == ``1234.0``) since JSON does
+    not distinguish them; booleans must be real booleans, not ``"Yes"``/``"true"``.
+    """
+    if isinstance(expected, bool):
+        # Checked before the numeric branch: bool is a subclass of int.
+        return isinstance(got, bool) and got == expected
+    if isinstance(expected, (int, float)):
+        if isinstance(got, bool) or not isinstance(got, (int, float)):
+            return False
+        return float(got) == float(expected)
+    if expected is None:
+        return got is None
+    return isinstance(got, str) and got.strip() == str(expected).strip()
+
+
+def _seq_of(row):
+    """The SEQnnnnn tag embedded in any string cell of an extracted row."""
+    if not isinstance(row, dict):
+        return None
+    for v in row.values():
+        if isinstance(v, str):
+            m = lib.SEQ.search(v)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def score_cells(sections, rows_typed, list_key):
+    """Per-CELL accuracy over list rows, matched to truth by SEQ tag.
+
+    Completeness (``completeness_recall``) answers "did every row come back";
+    this answers "did every cell come back with the right typed value". They are
+    independent: a run can recover 100% of rows and still return every ``Amount``
+    as the string ``"$1,234.00"``. Without this metric, per-row value handling is
+    invisible to the whole benchmark — which is why an earlier enforcement A/B
+    measured 81 value repairs and a delta of exactly zero.
+
+    Returns ``(hits, total, rows_matched)``. ``total`` counts only cells the
+    truth declares AND whose row was recovered, so this metric is about VALUE
+    fidelity and does not double-count the truncation that recall already reports.
+    """
+    if not rows_typed:
+        return None, None, None
+    by_seq = {}
+    for sec in sections:
+        ir = sec.get("inference_result") or {}
+        if not isinstance(ir, dict):
+            continue
+        for key, val in ir.items():
+            if list_key and key.lower() != str(list_key).lower():
+                continue
+            if not isinstance(val, list):
+                continue
+            for row in val:
+                seq = _seq_of(row)
+                if seq is not None:
+                    by_seq.setdefault(seq, row)
+    hits = total = 0
+    for seq_tag, cells in rows_typed.items():
+        seq = int(str(seq_tag)[3:]) if str(seq_tag).startswith("SEQ") else int(seq_tag)
+        row = by_seq.get(seq)
+        if row is None:
+            continue  # not recovered at all -> recall's business, not ours
+        for cell, exp in (cells or {}).items():
+            total += 1
+            got = next((v for k, v in row.items() if k.lower() == cell.lower()), None)
+            if typed_match(exp, got):
+                hits += 1
+    return hits, total, len(by_seq)
+
+
+def score_audit_metadata(sections):
+    """What the extraction stage RECORDED about itself, aggregated per document.
+
+    The extraction service writes an audit block into each section's
+    ``result.json`` under ``metadata`` — ``forced_tool`` (WS-05), ``validation``
+    (schema enforcement) and ``coercion`` (deterministic value repair). Nothing in
+    this harness read it, which left three shipped features with no instrument:
+
+    * A forcing A/B could not tell "forcing changed nothing" from "forcing never
+      ran" — a model that answers in prose, or a route that cannot carry a
+      toolConfig, both fall back silently and score identically to the off arm.
+    * An enforcement A/B could not report how often validation or coercion
+      actually FIRED, so a delta of zero was uninterpretable: no effect, or no
+      opportunity? (That exact ambiguity wasted a whole enforcement run.)
+
+    Returned keys are ``None`` when the feature left no record, so every existing
+    baseline stays comparable — a document that ran with forcing off gets
+    ``forced_tool_attempted: None``, not ``0``.
+    """
+    forced_attempted = forced_honored = 0
+    forced_skips: dict[str, int] = {}
+    val_seen = val_valid = val_errors = 0
+    coercions = refusals = 0
+    coercion_seen = False
+    for sec in sections:
+        md = sec.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        ft = md.get("forced_tool")
+        if isinstance(ft, dict):
+            # `skipped` names a route that cannot carry a toolConfig at all (a
+            # Lambda hook, the GPT-5.x route, a class with no properties). That is
+            # NOT an unhonored force and must not dilute the honored rate — it
+            # means the arm never ran on this section.
+            skipped = ft.get("skipped")
+            if skipped:
+                forced_skips[str(skipped)] = forced_skips.get(str(skipped), 0) + 1
+            elif ft.get("requested"):
+                forced_attempted += 1
+                if ft.get("honored"):
+                    forced_honored += 1
+        val = md.get("validation")
+        if isinstance(val, dict):
+            val_seen += 1
+            if val.get("valid"):
+                val_valid += 1
+            val_errors += int(val.get("error_count") or 0)
+        co = md.get("coercion")
+        if isinstance(co, dict):
+            coercion_seen = True
+            coercions += int(co.get("coercion_count") or 0)
+            # Refusals are the interesting half: a value coercion DECLINED to
+            # rewrite (an ambiguous date, a leading zero) is a field the model got
+            # wrong that enforcement deliberately did not touch.
+            refusals += int(co.get("refusal_count") or 0)
+    return {
+        "forced_tool_attempted": forced_attempted or None,
+        "forced_tool_honored": forced_honored if forced_attempted else None,
+        # THE number a forcing A/B is judged on: forcing that is not honored is
+        # not being tested.
+        "forced_tool_honored_rate": round(forced_honored / forced_attempted, 4)
+        if forced_attempted
+        else None,
+        "forced_tool_skips": forced_skips or None,
+        "validation_sections": val_seen or None,
+        "validation_valid_rate": round(val_valid / val_seen, 4) if val_seen else None,
+        "validation_errors": val_errors if val_seen else None,
+        "coercions": coercions if coercion_seen else None,
+        "coercion_refusals": refusals if coercion_seen else None,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values."""
     seqs, confs = [], []
     scalar_hits = scalar_tot = 0
+    typed_hits = typed_tot = 0
     fields = truth.get("fields") or {}
+    fields_typed = truth.get("fields_typed") or {}
     got_fields = {}
-    for sec in lib.iter_section_results(bucket, doc_prefix):
+    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    for sec in sections:
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
         seqs += [int(m) for m in lib.SEQ.findall(blob)]
@@ -56,13 +215,44 @@ def score_synthetic(bucket, doc_prefix, truth):
     prefix = 0
     while prefix in extracted:
         prefix += 1
-    # scalar field accuracy (exact, normalized)
+    # scalar field accuracy (exact, normalized). Compares against the RENDERED
+    # text, so it is unchanged for every existing truth file — the committed
+    # baseline stays comparable.
     for label, exp in fields.items():
         scalar_tot += 1
         got = got_fields.get(label.lower())
         if got is not None and str(got).strip() == str(exp).strip():
             scalar_hits += 1
+    # Typed accuracy: a SEPARATE metric, not a redefinition of the one above.
+    # Only populated for truth files that declare `fields_typed`.
+    for label, exp in fields_typed.items():
+        typed_tot += 1
+        if typed_match(exp, got_fields.get(label.lower())):
+            typed_hits += 1
+    cell_hits, cell_tot, _rows_matched = score_cells(
+        sections, truth.get("rows_typed"), truth.get("list_key")
+    )
+    cell_accuracy = (
+        round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
+    )
+    # Section count vs the truth's expectation. This is the metric boundary
+    # detection is judged on, and nothing else can see it: a document split into
+    # 3 sections instead of 1 still reports completeness_recall 1.0 and status
+    # COMPLETED, because every row came back — just distributed across sections
+    # that should not exist (#653/#726). Reported as a 1.0/0.0 so the mean over
+    # repeats IS the pass rate, which is what a non-deterministic failure needs.
+    audit = score_audit_metadata(sections)
+    expected_sections = truth.get("expected_sections")
+    sections_correct = (
+        (1.0 if len(sections) == int(expected_sections) else 0.0)
+        if expected_sections is not None
+        else None
+    )
     return {
+        **audit,
+        "sections": len(sections),
+        "sections_expected": expected_sections,
+        "sections_correct": sections_correct,
         "rows_truth": n_truth,
         "rows_extracted": len(extracted),
         "completeness_recall": round(recall, 4) if recall is not None else None,
@@ -70,6 +260,10 @@ def score_synthetic(bucket, doc_prefix, truth):
         "dups": len(seqs) - len(extracted),
         "n_gaps": len(truth_ids - extracted),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
+        "typed_accuracy": round(typed_hits / typed_tot, 4) if typed_tot else None,
+        "typed_fields": typed_tot or None,
+        "cell_accuracy": cell_accuracy,
+        "cells_compared": cell_tot or None,
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
         "pct_conf_below_0.9": round(
             100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
@@ -78,6 +272,56 @@ def score_synthetic(bucket, doc_prefix, truth):
         else None,
         "n_conf_leaves": len(confs),
     }
+
+
+def score_classification(ev):
+    """CLASSIFICATION accuracy + confidence calibration from the stack eval.
+
+    The evaluation report's `doc_split_metrics.page_details` carries, per page,
+    the ground-truth class, the predicted class, whether it was `correct`, and
+    (since GitHub #673) the classifier's own `predicted_confidence`. That last
+    pairing is the only thing that says whether a reported classification
+    confidence means anything:
+
+      class_calibration_separation = mean(conf | correct) - mean(conf | wrong)
+
+    Near 0 (or negative) means the model is equally confident when it is right
+    and when it is wrong — the score carries no information and must not drive
+    escalation, no matter how plausible the individual numbers look. This mirrors
+    `calibration_separation`, which does the same for extracted FIELDS.
+
+    Returns Nones when classification was not scored (the default) or when the
+    run has no ground-truth classes, so an unscored run reports honestly instead
+    of scoring 0.
+    """
+    out = {
+        "class_accuracy": None,
+        "class_calibration_separation": None,
+        "class_mean_confidence": None,
+        "n_class_scored_pages": 0,
+    }
+    if not ev:
+        return out
+    ds = ev.get("doc_split_metrics") or {}
+    acc = ds.get("page_level_accuracy")
+    if isinstance(acc, (int, float)):
+        out["class_accuracy"] = round(acc, 4)
+    right, wrong = [], []
+    for row in ds.get("page_details") or []:
+        c = row.get("predicted_confidence")
+        if isinstance(c, (int, float)):
+            (right if row.get("correct") else wrong).append(c)
+    scored = right + wrong
+    out["n_class_scored_pages"] = len(scored)
+    if scored:
+        out["class_mean_confidence"] = round(sum(scored) / len(scored), 4)
+    # Needs both populations: separation is undefined when every page was right
+    # (a perfect run says nothing about calibration) or every page was wrong.
+    if right and wrong:
+        out["class_calibration_separation"] = round(
+            sum(right) / len(right) - sum(wrong) / len(wrong), 4
+        )
+    return out
 
 
 def score_reference(bucket, doc_prefix):
@@ -101,12 +345,15 @@ def score_reference(bucket, doc_prefix):
                 sum(corr_conf) / len(corr_conf) - sum(wrong_conf) / len(wrong_conf), 4
             )
     confs = []
-    for sec in lib.iter_section_results(bucket, doc_prefix):
+    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    for sec in sections:
         lib.walk_confidence(sec.get("explainability_info"), confs)
     return {
+        **score_audit_metadata(sections),
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,
+        **score_classification(ev),
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
         "pct_conf_below_0.9": round(
             100 * sum(1 for c in confs if c < 0.9) / len(confs), 1

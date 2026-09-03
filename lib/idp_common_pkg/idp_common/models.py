@@ -70,9 +70,69 @@ class Page:
     text_confidence_uri: Optional[str] = None
     ocr_page_data_uri: Optional[str] = None
     classification: Optional[str] = None
-    confidence: float = 0.0
+    confidence: Optional[float] = None
+    """Confidence in this page's ``classification``, in ``[0.0, 1.0]``.
+
+    ``None`` means NOT SCORED — no confidence signal exists for this page. That
+    is the normal state: the classification prompt has to ask for a score and
+    the model has to return one (see `classification.confidence` and GitHub
+    #673), and several code paths never produce one at all (the SageMaker
+    backend returns no score; pages beyond `maxPagesForClassification` have
+    their class extrapolated rather than predicted).
+
+    Distinguishing "not scored" from a number matters because this value reaches
+    the reporting lake as `section_confidence` once aggregated: the field used
+    to default to a literal ``1.0``/``0.0``, which fed a fabricated *certainty*
+    into a column named confidence. ``1.0`` is now reserved for the paths that
+    genuinely assert the class deterministically (a document-name regex match, a
+    single-class configuration, a page-content regex match) and ``0.0`` for a
+    page whose classification errored.
+
+    Not serialized when ``None``, so pages that were never scored round-trip
+    unchanged."""
     tables: List[Dict[str, Any]] = field(default_factory=list)
     forms: Dict[str, str] = field(default_factory=dict)
+
+    classification_reason: Optional[str] = None
+    """The model's stated justification for this page's ``classification``.
+
+    The default classification prompt has always asked for a
+    `classification_reason` ("Detailed reasoning including specific visual and
+    textual evidence that led to this classification") — those output tokens
+    were paid for on every page and then dropped on the floor, because nothing
+    parsed the key back out. Persisting it makes a surprising classification
+    explainable after the fact, which is the same argument that applies to
+    ``document_boundary`` below.
+
+    ``None`` when the model returned no reason (or a custom prompt does not ask
+    for one), and not serialized in that case."""
+
+    classification_candidates: Optional[List[Dict[str, Any]]] = None
+    """The classifier's ranked alternative classes for this page, most likely
+    first: ``[{"class": "w2", "probability": 0.8}, {"class": "1099",
+    "probability": 0.15}]``.
+
+    Produced by ``classification.confidence.mode: topk``, which asks the model to
+    enumerate and rank candidates rather than self-report one number — that is
+    both better calibrated and the direct answer to "what else could this page
+    have been?" (the question a reviewer looking at a suspicious classification
+    actually has). ``None`` when nothing asked for them, and not serialized in
+    that case."""
+
+    document_boundary: Optional[str] = None
+    """The classifier's per-page boundary signal: ``"start"`` (this page begins a
+    new document) or ``"continue"``. ``None`` means no signal was produced — the
+    model omitted it, or the code path never asked for one.
+
+    This is what ``sectionSplitting: llm_determined`` splits on, and it used to
+    be discarded immediately after use. That made an unexpected section merge
+    effectively un-auditable: section spans alone cannot distinguish "the model
+    said continue" from "the model said nothing" from "the code never asked",
+    and diagnosing GitHub #565 required re-deriving it from Lambda logs.
+    Persisting it keeps the decision inspectable after the fact.
+
+    ``None`` is not serialized, so documents written by older code — and page
+    records that never had a boundary — round-trip unchanged."""
 
 
 @dataclass
@@ -144,7 +204,21 @@ class Section:
 
     section_id: str
     classification: str
-    confidence: float = 1.0
+    confidence: Optional[float] = None
+    """Confidence in this section's ``classification``, in ``[0.0, 1.0]``.
+
+    Aggregated from the section's pages by
+    ``ClassificationService._aggregate_page_confidence`` — the MINIMUM across
+    them, and ``None`` if any page is unscored. A mean would hide the one page
+    the classifier was unsure about, which is the page a reviewer needs to see;
+    and a section cannot be scored more confidently than its weakest page.
+
+    ``None`` means NOT SCORED (see :attr:`Page.confidence`). This reaches the
+    reporting lake as the `section_confidence` column, so a fabricated ``1.0``
+    there is worse than a null.
+
+    Note this is the confidence in the section's CLASS, unrelated to
+    ``confidence_threshold_alerts`` below, which are per-extracted-field."""
     page_ids: List[str] = field(default_factory=list)
     extraction_result_uri: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
@@ -164,6 +238,22 @@ class Section:
     """Optional category (e.g., "instructions", "legal") carried over from
     the class configuration for UI/report display."""
 
+    instance_count: int = 0
+    """How many separate documents (instances) of this section's class the
+    extraction found in this section.
+
+    ``0`` means "not determined" — the default, so sections written by older
+    code (or whose extraction failed before producing a result) read back
+    unchanged. ``1`` is the normal case. ``> 1`` means the section spans
+    several distinct documents of the same class, which classification did not
+    split apart; the UI surfaces this so a multi-document section is visible at
+    a glance instead of silently collapsing to its first record.
+
+    Populated by ``ExtractionService`` from whichever of these applies:
+    the length of a class's declared instance array, or the number of records
+    recovered when the model returned a JSON array for a single-object schema.
+    """
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Section":
         """Create a Section from a dictionary representation."""
@@ -173,7 +263,8 @@ class Section:
         return cls(
             section_id=data.get("section_id", ""),
             classification=data.get("classification", ""),
-            confidence=data.get("confidence", 1.0),
+            # Absent => not scored (None), NOT a presumed 1.0.
+            confidence=data.get("confidence"),
             page_ids=data.get("page_ids", []),
             extraction_result_uri=data.get("extraction_result_uri"),
             attributes=data.get("attributes"),
@@ -185,6 +276,7 @@ class Section:
             ],
             excluded=bool(data.get("excluded", False)),
             exclusion_reason=data.get("exclusion_reason"),
+            instance_count=int(data.get("instance_count") or 0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -192,7 +284,6 @@ class Section:
         result: Dict[str, Any] = {
             "section_id": self.section_id,
             "classification": self.classification,
-            "confidence": self.confidence,
             "page_ids": self.page_ids,
             "extraction_result_uri": self.extraction_result_uri,
             "attributes": self.attributes,
@@ -200,11 +291,17 @@ class Section:
             "excluded": self.excluded,
             "exclusion_reason": self.exclusion_reason,
         }
+        # Omitted when not scored, so an unscored section reads back as None
+        # rather than as a presumed 1.0 (see the `confidence` docstring).
+        if self.confidence is not None:
+            result["confidence"] = self.confidence
         # Only emit when non-empty to keep output compact / back-compatible.
         if self.processing_issues:
             result["processing_issues"] = [
                 pi.to_dict() for pi in self.processing_issues
             ]
+        if self.instance_count:
+            result["instance_count"] = self.instance_count
         return result
 
 
@@ -487,6 +584,23 @@ class Document:
                 pi.to_dict() for pi in self.processing_issues
             ]
 
+        # Free-form per-document metadata. Written by producers that expect a
+        # LATER stage to read it — classification stores
+        # metadata["failed_page_exceptions"] there — so leaving it out of the
+        # dict meant it never survived a Step Functions hop and the reader saw
+        # nothing (GitHub #706).
+        #
+        # Round-tripped through json with default=str because callers also stash
+        # live objects here (metadata["primary_exception"] holds an Exception
+        # instance for in-process re-raise). serialize_document's uncompressed
+        # branch returns to_dict() straight to Lambda, whose response serializer
+        # has no default=str and would fail on such a value.
+        #
+        # Omitted when empty so payloads stay byte-identical to what older code
+        # wrote.
+        if self.metadata:
+            result["metadata"] = json.loads(json.dumps(self.metadata, default=str))
+
         # Convert pages
         result["pages"] = {}
         for page_id, page in self.pages.items():
@@ -498,10 +612,26 @@ class Document:
                 "text_confidence_uri": page.text_confidence_uri,
                 "ocr_page_data_uri": page.ocr_page_data_uri,
                 "classification": page.classification,
-                "confidence": page.confidence,
                 "tables": page.tables,
                 "forms": page.forms,
             }
+            # Confidence and reason are omitted when absent, on the same
+            # convention as document_boundary below: a page nobody scored says
+            # nothing about its confidence rather than claiming 0.0 or 1.0.
+            if page.confidence is not None:
+                result["pages"][page_id]["confidence"] = page.confidence
+            if page.classification_reason:
+                result["pages"][page_id]["classification_reason"] = (
+                    page.classification_reason
+                )
+            if page.classification_candidates:
+                result["pages"][page_id]["classification_candidates"] = (
+                    page.classification_candidates
+                )
+            # Omitted when absent so payloads from before this existed — and
+            # pages that genuinely produced no boundary signal — are unchanged.
+            if page.document_boundary:
+                result["pages"][page_id]["document_boundary"] = page.document_boundary
 
         # Convert sections
         result["sections"] = []
@@ -509,11 +639,13 @@ class Document:
             section_dict = {
                 "section_id": section.section_id,
                 "classification": section.classification,
-                "confidence": section.confidence,
                 "page_ids": section.page_ids,
                 "extraction_result_uri": section.extraction_result_uri,
                 "confidence_threshold_alerts": section.confidence_threshold_alerts,
             }
+            # Same convention as the pages above: omitted when not scored.
+            if section.confidence is not None:
+                section_dict["confidence"] = section.confidence
             if section.attributes:
                 section_dict["attributes"] = section.attributes
             if section.processing_issues:
@@ -526,6 +658,10 @@ class Document:
                 section_dict["excluded"] = True
                 if section.exclusion_reason:
                     section_dict["exclusion_reason"] = section.exclusion_reason
+            # Same convention: omit when undetermined (0) so existing payloads
+            # are byte-identical.
+            if section.instance_count:
+                section_dict["instance_count"] = section.instance_count
             result["sections"].append(section_dict)
 
         # Add rule_validation_result if present (optional)
@@ -578,6 +714,9 @@ class Document:
             evaluation_results_uri=data.get("evaluation_results_uri"),
             summary_report_uri=data.get("summary_report_uri"),
             metering=data.get("metering", {}),
+            # `or {}` so an absent key and an explicit null both read back as the
+            # empty dict the field defaults to.
+            metadata=data.get("metadata") or {},
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
             config_revision=coerce_revision(data.get("config_revision")),
@@ -606,9 +745,13 @@ class Document:
                 text_confidence_uri=page_data.get("text_confidence_uri"),
                 ocr_page_data_uri=page_data.get("ocr_page_data_uri"),
                 classification=page_data.get("classification"),
-                confidence=page_data.get("confidence", 0.0),
+                # Absent => not scored (None), NOT a presumed 0.0.
+                confidence=page_data.get("confidence"),
                 tables=page_data.get("tables", []),
                 forms=page_data.get("forms", {}),
+                classification_reason=page_data.get("classification_reason"),
+                classification_candidates=page_data.get("classification_candidates"),
+                document_boundary=page_data.get("document_boundary"),
             )
 
         # Convert sections
@@ -618,7 +761,7 @@ class Document:
                 Section(
                     section_id=section_data.get("section_id"),
                     classification=section_data.get("classification"),
-                    confidence=section_data.get("confidence", 1.0),
+                    confidence=section_data.get("confidence"),
                     page_ids=section_data.get("page_ids", []),
                     extraction_result_uri=section_data.get("extraction_result_uri"),
                     attributes=section_data.get("attributes"),
@@ -632,6 +775,7 @@ class Document:
                     ],
                     excluded=bool(section_data.get("excluded", False)),
                     exclusion_reason=section_data.get("exclusion_reason"),
+                    instance_count=int(section_data.get("instance_count") or 0),
                 )
             )
 
@@ -821,9 +965,10 @@ class Document:
                         raw_text_uri=raw_text_uri,
                         parsed_text_uri=result_uri,
                         classification=page_data.get("classification"),
-                        confidence=page_data.get("confidence", 1.0),
+                        confidence=page_data.get("confidence"),
                         tables=page_data.get("tables", []),
                         forms=page_data.get("forms", {}),
+                        classification_reason=page_data.get("classification_reason"),
                     )
 
                 except Exception as e:
@@ -883,7 +1028,7 @@ class Document:
                         Section(
                             section_id=section_id,
                             classification=section_classification,
-                            confidence=section_data.get("confidence", 1.0),
+                            confidence=section_data.get("confidence"),
                             page_ids=page_ids,
                             extraction_result_uri=result_uri,
                             attributes=attributes,

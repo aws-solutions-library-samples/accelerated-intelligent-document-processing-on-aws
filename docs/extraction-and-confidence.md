@@ -103,8 +103,9 @@ extraction:
 > here. (`classification` / `summarization` keep their `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`) and OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`) — `reasoning_effort` controls how much
+> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -160,6 +161,16 @@ Agentic extraction requires models with tool-use support:
 > supported for **Simple (non-agentic) extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) is served on the standard Converse
+> API and accepts a `toolConfig` with all three `toolChoice` modes, so the Strands
+> agent loop works — making it the only non-Claude/non-Nova option for Advanced
+> extraction. Its 500K context also yields a larger shard budget (~90K tokens)
+> than a 200K-context Claude model (~18K). Note that `temperature` / `top_p` are
+> rejected by Grok and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
+> [xAI Grok Models](grok-models.md).
+
 #### Cost considerations
 
 Agentic extraction may have slightly higher costs due to additional processing
@@ -171,6 +182,27 @@ over 20% in accuracy on the [getomni-ai benchmark](https://getomni.ai/blog/ocr-b
 - **100% schema compliance** vs frequent validation failures
 - **Reduced manual review** and correction efforts
 - **Automatic caching**: For supported models, prompt and tool caching is automatically enabled, reducing costs for repeated extractions with the same configuration
+
+##### Dropping the duplicated schema (`restate_schema_in_system_prompt`)
+
+Agentic extraction sends your class schema **three times** per request: as the
+tool's input schema (required by the API), restated as JSON in the system prompt,
+and again in the schema-reminder tool. Copies 2 and 3 are byte-identical, so the
+system-prompt copy is pure duplication — measured at **2,600 of 6,680 schema
+tokens (38%)** on the lending `Payslip` class.
+
+```yaml
+extraction:
+  agentic:
+    restate_schema_in_system_prompt: true   # default; false removes copy 2
+```
+
+Left **on by default** deliberately. Restating a schema in prose often improves
+adherence, so this is a token/adherence trade rather than a free saving: on a
+list-heavy document, an agent that drifts from the schema returns fewer rows. If
+you turn it off, judge the result on **completeness**, not on the token count.
+The schema-reminder tool is unaffected either way, so the agent can always ask for
+the schema again mid-run.
 
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
@@ -482,6 +514,170 @@ extraction stub is authoritative). See the demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
 ---
+
+## 2b. Output Correctness: Coercion, Validation & Multi-Document Sections
+
+Three things happen to an extraction result after the model returns it and before
+it is stored. All are configurable under **Configuration → Extraction** in the Web
+UI, so any of them can be turned off without a redeploy if it causes trouble.
+
+### Value coercion (`extraction.coercion`)
+
+Repairs type/format mismatches deterministically — **no model call, no cost**:
+
+| Input | Field type | Becomes |
+|-------|-----------|---------|
+| `"$1,234.00"` | `number` | `1234.0` |
+| `"1.234,56"` (European) | `number` | `1234.56` |
+| `"12.5%"` | `number` | `12.5` (magnitude preserved, **not** divided by 100) |
+| `"03/15/2024"` | `string` + `format: date` | `"2024-03-15"` |
+| `"March 15, 1980"` | `string` + `format: date` | `"1980-03-15"` |
+| `"Yes"` | `boolean` | `true` |
+
+Every change is recorded in the section's `metadata.coercion`, so nothing is
+silently rewritten and you can audit exactly what was changed and why.
+
+**What it refuses to do.** Anything genuinely ambiguous is left untouched and
+recorded as a refusal rather than guessed:
+
+- `"01/02/2024"` — January 2nd or February 1st? (`ambiguous_date`)
+- `"03/15/24"` — a 2-digit year cannot be assigned a century (1924 or 2024 matters
+  for a date of birth)
+- `"2024-03-15T09:00:00Z"` into a `date` field — dropping a time component is data loss
+- `"1,234.56"` into an `integer` field — rounding would discard data
+- Anything across a type family — never string→object, never a scalar wrapped in an array
+
+If your corpus has a known day/month convention, `date_order: MDY` or `DMY`
+resolves the all-numeric ambiguous case. It **never** overrides a value that is
+already unambiguous (a `15` cannot be a month whatever you set).
+
+> **How much does coercion actually change?** Measured on a live stack: modern
+> models (Claude Sonnet 4.6, Nova Lite) already return correctly-typed values for
+> scalar fields, so coercion often fires **zero** times and changes nothing. It
+> fires substantially on **long repetitive list rows** (81 coercions across
+> 100-row transaction lists in one benchmark), where model output drifts. Treat it
+> as a **safety net for messy output and non-format-tolerant consumers** — Athena
+> column typing, rule validation, API clients — rather than as an accuracy
+> improver. It did not move evaluation accuracy in either A/B we ran.
+
+### Schema validation (`extraction.validation`)
+
+Validates the result against the **full class JSON Schema** — most importantly the
+`format` keywords (`date`, `email`, `uri`, `uuid`) that type validation alone does
+not enforce. Runs on both Simple and Advanced extraction.
+
+`fail_action` decides what happens when validation fails:
+
+| `fail_action` | Behaviour | Extra inference? |
+|---|---|---|
+| `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
+| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
+| `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
+
+Validation is **on by default** precisely because the default action is free: it
+turns an otherwise-silent schema violation into something visible at no cost —
+the issue reaches the document list's **Processing Issues** column and the
+**Processing Report** tab, naming the failing fields and the first few concrete
+violations, so you do not have to open the section result JSON.
+`escalate` is the opt-in that spends money. Only the failing fields are
+re-extracted and only those are merged back, so an over-eager escalation cannot
+overwrite fields that already validated; if escalation fails, the original
+extraction is kept unchanged.
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
+> configurations are migrated automatically on read — no action required.
+
+### Forced tool use (`extraction.forced_tool`) — experimental, off by default
+
+Coercion and validation repair or report a bad result *after* the fact. Forced
+tool use tries to make one shape of bad result impossible in the first place: the
+class schema is sent to the model as a **required tool** whose input *is* your
+schema, rather than described in prose in the prompt, and the API constrains the
+reply to that shape.
+
+```yaml
+extraction:
+  forced_tool:
+    enabled: false             # experimental; measure before turning it on
+    fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
+```
+
+Applies to **Simple** extraction only — Advanced (agentic) extraction already
+sends a tool schema. Configurable under **Configuration → Extraction → Schema
+Enforcement (experimental)**.
+
+**Why it is off by default.** Forcing constrains the *structure* of the reply, not
+the *accuracy* of the values in it. A model that would have emitted a stray key
+may instead emit a worse value that fits the schema, so this is not a free
+accuracy win and it is not yet proven on real corpora. Measure completeness and
+field accuracy on your own documents before enabling it.
+
+**When it is skipped automatically.** Not every route can carry a tool
+configuration. Models reached through a custom Lambda hook and the GPT-5.x
+(Responses API) route fall back to the prompt, and the reason is recorded — so a
+before/after comparison can tell "forcing changed nothing" from "forcing never
+ran", which are very different results.
+
+**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
+`honored` (the model can accept a tool configuration and still answer in prose),
+`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
+the number to look at first: forcing that is not honored has not been tested.
+
+> **Field names with spaces are handled.** Bedrock restricts top-level tool
+> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
+> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
+> form for the request and restored to exactly what you authored in the stored
+> result — you never see the sanitized names, and no configuration change is
+> needed.
+
+`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
+instead of falling back. That loses data by design and exists only to measure how
+often forcing is actually honored; leave it on in production.
+
+### Multi-document sections (`instance_count`)
+
+Classification splits sections by document *type*. When a packet concatenates
+several records of the **same** type with no separator, there is no type change to
+split on, so they land in one section — and extraction, whose class schema
+describes one document, may return only the first record.
+
+Each section now reports an **instance count**. In the Sections panel it is shown
+only when there is something to say — a badge beside the section's class when the
+count exceeds 1, hoverable for detail. A normal single-document section shows just
+its class name; so does a section whose count was never determined (older
+documents, or extraction that failed before producing a result). The raw value is
+on the API as `Section.InstanceCount` either way.
+
+If a class's schema is **already modelled as a packet of records** (one top-level
+array, one element per record), name that array so the count can be derived:
+
+```yaml
+classes:
+  - $id: patient_packet
+    type: object
+    x-aws-idp-instance-array: records   # each element is one document
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+          properties:
+            patient_name: { type: string }
+```
+
+This changes nothing about extraction output — it only tells the pipeline which
+existing array is the instance axis — so it is safe to add to a working config.
+
+If the model returns a JSON **array** for a single-document schema, every record is
+now preserved (the first becomes the section result, the rest are recorded in
+`metadata.recovered_instances`) and the section is flagged for review rather than
+failed.
+
+> **Known limitation.** If the model returns a single object for a
+> several-document section, only that one record exists in the response and
+> nothing can recover the others. Use `x-aws-idp-instance-array` with a
+> packet-shaped class for those packets. Automatic list-schema synthesis is
+> tracked separately.
 
 ## 3. Confidence Assessment
 
@@ -1144,10 +1340,14 @@ extraction:
 
 **Supported models** include:
 
-- `us.anthropic.claude-3-5-haiku-20241022-v1:0`
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
+
+`CACHEPOINT_SUPPORTED_MODELS` in
+[`idp_common/bedrock/client.py`](../lib/idp_common_pkg/idp_common/bedrock/client.py)
+is the authoritative list.
 
 **Optimal placement**: separate **static** content (system instructions,
 few-shot examples — cacheable) from **dynamic** content (document text — not
@@ -1288,6 +1488,13 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
 
+A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+rather than the completeness checks:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
+
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:
 
@@ -1314,10 +1521,12 @@ list is populated, the check stays quiet — the detected tables plausibly belon
 that one, and an empty sibling may be genuinely absent.
 
 **This check needs no configuration.** It runs on every Advanced-mode section, and
-in particular it is *not* behind `extraction.agentic.validation.enabled` (which is
-off by default) — a guard against silent data loss that has to be switched on
-protects nobody who did not already know to look. Its only effect is one more agent
-turn; it can never fail a document.
+in particular it is *not* behind `extraction.validation.enabled` — a guard against
+silent data loss that has to be switched on protects nobody who did not already
+know to look. (That argument is also why `extraction.validation.enabled` itself now
+defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+turning validation off does not also disable a check that costs nothing.) Its only
+effect is one more agent turn; it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as

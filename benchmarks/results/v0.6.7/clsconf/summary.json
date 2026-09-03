@@ -1,0 +1,334 @@
+{
+  "nova2lite": {
+    "run_id": "DocSplit-Poly-Seq-20260902-181304",
+    "n_docs": 20,
+    "pages_evaluated": 298,
+    "pages_scored": 298,
+    "class_accuracy": 0.8456,
+    "class_calibration_separation": 0.044,
+    "mean_conf_correct": 0.9472,
+    "mean_conf_wrong": 0.9033,
+    "n_conf_correct": 252,
+    "n_conf_wrong": 46,
+    "median_conf_correct": 0.95,
+    "median_conf_wrong": 0.95,
+    "pct_conf_below_0.9": 8.4,
+    "classification_cost": 0.26841,
+    "pages_processed": 298,
+    "classification_cost_per_page": 0.000901,
+    "classification_output_tokens_per_page": 198.5,
+    "classification_tokens": {
+      "inputTokens": 307547,
+      "outputTokens": 59167,
+      "cacheReadInputTokens": 278332
+    },
+    "per_doc": [
+      {
+        "doc": "packet_0001.pdf",
+        "class_accuracy": 0.8,
+        "class_calibration_separation": 0.0219,
+        "class_mean_confidence": 0.93,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0002.pdf",
+        "class_accuracy": 0.7778,
+        "class_calibration_separation": 0.0714,
+        "class_mean_confidence": 0.9056,
+        "n_class_scored_pages": 9
+      },
+      {
+        "doc": "packet_0003.pdf",
+        "class_accuracy": 0.7857,
+        "class_calibration_separation": 0.0576,
+        "class_mean_confidence": 0.9286,
+        "n_class_scored_pages": 14
+      },
+      {
+        "doc": "packet_0004.pdf",
+        "class_accuracy": 0.75,
+        "class_calibration_separation": -0.0167,
+        "class_mean_confidence": 0.9375,
+        "n_class_scored_pages": 8
+      },
+      {
+        "doc": "packet_0005.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 5
+      },
+      {
+        "doc": "packet_0006.pdf",
+        "class_accuracy": 0.8,
+        "class_calibration_separation": 0.05,
+        "class_mean_confidence": 0.94,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0007.pdf",
+        "class_accuracy": 0.6429,
+        "class_calibration_separation": 0.02,
+        "class_mean_confidence": 0.9429,
+        "n_class_scored_pages": 14
+      },
+      {
+        "doc": "packet_0008.pdf",
+        "class_accuracy": 0.9375,
+        "class_calibration_separation": 0.1,
+        "class_mean_confidence": 0.9437,
+        "n_class_scored_pages": 16
+      },
+      {
+        "doc": "packet_0009.pdf",
+        "class_accuracy": 0.9091,
+        "class_calibration_separation": 0.15,
+        "class_mean_confidence": 0.9364,
+        "n_class_scored_pages": 11
+      },
+      {
+        "doc": "packet_0010.pdf",
+        "class_accuracy": 0.9375,
+        "class_calibration_separation": 0.0,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 16
+      },
+      {
+        "doc": "packet_0011.pdf",
+        "class_accuracy": 0.5789,
+        "class_calibration_separation": 0.1017,
+        "class_mean_confidence": 0.9026,
+        "n_class_scored_pages": 19
+      },
+      {
+        "doc": "packet_0012.pdf",
+        "class_accuracy": 0.6,
+        "class_calibration_separation": -0.0,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0013.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 15
+      },
+      {
+        "doc": "packet_0014.pdf",
+        "class_accuracy": 0.95,
+        "class_calibration_separation": -0.05,
+        "class_mean_confidence": 0.9525,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0015.pdf",
+        "class_accuracy": 0.7778,
+        "class_calibration_separation": 0.05,
+        "class_mean_confidence": 0.9389,
+        "n_class_scored_pages": 9
+      },
+      {
+        "doc": "packet_0016.pdf",
+        "class_accuracy": 0.9474,
+        "class_calibration_separation": -0.05,
+        "class_mean_confidence": 0.9526,
+        "n_class_scored_pages": 19
+      },
+      {
+        "doc": "packet_0017.pdf",
+        "class_accuracy": 0.85,
+        "class_calibration_separation": 0.0667,
+        "class_mean_confidence": 0.94,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0018.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 12
+      },
+      {
+        "doc": "packet_0019.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 18
+      },
+      {
+        "doc": "packet_0020.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.95,
+        "n_class_scored_pages": 13
+      }
+    ]
+  },
+  "haiku45": {
+    "run_id": "DocSplit-Poly-Seq-20260902-181535",
+    "n_docs": 20,
+    "pages_evaluated": 298,
+    "pages_scored": 298,
+    "class_accuracy": 0.8523,
+    "class_calibration_separation": 0.2066,
+    "mean_conf_correct": 0.9475,
+    "mean_conf_wrong": 0.7409,
+    "n_conf_correct": 254,
+    "n_conf_wrong": 44,
+    "median_conf_correct": 0.95,
+    "median_conf_wrong": 0.735,
+    "pct_conf_below_0.9": 20.8,
+    "classification_cost": 1.70691,
+    "pages_processed": 298,
+    "classification_cost_per_page": 0.005728,
+    "classification_output_tokens_per_page": 352.9,
+    "classification_tokens": {
+      "inputTokens": 1018119,
+      "outputTokens": 105159,
+      "cacheReadInputTokens": 0
+    },
+    "per_doc": [
+      {
+        "doc": "packet_0001.pdf",
+        "class_accuracy": 0.85,
+        "class_calibration_separation": 0.1567,
+        "class_mean_confidence": 0.9065,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0002.pdf",
+        "class_accuracy": 0.7778,
+        "class_calibration_separation": 0.2029,
+        "class_mean_confidence": 0.8578,
+        "n_class_scored_pages": 9
+      },
+      {
+        "doc": "packet_0003.pdf",
+        "class_accuracy": 0.7857,
+        "class_calibration_separation": 0.2512,
+        "class_mean_confidence": 0.8807,
+        "n_class_scored_pages": 14
+      },
+      {
+        "doc": "packet_0004.pdf",
+        "class_accuracy": 0.625,
+        "class_calibration_separation": 0.188,
+        "class_mean_confidence": 0.8575,
+        "n_class_scored_pages": 8
+      },
+      {
+        "doc": "packet_0005.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.962,
+        "n_class_scored_pages": 5
+      },
+      {
+        "doc": "packet_0006.pdf",
+        "class_accuracy": 0.85,
+        "class_calibration_separation": 0.3345,
+        "class_mean_confidence": 0.891,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0007.pdf",
+        "class_accuracy": 0.5714,
+        "class_calibration_separation": 0.0908,
+        "class_mean_confidence": 0.9186,
+        "n_class_scored_pages": 14
+      },
+      {
+        "doc": "packet_0008.pdf",
+        "class_accuracy": 0.9375,
+        "class_calibration_separation": 0.166,
+        "class_mean_confidence": 0.9056,
+        "n_class_scored_pages": 16
+      },
+      {
+        "doc": "packet_0009.pdf",
+        "class_accuracy": 0.9091,
+        "class_calibration_separation": 0.179,
+        "class_mean_confidence": 0.9127,
+        "n_class_scored_pages": 11
+      },
+      {
+        "doc": "packet_0010.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.9681,
+        "n_class_scored_pages": 16
+      },
+      {
+        "doc": "packet_0011.pdf",
+        "class_accuracy": 0.5789,
+        "class_calibration_separation": 0.2651,
+        "class_mean_confidence": 0.8347,
+        "n_class_scored_pages": 19
+      },
+      {
+        "doc": "packet_0012.pdf",
+        "class_accuracy": 0.65,
+        "class_calibration_separation": 0.199,
+        "class_mean_confidence": 0.8965,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0013.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.98,
+        "n_class_scored_pages": 15
+      },
+      {
+        "doc": "packet_0014.pdf",
+        "class_accuracy": 0.95,
+        "class_calibration_separation": 0.2705,
+        "class_mean_confidence": 0.957,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0015.pdf",
+        "class_accuracy": 0.7778,
+        "class_calibration_separation": 0.245,
+        "class_mean_confidence": 0.8756,
+        "n_class_scored_pages": 9
+      },
+      {
+        "doc": "packet_0016.pdf",
+        "class_accuracy": 0.8947,
+        "class_calibration_separation": 0.1465,
+        "class_mean_confidence": 0.9311,
+        "n_class_scored_pages": 19
+      },
+      {
+        "doc": "packet_0017.pdf",
+        "class_accuracy": 0.9,
+        "class_calibration_separation": 0.1278,
+        "class_mean_confidence": 0.915,
+        "n_class_scored_pages": 20
+      },
+      {
+        "doc": "packet_0018.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.9575,
+        "n_class_scored_pages": 12
+      },
+      {
+        "doc": "packet_0019.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.9467,
+        "n_class_scored_pages": 18
+      },
+      {
+        "doc": "packet_0020.pdf",
+        "class_accuracy": 1.0,
+        "class_calibration_separation": null,
+        "class_mean_confidence": 0.9754,
+        "n_class_scored_pages": 13
+      }
+    ]
+  }
+}

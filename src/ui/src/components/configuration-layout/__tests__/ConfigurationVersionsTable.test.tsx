@@ -119,6 +119,33 @@ describe('ConfigurationVersionsTable — default columns', () => {
   });
 });
 
+describe('ConfigurationVersionsTable — create profile action', () => {
+  it('offers Create profile to admins', () => {
+    // Creating a profile from an existing one used to be reachable only from the
+    // editor's Actions menu, which meant opening the source profile first.
+    const onCreateProfile = vi.fn();
+    render(<ConfigurationVersionsTable versions={PROFILES} isAdmin onCreateProfile={onCreateProfile} />);
+    screen.getByText('Create profile').click();
+    expect(onCreateProfile).toHaveBeenCalled();
+  });
+
+  it('hides Create profile from non-admins', () => {
+    // Profile creation writes configuration, so it carries the same Admin gate as
+    // Import and the editor's save-as action.
+    render(<ConfigurationVersionsTable versions={PROFILES} onCreateProfile={vi.fn()} />);
+    expect(screen.queryByText('Create profile')).not.toBeInTheDocument();
+  });
+
+  it('does not make the destructive Delete action the primary button', () => {
+    // Delete was variant="primary", making the visual default on a table whose
+    // main job is creating and opening profiles a destructive one.
+    const labelAt = SOURCE.indexOf('Delete Selected ({selectedVersionsForCompare.length})');
+    const deleteButton = SOURCE.slice(SOURCE.lastIndexOf('<Button', labelAt), labelAt);
+    expect(deleteButton).toContain('variant="normal"');
+    expect(deleteButton).not.toContain('variant="primary"');
+  });
+});
+
 describe('ConfigurationVersionsTable — revision history entry point', () => {
   it('shows the retained revision count per profile', () => {
     render(<ConfigurationVersionsTable versions={PROFILES} />);
