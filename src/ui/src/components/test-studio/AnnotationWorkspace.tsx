@@ -545,7 +545,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    * The queue link, carrying the transition it belongs to.
    *
    * The ask, verbatim: "hash the queue link to a version that is a transition
-   * from existing state to next state." Without `?v=`, a link shared in Slack means
+   * from existing state to next state." Without `?v=`, a shared link means
    * "annotate this set" — which silently becomes a different job once the current
    * transition is published and the next one opens. With it, a stale link can say so.
    *
