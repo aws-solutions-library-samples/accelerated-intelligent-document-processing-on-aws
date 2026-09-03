@@ -47,6 +47,22 @@ extraction:
     # an error. Keep true in production; set false only to measure how often
     # forcing is actually honored.
     fallback_to_prompt: true
+  # Detect a section that holds SEVERAL documents of the same class when the
+  # model returned only one of them (GitHub #753 / #565). One extra integer is
+  # requested in the same inference and stripped from the result; when the answer
+  # exceeds the number of records extracted, an
+  # extraction_multi_instance_suspected warning is raised and the section's
+  # instance count reflects the model's answer.
+  multi_instance_detection:
+    # ON by default: this is the silent-data-loss case (SUCCESS, COMPLETED, zero
+    # issues, one record out of three), and a guard that defaults off reproduces
+    # the problem it exists to fix. Detection NEVER changes the extracted data or
+    # a class's schema flags — turning a class into a List-of-Class shape stays an
+    # explicit opt-in (x-aws-idp-multi-instance / x-aws-idp-instance-array).
+    # Set false to keep the extraction prompt byte-identical to earlier releases.
+    # Applies to Simple extraction (prompt and forced-tool paths); Advanced
+    # (agentic) extraction is not yet covered.
+    enabled: true
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.
   coercion:

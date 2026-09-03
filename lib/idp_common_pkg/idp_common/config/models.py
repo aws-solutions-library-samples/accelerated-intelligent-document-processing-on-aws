@@ -471,6 +471,48 @@ class ForcedToolConfig(BaseModel):
     )
 
 
+class MultiInstanceDetectionConfig(BaseModel):
+    """Detect a section that holds several documents of the same class (#753).
+
+    When classification finds no type change to split on, several consecutive
+    records of one class land in a single section. The class schema describes ONE
+    document, and the model overwhelmingly prefers to answer with one object — so
+    the second and third records are simply absent from the response and
+    **nothing anywhere reports it**: the section is SUCCESS, the document is
+    COMPLETED, ``instance_count`` is 1, and no issue is raised. That is the
+    original complaint in GitHub #565 and it is the common branch, not the rare
+    one (the rare one — a top-level JSON array — is already recovered and
+    warned about).
+
+    The mechanism is to ask the model, in the SAME inference, how many separate
+    documents of the class the supplied pages contain: one extra integer in the
+    response, no second call, and it asks the only component that has both the
+    pages and the schema in front of it. The field is stripped from the result
+    before anything downstream sees it.
+
+    **Detection only.** A count greater than 1 raises the
+    ``extraction_multi_instance_suspected`` warning and populates
+    ``Section.instance_count``; it never changes the extracted data, never fails
+    the section, and never flips a class's schema flags. Turning a class into a
+    List-of-Class shape stays an explicit opt-in
+    (``x-aws-idp-multi-instance`` / ``x-aws-idp-instance-array``).
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Ask the extraction model, in the same inference, how many separate "
+            "documents of the section's class the pages contain, and warn when "
+            "the answer is more than the result holds. Costs one extra integer "
+            "of output. ON by default: a data-loss guard that defaults off "
+            "reproduces the problem it exists to fix. Set false to leave the "
+            "extraction prompt byte-identical to earlier releases. Applies to "
+            "Simple extraction (prompt and forced-tool paths); Advanced "
+            "(agentic) extraction is not yet covered."
+        ),
+    )
+
+
 class CoercionConfig(BaseModel):
     """Deterministic type/format repair of extraction output before validation.
 
@@ -1047,6 +1089,14 @@ class ExtractionConfig(BaseModel):
             "Send the class schema as a forced Converse tool rather than "
             "describing it in the prompt. Off by default and gated on a measured "
             "win — see ForcedToolConfig."
+        ),
+    )
+    multi_instance_detection: MultiInstanceDetectionConfig = Field(
+        default_factory=MultiInstanceDetectionConfig,
+        description=(
+            "Detect (and warn about) a section that holds several documents of "
+            "the same class when the model returned only one — see "
+            "MultiInstanceDetectionConfig."
         ),
     )
     coercion: CoercionConfig = Field(

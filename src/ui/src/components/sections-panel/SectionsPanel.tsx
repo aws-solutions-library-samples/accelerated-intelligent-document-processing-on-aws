@@ -158,6 +158,16 @@ const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <spa
 // raises a `extraction_multi_instance_detected` ProcessingIssue), so this stays
 // factual rather than alarming — a class configured for multiple instances is
 // working as intended.
+//
+// EXCEPT for the #753 case, where the count comes from the model's own answer to
+// "how many documents are in these pages" and the extra records were NOT
+// extracted. "Each one was extracted as its own instance" would be flatly untrue
+// there, so the badge reads the section's own
+// `extraction_multi_instance_suspected` issue — the authoritative signal, already
+// on the row — rather than needing a new `InstanceSource` field plumbed through
+// the whole Section chain.
+const SUSPECTED_ISSUE_CODE = 'extraction_multi_instance_suspected';
+
 const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element | null => {
   const count = item.InstanceCount ?? 0;
 
@@ -165,27 +175,38 @@ const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element 
     return null;
   }
 
+  const suspected = (item.ProcessingIssues ?? []).some((issue) => issue?.code === SUSPECTED_ISSUE_CODE);
+
   return (
     <Popover
       dismissButton={false}
       position="top"
       size="medium"
       triggerType="custom"
-      header="Multiple documents in one section"
+      header={suspected ? 'Documents may be missing from this section' : 'Multiple documents in one section'}
       content={
         <SpaceBetween size="xs">
-          <Box variant="p">
-            Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
-            instance.
-          </Box>
+          {suspected ? (
+            <Box variant="p">
+              These pages appear to contain {count} separate {item.Class || 'document'} documents, but only the first was extracted — the
+              rest are not in the result.
+            </Box>
+          ) : (
+            <Box variant="p">
+              Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
+              instance.
+            </Box>
+          )}
           <Box variant="small" color="text-body-secondary">
-            If these should be separate sections, review the classification settings for this class.
+            {suspected
+              ? 'Split the section (classification section splitting), or turn on multi-instance extraction for this class so every document is extracted.'
+              : 'If these should be separate sections, review the classification settings for this class.'}
           </Box>
         </SpaceBetween>
       }
     >
       <span style={{ cursor: 'pointer' }}>
-        <Badge color="blue">{count}</Badge>
+        <Badge color={suspected ? 'severity-medium' : 'blue'}>{count}</Badge>
       </span>
     </Popover>
   );

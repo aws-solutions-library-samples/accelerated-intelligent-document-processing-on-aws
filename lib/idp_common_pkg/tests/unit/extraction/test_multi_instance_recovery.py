@@ -400,3 +400,225 @@ def test_recovered_source_is_the_only_one_that_warns():
             [i for i in issues if i.code == "extraction_multi_instance_detected"]
         )
         assert got is expect_warning, f"source={source} -> warning={got}"
+
+
+# --------------------------------------------------------------------------
+# #753 — the SILENT case: the model returned ONE object for a section that
+# holds several documents. Nothing anywhere reported it: SUCCESS, COMPLETED,
+# ProcessingIssueCount 0, instance_count 1. Detection asks the model, in the
+# same inference, how many documents the pages hold.
+# --------------------------------------------------------------------------
+
+
+def test_suspected_multi_instance_warns_naming_both_counts():
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "Anderson", "patient_dob": "1970-01-01"},
+        metadata={
+            "instance_count": 3,
+            "instance_source": "suspected",
+            "instance_probe": 3,
+            "instance_extracted_count": 1,
+        },
+        section_id="1",
+    )
+    issue = next(i for i in issues if i.code == "extraction_multi_instance_suspected")
+    assert issue.severity == "warning"
+    assert issue.stage == "extraction"
+    assert issue.section_id == "1"
+    # Both numbers, so the message cannot be misread as "3 records extracted".
+    assert "3 separate" in issue.message
+    assert "returned 1" in issue.message
+    assert "2 document(s) are NOT in the result" in issue.message
+    assert issue.details["instance_count"] == 3
+    assert issue.details["extracted_instance_count"] == 1
+    assert issue.details["detection"] == "model_self_report"
+
+
+def test_suspected_does_not_also_raise_the_recovered_warning():
+    """Two warnings for one situation would be noise, and the 'detected' wording
+    ("all N were extracted") is FALSE for the suspected case."""
+    svc = _svc()
+    codes = [
+        i.code
+        for i in svc._build_extraction_issues(
+            extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+            metadata={
+                "instance_count": 2,
+                "instance_source": "suspected",
+                "instance_extracted_count": 1,
+            },
+            section_id="1",
+        )
+    ]
+    assert codes == ["extraction_multi_instance_suspected"]
+
+
+def test_probe_of_one_is_the_normal_case_and_raises_nothing():
+    """A genuine single-document section must stay silent — a warning that fires
+    on ordinary documents is worse than none (#753 acceptance criteria)."""
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+        metadata={
+            "instance_count": 1,
+            "instance_source": "single",
+            "instance_probe": 1,
+        },
+        section_id="1",
+    )
+    assert issues == []
+
+
+def test_suspected_needs_a_count_above_one():
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+        metadata={"instance_count": 1, "instance_source": "suspected"},
+        section_id="1",
+    )
+    assert not [i for i in issues if i.code == "extraction_multi_instance_suspected"]
+
+
+# --------------------------------------------------------------------------
+# Probe plumbing through _save_results: the wire schema carries the probe, the
+# class schema never does, and the count/labelling stays honest.
+# --------------------------------------------------------------------------
+
+
+def test_wire_schema_carries_the_probe_but_the_class_schema_does_not():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    wire, added = svc._build_wire_schema(svc._class_schema, "patient_demographics")
+    assert added is True
+    assert INSTANCE_PROBE_FIELD in wire["properties"]
+    assert INSTANCE_PROBE_FIELD not in svc._class_schema["properties"]
+
+
+def test_probe_is_not_requested_when_detection_is_disabled():
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {"enabled": False},
+            }
+        }
+    )
+    svc = ExtractionService(config=cfg)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_probe_is_not_requested_in_agentic_mode():
+    """Advanced extraction validates through a generated Pydantic model and shards
+    by field, so an auxiliary property would be dropped on some paths and
+    duplicated on others. Documented gap, not an oversight."""
+    svc = _svc(agentic=True)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_read_instance_probe_strips_the_field():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    fields = {"patient_name": "A", INSTANCE_PROBE_FIELD: 3}
+    assert svc._read_instance_probe(fields) == 3
+    assert fields == {"patient_name": "A"}
+
+
+# --------------------------------------------------------------------------
+# _resolve_instance_reporting — the whole multi-instance reporting contract,
+# testable without S3.
+# --------------------------------------------------------------------------
+
+
+def _result(**kw):
+    from idp_common.extraction.service import ExtractionResult
+
+    defaults = dict(
+        extracted_fields={"patient_name": "A"},
+        metering={},
+        parsing_succeeded=True,
+        total_duration=1.0,
+        instance_count=1,
+    )
+    defaults.update(kw)
+    return ExtractionResult(**defaults)
+
+
+def test_reporting_ordinary_single_object():
+    count, meta = _svc()._resolve_instance_reporting(_result())
+    assert count == 1
+    assert meta == {"instance_count": 1, "instance_source": "single"}
+
+
+def test_reporting_recovered_array():
+    recovered = [{"patient_name": "A"}, {"patient_name": "B"}]
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(instance_count=2, recovered_instances=recovered)
+    )
+    assert count == 2
+    assert meta["instance_source"] == "recovered"
+
+
+def test_reporting_declared_axis_wins_over_the_response_shape():
+    count, meta = _packet_svc()._resolve_instance_reporting(
+        _result(extracted_fields={"records": [{}, {}, {}]})
+    )
+    assert count == 3
+    assert meta["instance_source"] == "declared"
+
+
+def test_reporting_suspected_records_both_counts():
+    count, meta = _svc()._resolve_instance_reporting(_result(instance_probe=3))
+    assert count == 3
+    assert meta["instance_source"] == "suspected"
+    assert meta["instance_extracted_count"] == 1
+    assert meta["instance_probe"] == 3
+
+
+def test_reporting_probe_agreeing_with_the_result_is_not_suspected():
+    count, meta = _svc()._resolve_instance_reporting(_result(instance_probe=1))
+    assert count == 1
+    assert meta["instance_source"] == "single"
+    # Still recorded for audit — "the model was asked and said 1" is useful.
+    assert meta["instance_probe"] == 1
+    assert "instance_extracted_count" not in meta
+
+
+def test_reporting_probe_below_the_recovered_count_does_not_lower_it():
+    """The records are physically present; the model's guess does not outvote
+    them."""
+    recovered = [{"a": 1}, {"a": 2}, {"a": 3}]
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(instance_count=3, recovered_instances=recovered, instance_probe=2)
+    )
+    assert count == 3
+    assert meta["instance_source"] == "recovered"
+
+
+def test_reporting_a_declared_packet_that_under_extracted_is_still_flagged():
+    """Designate/Synthesize mode is not a free pass: 1 record extracted where the
+    model says there are 3 is the same data loss."""
+    count, meta = _packet_svc()._resolve_instance_reporting(
+        _result(extracted_fields={"records": [{}]}, instance_probe=3)
+    )
+    assert count == 3
+    assert meta["instance_source"] == "suspected"
+    assert meta["instance_extracted_count"] == 1
+
+
+def test_reporting_undetermined_stays_zero_and_emits_nothing():
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(
+            instance_count=0, parsing_succeeded=False, extracted_fields={"error": "x"}
+        )
+    )
+    assert count == 0
+    assert meta == {}
