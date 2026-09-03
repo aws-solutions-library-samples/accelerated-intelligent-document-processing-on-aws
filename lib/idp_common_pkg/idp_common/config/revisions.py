@@ -101,10 +101,17 @@ def _canonical_numbers(node: Any) -> Any:
     gives one rendering per value regardless of route, and also collapses the
     ``int``/``float`` split (``0`` and ``0.0`` are the same setting).
 
-    The cost is that the number ``0.1`` and the string ``"0.1"`` now hash alike.
-    That is a config whose value is quoted in YAML versus not, which is the same
-    setting either way, so treating them as identical is right rather than merely
-    tolerable.
+    A number and its string spelling now hash *differently*, where ``default=str``
+    previously rendered ``Decimal("0.1")`` and the string ``"0.1"`` identically.
+    That is a tightening rather than a loss: a quoted numeric in a config is a
+    different value from an unquoted one, and the routes that produce a ``Decimal``
+    never produce a string.
+
+    Two collapses are deliberate. ``0`` and ``0.0`` become one value, because they
+    are one setting. And values differing only past ~17 significant digits — or
+    beyond ``2**53`` — hash alike, since ``float`` cannot separate them; no
+    sampling parameter, token limit or class threshold lives anywhere near that
+    range, which is why the precision is not worth preserving here.
     """
     # bool is an int subclass, so this test must come first or True becomes 1.0
     # and stops being distinguishable from the number.
@@ -124,9 +131,11 @@ def class_fingerprint(config_dict: Dict[str, Any]) -> str:
     Stable hash of the document classes in a configuration.
 
     A revision that changes document classes invalidates a synced BDA project,
-    so each revision records this fingerprint; a consumer can compare the
-    published revision's fingerprint with the one that was last synced to decide
-    whether a BDA resync is required.
+    so each revision records this fingerprint against the day a consumer compares
+    the published revision's fingerprint with the one last synced to decide
+    whether a BDA resync is required. Nothing does that yet: the value is recorded
+    and surfaced (the SDK's ``ConfigRevisionInfo``, the revision list API) but no
+    code path compares two of them, so BDA resync is not currently driven by it.
     """
     classes = _canonical_numbers(config_dict.get("classes"))
     canonical = json.dumps(classes, sort_keys=True, default=str, separators=(",", ":"))
