@@ -13,7 +13,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import SchemaInspector from '../SchemaInspector';
-import { X_AWS_IDP_VALIDATION_ENGINE, X_AWS_IDP_RULE_JSON } from '../../../constants/schemaConstants';
+import {
+  X_AWS_IDP_VALIDATION_ENGINE,
+  X_AWS_IDP_RULE_JSON,
+  X_AWS_IDP_DOCUMENT_TYPE,
+  X_AWS_IDP_INSTANCE_ARRAY,
+} from '../../../constants/schemaConstants';
 
 // Helper to create a minimal selected attribute
 function makeAttribute(overrides: Record<string, unknown> = {}) {
@@ -346,5 +351,75 @@ describe('SchemaInspector RuleJSON Section', () => {
     fireEvent.click(removeButton);
 
     expect(onUpdate).toHaveBeenCalledWith({ [X_AWS_IDP_RULE_JSON]: undefined });
+  });
+});
+
+/**
+ * Instance Array (Designate mode) class-level control — GitHub #715 Phase 1.
+ *
+ * `x-aws-idp-instance-array` was round-tripped by the schema editor but had no
+ * editor of its own, so Designate mode was only reachable by pasting JSON or
+ * editing YAML. The control is a SELECT over the class's own array-of-object
+ * properties because the backend config validator hard-rejects any other value.
+ */
+describe('SchemaInspector Instance Array control', () => {
+  const recordsArray = {
+    type: 'array',
+    items: { type: 'object', properties: { PatientName: { type: 'string' } } },
+  };
+
+  const docClass = (overrides: Record<string, unknown> = {}, properties: Record<string, Record<string, unknown>> = {}) => ({
+    id: 'class-1',
+    name: 'PatientPacket',
+    [X_AWS_IDP_DOCUMENT_TYPE]: true,
+    attributes: { properties, required: [] },
+    ...overrides,
+  });
+
+  const renderClass = (cls: ReturnType<typeof docClass>, onUpdateClass = vi.fn()) => {
+    render(<SchemaInspector selectedClass={cls} onUpdate={vi.fn()} onUpdateClass={onUpdateClass} />);
+    return onUpdateClass;
+  };
+
+  it('renders the control for a document class', () => {
+    renderClass(docClass({}, { records: recordsArray }));
+    expect(screen.getByText('Instance Array (Optional)')).toBeInTheDocument();
+  });
+
+  it('is disabled with an explanatory description when the class has no array-of-objects property', () => {
+    renderClass(docClass({}, { PatientName: { type: 'string' }, Tags: { type: 'array', items: { type: 'string' } } }));
+    expect(screen.getByText(/This class has no array-of-objects property/)).toBeInTheDocument();
+  });
+
+  it('pre-selects the designated property when the class already declares one', () => {
+    renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: recordsArray }));
+    expect(screen.getByText('records')).toBeInTheDocument();
+  });
+
+  it('shows the none option when no instance array is designated', () => {
+    renderClass(docClass({}, { records: recordsArray }));
+    expect(screen.getByText('(None — one document per section)')).toBeInTheDocument();
+  });
+
+  it('flags — rather than silently erases — a value that is not an array of objects', () => {
+    // Set via YAML/CLI, or left behind after the property's type changed. The
+    // editor must not drop it on open: that is the exact silent-erase failure
+    // this key already had before it was added to the export allow-list.
+    const onUpdateClass = renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'PatientName' }, { PatientName: { type: 'string' } }));
+    expect(screen.getByText(/is not a top-level array-of-objects property/)).toBeInTheDocument();
+    expect(onUpdateClass).not.toHaveBeenCalled();
+  });
+
+  it('offers an array whose items are a $ref, the idiom this editor itself emits', () => {
+    renderClass(
+      docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: { type: 'array', items: { $ref: '#/$defs/PatientRecord' } } }),
+    );
+    expect(screen.getByText('records')).toBeInTheDocument();
+    expect(screen.queryByText(/is not a top-level array-of-objects property/)).not.toBeInTheDocument();
+  });
+
+  it('is not rendered for a policy/rule class', () => {
+    render(<SchemaInspector selectedClass={docClass({}, { records: recordsArray })} onUpdate={vi.fn()} isRuleSchema={true} />);
+    expect(screen.queryByText('Instance Array (Optional)')).not.toBeInTheDocument();
   });
 });

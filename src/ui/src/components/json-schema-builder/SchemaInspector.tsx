@@ -47,6 +47,7 @@ import {
   EXTRACTION_MODEL_OVERRIDE_OPTIONS,
   X_AWS_IDP_EXCLUDE_FROM_PROCESSING,
   X_AWS_IDP_EXCLUSION_REASON,
+  X_AWS_IDP_INSTANCE_ARRAY,
   X_AWS_IDP_PAGE_TYPES,
   X_AWS_IDP_SOURCE_PAGE_TYPES,
   X_AWS_IDP_VALIDATION_ENGINE,
@@ -243,6 +244,86 @@ const RuleJsonSection: React.FC<{
   );
 };
 
+/**
+ * Names of the class's own top-level properties that are an ARRAY OF OBJECTS.
+ *
+ * These are the only legal values for `x-aws-idp-instance-array` (Designate
+ * mode): the backend config validator
+ * (`IDPConfig.validate_instance_array` in `config/models.py`) hard-rejects a
+ * name that is not a top-level array-of-object, so offering a free-text box
+ * here would let a user save a config the pipeline then refuses to load.
+ * A `$ref`'d `items` counts — that is the idiom this editor itself emits for a
+ * reusable record type, and the validator resolves it.
+ */
+const arrayOfObjectPropertyNames = (cls: SchemaClass): string[] => {
+  const properties = cls.attributes?.properties || {};
+  return Object.entries(properties)
+    .filter(([, spec]) => {
+      if (!spec || spec.type !== 'array') return false;
+      const items = spec.items;
+      if (!items) return false;
+      return Boolean(items.$ref) || items.type === 'object' || Boolean(items.properties);
+    })
+    .map(([name]) => name);
+};
+
+const NONE_OPTION_VALUE = '';
+
+/**
+ * Class-level editor for `x-aws-idp-instance-array` ("Designate mode").
+ *
+ * Before this control the key was round-tripped by the schema editor but had no
+ * UI at all, so the only way to reach it was pasting JSON or editing the YAML —
+ * see GitHub #694 / #715. It is a SELECT rather than a text input because the
+ * value must name one of the class's own array-of-object properties; a typo in a
+ * free-text box would be accepted here and then hard-fail config load.
+ */
+const InstanceArrayField = ({
+  selectedClass,
+  onUpdateClass,
+}: {
+  selectedClass: SchemaClass;
+  onUpdateClass: (updates: Record<string, unknown>) => void;
+}): React.JSX.Element => {
+  const candidates = arrayOfObjectPropertyNames(selectedClass);
+  const current = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
+  // A value set outside the UI (YAML/CLI) that no longer matches an
+  // array-of-object property is kept and flagged rather than dropped — silently
+  // erasing a user's configuration on open is the failure mode this whole key
+  // has already had once.
+  const isStale = Boolean(current) && !candidates.includes(current);
+
+  const options = [
+    { label: '(None — one document per section)', value: NONE_OPTION_VALUE },
+    ...candidates.map((name) => ({ label: name, value: name })),
+    ...(isStale ? [{ label: `${current} (not an array of objects)`, value: current }] : []),
+  ];
+
+  return (
+    <FormField
+      label="Instance Array (Optional)"
+      description={
+        candidates.length === 0 && !isStale
+          ? 'Only for a class whose schema is already a PACKET of records — it names the top-level array-of-objects property holding one record per document. This class has no array-of-objects property, so there is nothing to designate.'
+          : 'For a class whose schema is already a PACKET of records: names the top-level array-of-objects property that holds one record per document. The section then reports that array’s length as its instance count (shown as a badge in the Sections panel) instead of always 1. Purely a signal — it does not change the extraction shape or any downstream output.'
+      }
+      errorText={
+        isStale
+          ? `"${current}" is not a top-level array-of-objects property of this class; the configuration will be rejected on save.`
+          : undefined
+      }
+    >
+      <Select
+        selectedOption={options.find((o) => o.value === current) || options[0]}
+        onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: detail.selectedOption.value || undefined })}
+        options={options}
+        disabled={candidates.length === 0 && !isStale}
+        placeholder="(None — one document per section)"
+      />
+    </FormField>
+  );
+};
+
 const SchemaInspector = ({
   selectedClass = null,
   selectedAttribute = null,
@@ -384,6 +465,8 @@ const SchemaInspector = ({
                   placeholder={isRuleSchema ? 'e.g., (?i)(medicare\\s+number)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
                 />
               </FormField>
+
+              {!isRuleSchema && <InstanceArrayField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
 
               {!isRuleSchema && (
                 <>
