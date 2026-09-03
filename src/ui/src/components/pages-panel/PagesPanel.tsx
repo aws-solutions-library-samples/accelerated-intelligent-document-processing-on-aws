@@ -22,6 +22,7 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassNameText from '../common/ClassNameText';
 import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
@@ -84,7 +85,7 @@ const ClassCell = ({
   classificationIndex?: ClassificationIndex;
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
-    <span>{item.Class || '-'}</span>
+    <ClassNameText>{item.Class || '-'}</ClassNameText>
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -140,7 +141,9 @@ const EditableClassCell = ({
   <FormField>
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
-        <StatusIndicator>{item.Class}</StatusIndicator>
+        <StatusIndicator>
+          <ClassNameText>{item.Class}</ClassNameText>
+        </StatusIndicator>
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>
