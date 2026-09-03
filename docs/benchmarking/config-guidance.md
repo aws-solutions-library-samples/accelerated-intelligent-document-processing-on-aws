@@ -95,9 +95,29 @@ The one-axis sweeps over geometry / escalation / extraction model / confidence m
 reasoning effort (the `full` suite) were **not** run for this release; §2–§4 vary OCR,
 extraction mode and assessment only.
 
+**Axes added since this grid was run** (all have suites; see [index.md](index.md) for which
+metric each is judged on). Advice for the ones that have been measured is in §7.
+
+| Axis | Config path | Measured? |
+|------|-------------|-----------|
+| Enforcement | `extraction.coercion.enabled`, `extraction.validation.{enabled,fail_action}` | partially — see §7 |
+| Forcing | `extraction.forced_tool.enabled` | yes — §7 |
+| Schema restatement | `extraction.agentic.restate_schema_in_system_prompt` | yes — §7 |
+| Section splitting | `classification.sectionSplitting` | yes — §7 |
+| Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes — §7 |
+| Classification confidence | `classification.confidence.mode` | not yet (cost unmeasured) |
+| Classification model | `classification.model` | held at Sonnet 5 for §7 only |
+| OCR DPI | `ocr.image.dpi` | as a control only — §7 |
+
 ---
 
 ## 2. Configuration matrix (10 cells × 7 synthetic list docs, exact GT)
+
+> **Cell count has since grown.** `core_cells` held 10 entries when this grid was run and
+> now holds 19 — the v0.7 feature A/B cells (enforcement, forcing, schema restatement,
+> section splitting) were added to it, so `coresynth`/`corefast` are no longer the 70/90-run
+> grids described here. Control arms live in a separate `control_cells:` block and are
+> excluded from those expansions.
 
 Mean over 7 bank-statement (transaction-list) documents spanning 5 → 800 rows and varying
 row width, list count and description length (`tiny_form`, `small_narrow`, `med_narrow`,
@@ -140,8 +160,10 @@ properly, with repeats on a single document.
 3. **⚠️ Advanced mode nulled an entire list** on `longdesc_100` (recall 0.000, 0/100 rows,
    $0.143 and 33 s — it gave up early), while simple mode returned all 100. That single
    document is the whole 0.857 for `tt-adv-sep`; the other six are 1.000. Same tool-decline
-   failure path reported at v0.6.0, still open. BDA + advanced did **not** reproduce it this
-   time (1.000 across all 7).
+   failure path reported at v0.6.0. **Fixed since**: #668 shipped a retry when the agent
+   declines the recommended table tool, and the post-fix `advverify` runs no longer
+   reproduce the null (see `docs/benchmarking/releases/`). BDA + advanced did **not**
+   reproduce it here either (1.000 across all 7).
 4. **LAYOUT-only is the cheapest complete option** (simple $0.514, advanced $1.745) and has
    the best-behaved confidence (mean 0.996, **0%** alert rate). Textract TABLES adds cost
    with no completeness benefit at this scale; enable TABLES for very large multi-page
@@ -285,9 +307,11 @@ comparisons of configurations that all did the job.
 > flags any cell with cost CV > 0.25 as unreliable-at-current-n, and
 > `aggregate.py --compare` only reports a cost regression when the mean shift exceeds the
 > combined sampling spread — so agentic noise never masquerades as a regression. That
-> variance-aware treatment applies to **cost only**; recall/accuracy deltas are still
-> compared per-sample, which is how a non-deterministic completeness swing can be reported
-> as an improvement (see [releases/v0.6.5.md §4](releases/v0.6.5.md)).
+> That treatment now covers **accuracy and completeness too**, not only cost: `--compare`
+> reasons about failure *rates* and mean-vs-spread rather than a single draw
+> ([index.md](index.md)). It was cost-only for this edition, which is how a
+> non-deterministic completeness swing got reported as an improvement in
+> [releases/v0.6.5.md §4](releases/v0.6.5.md).
 
 ---
 
@@ -330,14 +354,96 @@ comparisons of configurations that all did the job.
    finished in 33 s for $0.14 — visibly less work than a real extraction). Fall back to
    direct row extraction rather than nulling, and treat "list null but OCR shows a table" as
    an error.
-4. **Variance-aware comparison for accuracy/recall, not just cost** — `--compare` currently
-   promotes a single-sample recall swing to a headline improvement.
-5. **`kv_form` doc-class benchmark** — add a flat key/value document class so non-list docs
-   are scored against their own schema (currently excluded from the bank_statement matrix).
+4. ~~**Variance-aware comparison for accuracy/recall, not just cost**~~ — **done.**
+   `--compare` now uses failure rates and mean-vs-spread for accuracy and completeness, not
+   just cost.
+5. ~~**`kv_form` doc-class benchmark**~~ — **done.** `kv_form` is a corpus document with its
+   own generated class schema and typed ground truth (`--class kv_form`).
 6. **Reference-corpus cells in the standard release run.** The `core` suite includes two
    20-document reference corpora, which makes it 470 document runs; that is why this edition
    uses the synthetic-only `coresynth` grid and reports no real-world accuracy number. A
    cheaper sampled variant would keep real-world accuracy in every release.
+
+---
+
+## 7. v0.7 configuration options (measured 2026-09-03)
+
+Measured on stack `IDP1` (us-west-2), develop at v0.6.7.dev5 plus PR #744. These are
+**separate measurements from §2–§4** above, which remain v0.6.5 numbers on a different
+stack and are not restated here. Costs are estimates from `config_library/pricing.yaml`,
+rates as of 2026-09-02.
+
+### `extraction.agentic.restate_schema_in_system_prompt` — safe to turn off
+
+Advanced extraction sends the class schema three times per request; the system-prompt
+restatement is a byte-identical duplicate of the tool schema (2,600 of 6,680 schema tokens
+on the lending `Payslip` class). The gate was **completeness**, because restating a schema
+in prose plausibly aids adherence.
+
+| arm | n | failures | completeness recall | cell accuracy |
+|---|---|---|---|---|
+| `restate-on` (default) | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
+| `restate-off` | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
+
+**Guidance: turning it off costs no completeness.** Observed cost was 12% lower with it
+off, but at cost CV 0.25–0.43 that is **not resolvable at n=6** — treat the benefit as
+context-window headroom, not dollars. Per-document token counts cannot measure it either
+(83k/54k/115k *within* one arm), because agentic turn count is non-deterministic; the
+per-*request* saving from static analysis is the defensible figure.
+
+### `extraction.forced_tool.enabled` — leave off; it is not yet proven
+
+Declares the class schema as a required Converse tool instead of describing it in prose.
+Two defects had to be fixed before it ran at all (both in PR #744): schema-document
+metadata that Bedrock rejects, and a wrapper key that silently discarded the entire
+extraction. The A/B below therefore measured broken code and **must be re-run**:
+
+| arm | n | failures | completeness recall |
+|---|---|---|---|
+| `force-off` | 6 | 0 | 1.0 every run |
+| `force-on` | 6 | 0 | **0.167 mean** (0.0 three times on a 100-row list) |
+
+Every one of those runs reported `COMPLETED`, and `forced_tool.honored` was 1.0 — the model
+called the tool exactly as asked. That is the value of the honored-rate metric: without it,
+"forcing had no effect" and "forcing never ran" are indistinguishable in the output.
+
+⚠️ **Do not read this as an argument against tool use.** Advanced (agentic) extraction has
+always used tool-based structured output and scored completeness recall **1.0 on all 12
+runs** of the restatement A/B above, on the same stack.
+
+### `classification.sectionSplitting` — `disabled` is not a workaround for packets
+
+Boundary detection judged on `sections_correct` (1.0/0.0 per run, so the mean over 5
+repeats is the pass rate), classification model Sonnet 5.
+
+| cell | one 3-page statement | same, paginated | two statements in one file |
+|---|---|---|---|
+| `llm_determined` (default) | **1.00** | **1.00** | **1.00** |
+| `disabled` | 1.00 | 1.00 | **0.00** |
+
+`disabled` is correct by construction on a single document and **wrong by construction on a
+packet** — it emits one all-pages section where two are correct, losing the split silently
+(completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
+over-splitting.
+
+### The `<boundary-detection-rules>` prompt block (#653) — unvalidated
+
+A full factorial of prompt × `classification.confidence.mode` × `ocr.image.dpi`, 90 runs,
+found **no difference on any shape**: all six arms score 1.00. An earlier, uncontrolled
+figure of 0% → 60% on the unpaginated document **does not reproduce and is retracted**.
+
+The defensible conclusion is not "the block does nothing" but that **this corpus cannot
+reproduce the bug the block addresses, so it cannot validate it either** — the generator
+writes clean documents with unambiguous header blocks and explicit `Page N of M` footers,
+and both prompts handle those. Full write-up and reproduction commands:
+`benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md`.
+
+### Not yet measured
+
+`classification.confidence.mode` defaults to `topk` as of v0.7, which spends output tokens
+on **every page**. Its cost is documented from first principles in
+[configuration.md](../configuration.md) but has not been benchmarked; `class_confidence` is
+now an axis, so it can be.
 
 ---
 
