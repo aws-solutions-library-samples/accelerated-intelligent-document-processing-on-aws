@@ -141,7 +141,15 @@ const QUEUE_PAGE_SIZE = 100;
 
 const LABEL_JOB_POLL_MS = 5000;
 
-const formatPct = (fraction: number): string => (Number.isFinite(fraction) ? `${(fraction * 100).toFixed(1)}%` : '—');
+/**
+ * `decimals` carries how much precision the number has earned. EstimateConfidence
+ * exists, per its own docstring, "so a cold-start estimate is never rendered with
+ * the same authority as a measured one" — but rendering every tier to 0.1% spent
+ * that distinction on the qualifier line while the headline still read like a
+ * measurement. One review of a 12-document set moved a displayed 85.1% to 92.2%,
+ * a swing two orders of magnitude wider than the digit being shown.
+ */
+const formatPct = (fraction: number, decimals = 1): string => (Number.isFinite(fraction) ? `${(fraction * 100).toFixed(decimals)}%` : '—');
 
 /** Rows per page in the queue rail. */
 const QUEUE_ROWS_PER_PAGE = 20;
@@ -527,6 +535,13 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       : openedDraft;
 
   /**
+   * How precisely the accuracy estimate may be printed. A tenth of a percent is a
+   * claim about the second significant figure, which only a curve measured on this
+   * set supports; below that the number moves by whole points per review.
+   */
+  const estimateDecimals = impact?.estimateConfidence === 'measured' ? 1 : 0;
+
+  /**
    * The queue link, carrying the transition it belongs to.
    *
    * Spencer's ask, in his words: "hash the queue link to a version that is a transition
@@ -579,9 +594,18 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       {/* Exactly one primary at a time, and it is whichever action comes next:
           claim an unclaimed document, then confirm the one you hold. Both were
           primary before, which put two solid-blue buttons side by side and left
-          the order of operations to be guessed. */}
+          the order of operations to be guessed.
+          Before a transition is open, neither is next: "Start annotating" is, and
+          it is primary in the alert below. Claiming stays available — it is a lock
+          for coordinating with other annotators, not a write to ground truth — but
+          it stops competing for the eye with the step that actually unblocks work. */}
       {selected.reviewObjectKey && !selected.claimedByMe && !selected.reviewed && (
-        <Button variant="primary" onClick={claimSelected} loading={isClaiming} disabled={isLoading || Boolean(selected.claimedBy)}>
+        <Button
+          variant={draft ? 'primary' : 'normal'}
+          onClick={claimSelected}
+          loading={isClaiming}
+          disabled={isLoading || Boolean(selected.claimedBy)}
+        >
           {selected.claimedBy ? `Claimed by ${selected.claimedBy}` : 'Claim this document'}
         </Button>
       )}
@@ -593,12 +617,19 @@ const AnnotationWorkspace = (): React.JSX.Element => {
         </Button>
       )}
       {/* Skipping advances the cursor without marking anything reviewed, so a
-          correct document needs this to ever leave the queue. */}
+          correct document needs this to ever leave the queue.
+          Gated on `draft` for the same reason the editor is: confirming is a write to
+          ground truth — it tags every section reviewed-human, which is precisely the
+          draft-machine → reviewed-human transition a version brackets. Gating only the
+          editor left this as an ungated second route to the same commitment, so a whole
+          set could be confirmed without a version ever recording what the labels had
+          been. The alert below says what to do about it, and is the only primary until
+          it is done. */}
       <Button
-        variant={selected.claimedByMe || selected.reviewed || !selected.reviewObjectKey ? 'primary' : 'normal'}
+        variant={draft && (selected.claimedByMe || selected.reviewed || !selected.reviewObjectKey) ? 'primary' : 'normal'}
         onClick={handleConfirmCorrect}
         loading={isConfirming}
-        disabled={isLoading || !selected.reviewObjectKey}
+        disabled={isLoading || !selected.reviewObjectKey || !draft}
       >
         {selected.reviewed ? 'Re-confirm labels' : 'Labels are correct — mark reviewed'}
       </Button>
@@ -696,10 +727,12 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 <ColumnLayout columns={3} variant="text-grid">
                   <div>
                     <Box variant="awsui-key-label">Estimated label accuracy</Box>
-                    <Box fontSize="heading-m">{formatPct(1 - impact.baselineError)}</Box>
+                    {/* Whole percent until the curve is actually measured on this set:
+                        see formatPct. */}
+                    <Box fontSize="heading-m">{formatPct(1 - impact.baselineError, estimateDecimals)}</Box>
                     <Box fontSize="body-s" color="text-body-secondary">
                       {impact.residualError < impact.baselineError
-                        ? `${formatPct(1 - impact.residualError)} after the recommended review`
+                        ? `${formatPct(1 - impact.residualError, estimateDecimals)} after the recommended review`
                         : 'reviewing more will refine this'}
                     </Box>
                   </div>
@@ -719,7 +752,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                     {/* Shared renderer with the Test Sets list: one vocabulary and
                         color map, so a set cannot appear to change tier between
                         screens. */}
-                    {renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError)}
+                    {renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError, estimateDecimals)}
                   </div>
                 </ColumnLayout>
               )}
@@ -808,6 +841,17 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                     }}
                     countText={queueFilter ? `${filteredQueue.length} match${filteredQueue.length === 1 ? '' : 'es'}` : ''}
                   />
+                  {/* Reviewing a document drops it out of the queue, so this is the only
+                      route back to one — and it used to exist solely as the action on the
+                      "Queue complete" alert, i.e. only once every other document was done.
+                      Searching a reviewed document by name until then returned "0 matches"
+                      with no hint it was being filtered out, which is exactly the state an
+                      annotator who has just mis-saved is in. */}
+                  {!showReviewed && (
+                    <Button variant="inline-link" onClick={() => setShowReviewed(true)}>
+                      Show reviewed documents
+                    </Button>
+                  )}
                   <Cards
                     items={pagedQueue}
                     trackBy="objectKey"
@@ -875,7 +919,23 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                       ],
                     }}
                     cardsPerRow={[{ cards: 1 }]}
-                    empty={<Box textAlign="center">No documents to review.</Box>}
+                    /* "No documents to review" is wrong when a filter is what emptied the
+                       list — the documents are there, the text just does not match one.
+                       Said plainly, because the likeliest reason a search finds nothing is
+                       that the document was already reviewed and is hidden. */
+                    empty={
+                      <Box textAlign="center">
+                        <SpaceBetween size="xs">
+                          <Box>{queueFilter ? `No document matches "${queueFilter}".` : 'No documents to review.'}</Box>
+                          {queueFilter && !showReviewed && (
+                            <Box fontSize="body-s" color="text-body-secondary">
+                              Reviewed documents are hidden — show them to search those too.
+                            </Box>
+                          )}
+                          {!showReviewed && <Button onClick={() => setShowReviewed(true)}>Show reviewed documents</Button>}
+                        </SpaceBetween>
+                      </Box>
+                    }
                   />
                   {queuePageCount > 1 && (
                     <Pagination

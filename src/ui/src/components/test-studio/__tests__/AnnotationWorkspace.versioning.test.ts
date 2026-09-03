@@ -88,4 +88,25 @@ describe('AnnotationWorkspace version transition', () => {
     // score is attributed to one.
     expect(SOURCE).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
+
+  it('gates confirming labels on the transition, not only editing them', () => {
+    // Found by using the screen as an annotator: the editor was read-only before a
+    // transition existed, but "Labels are correct — mark reviewed" sat next to it
+    // enabled. It calls completeSectionReview for every section, which tags each one
+    // reviewed-human server-side — the draft-machine -> reviewed-human change a version
+    // is supposed to bracket. So an entire set could be confirmed, and its provenance
+    // rewritten, with no version recording what the labels had been: the silent
+    // commitment this feature removes, still reachable by the button beside the one
+    // that was fixed.
+    expect(SOURCE).toMatch(/disabled=\{isLoading \|\| !selected\.reviewObjectKey \|\| !draft\}/);
+  });
+
+  it('leaves one primary action, and it is the one that unblocks the rest', () => {
+    // Before a transition is open, neither claiming nor confirming is the next step —
+    // "Start annotating" is, and it is the primary inside that alert. Claim was
+    // unconditionally primary, so two solid-blue buttons competed while the actual
+    // prerequisite sat lower down in an alert.
+    expect(SOURCE).toMatch(/variant=\{draft \? 'primary' : 'normal'\}/);
+    expect(SOURCE).not.toMatch(/<Button variant="primary" onClick=\{claimSelected\}/);
+  });
 });
