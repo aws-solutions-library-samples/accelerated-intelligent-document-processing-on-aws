@@ -641,11 +641,12 @@ several records of the **same** type with no separator, there is no type change 
 split on, so they land in one section — and extraction, whose class schema
 describes one document, may return only the first record.
 
-Each section now reports an **instance count**, shown in the Sections panel:
-
-- blank (`-`) — not determined
-- `1` — the normal case
-- **`> 1`** — the section spans several distinct documents; hover for detail
+Each section now reports an **instance count**. In the Sections panel it is shown
+only when there is something to say — a badge beside the section's class when the
+count exceeds 1, hoverable for detail. A normal single-document section shows just
+its class name; so does a section whose count was never determined (older
+documents, or extraction that failed before producing a result). The raw value is
+on the API as `Section.InstanceCount` either way.
 
 If a class's schema is **already modelled as a packet of records** (one top-level
 array, one element per record), name that array so the count can be derived:
