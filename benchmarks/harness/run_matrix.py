@@ -25,6 +25,7 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_configs import _resolve_value as _resolve_axis_value
 from make_configs import set_path as _set_path
 
 import lib
@@ -323,8 +324,14 @@ def verify_config_axes(cells):
                 # (ocr.features becomes [{name: X}, ...]). Reusing the generator's
                 # own function means this check can never disagree with it over a
                 # shape transform — only over a real value difference.
+                # `@file:` axis values (the frozen pre-#653 prompt) name a file
+                # whose CONTENTS get written, so the index's literal
+                # "@file:foo.txt" will never equal what is on disk. Resolve it the
+                # same way make_configs does, or this check reports a mismatch on
+                # a config it generated correctly — which is exactly what it did
+                # the first time boundaryctl ran.
                 probe: dict = {}
-                _set_path(probe, dotted, want)
+                _set_path(probe, dotted, _resolve_axis_value(want))
                 want_written = _dig(probe, dotted)
                 got = _dig(cfg, dotted)
                 if str(got) != str(want_written):

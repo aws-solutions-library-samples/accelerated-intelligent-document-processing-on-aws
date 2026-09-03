@@ -60,6 +60,19 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # classification.confidence.mode (#731/#673). Turned ON by default (`topk`) in
+  # v0.7, so every existing deployment starts paying per-page classification
+  # output tokens on upgrade — this axis is how that cost gets measured.
+  #
+  # It is ALSO a confound for any classification study: `topk` rewrites the
+  # classification prompt to ask the model to rank alternative classes with
+  # probabilities. That extra reasoning can improve the boundary decision on its
+  # own, which masks a boundary-prompt comparison — the #653 pre/post control
+  # measured +0.00 on all three shapes with `topk` on, having measured a real
+  # deficit before #731 landed. Hold it `off` to isolate a prompt change.
+  class_confidence:
+    topk: {classification.confidence.mode: topk}
+    'off': {classification.confidence.mode: "off"}
   # classification.task_prompt, frozen at two points in history. This is the ONLY
   # axis whose value is a whole prompt rather than a scalar, so it uses the
   # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
@@ -141,6 +154,7 @@ default_cell:
   schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
+  class_confidence: topk              # the shipped default since #731
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.

@@ -176,3 +176,67 @@ class TestOverrideSlug:
         assert 'ap.add_argument(\n        "--set"' in src, (
             "run_matrix needs a matching --set so it can find the right index"
         )
+
+
+@pytest.mark.unit
+def test_a_file_valued_axis_does_not_false_positive(rm, tmp_path):
+    """`@file:` axis values must be RESOLVED before comparing index to disk.
+
+    The frozen pre-#653 classification prompt is supplied as
+    `@file:classification_task_prompt_pre653.txt`. The index records that literal
+    string; the generated config holds the file's CONTENTS. Comparing the two
+    verbatim reports a mismatch on a config that was generated correctly — which
+    is precisely what happened the first time `boundaryctl` tried to run, aborting
+    a suite whose configs were fine.
+    """
+    import yaml as _yaml
+
+    matrix = _yaml.safe_load(open(rm.CFG_MATRIX))
+    axis = (matrix.get("axes") or {}).get("boundary_prompt") or {}
+    knobs = axis.get("legacy") or {}
+    assert knobs, "the boundary_prompt/legacy axis value has gone away"
+    dotted, raw = next(iter(knobs.items()))
+    assert str(raw).startswith("@file:"), f"expected an @file: value, got {raw!r}"
+
+    # Build a config file the way make_configs would: the RESOLVED contents.
+    resolved = rm._resolve_axis_value(raw)
+    assert resolved and not resolved.startswith("@file:")
+    cfg_path = tmp_path / "cell.yaml"
+    probe: dict = {}
+    rm._set_path(probe, dotted, resolved)
+    cfg_path.write_text(_yaml.safe_dump(probe))
+
+    cells = [
+        {
+            "cell": "split-llm-legacyprompt",
+            "path": str(cfg_path),
+            "resolved": {"boundary_prompt": "legacy"},
+        }
+    ]
+    # Must NOT raise/exit.
+    rm.verify_config_axes(cells)
+
+
+@pytest.mark.unit
+def test_a_file_valued_axis_still_catches_a_real_mismatch(rm, tmp_path):
+    """Guard-the-guard: resolving `@file:` must not blind the check. A config
+    whose prompt is genuinely something else still has to abort."""
+    import yaml as _yaml
+
+    matrix = _yaml.safe_load(open(rm.CFG_MATRIX))
+    knobs = ((matrix.get("axes") or {}).get("boundary_prompt") or {}).get("legacy")
+    dotted, _raw = next(iter(knobs.items()))
+    cfg_path = tmp_path / "cell.yaml"
+    probe: dict = {}
+    rm._set_path(probe, dotted, "some completely different prompt")
+    cfg_path.write_text(_yaml.safe_dump(probe))
+
+    cells = [
+        {
+            "cell": "split-llm-legacyprompt",
+            "path": str(cfg_path),
+            "resolved": {"boundary_prompt": "legacy"},
+        }
+    ]
+    with pytest.raises(SystemExit):
+        rm.verify_config_axes(cells)
