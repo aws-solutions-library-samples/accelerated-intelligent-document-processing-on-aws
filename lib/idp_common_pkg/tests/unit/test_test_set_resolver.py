@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import pathlib
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
@@ -2658,10 +2660,15 @@ class TestTestSetResolver:
     ):
         """Correcting the class must actually reach the extraction.
 
-        The class is written to the baseline before the run because the pipeline
-        skips classification for pages that already carry one — that is what makes
-        the re-run extract against the class the annotator chose rather than
-        re-deciding it. Only the named document is processed.
+        Two things have to happen, and this test previously asserted only the
+        first — which is why the flow shipped broken. The baseline pin is not
+        sufficient on its own: the run classifies from the *input document* and
+        never reads the test set's baseline, so the pipeline re-derived the
+        original class and the harvest wrote it back over the pin.
+
+        So the class must also be sent INTO the run, which stamps it as S3
+        metadata for the classification step. Only the named document is
+        processed.
         """
         table, s3 = labeling_env
         _seed_test_set(table, "ts1", fileCount=2)
@@ -2698,6 +2705,9 @@ class TestTestSetResolver:
         assert result["jobId"] == "ts1-reextract"
         payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
         assert payload["arguments"]["input"]["objectKeys"] == ["check.pdf"]
+        # The assertion whose absence let the bug ship: without this the class
+        # never reaches the pipeline and the correction is silently discarded.
+        assert payload["arguments"]["input"]["documentClass"] == "bank-check"
 
         written = json.loads(
             s3.get_object(
@@ -2971,6 +2981,599 @@ class TestTestSetResolver:
         assert written["labelSource"] == "reviewed-human"
         assert written["document_class"]["type"] == "bank-check"
 
+    def test_an_annotator_can_watch_the_reextract_they_started(self):
+        """Starting a job without being able to observe it is not a capability.
+
+        The editor calls reextractTestSetDocument — long Annotator-reachable — and
+        then polls getDraftLabelJob for the outcome. getDraftLabelJob was absent from
+        ANNOTATOR_ALLOWED_FIELDS, so on a dev stack an annotator's class correction
+        ran to completion server-side while the UI showed "Could not re-extract this
+        document": a failure message over a job that worked.
+        """
+        allowed = test_set_index.ANNOTATOR_ALLOWED_FIELDS
+
+        # Both halves of the same flow, or neither is usable.
+        assert "reextractTestSetDocument" in allowed
+        assert "getDraftLabelJob" in allowed
+
+    def test_every_annotator_field_asserts_per_set_scope(self):
+        """Group membership alone would expose other teams' sets.
+
+        Each Annotator-reachable field must assert per-set access somewhere on its
+        path. Checked in the dispatch branch AND in the handler it calls, because the
+        codebase does both: getTestSetDocuments asserts in the dispatch,
+        getAnnotationQueue inside its handler. Looking only at the dispatch reported a
+        gap that was not there.
+        """
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        dispatch = source[source.index("def handler(") :]
+
+        for field in test_set_index.ANNOTATOR_ALLOWED_FIELDS:
+            branch_at = dispatch.index(f'field_name == "{field}"')
+            next_branch = dispatch.find("elif field_name ==", branch_at + 1)
+            branch = dispatch[
+                branch_at : next_branch if next_branch > 0 else len(dispatch)
+            ]
+            if "assert_can_access_test_set" in branch:
+                continue
+
+            # Otherwise the handler it delegates to has to do it.
+            called = re.findall(r"return (\w+)\(", branch)
+            assert called, f"{field} dispatches to nothing recognisable"
+            handler_src = ""
+            for name in called:
+                at = source.find(f"def {name}(")
+                if at == -1:
+                    continue
+                end = source.find("\ndef ", at + 1)
+                handler_src += source[at : end if end > 0 else len(source)]
+            assert "assert_can_access_test_set" in handler_src, (
+                f"{field} is Annotator-reachable but neither its dispatch branch nor "
+                f"{called} asserts per-set access"
+            )
+
+    # ---------------------------------------------------------------- regrouping
+
+    @staticmethod
+    def _seed_packet(s3, sections):
+        """Write a document's baseline sections. `sections` is {id: (class, indices)}."""
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        for section_id, (doc_class, indices) in sections.items():
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/packet.pdf/sections/{section_id}/result.json",
+                Body=json.dumps(
+                    {
+                        "document_class": {"type": doc_class},
+                        "split_document": {"page_indices": indices},
+                        "inference_result": {"field": f"value-from-{section_id}"},
+                        "labelSource": "reviewed-human",
+                        "_editHistory": [{"editedBy": "someone"}],
+                    }
+                ).encode(),
+            )
+
+    @staticmethod
+    def _read_sections(s3):
+        """{section_id: parsed result.json} for the seeded document."""
+        prefix = "ts1/baseline/packet.pdf/sections/"
+        out = {}
+        for obj in s3.list_objects_v2(Bucket="test-set-bucket", Prefix=prefix).get(
+            "Contents", []
+        ):
+            if not obj["Key"].endswith("/result.json"):
+                continue
+            section_id = obj["Key"][len(prefix) :].split("/")[0]
+            out[section_id] = json.loads(
+                s3.get_object(Bucket="test-set-bucket", Key=obj["Key"])["Body"].read()
+            )
+        return out
+
+    def test_regrouping_preserves_every_field_value(self, labeling_env):
+        """The whole reason this mutation exists rather than a re-extract.
+
+        The motivating case was a wrong packet split on a document carrying
+        annotations that could not be lost. Re-running extraction would fix the grouping and destroy the
+        annotations, so this writes the grouping and nothing else.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1, 2],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [0, 1, 2]
+        assert after["2"]["split_document"]["page_indices"] == [3]
+        # Untouched: the values, their provenance, and the edit trail.
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["2"]["inference_result"] == {"field": "value-from-2"}
+        assert after["1"]["labelSource"] == "reviewed-human"
+        assert after["1"]["_editHistory"] == [{"editedBy": "someone"}]
+
+    def test_a_repeated_section_id_is_refused(self, labeling_env):
+        """Sections are keyed by id when the existing baselines are looked up, so a
+        repeated id writes the same baseline content into two section files and
+        renumbers around a group that no longer exists. The page-level checks cannot
+        catch it: both groups' pages are legitimately accounted for."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2])})
+
+        with pytest.raises(Exception, match="more than once"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "FieldTicket",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Invoice",
+                                "pageIndices": [1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Invoice",
+                                "pageIndices": [2],
+                            },
+                        ],
+                    }
+                }
+            )
+
+        # Nothing written: the refusal happens in validation, before any put_object.
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [0, 1]
+        assert after["2"]["split_document"]["page_indices"] == [2]
+
+    def test_a_custom_page_order_survives_the_save(self, labeling_env):
+        """The defect this pair of tests exists for.
+
+        ``page_indices`` records the section's reading order as well as its membership:
+        ``split_accuracy_with_order`` compares the two lists with ``==`` and half the
+        graded packet score is Kendall's Tau over each page's position
+        (``stickler_backend/doc_split.py:111``). This once called ``sorted()`` here, so a
+        reviewer's authored order was discarded on every save — and the value written was
+        still plausible-looking JSON, so nothing raised.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        # Page 1 read before page 0: a packet assembled out of order.
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [1, 0],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3, 2],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["split_document"]["page_indices"] == [1, 0]
+        assert after["2"]["split_document"]["page_indices"] == [3, 2]
+        # And the values are still preserved alongside the order.
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["1"]["labelSource"] == "reviewed-human"
+
+    def test_the_response_reports_the_order_actually_written(self, labeling_env):
+        """The client redraws its board from this, so a sorted response would show the
+        reviewer an order that is not what is on disk."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("Invoice", [0, 1, 2])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 0, 1],
+                        }
+                    ],
+                }
+            }
+        )
+
+        assert result["sections"][0]["pageIndices"] == [2, 0, 1]
+        assert self._read_sections(s3)["1"]["split_document"]["page_indices"] == [
+            2,
+            0,
+            1,
+        ]
+
+    def test_a_class_only_edit_does_not_normalise_an_existing_order(self, labeling_env):
+        """The worst shape of the bug: a reviewer who touched only the *class* would have
+        silently rewritten the section's page order as a side effect, changing a metric
+        they never went near."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [2, 0, 1])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 0, 1],
+                        }
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["document_class"]["type"] == "Invoice"
+        assert after["1"]["split_document"]["page_indices"] == [2, 0, 1]
+
+    def test_section_order_keys_on_the_lowest_page_not_the_first_listed(
+        self, labeling_env
+    ):
+        """Now that a section can carry a manual page order, ``min`` and ``[0]`` differ.
+
+        A section's place in the document is where it *starts*, so section ordering keys on
+        the lowest page. Keying on the first listed page would let a within-section reorder
+        silently renumber the sections around it.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        # Reads page 3 first, but still starts at page 2.
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [3, 2],
+                        },
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1],
+                        },
+                    ],
+                }
+            }
+        )
+
+        # FieldTicket still comes first: it starts at page 0.
+        assert [s["documentClass"] for s in result["sections"]] == [
+            "FieldTicket",
+            "Invoice",
+        ]
+
+    def test_sections_are_renumbered_so_ids_agree_with_page_order(self, labeling_env):
+        """Consumers take a section's group index from its position in a list.
+
+        `compute_graded_packet_metrics` enumerates the sections it is given, and nothing
+        guarantees that list is in page order. Numbering 1..N by first page makes id
+        order, lexical key order and page order the same thing, so no consumer can
+        disagree about which group a page belongs to.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [2, 3]), "2": ("Invoice", [0, 1])})
+
+        result = test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [2, 3],
+                        },
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [0, 1],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        # Section 1 now holds the FIRST pages, and carries the content that came with
+        # them — the values follow their pages, not their old id.
+        assert after["1"]["split_document"]["page_indices"] == [0, 1]
+        assert after["1"]["inference_result"] == {"field": "value-from-2"}
+        assert after["2"]["split_document"]["page_indices"] == [2, 3]
+        assert after["2"]["inference_result"] == {"field": "value-from-1"}
+        assert [s["pageIndices"] for s in result["sections"]] == [[0, 1], [2, 3]]
+
+    def test_merging_two_sections_removes_the_leftover_file(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1, 2, 3],
+                        }
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        # A stale section/2/result.json left behind would be read as a real section by
+        # every consumer, including scoring.
+        assert list(after) == ["1"]
+
+    def test_a_new_section_is_written_with_no_field_values(self, labeling_env):
+        """Splitting one section into two: the new half has nothing extracted yet.
+
+        Writing an empty inference_result states that plainly; inventing a copy of the
+        original's values would look like extracted data that no model produced.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1, 2, 3])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "1",
+                            "documentClass": "FieldTicket",
+                            "pageIndices": [0, 1],
+                        },
+                        {
+                            "sectionId": "99",
+                            "documentClass": "Invoice",
+                            "pageIndices": [2, 3],
+                        },
+                    ],
+                }
+            }
+        )
+
+        after = self._read_sections(s3)
+        assert after["1"]["inference_result"] == {"field": "value-from-1"}
+        assert after["2"]["inference_result"] == {}
+        assert after["2"]["document_class"]["type"] == "Invoice"
+
+    def test_a_page_in_two_sections_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        with pytest.raises(Exception, match="in both section"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1, 2]},
+                            {"sectionId": "2", "pageIndices": [2, 3]},
+                        ],
+                    }
+                }
+            )
+
+    def test_dropping_a_labelled_page_is_refused(self, labeling_env):
+        """Losing a page silently would discard the ground truth for it.
+
+        The client also requires every page of the rendered PDF to be assigned, which
+        only it can check — the server would have to parse the document to learn its
+        page count. What the server can enforce is that nothing already labelled goes
+        missing, which is the half that loses data.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1]), "2": ("Invoice", [2, 3])})
+
+        with pytest.raises(Exception, match="would no longer belong to any section"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [{"sectionId": "1", "pageIndices": [0, 1, 2]}],
+                    }
+                }
+            )
+
+    def test_a_page_the_baseline_never_mentioned_is_allowed_in(self, labeling_env):
+        """A split that dropped a page is exactly what a reviewer is here to fix."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    # Page 2 was never in any section; the reviewer adds it.
+                    "sections": [{"sectionId": "1", "pageIndices": [0, 1, 2]}],
+                }
+            }
+        )
+
+        assert self._read_sections(s3)["1"]["split_document"]["page_indices"] == [
+            0,
+            1,
+            2,
+        ]
+
+    def test_an_empty_section_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        with pytest.raises(Exception, match="has no pages"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1]},
+                            {"sectionId": "2", "pageIndices": []},
+                        ],
+                    }
+                }
+            )
+
+    def test_a_negative_or_non_integer_page_index_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_packet(s3, {"1": ("FieldTicket", [0, 1])})
+
+        for bad in (-1, "0", 1.5, True):
+            with pytest.raises(Exception, match="invalid page index"):
+                test_set_index.update_test_set_document_sections(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKey": "packet.pdf",
+                            "sections": [
+                                {"sectionId": "1", "pageIndices": [0, 1, bad]}
+                            ],
+                        }
+                    }
+                )
+
+    def test_a_document_with_no_baseline_is_refused_with_advice(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+
+        with pytest.raises(Exception, match="Generate draft labels"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [{"sectionId": "1", "pageIndices": [0]}],
+                    }
+                }
+            )
+
+    def test_a_document_class_is_validated_before_it_reaches_s3_metadata(self):
+        """`documentClass` is Annotator-reachable and ends up as S3 user metadata.
+
+        It flows reviewer -> reextractTestSetDocument -> generate_draft_labels ->
+        SQS -> S3 object user metadata -> Document.from_s3_event -> a forced class
+        and a forced section, and the dispatcher deliberately does not
+        deep-validate nested input fields. S3 user metadata must be ASCII, so a
+        non-ASCII value surfaced as a botocore failure and a 500 instead of a
+        clean rejection.
+        """
+        v = test_set_index.validate_document_class
+
+        # The real vocabulary, taken from shipped configs.
+        # Real names, taken from config_library: all 120 shipped classes match this.
+        for good in (
+            "Bank Statement",
+            "Bank-Statement",
+            "Payslip",
+            "invoice",
+            "W-2",
+            "BANK_CHECK",
+            "PA-Claims-Evidence",
+        ):
+            assert v(good) is True, good
+
+        # Absent means "leave the class alone", which is a legitimate call.
+        assert v(None) is True
+        assert v("") is True
+
+        # Rejected.
+        # `\s` would admit these, and `$` matches before a trailing newline.
+        assert v("Bank\nStatement") is False
+        assert v("Bank Statement\n") is False
+        assert v("Bank\tStatement") is False
+        assert v("Ünicode Class") is False  # not ASCII: botocore 500, not a 400
+        assert v("x" * 101) is False
+        # Caught a first draft of the regex that allowed '.' and '/'.
+        assert v("../../etc/passwd") is False
+        assert v("a/b") is False
+        assert v({"not": "a string"}) is False
+        assert v(123) is False
+
+    def test_reextract_rejects_a_malformed_document_class(self, labeling_env):
+        """The check runs before anything is written, not after."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+
+        with pytest.raises(Exception, match="Invalid document class"):
+            test_set_index.reextract_test_set_document(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "a.pdf",
+                        "documentClass": "Ünicode",
+                    }
+                }
+            )
+
     def test_clear_draft_labels_keeps_human_and_authored_ground_truth(
         self, labeling_env
     ):
@@ -2997,8 +3600,12 @@ class TestTestSetResolver:
             )
         table.update_item(
             Key={"PK": "testset#ts1", "SK": "metadata"},
-            UpdateExpression="SET labelJobId = :j, labelJobStatus = :s",
-            ExpressionAttributeValues={":j": "old-run", ":s": "COMPLETED"},
+            UpdateExpression=(
+                "SET labelJobId = :j, labelJobStatus = :s, labelProbedFileCount = :n"
+            ),
+            # Seeded, or the "marker is gone" assertion below passes against code that
+            # never removes it.
+            ExpressionAttributeValues={":j": "old-run", ":s": "COMPLETED", ":n": 3},
         )
 
         result = test_set_index.clear_draft_labels({"testSetId": "ts1"})
@@ -3029,6 +3636,79 @@ class TestTestSetResolver:
         assert "labelJobStatus" not in meta
         # Confirmation is returned, not stored — see the reset test for why.
         assert "lastAddResult" not in meta
+        # The probe marker must go, or _reconcile_label_state skips this set forever:
+        # it is keyed on fileCount, and clearing drafts removes baselines without
+        # changing membership. Observed on a dev stack as a cleared set permanently
+        # reporting "Draft (machine)" and a 97.6% estimate with no labels present.
+        assert "labelProbedFileCount" not in meta
+
+    def test_clear_draft_labels_returns_a_wholly_drafted_set_to_unlabeled(
+        self, labeling_env
+    ):
+        """Clearing every label must not leave the set claiming to have some.
+
+        The label state is what drives the Labels badge and whether the review-effort
+        estimator runs at all, so a set that reports "draft" with nothing under
+        baseline/ also gets an estimated accuracy inferred entirely from a cross-set
+        prior — a number about no labels.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps(
+                    {"labelSource": "draft-machine", "inference_result": {"f": "v"}}
+                ).encode(),
+            )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelState = :d, labelProbedFileCount = :n",
+            ExpressionAttributeValues={":d": "draft", ":n": 2},
+        )
+
+        test_set_index.clear_draft_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelState"] == "unlabeled"
+
+    def test_clear_draft_labels_leaves_state_to_the_reconciler_when_labels_survive(
+        self, labeling_env
+    ):
+        """`kept` counts label objects, not documents, so it cannot decide the state.
+
+        Some documents may have lost their only label while others keep theirs, which
+        is "unlabeled" by the coverage rule registration uses — a question only
+        _validate_test_set_files can answer. So the state is left alone and the probe
+        marker dropped, which is what lets the reconciler answer it.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name, src in (("draft.pdf", "draft-machine"), ("kept.pdf", None)):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+            body = {"inference_result": {"f": "v"}}
+            if src:
+                body["labelSource"] = src
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps(body).encode(),
+            )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelState = :d, labelProbedFileCount = :n",
+            ExpressionAttributeValues={":d": "draft", ":n": 2},
+        )
+
+        test_set_index.clear_draft_labels({"testSetId": "ts1"})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        # Not asserted as "unlabeled": that would be guessing at coverage here.
+        assert meta["labelState"] == "draft"
+        # But the next list re-derives it, which is the whole point.
+        assert "labelProbedFileCount" not in meta
 
     def test_reset_discards_reviewed_labels_and_review_state(self, labeling_env):
         """The destructive counterpart to clearDraftLabels.
@@ -3415,6 +4095,220 @@ class TestTestSetResolver:
 
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
+
+    def test_the_annotation_queue_carries_the_class_through(self, labeling_env):
+        """End to end: the queue is a different resolver from the documents page,
+        so the field has to survive that hop too. Pinned because the value is
+        only useful where the review work actually happens."""
+        table, s3 = labeling_env
+        _seed_test_set(
+            table, "ts1", fileCount=1, labelJobId="run1", labelJobStatus="COMPLETED"
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        queue = test_set_index.get_annotation_queue({"testSetId": "ts1"})
+
+        assert queue["documents"][0]["documentClasses"] == ["Bank-Statement"]
+
+    def test_queue_shows_what_each_document_was_classified_as(self, labeling_env):
+        """A reviewer must be able to see the class without opening the document.
+
+        It is the one thing no other column can reveal. Extraction against the
+        wrong schema can be *confidently* wrong, so a misclassified document's
+        confidence and alert count look entirely normal — which is why it sorts
+        low in worst-first order and never gets opened.
+
+        Shown, not scored: nothing here can tell whether the class is WRONG,
+        because the draft under review is itself the candidate ground truth and
+        classification carries no real confidence. So it is deliberately kept out
+        of the ordering and out of the review-effort estimator.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["documents"][0]["documentClasses"] == ["Bank-Statement"]
+
+    def test_each_section_reports_its_page_grouping(self, labeling_env):
+        """The page-regrouping editor needs every section's grouping at once.
+
+        Without this it would have to fetch each section's result.json again — the
+        editor otherwise loads only the section being viewed. The resolver is already
+        opening these files for label state and class, so this costs no extra reads.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        for section, cls, indices in (("1", "Invoice", [0, 1]), ("2", "W2", [2])):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/packet.pdf/sections/{section}/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "document_class": {"type": cls},
+                        "split_document": {"page_indices": indices},
+                        "inference_result": {"f": "v"},
+                    }
+                ).encode(),
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        sections = page["documents"][0]["sections"]
+
+        assert [s["sectionId"] for s in sections] == ["1", "2"]
+        assert [s["pageIndices"] for s in sections] == [[0, 1], [2]]
+
+    def test_a_section_with_no_grouping_omits_it_rather_than_claiming_no_pages(
+        self, labeling_env
+    ):
+        """Absent and empty are different claims.
+
+        A non-packet baseline carries no split_document at all. Reporting [] would say
+        "this section covers no pages", which would make the regrouping editor show it
+        as empty and refuse to save.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Bank-Statement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert "pageIndices" not in page["documents"][0]["sections"][0]
+
+    def test_the_queue_reports_page_groupings_too(self, labeling_env):
+        """Both payloads, because the editor is reached from either."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/packet.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "draft-machine",
+                    "document_class": {"type": "Invoice"},
+                    "split_document": {"page_indices": [0, 1, 2]},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        queue = test_set_index.get_annotation_queue({"testSetId": "ts1"})
+
+        assert queue["documents"][0]["sections"][0]["pageIndices"] == [0, 1, 2]
+
+    def test_a_packet_reports_each_distinct_class_once(self, labeling_env):
+        """A split document has a class per section. Duplicates collapse so a
+        20-page packet of one class does not render twenty identical badges."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        for section, cls in (("1", "Invoice"), ("2", "W2"), ("3", "Invoice")):
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/a.pdf/sections/{section}/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "document_class": {"type": cls},
+                        "inference_result": {"f": "v"},
+                    }
+                ).encode(),
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        # Distinct, and in the order encountered.
+        assert page["documents"][0]["documentClasses"] == ["Invoice", "W2"]
+
+    def test_a_baseline_with_no_class_reports_none_rather_than_a_blank(
+        self, labeling_env
+    ):
+        """An empty list, not [""] — a blank badge would read as a class named ""."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {"labelSource": "draft-machine", "inference_result": {"f": "v"}}
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["documents"][0]["documentClasses"] == []
+
+    def test_documents_page_reports_the_SET_size_not_the_page_size(self, labeling_env):
+        """A paginated response must say how big the whole set is.
+
+        Without it a caller can only count what it received and call that the
+        total, which is what happened: the UI showed "Documents (50)" for a
+        100-document set and offered to "Label 50 document(s)" — then labeled all
+        100, because select-all sends no object keys and the server walks the set
+        itself. The number shown was wrong in the one direction that matters.
+
+        Read from the stored fileCount, so it stays O(1) as sets grow.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=100)
+        for i in range(3):
+            s3.put_object(
+                Bucket="test-set-bucket", Key=f"ts1/input/doc{i}.pdf", Body=b"x"
+            )
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1", "limit": 2})
+
+        assert len(page["documents"]) == 2, "page is capped by limit"
+        assert page["totalCount"] == 100, "but the total describes the whole set"
+        assert page["nextToken"], "and there is more to fetch"
+
+    def test_total_count_is_zero_rather_than_absent_when_unknown(self, labeling_env):
+        """A missing fileCount must not surface as null and render as blank."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+
+        assert page["totalCount"] == 0
 
     def test_documents_page_omits_the_job_once_it_is_finished(self, labeling_env):
         table, s3 = labeling_env

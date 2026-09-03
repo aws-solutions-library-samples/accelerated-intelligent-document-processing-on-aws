@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
@@ -35,6 +36,49 @@ def validate_test_set_name(name):
     if not name or not isinstance(name, str):
         return False
     return re.match(r"^[a-zA-Z0-9\s_-]+$", name) and len(name) <= 50
+
+
+# Document class names come from a config's `classes`. All 120 shipped across
+# config_library use letters, digits, spaces, hyphens and underscores and nothing
+# else ("Bank Statement", "Bank-Statement", "PA-Claims-Evidence", "BANK_CHECK"),
+# so the character set is exactly that — no dot and no slash, which a first draft
+# allowed and which let "../../etc/passwd" through.
+#
+# A literal space rather than `\s`, which admits newlines and tabs. And matched with
+# `fullmatch`, not `match`: `$` matches BEFORE a trailing newline, so
+# "Bank Statement\n" passes `^...$` even with the space literal. A test caught that
+# after this comment had already claimed otherwise.
+#
+# ASCII-only matters concretely: the value is carried as S3 object *user metadata*,
+# where a non-ASCII class name surfaced as a botocore failure and a 500 rather
+# than a clean rejection.
+_DOCUMENT_CLASS_RE = re.compile(r"[a-zA-Z0-9 _-]+")
+_DOCUMENT_CLASS_MAX_LEN = 100
+
+
+def validate_document_class(document_class):
+    """Validate a caller-supplied document class before it reaches S3 metadata.
+
+    ``reextractTestSetDocument`` is reachable by the **Annotator** group, the
+    lowest-privilege role, and its ``documentClass`` flows reviewer → resolver →
+    ``generate_draft_labels`` → SQS → S3 user metadata → ``Document.from_s3_event``
+    → a forced class and a forced section. Nothing along that path constrained it,
+    and the dispatcher deliberately does not deep-validate nested input fields.
+
+    This bounds the shape only. It deliberately does NOT check membership of the
+    deployment's configured classes: this Lambda has no CONFIGURATION_TABLE grant,
+    so that check needs an env var and a read permission it does not currently
+    have. A well-formed but unconfigured class therefore still yields a section
+    with no schema and so no extracted fields — visibly wrong in the UI rather
+    than silently wrong. Worth closing separately.
+    """
+    if document_class is None or document_class == "":
+        return True  # Optional: absence means "leave the class alone".
+    if not isinstance(document_class, str):
+        return False
+    if len(document_class) > _DOCUMENT_CLASS_MAX_LEN:
+        return False
+    return bool(_DOCUMENT_CLASS_RE.fullmatch(document_class))
 
 
 def validate_description(description):
@@ -146,6 +190,17 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # annotator page load and the panel is silently absent for the role it exists
     # for. Per-set scope is still asserted in the handler below.
     "estimateReviewEffort",
+    # Starting a re-extract without being able to watch it is not a capability. The
+    # editor kicks off reextractTestSetDocument (allowed above) and then polls this
+    # for the outcome, so leaving it off the list meant an annotator's class
+    # correction ran to completion server-side while the UI reported
+    # "Could not re-extract this document" — a failure message over a job that
+    # worked. Per-set scope is asserted in the handler below, as for the others.
+    "getDraftLabelJob",
+    # Correcting a wrong packet split is annotation work, exactly as correcting a wrong
+    # class is — and it is the correction most often needed in practice. Per-set scope
+    # asserted in the dispatch below.
+    "updateTestSetDocumentSections",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -212,12 +267,19 @@ def handler(event, context):
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
         return generate_draft_labels(event["arguments"], event)
+    elif field_name == "updateTestSetDocumentSections":
+        # Annotator-reachable: group membership alone would expose other sets.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return update_test_set_document_sections(event["arguments"], event)
     elif field_name == "reextractTestSetDocument":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
         assert_can_access_test_set(event, input_data.get("testSetId") or "")
         return reextract_test_set_document(event["arguments"], event)
     elif field_name == "getDraftLabelJob":
+        # Annotator-reachable: group membership alone would expose other sets' jobs.
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         return get_draft_label_job(event["arguments"])
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.
@@ -870,9 +932,17 @@ def generate_draft_labels(args, event=None):
     config_version = input_data.get("configVersion")
     config_revision = input_data.get("configRevision")
     object_keys = input_data.get("objectKeys") or []
+    # Forces the class for this run's documents instead of classifying them. Only
+    # ever set by a single-document re-extract after a class correction.
+    document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -914,6 +984,8 @@ def generate_draft_labels(args, event=None):
             run_input["configRevision"] = config_revision
     if object_keys:
         run_input["objectKeys"] = object_keys
+    if document_class:
+        run_input["documentClass"] = document_class
 
     lambda_client = boto3.client("lambda")
     response = lambda_client.invoke(
@@ -982,8 +1054,21 @@ def reextract_test_set_document(args, event=None):
     reprocessed outside a job would never reach the baseline. Going through a job
     also keeps the harvest's overwrite safety, pruning and curve bookkeeping.
 
-    The class is pinned by writing it to the baseline first, since classification is
-    skipped for pages that already carry one.
+    The corrected class is applied in **two** places, and both are load-bearing:
+
+    1. Sent into the run, which stamps it as S3 metadata on the copied document so
+       the classification step uses it instead of classifying. This is what makes
+       extraction run against the class the reviewer chose.
+    2. Written onto the existing baseline up front, so a run that never completes
+       still records the correction, and so a reviewed label is demoted (the
+       harvest refuses to overwrite ``reviewed-human``).
+
+    Step 2 alone used to be the whole implementation, and it silently did not
+    work: the run classifies from the input document and never sees the test set's
+    baseline, so the pipeline re-derived the original class and the harvest wrote
+    it back over the pin. The observable result was the demotion sticking while
+    the correction vanished, leaving fields extracted under the old schema beside
+    a "Re-extracted as X" success message.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -992,6 +1077,11 @@ def reextract_test_set_document(args, event=None):
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -1025,6 +1115,14 @@ def reextract_test_set_document(args, event=None):
                 "testSetId": test_set_id,
                 "objectKeys": [object_key],
                 "configVersion": config_version,
+                # The correction has to reach the PIPELINE, not just the baseline.
+                # Stamping it on the baseline alone does not work: the run
+                # classifies from the input document, which never sees the test
+                # set's baseline, and the harvest then writes the pipeline's own
+                # class back over the pin. The visible result was the demotion
+                # sticking while the corrected class silently disappeared, and
+                # fields still extracted under the old schema.
+                "documentClass": document_class,
             }
         },
         event,
@@ -1034,6 +1132,226 @@ def reextract_test_set_document(args, event=None):
         f"'{document_class or 'its existing class'}' via job {result['jobId']}"
     )
     return result
+
+
+# A packet with more sections than this is far more likely to be a client bug than a
+# real document, and each section is a separate S3 write.
+MAX_SECTIONS_PER_DOCUMENT = 200
+
+
+def _read_baseline_sections(test_set_bucket, test_set_id, object_key):
+    """Every section of a document's baseline, as ``{section_id: (key, parsed)}``.
+
+    An unreadable section is fatal here, unlike in ``_set_baseline_document_class``
+    where one bad file must not block a class correction. Re-grouping rewrites the
+    whole set of sections, so proceeding without knowing what one of them contained
+    would discard its field values silently.
+    """
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    out = {}
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith("/result.json"):
+                continue
+            section_id = key[len(prefix) :].split("/")[0]
+            body = s3_client.get_object(Bucket=test_set_bucket, Key=key)["Body"].read()
+            out[section_id] = (key, json.loads(body))
+    return out
+
+
+def _validate_regrouping(sections, previously_labelled_pages):
+    """Reject a re-grouping that would corrupt or lose ground truth.
+
+    The client validates more than this — it also requires every page of the rendered
+    PDF to be assigned, which only it can check, because the server would have to
+    parse the document to learn its page count. What the server *can* enforce is that
+    nothing already labelled disappears, and that the result is a partition of what it
+    is given:
+
+    * no page in two sections, which would make the grouping meaningless;
+    * no empty section, which would carry field values belonging to no pages;
+    * no page that was previously labelled going missing, which would silently drop
+      the ground truth for that page.
+
+    A page the baseline never mentioned *is* allowed in: a split that dropped a page
+    entirely is exactly the defect a reviewer is here to fix.
+    """
+    if not sections:
+        raise Exception("A document must have at least one section")
+    if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
+        raise Exception(
+            f"Too many sections ({len(sections)}); the maximum is "
+            f"{MAX_SECTIONS_PER_DOCUMENT}"
+        )
+
+    seen = {}
+    section_ids = set()
+    for section in sections:
+        section_id = str(section.get("sectionId") or "")
+        # Sections are keyed by id when the existing baselines are looked up, so a
+        # repeated id would write the same baseline content into two section files and
+        # renumber around a group that no longer exists. The page-level checks below
+        # cannot catch it: both groups' pages are legitimately accounted for.
+        if section_id in section_ids:
+            raise Exception(f"Section '{section_id}' appears more than once")
+        section_ids.add(section_id)
+        indices = section.get("pageIndices")
+        if not isinstance(indices, list) or not indices:
+            raise Exception(f"Section '{section_id}' has no pages")
+        for raw in indices:
+            if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+                raise Exception(
+                    f"Section '{section_id}' has an invalid page index {raw!r}; "
+                    "expected a non-negative integer"
+                )
+            if raw in seen:
+                raise Exception(
+                    f"Page index {raw} is in both section '{seen[raw]}' and "
+                    f"section '{section_id}'"
+                )
+            seen[raw] = section_id
+
+    lost = sorted(previously_labelled_pages - set(seen))
+    if lost:
+        raise Exception(
+            f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
+            "would no longer belong to any section, which would discard the ground "
+            "truth for those pages"
+        )
+
+
+def update_test_set_document_sections(args, event=None):
+    """Re-group a document's pages into sections, keeping every field value.
+
+    The reason this exists: a packet split that grouped pages wrongly makes the
+    classification ground truth wrong, and until now there was no way to correct it —
+    the editor showed ``page_indices`` read-only. Fixing it by re-running extraction
+    would regenerate the field values, which is precisely the annotation loss the
+    reviewer is trying to avoid.
+
+    So this writes the grouping and the class and **nothing else**. Each surviving
+    section keeps its ``inference_result``, its ``labelSource`` and its
+    ``_editHistory`` — a reviewer's corrections are not touched. The fields may no
+    longer match their pages afterwards, which is true and is why the UI says so and
+    offers an opt-in re-extract rather than doing it here.
+
+    ## Sections are renumbered to agree with page order
+
+    Consumers derive a section's group index from its *position in a list*
+    (``compute_graded_packet_metrics`` enumerates ``sections_gt``), and nothing
+    guarantees that list is in page order. Writing sections as ``1..N`` in first-page
+    order makes id order, lexical key order and page order all the same thing, so no
+    consumer can disagree about which group a page is in.
+
+    That means rewriting every section file rather than renaming a few. Writes happen
+    before deletes, so an interrupted call leaves an extra stale section — visible,
+    and recoverable by re-saving — rather than a missing one.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+    object_key = input_data["objectKey"]
+    incoming = input_data.get("sections") or []
+
+    if not validate_test_set_name(test_set_id):
+        raise Exception("Invalid test set id")
+    for section in incoming:
+        if not validate_document_class(section.get("documentClass")):
+            raise Exception(
+                f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+                "characters of letters, digits, spaces, hyphens or underscores"
+            )
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
+    if not existing:
+        raise Exception(
+            f"'{object_key}' has no baseline sections to re-group. Generate draft "
+            "labels for this test set first."
+        )
+
+    previously_labelled = {
+        int(index)
+        for _key, parsed in existing.values()
+        for index in (parsed.get("split_document") or {}).get("page_indices") or []
+    }
+    _validate_regrouping(incoming, previously_labelled)
+
+    # First-page order, so the ids we assign below agree with page order. Keyed on
+    # ``min`` rather than ``pageIndices[0]``: now that a section can carry a manual page
+    # order, those differ, and a section's place in the document is where it *starts*, not
+    # which of its pages happens to be read first.
+    ordered = sorted(incoming, key=lambda sec: min(sec["pageIndices"]))
+
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    written_keys = set()
+    for position, section in enumerate(ordered, start=1):
+        source_id = str(section.get("sectionId") or "")
+        _old_key, content = existing.get(source_id, (None, None))
+        if content is None:
+            # A section the reviewer added. It has no field values yet, and saying so
+            # in the data beats writing a plausible-looking empty result.
+            content = {"inference_result": {}, "labelSource": LABEL_SOURCE_DRAFT}
+            logger.info(
+                f"Section '{source_id}' of {object_key} is new; writing it with no "
+                "field values"
+            )
+        content = dict(content)
+
+        split = dict(content.get("split_document") or {})
+        # Order-preserving, deliberately. ``page_indices`` records the section's reading
+        # order as well as its membership: ``split_accuracy_with_order`` compares the two
+        # lists with ``==`` and the graded packet score is half Kendall's Tau over each
+        # page's position (see ``stickler_backend/doc_split.py:111``). Sorting here — as
+        # this once did — silently discarded authored order on every save, including on a
+        # save that only meant to correct a section's class.
+        split["page_indices"] = [int(i) for i in section["pageIndices"]]
+        content["split_document"] = split
+
+        document_class = section.get("documentClass")
+        if document_class:
+            doc_class = dict(content.get("document_class") or {})
+            doc_class["type"] = document_class
+            content["document_class"] = doc_class
+
+        key = f"{prefix}{position}/result.json"
+        s3_client.put_object(
+            Bucket=test_set_bucket,
+            Key=key,
+            Body=json.dumps(content, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        written_keys.add(key)
+
+    # After the writes, never before: an interruption should leave a stale extra
+    # section rather than a hole.
+    for old_key, _content in existing.values():
+        if old_key not in written_keys:
+            s3_client.delete_object(Bucket=test_set_bucket, Key=old_key)
+
+    logger.info(
+        f"Re-grouped {object_key} in {test_set_id} into {len(ordered)} section(s); "
+        f"removed {len(existing) - len(written_keys) if len(existing) > len(written_keys) else 0} "
+        "stale section file(s)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "objectKey": object_key,
+        "sections": [
+            {
+                "sectionId": str(position),
+                "documentClass": section.get("documentClass"),
+                # As written, so the client's board reflects what is now on disk.
+                "pageIndices": [int(i) for i in section["pageIndices"]],
+            }
+            for position, section in enumerate(ordered, start=1)
+        ],
+    }
 
 
 def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class_type):
@@ -1392,6 +1710,12 @@ def get_annotation_queue(args, event=None):
                 "alertCount": doc.get("alertCount"),
                 "fieldCount": doc.get("fieldCount"),
                 "labelSource": doc.get("labelSource"),
+                # So a reviewer can see what each document was classified as
+                # without opening it. A wrong class is not visible any other way
+                # from the queue: extraction under the wrong schema can be
+                # confidently wrong, so the row's confidence and alert count look
+                # entirely normal.
+                "documentClasses": doc.get("documentClasses") or [],
                 "sectionCount": len(doc.get("sections") or []),
                 "sections": doc.get("sections") or [],
                 "claimedBy": owner or None,
@@ -2272,6 +2596,9 @@ def clear_draft_labels(args):
 
     Only ``draft-machine`` labels are removed. Reviewed, uploaded and generated
     ground truth survives, so a config retry cannot discard human work.
+
+    Also resets the set's ``labelState`` — see the comment at the update below for
+    why the reconciler cannot be left to do it.
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
@@ -2314,15 +2641,44 @@ def clear_draft_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
-    # contentSignature is dropped so the next warm-container reconcile within
-    # the TTL window doesn't skip on a stale signature — we just deleted
-    # baselines from S3, so the memoized signature is no longer valid.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression=(
-            "REMOVE lastAddResult, labelJobId, labelJobStatus, contentSignature"
-        ),
-    )
+    #
+    # Two independent skip-markers have to be invalidated here, because two different
+    # reconcilers memoize against this row:
+    #
+    #  - labelProbedFileCount guards _reconcile_label_state, which is keyed on
+    #    fileCount. Clearing drafts deletes baseline objects without changing
+    #    membership, so the marker still matches and the set is skipped on every
+    #    subsequent list. Observed on a dev stack: a set cleared for a retest kept
+    #    reporting "Draft (machine)" and a 97.6% estimated accuracy while every one of
+    #    its 100 documents read "Unlabeled", permanently.
+    #  - contentSignature (plus the in-process memo) guards the file-listing
+    #    reconcile. We just deleted baselines from S3, so the memoized signature no
+    #    longer describes the bucket.
+    #
+    # Dropping the label probe marker is also what makes the ambiguous case correct.
+    # With no drafts left the state is knowably "unlabeled"; with some non-draft labels
+    # surviving it depends on whether coverage is still complete across documents,
+    # which `kept` (a count of label objects) cannot answer. So invalidate the marker
+    # and let the reconciler re-derive it through _validate_test_set_files — the same
+    # helper registration uses, so the two cannot disagree about what "labeled" means.
+    if kept == 0:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "SET labelState = :u "
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount, contentSignature"
+            ),
+            expression_attribute_values={":u": "unlabeled"},
+        )
+    else:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount, contentSignature"
+            ),
+        )
     _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(
@@ -3069,6 +3425,14 @@ def get_test_set_documents(args):
     result = {
         "documents": documents,
         "nextToken": response.get("NextContinuationToken"),
+        # The set's whole size, not this page's. A paginated response that reports
+        # only what it returned leaves the caller counting the page and calling it
+        # the total: the UI showed "Documents (50)" and offered to "Label 50
+        # document(s)" for a 100-document set, then labeled all 100 — because
+        # select-all sends no objectKeys and the server walks the set itself.
+        # Read from the stored counter already fetched above, so this is O(1) and
+        # stays O(1) as sets grow.
+        "totalCount": _as_int(item.get("fileCount")) or 0,
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested
@@ -3101,7 +3465,7 @@ def _attach_label_metadata(test_set_bucket, documents):
     tasks = []
     for doc in documents:
         for section in doc["sections"]:
-            tasks.append((doc, section["baselineKey"]))
+            tasks.append((doc, section))
     if not tasks:
         for doc in documents:
             doc["labelSource"] = None
@@ -3120,16 +3484,47 @@ def _attach_label_metadata(test_set_bucket, documents):
             return None
 
     per_doc = {
-        id(doc): {"sources": [], "confidences": [], "alerts": [], "fields": []}
+        id(doc): {
+            "sources": [],
+            "confidences": [],
+            "alerts": [],
+            "fields": [],
+            # The class each section was given. Collected here because these
+            # baselines are already being read for label state, so it costs
+            # nothing extra — and a reviewer working the queue could not
+            # previously see what class a document had been assigned without
+            # opening it, which is the whole difficulty with a misclassified
+            # document: extraction against the wrong schema can be confidently
+            # wrong, so nothing else about the row looks unusual.
+            "classes": [],
+        }
         for doc, _ in tasks
     }
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(tasks), 16)
     ) as executor:
-        results = executor.map(lambda t: (t[0], read(t[1])), tasks)
-        for doc, result in results:
+        results = executor.map(lambda t: (t[0], t[1], read(t[1]["baselineKey"])), tasks)
+        for doc, section, result in results:
             if not result:
                 continue
+            # The section's OWN class, distinct from the document-level
+            # `documentClasses` badge list: the regrouping board shows a class per
+            # section, and the editor only ever loads the section being viewed.
+            section_class = (result.get("document_class") or {}).get("type")
+            if section_class:
+                section["documentClass"] = str(section_class)
+            # The section's page grouping, so the page-regrouping editor can show every
+            # section at once instead of fetching each result.json again. Free: this
+            # file is already open for label state and class, same as `classes` below.
+            # Left absent rather than empty when unreadable — an empty grouping would
+            # read as "this section has no pages", which is a different claim.
+            indices = (result.get("split_document") or {}).get("page_indices")
+            if isinstance(indices, list):
+                section["pageIndices"] = [
+                    int(i)
+                    for i in indices
+                    if isinstance(i, int) and not isinstance(i, bool)
+                ]
             bucket_for_doc = per_doc[id(doc)]
             # A baseline with no labelSource is ground truth supplied when the set was
             # created: authoritative, but not reviewed here. Reporting it as
@@ -3158,11 +3553,30 @@ def _attach_label_metadata(test_set_bucket, documents):
             if alerts is not None:
                 bucket_for_doc["alerts"].append(alerts)
                 bucket_for_doc["fields"].append(fields)
+            # Reusing section_class from above — same `result`, same iteration.
+            if section_class:
+                bucket_for_doc["classes"].append(str(section_class))
 
     for doc in documents:
         collected = per_doc.get(
-            id(doc), {"sources": [], "confidences": [], "alerts": [], "fields": []}
+            id(doc),
+            {
+                "sources": [],
+                "confidences": [],
+                "alerts": [],
+                "fields": [],
+                "classes": [],
+            },
         )
+        # Distinct classes, order preserved. A single-section document yields one;
+        # a packet yields the classes its sections were split into. Reported as a
+        # list rather than joined, so the UI decides how to render more than one
+        # rather than parsing a string back apart.
+        seen_classes = []
+        for cls in collected["classes"]:
+            if cls not in seen_classes:
+                seen_classes.append(cls)
+        doc["documentClasses"] = seen_classes
         sources = collected["sources"]
         confidences = collected["confidences"]
         # A document counts as reviewed only when every section is.

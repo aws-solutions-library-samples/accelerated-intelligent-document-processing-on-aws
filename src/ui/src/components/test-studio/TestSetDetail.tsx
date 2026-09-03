@@ -23,6 +23,7 @@ import {
   ExpandableSection,
   FormField,
   Header,
+  Icon,
   Input,
   Link,
   Modal,
@@ -83,6 +84,21 @@ export const renderLabelSource = (labelSource?: string | null): React.JSX.Elemen
 };
 
 /**
+ * Provenance for a baseline whose bytes are already loaded.
+ *
+ * `renderLabelSource(undefined)` renders "Unlabeled", which is correct for a
+ * document row where the baseline may not exist at all. It is wrong once the file
+ * has been read: the pipeline writes `labelSource` and a hand-uploaded ground-truth
+ * file does not, so absence in a loaded baseline means authored ground truth.
+ *
+ * The server already codifies this — `_attach_label_metadata` falls back to
+ * `uploaded` for exactly this reason — and the editor did not, so the same document
+ * read "Uploaded" in the review queue and "Unlabeled" in the editor header, two
+ * lines below an alert saying "Already ground truth".
+ */
+export const renderLoadedLabelSource = (labelSource?: string | null): React.JSX.Element => renderLabelSource(labelSource || 'uploaded');
+
+/**
  * Confidence as a percentage, colored against the configured alert threshold: red
  * below it, amber within 10 points above it, otherwise plain. Fixed bands would
  * contradict the assessment config, where whether 0.85 passes depends on the
@@ -118,7 +134,109 @@ export const QUALITY_TIER_COLORS: Record<string, 'green' | 'blue' | 'severity-ne
   gold: 'green',
   silver: 'blue',
   bronze: 'severity-neutral',
-  unrated: 'red',
+  // NOT red. "Unrated" is the absence of a defensible claim, not a fault — and
+  // reviewing a document can legitimately move a set INTO it: once there is
+  // enough evidence to test whether confidence ranks correctness, the estimator
+  // may find it does not, and withdraw the number it had been inferring from a
+  // cross-set prior. Red made that read as "your review broke this set", when in
+  // fact the preceding Bronze figure was the less honest of the two states.
+  unrated: 'severity-neutral',
+};
+
+/**
+ * What the four tiers mean, all of them at once.
+ *
+ * The per-row popover explains only the tier that row happens to have, so a set
+ * badged "Bronze" told you Bronze was bad without telling you what better looked
+ * like or how to get there. Mirrors TIER_EXPLANATIONS in
+ * `idp_common/evaluation/confidence_curve.py` — if the thresholds move there,
+ * they move here.
+ */
+export const LabelAccuracyLegend = (): React.JSX.Element => (
+  <Popover
+    dismissButton={false}
+    position="bottom"
+    size="large"
+    triggerType="custom"
+    header="Estimated label accuracy"
+    content={
+      <SpaceBetween size="xs">
+        <Box variant="span" fontSize="body-s">
+          An estimate of how often these labels are right, inferred from the confidence scores of the run that produced them. It is not a
+          measurement against a known answer — a tier is earned from evidence on this set, never asserted.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="green">Gold</Badge> — at least 99%, measured on this set rather than extrapolated.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="blue">Silver</Badge> — at least 95%, with the confidence curve at least partly measured here.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="severity-neutral">Bronze</Badge> — below 95%, or still estimated from a cross-set prior. Review or score the set to
+          earn a higher tier.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="severity-neutral">Unrated</Badge> — confidence does not rank errors on this set, so no accuracy claim is defensible.
+          Reviewing only a subset would not be meaningful.
+        </Box>
+        <Box variant="span" fontSize="body-s" color="text-body-secondary">
+          A set whose labels you uploaded or authored by hand is the reference other runs are scored against, so a low figure here is a
+          statement about the confidence data behind the estimate, not about those labels. Where no estimate exists at all, the column says
+          so rather than implying one.
+        </Box>
+      </SpaceBetween>
+    }
+  >
+    <Box variant="span" fontSize="body-s" color="text-status-info">
+      Est. label accuracy <Icon name="status-info" size="small" />
+    </Box>
+  </Popover>
+);
+
+/**
+ * The accuracy cell, including the cases where there is no estimate to show.
+ *
+ * Separate from `renderQualityTier` because the honest answer depends on WHY the
+ * estimate is missing, and only the caller knows: a machine-drafted set with no
+ * curve yet is genuinely unassessed, whereas a set of human ground truth has
+ * nothing to assess. Rendering both as "-" inverted the trust signal — the
+ * authored set, which is the reference, looked worse than the draft that was
+ * being measured against it.
+ */
+export const renderLabelAccuracy = (
+  entry?: { tier?: string | null; reason?: string | null; accuracy?: number | null } | null,
+  labelState?: string | null,
+  isEstimating?: boolean,
+): React.JSX.Element => {
+  if (entry?.tier) return renderQualityTier(entry.tier, entry.reason, entry.accuracy);
+
+  // Estimates arrive one request per set, after the table has already rendered.
+  // Without this the column asserted a verdict for the second or two the calls
+  // were in flight, then replaced it with a percentage — caught on a live stack,
+  // where a 2000-document set flashed "Ground truth" before settling on
+  // "76.1% est. Bronze".
+  if (isEstimating) return <StatusIndicator type="loading">Estimating</StatusIndicator>;
+
+  if (labelState === 'labeled') {
+    return (
+      <Popover
+        dismissButton={false}
+        position="top"
+        size="medium"
+        triggerType="custom"
+        content={
+          <Box variant="span" fontSize="body-s">
+            No accuracy estimate was returned for this set. Its labels are the reference other runs are scored against, so the absence is
+            not a low rating — there is simply no confidence data here to infer a figure from.
+          </Box>
+        }
+      >
+        <Badge color="green">Ground truth</Badge>
+      </Popover>
+    );
+  }
+
+  return <Box color="text-status-inactive">Not assessed yet</Box>;
 };
 
 export const renderQualityTier = (tier?: string | null, reason?: string | null, accuracy?: number | null): React.JSX.Element => {
@@ -144,6 +262,13 @@ export const renderQualityTier = (tier?: string | null, reason?: string | null, 
           </Box>
         )}
         <Badge color={QUALITY_TIER_COLORS[tier] ?? 'severity-neutral'}>{label}</Badge>
+        {/* The reason is the whole content of an unrated verdict, and it is the one
+            case where the user cannot guess it — so it is not left to a hover. */}
+        {tier === 'unrated' && reason ? (
+          <Box variant="span" fontSize="body-s" color="text-body-secondary">
+            — {reason}
+          </Box>
+        ) : null}
       </SpaceBetween>
     </Popover>
   );
@@ -176,7 +301,7 @@ export const renderAlertCount = (
   return (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <Box color={alertCount > 0 ? 'text-status-error' : 'text-status-success'} fontWeight={alertCount > 0 ? 'bold' : 'normal'}>
-        {alertCount === 0 ? `None of ${fieldCount ?? 0} fields` : `${alertCount} of ${fieldCount ?? 0} fields`}
+        {alertCount === 0 ? `None of ${fieldCount ?? 0} fields flagged` : `${alertCount} of ${fieldCount ?? 0} fields flagged`}
       </Box>
     </Popover>
   );
@@ -219,6 +344,8 @@ const TestSetDetail = (): React.JSX.Element => {
   const [pageTokens, setPageTokens] = useState<(string | null)[]>([null]);
   const [currentPageIndex, setCurrentPageIndex] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  // The set's size, from the server. The page length is not the total.
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -257,6 +384,7 @@ const TestSetDetail = (): React.JSX.Element => {
         const page = response.data?.getTestSetDocuments;
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
+        setTotalCount(page?.totalCount ?? null);
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -488,7 +616,16 @@ const TestSetDetail = (): React.JSX.Element => {
             <Table
               header={
                 <Header
-                  counter={`(${filteredDocs.length})`}
+                  counter={
+                    // No count at all while the first page is loading: '(0)' reads
+                    // as "this set is empty", which is a statement we cannot make
+                    // yet and the one that most misleads.
+                    isLoading && filteredDocs.length === 0
+                      ? undefined
+                      : totalCount !== null && totalCount > filteredDocs.length
+                        ? `(${filteredDocs.length} of ${totalCount})`
+                        : `(${filteredDocs.length})`
+                  }
                   description={
                     hasConfidence
                       ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
@@ -516,7 +653,14 @@ const TestSetDetail = (): React.JSX.Element => {
                       {/* Needed because the harvest only replaces a draft when the
                           new run produces a section for it: a run that splits
                           differently leaves orphan sections behind. */}
-                      <Button onClick={() => setShowClearDraftsModal(true)} disabled={isLoading || labelJob?.status === 'RUNNING'}>
+                      {/* The only action here that destroys work. It sat in the
+                          same row as Refresh and Annotate with identical styling,
+                          so nothing but the label distinguished it. */}
+                      <Button
+                        iconName="remove"
+                        onClick={() => setShowClearDraftsModal(true)}
+                        disabled={isLoading || labelJob?.status === 'RUNNING'}
+                      >
                         Clear draft labels
                       </Button>
                       <Button iconName="refresh" onClick={() => fetchPage(currentPageIndex, pageTokens)} disabled={isLoading}>
@@ -626,9 +770,9 @@ const TestSetDetail = (): React.JSX.Element => {
             />
 
             <GenerateDraftLabelsModal
+              setTotalCount={totalCount}
               visible={showLabelModal}
               testSetId={testSetId ?? ''}
-              documents={documents}
               submitting={isStartingLabels}
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}
@@ -654,8 +798,10 @@ const TestSetDetail = (): React.JSX.Element => {
                     <Button variant="link" onClick={() => setShowClearDraftsModal(false)}>
                       Cancel
                     </Button>
-                    <Button variant="primary" onClick={handleClearDraftLabels} loading={isClearingDrafts}>
-                      Clear draft labels
+                    {/* Names what will be deleted, so the confirm button is not
+                        interchangeable with every other primary in the app. */}
+                    <Button variant="primary" iconName="remove" onClick={handleClearDraftLabels} loading={isClearingDrafts}>
+                      Delete draft labels
                     </Button>
                   </SpaceBetween>
                 </Box>

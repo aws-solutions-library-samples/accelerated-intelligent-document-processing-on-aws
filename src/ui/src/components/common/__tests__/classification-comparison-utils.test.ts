@@ -184,6 +184,18 @@ describe('evaluationResultsUriFrom', () => {
     expect(evaluationResultsUriFrom('s3://out/docs/pkg.pdf/summary/summary.md')).toBeNull();
   });
 
+  it('refuses any report.md outside the evaluation prefix', () => {
+    // Pinned to the documented evaluation key template rather than to any
+    // `.md`, so another report's URI cannot yield a results path that does not
+    // exist and would then read as a missing evaluation. A version snapshot's
+    // longer prefix still ends `/evaluation/report.md`, so it is unaffected.
+    expect(evaluationResultsUriFrom('s3://out/docs/pkg.pdf/summary/report.md')).toBeNull();
+    expect(evaluationResultsUriFrom('s3://out/docs/pkg.pdf/evaluation/other.md')).toBeNull();
+    expect(evaluationResultsUriFrom('s3://out/docs/pkg.pdf/runs/r1/evaluation/report.md')).toBe(
+      's3://out/docs/pkg.pdf/runs/r1/evaluation/results.json',
+    );
+  });
+
   it('only rewrites the trailing report.md', () => {
     // A key that contains "report.md" earlier in the path must not be mangled.
     expect(evaluationResultsUriFrom('s3://out/report.md/x/evaluation/report.md')).toBe('s3://out/report.md/x/evaluation/results.json');

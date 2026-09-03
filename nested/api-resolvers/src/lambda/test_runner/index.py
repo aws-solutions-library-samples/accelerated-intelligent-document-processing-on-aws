@@ -99,6 +99,7 @@ def handler(event, context):
         # Names exactly which documents to process, where numberOfFiles takes the
         # first N of the set.
         object_keys = input_data.get("objectKeys") or []
+        document_class = input_data.get("documentClass")
         config_version = input_data.get("configVersion")
         # Revision of that profile to score against. Pinning it is what makes two
         # runs of the same profile comparable — otherwise a run records only which
@@ -176,6 +177,7 @@ def handler(event, context):
             files_to_process,
             effective_config_version,
             test_set_version,
+            purpose=purpose,
             config_revision=effective_config_revision,
         )
 
@@ -229,6 +231,13 @@ def handler(event, context):
         # extraction to a stale copy of itself.
         if purpose == "draft-labeling":
             message_body["purpose"] = purpose
+
+        # A single-document re-extract after a class correction. Passed straight
+        # through to the copier, which stamps it as S3 metadata so the
+        # classification step uses it instead of classifying again — the whole
+        # point of the request is that the model's own answer was wrong.
+        if document_class:
+            message_body["documentClass"] = document_class
 
         sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
 
@@ -542,6 +551,7 @@ def _store_test_run_metadata(
     file_count=0,
     config_version=None,
     test_set_version=None,
+    purpose="scoring",
     config_revision=None,
 ):
     """Store test run metadata in tracking table"""
@@ -565,6 +575,16 @@ def _store_test_run_metadata(
             "Config": config,
             "CreatedAt": created_at,
         }
+
+        # Persisted so downstream resolvers can tell a scoring run from one that
+        # CREATES the baseline. Without it the only marker was the free-text
+        # Context string ("Draft labeling run"), which a user can type themselves
+        # and which nothing guarantees.
+        #
+        # A PARAMETER, not a read of the caller's local. It was written as the
+        # latter, which is a NameError on every call — and since the except below
+        # re-raises, that failed every test run start outright.
+        item["Purpose"] = purpose
 
         if context:
             item["Context"] = context

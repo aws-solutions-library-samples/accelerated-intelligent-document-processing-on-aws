@@ -490,6 +490,12 @@ class Document:
     config_revision: Optional[int] = None
     submission_source: Optional[str] = None
     test_set_id: Optional[str] = None
+    # Class every page must be treated as, instead of classifying. Set when a
+    # reviewer corrects a misclassified document and asks for it to be
+    # re-extracted: the point of that request is to run extraction under a
+    # DIFFERENT class than the pipeline would choose, so leaving classification
+    # to the model would re-derive the wrong one and discard the correction.
+    forced_document_class: Optional[str] = None
     evaluation_status: Optional[str] = None
     evaluation_report_uri: Optional[str] = None
     evaluation_results_uri: Optional[str] = None
@@ -560,6 +566,10 @@ class Document:
             "config_revision": self.config_revision,
             "submission_source": self.submission_source,
             "test_set_id": self.test_set_id,
+            # Carried across step boundaries: set before OCR, read at
+            # classification. Dropping it here would silently re-enable
+            # classification and lose the reviewer's correction.
+            "forced_document_class": self.forced_document_class,
             "confidence_alert_count": self.confidence_alert_count,
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
@@ -712,6 +722,7 @@ class Document:
             config_revision=coerce_revision(data.get("config_revision")),
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
+            forced_document_class=data.get("forced_document_class"),
             errors=data.get("errors", []),
         )
 
@@ -822,6 +833,7 @@ class Document:
         config_revision = None
         submission_source = None
         test_set_id = None
+        forced_document_class = None
         try:
             import boto3
 
@@ -840,6 +852,12 @@ class Document:
                 logger.info(f"No config-version found in metadata for {input_key}")
             submission_source = metadata.get("submission-source")
             test_set_id = metadata.get("test-set-id")
+            forced_document_class = metadata.get("document-class")
+            if forced_document_class:
+                logger.info(
+                    f"Document {input_key} carries a forced class "
+                    f"'{forced_document_class}'; classification will be skipped"
+                )
             if submission_source:
                 logger.info(
                     f"Document {input_key} submitted by {submission_source}"
@@ -859,6 +877,7 @@ class Document:
             config_revision=config_revision,
             submission_source=submission_source,
             test_set_id=test_set_id,
+            forced_document_class=forced_document_class,
         )
 
     def to_json(self) -> str:

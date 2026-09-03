@@ -38,6 +38,95 @@ _GRADED_PACKET_KEYS = (
     "avg_ordering_score",
 )
 
+# Ceiling on the per-section classification errors carried onto the run record.
+# The whole aggregation lands in ONE DynamoDB attribute (testRunResult), so an
+# unbounded list is a 400KB item limit waiting to be hit: a 500-document run
+# where the config is wrong for a whole class produces thousands of entries.
+# Truncation is reported rather than silent — see ``_collect_classification_errors``.
+MAX_CLASSIFICATION_ERRORS = 200
+
+
+def _classification_errors_for_doc(
+    doc_key: str, doc_split_metrics: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Per-section classification mismatches for one document.
+
+    ``section_details_with_order`` is already computed for every evaluated
+    document and serialized into its results.json, but nothing forwarded it to
+    the run level — so a misclassified document was invisible in Test Studio
+    except as a dip in an aggregate percentage. Extraction runs against the
+    wrong schema can be *confidently* wrong, so such a document can also rank
+    low-priority by alert count in the annotation queue and never be opened.
+
+    Three kinds, kept apart because they mean different things and imply
+    different fixes:
+
+    * ``class`` — the wrong document class. Extraction ran the wrong schema.
+    * ``unmatched`` — a ground-truth section with no predicted counterpart at
+      all, which is a splitting failure rather than a labelling one.
+    * ``order`` — right class and right pages, wrong page order. Cosmetic for
+      extraction, but it is what ``split_accuracy_with_order`` penalises, so
+      conflating it with ``class`` would misdirect whoever is debugging.
+    """
+    errors: List[Dict[str, Any]] = []
+    for section in doc_split_metrics.get("section_details_with_order") or []:
+        if not isinstance(section, dict):
+            continue
+        expected = section.get("ground_truth_class")
+        predicted = section.get("predicted_class")
+
+        if predicted in (None, ""):
+            kind = "unmatched"
+        elif expected != predicted:
+            kind = "class"
+        elif section.get("order_matched") is False:
+            kind = "order"
+        else:
+            continue
+
+        errors.append(
+            {
+                "doc_key": doc_key,
+                "section_id": section.get("section_id"),
+                "kind": kind,
+                "expected_class": expected,
+                "predicted_class": predicted,
+                "expected_pages": section.get("ground_truth_pages") or [],
+                "predicted_pages": section.get("predicted_pages") or [],
+            }
+        )
+    return errors
+
+
+def _collect_classification_errors(
+    per_doc_errors: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Flatten per-document mismatches into the run-level payload.
+
+    Class errors sort first: a wrong schema is what makes a document's whole
+    extraction meaningless, so it must not be pushed past the cap by a run
+    full of page-order nits. ``total`` counts everything found, so the UI can
+    say "showing 200 of 340" rather than implying 200 is all there was.
+    """
+    ordering = {"class": 0, "unmatched": 1, "order": 2}
+    flat = [e for errors in per_doc_errors.values() for e in errors]
+    flat.sort(key=lambda e: (ordering.get(e["kind"], 9), e["doc_key"] or ""))
+
+    kept = flat[:MAX_CLASSIFICATION_ERRORS]
+    if len(flat) > len(kept):
+        logger.warning(
+            "Truncating classification errors for this run: keeping %d of %d "
+            "(class errors first). The UI reports the total.",
+            len(kept),
+            len(flat),
+        )
+    return {
+        "errors": kept,
+        "total": len(flat),
+        "documents_affected": len(per_doc_errors),
+        "truncated": len(flat) > len(kept),
+    }
+
 
 # Process-wide LRU dedupe for the parent-bucket-collision warning. The
 # aggregation Lambda runs once per test run; a stable scalar-vs-structured
@@ -247,6 +336,7 @@ def aggregate_test_run_with_stickler(
         doc_weighted_scores,
         doc_graded_packet_scores,
         excluded_doc_keys,
+        doc_classification_errors,
     ) = _load_comparison_results(test_run_id, tracking_table_name)
 
     if not comparison_results:
@@ -262,6 +352,13 @@ def aggregate_test_run_with_stickler(
             )
         empty["excluded_documents"] = excluded_doc_keys
         empty["excluded_document_count"] = len(excluded_doc_keys)
+        # Same reasoning as graded_packet_metrics above, and this is the path
+        # that matters most for classification errors: a run whose classes are
+        # all wrong can produce no usable section comparisons at all, so the
+        # only thing left to report IS the misclassification.
+        empty["classification_errors"] = _collect_classification_errors(
+            doc_classification_errors
+        )
         return empty
 
     # Use Stickler's bulk aggregator
@@ -387,6 +484,9 @@ def aggregate_test_run_with_stickler(
         )
         transformed["excluded_documents"] = excluded_doc_keys
         transformed["excluded_document_count"] = len(excluded_doc_keys)
+        transformed["classification_errors"] = _collect_classification_errors(
+            doc_classification_errors
+        )
         return transformed
 
     except Exception as e:
@@ -417,6 +517,7 @@ def _load_comparison_results(
     Dict[str, float],
     Dict[str, Dict[str, float]],
     List[str],
+    Dict[str, List[Dict[str, Any]]],
 ]:
     """
     Load all Stickler comparison results for documents in a test run.
@@ -426,8 +527,8 @@ def _load_comparison_results(
         tracking_table_name: DynamoDB tracking table name
 
     Returns:
-        Tuple of
-        ``(comparison_results, doc_weighted_scores, doc_graded_packet_scores, excluded_doc_keys)``.
+        Tuple of ``(comparison_results, doc_weighted_scores,
+        doc_graded_packet_scores, excluded_doc_keys, doc_classification_errors)``.
         ``doc_graded_packet_scores`` maps doc_key → the graded packet metrics
         dict (``{final_score, clustering_score, v_measure, rand_index,
         avg_ordering_score}``) computed per document by
@@ -437,18 +538,28 @@ def _load_comparison_results(
         ``excluded_doc_keys`` lists documents whose every section was a
         scoring no-op (class has no extractable schema); they contribute no
         weighted score and are surfaced to the UI as an "excluded" count.
+        ``doc_classification_errors`` maps doc_key → the sections whose predicted
+        class disagreed with ground truth, which the run-level Classification errors
+        panel reads.
     """
     table = dynamodb.Table(tracking_table_name)
     output_bucket = os.environ.get("OUTPUT_BUCKET")
 
     if not output_bucket:
         logger.error("OUTPUT_BUCKET environment variable not set")
-        return [], {}, {}, []
+        # Five elements, matching the annotation and the success path below. This
+        # returned four for a while after ``doc_classification_errors`` was added: the
+        # happy path and the caller's unpack were both updated and this was not, so the
+        # only route through here — a misconfigured function — raised ValueError on the
+        # unpack instead of logging and degrading. Nothing caught it because no test
+        # exercised the path.
+        return [], {}, {}, [], {}
 
     # Scan for all documents matching the test run prefix
     comparison_results = []
     doc_weighted_scores = {}
     doc_graded_packet_scores: Dict[str, Dict[str, float]] = {}
+    doc_classification_errors: Dict[str, List[Dict[str, Any]]] = {}
 
     # Use scan with filter on PK to select only document records for this test run
     response = table.scan(
@@ -628,6 +739,11 @@ def _load_comparison_results(
                 "weighted_score": weighted_score,
                 "excluded_from_scoring": excluded_from_scoring,
                 "graded_scores": graded_scores,
+                # The per-section detail behind the split-accuracy percentages.
+                # Same payload the graded scores come from; previously dropped.
+                "classification_errors": _classification_errors_for_doc(
+                    doc_key, doc_split_metrics
+                ),
                 "success": True,
             }
         except Exception as e:
@@ -660,6 +776,10 @@ def _load_comparison_results(
                     doc_graded_packet_scores[result["doc_key"]] = result[
                         "graded_scores"
                     ]
+                if result.get("classification_errors"):
+                    doc_classification_errors[result["doc_key"]] = result[
+                        "classification_errors"
+                    ]
 
     logger.info(
         f"Loaded {len(comparison_results)} comparison results for test run {test_run_id}"
@@ -676,11 +796,17 @@ def _load_comparison_results(
             f"{len(excluded_doc_keys)} document(s) excluded from scoring for test "
             f"run {test_run_id} (no extractable schema for any section)"
         )
+    if doc_classification_errors:
+        logger.info(
+            f"{len(doc_classification_errors)} document(s) have classification "
+            f"mismatches for test run {test_run_id}"
+        )
     return (
         comparison_results,
         doc_weighted_scores,
         doc_graded_packet_scores,
         excluded_doc_keys,
+        doc_classification_errors,
     )
 
 
@@ -1480,6 +1606,12 @@ def _empty_metrics() -> Dict[str, Any]:
         },
         "split_classification_metrics": {},
         "graded_packet_metrics": {},
+        "classification_errors": {
+            "errors": [],
+            "total": 0,
+            "documents_affected": 0,
+            "truncated": False,
+        },
         "excluded_documents": [],
         "excluded_document_count": 0,
         "document_count": 0,

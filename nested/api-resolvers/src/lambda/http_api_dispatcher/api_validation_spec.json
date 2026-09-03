@@ -2004,6 +2004,24 @@
         }
       ]
     },
+    "updateDocumentSections": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "sections",
+          "non_null": true,
+          "type": "DocumentSectionGroupingInput"
+        }
+      ]
+    },
     "updateDocumentStatus": {
       "args": [
         {
@@ -2070,6 +2088,17 @@
           "name": "input",
           "non_null": true,
           "type": "UpdateTestSetInput"
+        }
+      ]
+    },
+    "updateTestSetDocumentSections": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "UpdateTestSetDocumentSectionsInput"
         }
       ]
     },
@@ -2440,6 +2469,29 @@
         "type": "Float"
       }
     ],
+    "DocumentSectionGroupingInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "sectionId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "classification",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "pageIds",
+        "non_null": true,
+        "type": "String"
+      }
+    ],
     "FileUploadInfo": [
       {
         "elem_non_null": false,
@@ -2489,6 +2541,13 @@
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
         "non_null": false,
         "type": "String"
       }
@@ -2942,6 +3001,29 @@
         "type": "Int"
       }
     ],
+    "TestSetSectionGroupingInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "sectionId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "pageIndices",
+        "non_null": true,
+        "type": "Int"
+      }
+    ],
     "TestSetUploadInput": [
       {
         "elem_non_null": false,
@@ -3265,6 +3347,29 @@
         "name": "WorkflowStatus",
         "non_null": false,
         "type": "String"
+      }
+    ],
+    "UpdateTestSetDocumentSectionsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "objectKey",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "sections",
+        "non_null": true,
+        "type": "TestSetSectionGroupingInput"
       }
     ],
     "UpdateTestSetInput": [

@@ -40,7 +40,7 @@ import { getErrorMessage } from '../../utils/errorUtils';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import CreateTestSetWizard from './CreateTestSetWizard';
-import { renderQualityTier } from './TestSetDetail';
+import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
 import { testSetDetailHref, testSetAnnotateHref } from '../../routes/constants';
 
 const client = generateClient();
@@ -142,16 +142,28 @@ const TestSets = (): React.JSX.Element => {
   const [tiers, setTiers] = useState<Record<string, { tier: string; reason: string; accuracy: number | null }>>({});
 
   /**
+   * Which sets have an estimate request in flight.
+   *
+   * Needed because a missing entry in `tiers` means three different things — not
+   * fetched yet, not applicable (unlabeled), or fetched and no tier returned — and
+   * only the last two are verdicts the column may state.
+   */
+  const [estimating, setEstimating] = useState<Record<string, boolean>>({});
+
+  /**
    * Fetch each set's tier, keyed on the label state it was computed from. Must not
    * be called from loadTestSets, which runs on a 3s poll: that would fire one
    * estimateReviewEffort per labeled set every tick.
    */
   const loadTiers = useCallback(async (sets: TestSetItem[]) => {
     const client2 = generateClient();
+    // Only labeled sets can have a tier; there is nothing to assess otherwise.
+    const assessable = sets.filter((set) => set.labelState && set.labelState !== 'unlabeled');
+    // Marked before the first await, so the column never has a window in which a
+    // request is pending and the row looks settled.
+    setEstimating((prev) => ({ ...prev, ...Object.fromEntries(assessable.map((set) => [set.id, true])) }));
     await Promise.all(
-      sets.map(async (set) => {
-        // Only labeled sets can have a tier; there is nothing to assess otherwise.
-        if (!set.labelState || set.labelState === 'unlabeled') return;
+      assessable.map(async (set) => {
         try {
           const response = await client2.graphql({
             query: estimateReviewEffort,
@@ -169,8 +181,10 @@ const TestSets = (): React.JSX.Element => {
             }));
           }
         } catch (err) {
-          // A missing tier is not an error state; the column stays blank.
+          // A missing tier is not an error state; the column says "not assessed".
           console.debug(`No quality tier for ${set.id}:`, err);
+        } finally {
+          setEstimating((prev) => ({ ...prev, [set.id]: false }));
         }
       }),
     );
@@ -761,12 +775,10 @@ const TestSets = (): React.JSX.Element => {
     },
     {
       id: 'qualityTier',
-      header: 'Est. label accuracy',
-      cell: (item: TestSetItem) => {
-        const entry = tiers[item.id];
-        if (!entry) return <Box color="text-status-inactive">-</Box>;
-        return renderQualityTier(entry.tier, entry.reason, entry.accuracy);
-      },
+      // The tier names are meaningless without the scale, and the per-row popover
+      // only ever explains the row you are hovering.
+      header: <LabelAccuracyLegend />,
+      cell: (item: TestSetItem) => renderLabelAccuracy(tiers[item.id], item.labelState, estimating[item.id]),
     },
     {
       id: 'version',

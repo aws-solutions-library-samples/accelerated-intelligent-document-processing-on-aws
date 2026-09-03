@@ -287,9 +287,15 @@ const TestRunner = ({
 
         <FormField
           label="Number of Files"
-          description={`Optional: Limit the number of files to process (max: ${
-            selectedTestSet ? testSets.find((ts) => ts.id === selectedTestSet.value)?.fileCount || 0 : 0
-          })`}
+          // 'max: 0' before a set is chosen reads as a hard limit of zero, i.e.
+          // "you cannot run this" — when in fact no maximum is known yet.
+          description={(() => {
+            if (!selectedTestSet) return 'Optional: Limit the number of files to process. Choose a test set to see its maximum.';
+            const fileCount = testSets.find((ts) => ts.id === selectedTestSet.value)?.fileCount;
+            return fileCount
+              ? `Optional: Limit the number of files to process (max: ${fileCount})`
+              : 'Optional: Limit the number of files to process.';
+          })()}
         >
           <Input
             value={numberOfFiles}

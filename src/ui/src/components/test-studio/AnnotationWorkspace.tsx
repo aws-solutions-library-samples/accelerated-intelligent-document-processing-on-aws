@@ -68,6 +68,7 @@ export interface QueueItem {
   minConfidence?: number | null;
   confidenceThreshold?: number | null;
   alertCount?: number | null;
+  documentClasses?: (string | null)[] | null;
   fieldCount?: number | null;
   labelSource?: string | null;
   sectionCount: number;
@@ -109,9 +110,29 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   // that document.
   const [searchParams] = useSearchParams();
   const requestedDoc = searchParams.get('doc');
+  // Canonical field path from a shared link, e.g. "?doc=x.pdf&field=LineItems[0].Rate".
+  const requestedField = searchParams.get('field');
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
-  const { canAnnotate, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAuthor, isReviewer, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+
+  /**
+   * Who the SERVER will accept, per save path — the two differ, and neither matches
+   * `canAnnotate`.
+   *
+   * A document with a review record saves through `completeSectionReview`
+   * (`Admin, Reviewer, Annotator` — schema.graphql:1350-1351). One without saves
+   * through the editor's direct-to-S3 write, which needs `uploadDocument`
+   * (`Admin, Author` — schema.graphql:1239-1246). So `Author` is refused the first
+   * and `Annotator` the second.
+   *
+   * Gating on `canAnnotate` (Admin | Author | Annotator) offered editing to users the
+   * server would refuse: an Annotator would have corrected a class and lost it to an
+   * authorization error at save. The server is still what enforces this; these
+   * booleans exist so the UI does not invite work it cannot persist.
+   */
+  const canSaveViaReview = isAdmin || isReviewer || isAnnotator;
+  const canSaveDirectToBaseline = isAdmin || isAuthor;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<QueueState | null>(null);
@@ -407,6 +428,24 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   const queueLink = `${window.location.origin}/${testSetAnnotateHref(testSetId ?? '')}`;
 
   /**
+   * Link to one field of the open document, for "what should this value be?".
+   *
+   * Deliberately a link rather than an in-app handoff: the alternative considered
+   * was routing a question to a subject-matter expert's own queue, which assumes
+   * a customer organised that way. A URL works for anyone with Slack, and the
+   * recipient's access is still checked on arrival — the link only navigates.
+   */
+  const buildFieldLink = useCallback(
+    (fieldPath: string) => {
+      const params = new URLSearchParams();
+      if (selected?.objectKey) params.set('doc', selected.objectKey);
+      params.set('field', fieldPath);
+      return `${queueLink}?${params.toString()}`;
+    },
+    [queueLink, selected?.objectKey],
+  );
+
+  /**
    * Per-document actions live in the editor pane's header, not below it: on a long
    * document a footer button is below the fold.
    */
@@ -415,6 +454,10 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       <Button onClick={advanceToNext} disabled={isLoading}>
         Skip to next document
       </Button>
+      {/* Exactly one primary at a time, and it is whichever action comes next:
+          claim an unclaimed document, then confirm the one you hold. Both were
+          primary before, which put two solid-blue buttons side by side and left
+          the order of operations to be guessed. */}
       {selected.reviewObjectKey && !selected.claimedByMe && !selected.reviewed && (
         <Button variant="primary" onClick={claimSelected} loading={isClaiming} disabled={isLoading || Boolean(selected.claimedBy)}>
           {selected.claimedBy ? `Claimed by ${selected.claimedBy}` : 'Claim this document'}
@@ -429,7 +472,12 @@ const AnnotationWorkspace = (): React.JSX.Element => {
       )}
       {/* Skipping advances the cursor without marking anything reviewed, so a
           correct document needs this to ever leave the queue. */}
-      <Button variant="primary" onClick={handleConfirmCorrect} loading={isConfirming} disabled={isLoading || !selected.reviewObjectKey}>
+      <Button
+        variant={selected.claimedByMe || selected.reviewed || !selected.reviewObjectKey ? 'primary' : 'normal'}
+        onClick={handleConfirmCorrect}
+        loading={isConfirming}
+        disabled={isLoading || !selected.reviewObjectKey}
+      >
         {selected.reviewed ? 'Re-confirm labels' : 'Labels are correct — mark reviewed'}
       </Button>
     </SpaceBetween>
@@ -647,6 +695,19 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                             <SpaceBetween direction="horizontal" size="xxs">
                               {/* Alerts first: the queue is ordered by this. */}
                               {renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold)}
+                              {/* The class, shown but NOT scored and NOT part of the
+                                  ordering. A wrong class is invisible from every other
+                                  column: extraction under the wrong schema can be
+                                  confidently wrong, so the alert count and confidence
+                                  look entirely normal. Nothing here can tell whether
+                                  the class is wrong — the draft under review IS the
+                                  candidate ground truth — so it is put in front of a
+                                  human rather than turned into a number. */}
+                              {(item.documentClasses ?? []).filter(Boolean).map((cls) => (
+                                <Badge key={cls as string} color="grey">
+                                  {cls}
+                                </Badge>
+                              ))}
                               {renderLabelSource(item.labelSource)}
                             </SpaceBetween>
                           ),
@@ -702,9 +763,24 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 ]}
               />
               {!selected && <Alert type="info">Choose a document from the queue to start.</Alert>}
-              {selected && !selected.reviewObjectKey && (
+              {/* A missing review key has TWO opposite causes and they need
+                  opposite advice. The queue rail beside this already distinguishes
+                  them; this pane did not, and told a reviewer whose every document
+                  already had ground truth to "generate draft labels first" — while
+                  the same screen said "nothing to review". Keyed on labelSource,
+                  exactly as the rail is. */}
+              {selected && !selected.reviewObjectKey && !selected.labelSource && (
                 <Alert type="warning" header="Not ready to annotate">
-                  This test set has no labeling run yet, so there is nothing to claim or review. Generate draft labels for the set first.
+                  This document has no labels yet. Generate draft labels for the set first, then it will appear here for review.
+                </Alert>
+              )}
+              {selected && !selected.reviewObjectKey && selected.labelSource && (
+                <Alert type="success" header="Already ground truth">
+                  This document carries authored ground truth, so there is nothing to draft-label or review — draft labeling skips it
+                  deliberately, and nothing here will overwrite it.
+                  {canSaveDirectToBaseline
+                    ? ' You can still correct it below, including its class; saving writes the ground truth directly rather than recording a review, because there is no draft here to confirm.'
+                    : ' Correcting a document that already has authored ground truth writes it directly rather than recording a review, which an Admin or Author has to do — you can inspect the values below.'}
                 </Alert>
               )}
               {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}
@@ -715,12 +791,40 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                   inputKey={selected.inputKey}
                   objectKey={selected.objectKey}
                   sections={selected.sections ?? []}
-                  isReadOnly={!canAnnotate || !selected.reviewObjectKey}
-                  onSave={handleSave}
+                  /* Read-only only when the server would refuse this document's save
+                     path — see canSaveViaReview / canSaveDirectToBaseline above.
+
+                     Previously `!canAnnotate || !selected.reviewObjectKey`, so a
+                     missing review record forced read-only whatever the role: an
+                     Admin opening a document that already carried authored ground
+                     truth got a disabled class dropdown reading "You do not have
+                     permission to change this class", two lines under an alert
+                     promising they could "correct the values" ([#674]). The review
+                     record gates the review WORKFLOW — claim, release, mark reviewed,
+                     handled by separate props above — not editing. */
+                  isReadOnly={selected.reviewObjectKey ? !canSaveViaReview : !canSaveDirectToBaseline}
+                  /* Wider than isReadOnly on purpose. A class correction persists via
+                     reextractTestSetDocument (Admin, Author, Annotator), which stamps
+                     the baseline server-side and needs no review record — so every
+                     role that may work this queue may also correct a class, even on a
+                     document whose FIELD edits they could not save. */
+                  canChangeClass={canAnnotate}
+                  /* Route through the review API only when there IS a review to
+                     complete. completeSectionReview requires reviewObjectKey, so
+                     leaving it wired for an authored-ground-truth document would let
+                     someone edit and then lose the work to "no review record yet" on
+                     save. Falling back to the editor's direct-to-S3 write is what
+                     TestSetDocumentDetail already does, and it is the semantically
+                     correct path here: there is no draft to confirm, nothing to tag
+                     reviewed-human, and no confidence-curve signal to record for a
+                     label a human authored in the first place. */
+                  onSave={selected.reviewObjectKey ? handleSave : undefined}
                   onSaved={handleSaved}
                   saveButtonText="Save & next in queue"
                   testSetId={testSetId}
                   onReextracted={() => loadQueue(false)}
+                  focusFieldPath={requestedField}
+                  buildFieldLink={buildFieldLink}
                 />
               )}
             </SpaceBetween>
