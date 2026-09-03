@@ -32,6 +32,17 @@ interface DateRange {
   endDateTime: string;
 }
 
+/**
+ * Which submission partition the document list is showing. Test Studio runs its
+ * documents through the production pipeline, so they are only distinguishable by
+ * the provenance tag the test file copier writes; the backend keys the
+ * TypeDateIndex on it (ItemType document vs test-document) and `listDocuments`
+ * selects one partition via this argument. The two views are mutually exclusive —
+ * there is no combined view, by design, because merging two independently
+ * paginated queries would need a synthesised composite nextToken.
+ */
+export type DocumentView = 'PRODUCTION' | 'TEST';
+
 interface UseGraphQlApiParams {
   initialPeriodsToLoad?: number;
 }
@@ -46,6 +57,8 @@ interface UseGraphQlApiReturn {
   periodsToLoad: number;
   customDateRange: DateRange | null;
   setCustomDateRange: React.Dispatch<React.SetStateAction<DateRange | null>>;
+  documentView: DocumentView;
+  setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
   reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
@@ -79,6 +92,11 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   const [isDocumentsListLoading, setIsDocumentsListLoading] = useState<boolean>(false);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [customDateRange, setCustomDateRange] = useState<DateRange | null>(null);
+  // Deliberately NOT persisted to localStorage, unlike periodsToLoad and
+  // customDateRange. A sticky view would mean a user who left the list on TEST
+  // returns days later, sees none of their uploads, and concludes documents were
+  // lost. Every mount starts on the production list.
+  const [documentView, setDocumentView] = useState<DocumentView>('PRODUCTION');
   const { setErrorMessage } = useAppContext();
 
   // Ref to track customDateRange in subscription callbacks (closures capture stale state)
@@ -86,6 +104,14 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   useEffect(() => {
     customDateRangeRef.current = customDateRange;
   }, [customDateRange]);
+
+  // Same reason as customDateRangeRef: the load effect fetches from inside a
+  // setTimeout and the poll callback from an interval, so both must read the
+  // current view rather than the one captured when they were created.
+  const documentViewRef = useRef<DocumentView>(documentView);
+  useEffect(() => {
+    documentViewRef.current = documentView;
+  }, [documentView]);
 
   const setDocumentsDeduped = useCallback((documentValues: Document[]): void => {
     setDocuments((currentDocuments) => {
@@ -195,12 +221,16 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
 
   /**
    * Fetch documents for a date range using the GSI-based listDocuments query.
-   * Paginates through results up to MAX_DOCUMENTS_TO_LOAD to avoid excessive API calls.
-   * The GSI query returns document list fields directly (no getDocument calls needed).
+   * Drains every page in the range; the GSI query returns document list fields
+   * directly (no getDocument calls needed).
+   *
+   * `view` selects the submission partition. It is threaded as an argument rather
+   * than read from state because the callers fire from a setTimeout and an
+   * interval, where captured state goes stale.
    */
-  const sendSetDocumentsForDateRange = async (dateRange: DateRange): Promise<void> => {
+  const sendSetDocumentsForDateRange = async (dateRange: DateRange, view: DocumentView): Promise<void> => {
     try {
-      logger.info('Fetching documents via GSI', dateRange);
+      logger.info('Fetching documents via GSI', { ...dateRange, view });
       let totalLoaded = 0;
       let currentToken: string | null = null;
 
@@ -209,6 +239,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
           startDateTime: dateRange.startDateTime,
           endDateTime: dateRange.endDateTime,
           limit: 200,
+          view,
         };
         if (currentToken) {
           variables.nextToken = currentToken;
@@ -258,9 +289,12 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
       hasListBeenRequestedRef.current = true;
       logger.debug('document list is loading');
       setTimeout(() => {
+        // The reset matters for the view switch specifically: setDocumentsDeduped
+        // merges and keeps rows the response did not mention, so without clearing
+        // first, switching away from TEST would leave its documents in the list.
         setDocuments([]);
         const dateRange = customDateRange || getDateRangeForPeriod(periodsToLoad);
-        sendSetDocumentsForDateRange(dateRange);
+        sendSetDocumentsForDateRange(dateRange, documentViewRef.current);
       }, 1);
     }
   }, [isDocumentsListLoading]);
@@ -280,6 +314,15 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
     }
   }, [customDateRange]);
 
+  useEffect(() => {
+    logger.debug('document view changed', documentView);
+    if (hasListBeenRequestedRef.current) {
+      // A different index partition entirely, so this is a full reload rather than
+      // a client-side filter of what is already loaded.
+      setIsDocumentsListLoading(true);
+    }
+  }, [documentView]);
+
   // ── Polling (httpapi transport — replaces onCreate/onUpdate subscriptions) ──
   // Silently re-fetch the active date range on an interval. sendSetDocumentsForDateRange
   // feeds setDocumentsDeduped, whose merge logic preserves rich detail already
@@ -289,7 +332,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   const pollDocuments = useCallback(() => {
     if (!hasListBeenRequestedRef.current) return;
     const dateRange = customDateRangeRef.current || getDateRangeForPeriod(periodsToLoad);
-    void sendSetDocumentsForDateRange(dateRange);
+    void sendSetDocumentsForDateRange(dateRange, documentViewRef.current);
   }, [periodsToLoad]);
 
   usePolling(pollDocuments, {
@@ -361,6 +404,8 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
     periodsToLoad,
     customDateRange,
     setCustomDateRange,
+    documentView,
+    setDocumentView,
     deleteDocuments,
     reprocessDocuments,
     abortWorkflows,

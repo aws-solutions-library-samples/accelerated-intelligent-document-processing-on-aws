@@ -1,14 +1,23 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
-import { Button, ButtonDropdown, CollectionPreferences, Link, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
+import {
+  Button,
+  ButtonDropdown,
+  CollectionPreferences,
+  Link,
+  SegmentedControl,
+  SpaceBetween,
+  StatusIndicator,
+} from '@cloudscape-design/components';
 import type { ButtonDropdownProps, CollectionPreferencesProps } from '@cloudscape-design/components';
 import type { TableProps } from '@cloudscape-design/components';
 
 import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
 
 import { TableHeader } from '../common/table';
-import { DOCUMENTS_PATH } from '../../routes/constants';
+import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
+import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
@@ -72,6 +81,13 @@ interface DocumentsCommonHeaderProps {
   /** Starts a bulk artifact export (ZIP) for the selected documents. */
   onDownloadSelected?: ((scope: ExportScope) => void) | null;
   isDownloadInProgress?: boolean;
+  /**
+   * When set, Abort / Reprocess / Delete render disabled with this as their
+   * tooltip. Used by the Test Studio view, where mutating a run's documents would
+   * invalidate the results scored against them. Disabled-with-a-reason rather than
+   * hidden, so the constraint is discoverable instead of the buttons just vanishing.
+   */
+  destructiveDisabledReason?: string | null;
   [key: string]: unknown;
 }
 
@@ -133,8 +149,40 @@ export const buildDownloadMenuItems = (
 
 export const KEY_COLUMN_ID = 'objectKey';
 export const UNIQUE_TRACK_ID = 'uniqueId';
+export const TEST_RUN_COLUMN_ID = 'testRunId';
 
-export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TableProps.ColumnDefinition<MappedDocument>[] => [
+/**
+ * Test Studio copies a run's inputs into the pipeline under a `{testRunId}/`
+ * prefix, so the run id is recoverable from the object key. Mirrors
+ * `_TEST_RUN_KEY_RE` in src/lambda/backfill_gsi_attributes/index.py — the shape is
+ * `<testSetId>-<YYYYMMDD>-<HHMMSS>/`.
+ *
+ * This is only used to label and link rows already known to be test submissions
+ * (the caller queried the TEST view), never to decide whether a row *is* one. That
+ * distinction matters: an ordinary upload can coincidentally share the shape, which
+ * is why the backend requires a matching testrun record before retyping anything.
+ */
+const TEST_RUN_KEY_RE = /^([^/]+-\d{8}-\d{6})\//;
+
+/** The test run id embedded in a test submission's object key, or null. */
+export const testRunIdFromObjectKey = (objectKey: string | undefined): string | null => TEST_RUN_KEY_RE.exec(objectKey ?? '')?.[1] ?? null;
+
+const TEST_RUN_COLUMN: TableProps.ColumnDefinition<MappedDocument> = {
+  id: TEST_RUN_COLUMN_ID,
+  header: 'Test Run',
+  cell: (item) => {
+    const testRunId = testRunIdFromObjectKey(item.objectKey);
+    if (!testRunId) return '-';
+    return <Link href={testRunResultsHref(testRunId)}>{testRunId}</Link>;
+  },
+  sortingComparator: (a, b) => (testRunIdFromObjectKey(a.objectKey) ?? '').localeCompare(testRunIdFromObjectKey(b.objectKey) ?? ''),
+  width: 260,
+};
+
+export const COLUMN_DEFINITIONS_MAIN = (
+  versions: ConfigVersion[] = [],
+  documentView: DocumentView = 'PRODUCTION',
+): TableProps.ColumnDefinition<MappedDocument>[] => [
   {
     id: KEY_COLUMN_ID,
     header: 'Document ID',
@@ -146,6 +194,9 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
     sortingField: 'objectKey',
     width: 300,
   },
+  // Second, not first: Document ID stays the leftmost identifier. Column order
+  // comes from this array — `visibleColumns` only controls visibility.
+  ...(documentView === 'TEST' ? [TEST_RUN_COLUMN] : []),
   {
     id: 'objectStatus',
     header: 'Status',
@@ -353,6 +404,36 @@ const ABORTABLE_STATUSES = [
   'EVALUATING',
 ];
 
+/**
+ * Switches the list between the two submission partitions. A two-state control
+ * rather than a "show test documents too" toggle because the backend has no
+ * combined view, and because the populations differ by orders of magnitude — on a
+ * stack that runs Test Studio regularly the test documents outnumber real uploads
+ * ~50:1, so merging them would bury the uploads and undo the point of separating
+ * them in the first place.
+ */
+export const DocumentViewSelector = ({
+  documentView,
+  setDocumentView,
+  disabled,
+}: {
+  documentView: DocumentView;
+  setDocumentView: (view: DocumentView) => void;
+  disabled?: boolean;
+}): React.JSX.Element => (
+  <SegmentedControl
+    selectedId={documentView}
+    onChange={({ detail }) => setDocumentView(detail.selectedId as DocumentView)}
+    label="Document source"
+    options={[
+      // "Production" rather than "Uploads": API, CLI and extension submissions land
+      // in this partition too, not just documents uploaded through the web UI.
+      { id: 'PRODUCTION', text: 'Production', disabled },
+      { id: 'TEST', text: 'Test Studio', disabled },
+    ]}
+  />
+);
+
 export const DocumentsCommonHeader = ({
   resourceName = 'Documents',
   selectedItems = [],
@@ -363,6 +444,7 @@ export const DocumentsCommonHeader = ({
   onReleaseReview,
   onDownloadSelected,
   isDownloadInProgress,
+  destructiveDisabledReason,
   _currentUsername,
   ...props
 }: DocumentsCommonHeaderProps): React.JSX.Element => {
@@ -454,18 +536,36 @@ export const DocumentsCommonHeader = ({
             </Button>
           )}
           {onAbort && (
-            <span title="Abort processing for selected documents">
-              <Button iconName="status-stopped" variant="normal" disabled={!hasAbortableItems} onClick={onAbort} ariaLabel="Abort" />
+            <span title={destructiveDisabledReason || 'Abort processing for selected documents'}>
+              <Button
+                iconName="status-stopped"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasAbortableItems}
+                onClick={onAbort}
+                ariaLabel="Abort"
+              />
             </span>
           )}
           {onReprocess && (
-            <span title="Reprocess selected documents">
-              <Button iconName="redo" variant="normal" disabled={!hasSelectedItems} onClick={onReprocess} ariaLabel="Reprocess" />
+            <span title={destructiveDisabledReason || 'Reprocess selected documents'}>
+              <Button
+                iconName="redo"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                onClick={onReprocess}
+                ariaLabel="Reprocess"
+              />
             </span>
           )}
           {onDelete && (
-            <span title="Delete selected documents">
-              <Button iconName="remove" variant="normal" disabled={!hasSelectedItems} onClick={onDelete} ariaLabel="Delete" />
+            <span title={destructiveDisabledReason || 'Delete selected documents'}>
+              <Button
+                iconName="remove"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                onClick={onDelete}
+                ariaLabel="Delete"
+              />
             </span>
           )}
           {onReleaseReview && (

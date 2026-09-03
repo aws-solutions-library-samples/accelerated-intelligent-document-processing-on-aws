@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useEffect, useState, useMemo } from 'react';
-import { Table, Pagination, TextFilter, Box, SpaceBetween } from '@cloudscape-design/components';
+import { Table, Pagination, TextFilter, Box, Link, SpaceBetween } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
@@ -36,13 +36,16 @@ import type { MappedDocument } from './documents-table-config';
 import {
   DocumentsPreferences,
   DocumentsCommonHeader,
+  DocumentViewSelector,
   COLUMN_DEFINITIONS_MAIN,
   KEY_COLUMN_ID,
   UNIQUE_TRACK_ID,
+  TEST_RUN_COLUMN_ID,
   SELECTION_LABELS,
   DEFAULT_PREFERENCES,
   DEFAULT_SORT_COLUMN,
 } from './documents-table-config';
+import { testExecutionsHref } from '../../routes/constants';
 
 import { getFilterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
@@ -110,12 +113,16 @@ const DocumentList = (): React.JSX.Element => {
     periodsToLoad,
     customDateRange,
     setCustomDateRange,
+    documentView,
+    setDocumentView,
     getDocumentDetailsFromIds,
     deleteDocuments,
     reprocessDocuments,
     abortWorkflows,
     hasListBeenLoaded,
   } = useDocumentsContext();
+
+  const isTestView = documentView === 'TEST';
 
   const [preferences, setPreferences] = useLocalStorage('documents-list-preferences', DEFAULT_PREFERENCES);
 
@@ -168,8 +175,26 @@ const DocumentList = (): React.JSX.Element => {
         </Box>
       );
     }
+    if (isTestView) {
+      // An empty test view usually means the date range predates the runs rather
+      // than that there are none, so point at the run list instead of stopping at
+      // "no documents".
+      return (
+        <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
+          <SpaceBetween size="xxs">
+            <div>
+              <b>No Test Studio documents</b>
+              <Box variant="p" color="inherit">
+                No test run submitted documents in this time period. Widen the range with Load, or see{' '}
+                <Link href={testExecutionsHref()}>Test Executions</Link>.
+              </Box>
+            </div>
+          </SpaceBetween>
+        </Box>
+      );
+    }
     return <TableEmptyState resourceName="Document" />;
-  }, [isReviewerOnly]);
+  }, [isReviewerOnly, isTestView]);
 
   // prettier-ignore
   const {
@@ -473,7 +498,7 @@ const DocumentList = (): React.JSX.Element => {
         {...collectionProps}
         header={
           <DocumentsCommonHeader
-            resourceName="Documents"
+            resourceName={isTestView ? 'Test Studio Documents' : 'Documents'}
             documents={documents}
             selectedItems={collectionProps.selectedItems}
             totalItems={filteredDocumentList}
@@ -491,37 +516,55 @@ const DocumentList = (): React.JSX.Element => {
                 ...item,
                 configVersion: formatConfigVersionText(item.configVersion, versions),
               }));
-              exportToExcel(exportData, 'Document-List');
+              exportToExcel(exportData, isTestView ? 'Test-Studio-Document-List' : 'Document-List');
             }}
             onDownloadSelected={handleDownloadSelected}
             isDownloadInProgress={isDownloadInProgress}
             onReprocess={canWrite ? () => setIsReprocessModalVisible(true) : null}
             onDelete={canWrite ? () => setIsDeleteModalVisible(true) : null}
             onAbort={canWrite ? () => setIsAbortModalVisible(true) : null}
+            // Reprocessing or deleting a test run's documents would silently
+            // invalidate the results scored against them (and the confidence
+            // calibration derived from those results). Test Studio owns that
+            // lifecycle — rerun or delete the run there instead.
+            destructiveDisabledReason={
+              isTestView ? 'Test Studio documents are managed by their test run — use Test Executions to rerun or delete a run' : null
+            }
             onClaimReview={canReview ? handleClaimReview : null}
             onReleaseReview={isAdmin ? handleReleaseReview : null}
             currentUsername={currentUsername}
           />
         }
-        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions)}
+        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView)}
         items={items}
         loading={isDocumentsListLoading}
         loadingText="Loading documents"
         selectionType="multi"
         ariaLabels={SELECTION_LABELS}
         filter={
-          <TextFilter
-            {...filterProps}
-            filteringAriaLabel="Filter documents"
-            filteringPlaceholder="Find documents"
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
-          />
+          // Source first, then search: the segmented control chooses which set of
+          // documents is in the table, and the text filter narrows within it.
+          <SpaceBetween size="xs" direction="horizontal" alignItems="center">
+            <DocumentViewSelector documentView={documentView} setDocumentView={setDocumentView} disabled={isDocumentsListLoading} />
+            <TextFilter
+              {...filterProps}
+              filteringAriaLabel="Filter documents"
+              filteringPlaceholder="Find documents"
+              countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            />
+          </SpaceBetween>
         }
         wrapLines={preferences.wrapLines}
         pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}
         preferences={<DocumentsPreferences preferences={preferences} setPreferences={setPreferences as (prefs: unknown) => void} />}
         trackBy={UNIQUE_TRACK_ID}
-        visibleColumns={[KEY_COLUMN_ID, ...preferences.visibleContent]}
+        // Test Run is force-included in the test view rather than offered in
+        // Preferences: the visibleContent preference is one shared localStorage
+        // entry, so a column only meaningful in one view would otherwise need a
+        // second entry to avoid an unselectable column in the other.
+        visibleColumns={[KEY_COLUMN_ID, ...(isTestView ? [TEST_RUN_COLUMN_ID] : []), ...preferences.visibleContent].filter(
+          (id, i, all) => all.indexOf(id) === i,
+        )}
         resizableColumns
       />
 

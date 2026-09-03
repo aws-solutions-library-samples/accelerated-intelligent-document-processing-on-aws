@@ -3,7 +3,14 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
-import { buildDownloadMenuItems, type MappedDocument } from '../documents-table-config';
+import {
+  COLUMN_DEFINITIONS_MAIN,
+  KEY_COLUMN_ID,
+  TEST_RUN_COLUMN_ID,
+  buildDownloadMenuItems,
+  testRunIdFromObjectKey,
+  type MappedDocument,
+} from '../documents-table-config';
 
 const row = (overrides: Partial<MappedDocument> = {}): MappedDocument =>
   ({
@@ -83,5 +90,52 @@ describe('buildDownloadMenuItems', () => {
     const items = buildDownloadMenuItems([row()], 5, false);
     expect(items).toHaveLength(1);
     expect(group(items, 0).text).toBe('Document list');
+  });
+});
+
+describe('testRunIdFromObjectKey', () => {
+  it('recovers the run id from the prefix the test file copier writes', () => {
+    expect(testRunIdFromObjectKey('W2-TestSet-20260417-125337/doc-1.pdf')).toBe('W2-TestSet-20260417-125337');
+  });
+
+  it('keeps hyphens and spaces that are part of the test set name', () => {
+    expect(testRunIdFromObjectKey('ConfBench (full)-20260521-163329/a.pdf')).toBe('ConfBench (full)-20260521-163329');
+    expect(testRunIdFromObjectKey('DocSplit-Poly-Seq-20260521-163329/nested/a.pdf')).toBe('DocSplit-Poly-Seq-20260521-163329');
+  });
+
+  it('returns null for keys without the run prefix, so an ordinary upload is never mislabelled', () => {
+    expect(testRunIdFromObjectKey('lending_package.pdf')).toBeNull();
+    expect(testRunIdFromObjectKey('tenant/one/lending.pdf')).toBeNull();
+    // Right shape but no trailing slash: the prefix names a document, not a folder.
+    expect(testRunIdFromObjectKey('set-20260417-125337')).toBeNull();
+    // Timestamp must be the full YYYYMMDD-HHMMSS.
+    expect(testRunIdFromObjectKey('set-2026041-12533/a.pdf')).toBeNull();
+  });
+
+  it('tolerates a missing key', () => {
+    expect(testRunIdFromObjectKey(undefined)).toBeNull();
+  });
+});
+
+describe('COLUMN_DEFINITIONS_MAIN', () => {
+  const ids = (view?: 'PRODUCTION' | 'TEST') => COLUMN_DEFINITIONS_MAIN([], view).map((c) => c.id);
+
+  it('adds the Test Run column only in the Test Studio view', () => {
+    expect(ids('TEST')).toContain(TEST_RUN_COLUMN_ID);
+    expect(ids('PRODUCTION')).not.toContain(TEST_RUN_COLUMN_ID);
+  });
+
+  it('defaults to the production view', () => {
+    expect(ids()).toEqual(ids('PRODUCTION'));
+  });
+
+  it('keeps Document ID leftmost, with Test Run immediately after it', () => {
+    // Column order comes from this array, not from the table's visibleColumns.
+    expect(ids('TEST').slice(0, 2)).toEqual([KEY_COLUMN_ID, TEST_RUN_COLUMN_ID]);
+    expect(ids('PRODUCTION')[0]).toBe(KEY_COLUMN_ID);
+  });
+
+  it('changes nothing else about the production columns', () => {
+    expect(ids('TEST').filter((id) => id !== TEST_RUN_COLUMN_ID)).toEqual(ids('PRODUCTION'));
   });
 });
