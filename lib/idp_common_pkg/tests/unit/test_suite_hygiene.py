@@ -202,3 +202,46 @@ def test_that_bedrock_sweep_found_the_known_live_module():
         "expected to detect the live agentic extraction module; the passthrough "
         f"detection may have gone stale (found: {found})"
     )
+
+
+@pytest.mark.unit
+def test_only_one_pytest_ini_governs_this_package():
+    """A second `pytest.ini` under `tests/` SHADOWED the package one.
+
+    pytest picks its config by walking up from the test paths, so
+    `lib/idp_common_pkg/tests/pytest.ini` won over
+    `lib/idp_common_pkg/pytest.ini` for every path under `tests/`. The shadowing
+    file had no `addopts`, so `-m "not integration"` never applied and the
+    `agentic` marker was unregistered: a bare `pytest tests/...` collected and RAN
+    the live-Bedrock tests. CI escaped only because run_all_tests.py passes `-m`
+    explicitly on the command line.
+
+    One config file, at the package root.
+    """
+    pkg = os.path.dirname(TESTS_DIR)
+    stray = [
+        os.path.relpath(os.path.join(root, fn), pkg)
+        for root, _dirs, files in os.walk(TESTS_DIR)
+        for fn in files
+        if fn in ("pytest.ini", "setup.cfg", "tox.ini")
+    ]
+    assert not stray, (
+        f"config file(s) under tests/ shadow the package pytest.ini: {stray}. "
+        f"pytest resolves config by walking up from the test path, so these win "
+        f"and silently drop addopts (including -m 'not integration')."
+    )
+    assert os.path.exists(os.path.join(pkg, "pytest.ini")), (
+        "the package-level pytest.ini is missing"
+    )
+
+
+@pytest.mark.unit
+def test_the_default_marker_filter_is_actually_in_effect(pytestconfig):
+    """Guard-the-guard for the above: assert the running session really excludes
+    `integration`, whatever config file was chosen. Reads the live session rather
+    than the file, so it fails if `addopts` is dropped again by any route."""
+    markexpr = pytestconfig.getoption("markexpr") or ""
+    assert "not integration" in markexpr.replace('"', "").replace("'", ""), (
+        f"the session is not excluding integration-marked tests (markexpr="
+        f"{markexpr!r}); live-Bedrock tests would run"
+    )

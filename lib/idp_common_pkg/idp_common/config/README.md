@@ -41,8 +41,19 @@ model_id = idp_config.extraction.model
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards such as rejecting OpenAI Responses models for
-agentic extraction or discovery).
+model/feature-compatibility guards). Two guards, with deliberately different
+scopes — both hard errors at config time rather than an obscure mid-processing
+failure:
+
+| Guard | Rejects | Why |
+|---|---|---|
+| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
+
+Grok is therefore rejected for **discovery** but not for agentic extraction. The
+authoritative per-model answer is
+`idp_common.bedrock.client.document_blocks_unsupported_reason()` — call it rather
+than duplicating the model list.
 
 ```python
 from idp_common.config.merge_utils import validate_config

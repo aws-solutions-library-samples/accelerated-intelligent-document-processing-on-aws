@@ -600,3 +600,59 @@ class TestGrokAgenticPath:
         arf = config.get("additional_request_fields") or {}
         assert arf.get("output_config") == {"effort": "high"}
         assert "reasoning" not in arf
+
+
+class TestAgenticCachePointGating:
+    """The agentic prompt builder appended a trailing cachePoint unconditionally.
+
+    That is not a mere optimization: Bedrock rejects the ENTIRE request for a
+    model that does not support prompt caching, with
+    "AccessDeniedException: You invoked an unsupported model or your request did
+    not allow prompt caching". Grok is such a model, so the unconditional append
+    failed EVERY document in agentic extraction — found on live stack IDP1, not
+    by any unit test, because the earlier tests only checked that
+    _build_model_config emitted no cache CONFIG (a different site).
+    """
+
+    @staticmethod
+    def _has_cachepoint(blocks):
+        return any(
+            isinstance(b, dict) and b.get("cachePoint", {}).get("type") == "default"
+            for b in blocks
+        )
+
+    def test_no_cachepoint_for_grok(self):
+        blocks = _prepare_prompt_content("Extract this", None, None, model_id=GROK_US)
+        assert not self._has_cachepoint(blocks)
+
+    def test_no_cachepoint_for_grok_global(self):
+        blocks = _prepare_prompt_content(
+            "Extract this", None, None, model_id=GROK_GLOBAL
+        )
+        assert not self._has_cachepoint(blocks)
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.anthropic.claude-sonnet-5",
+            "us.anthropic.claude-opus-4-8",
+            "us.amazon.nova-lite-v1:0",
+        ],
+    )
+    def test_cachepoint_kept_for_caching_models(self, model_id):
+        """Regression guard: the fix must not disable caching for models that
+        DO support it — that would be a silent cost increase."""
+        blocks = _prepare_prompt_content("Extract this", None, None, model_id=model_id)
+        assert self._has_cachepoint(blocks)
+
+    def test_cachepoint_kept_when_model_id_omitted(self):
+        """Back-compat for callers that don't pass model_id."""
+        blocks = _prepare_prompt_content("Extract this", None, None)
+        assert self._has_cachepoint(blocks)
+
+    def test_task_description_marker_still_appended(self):
+        """The 'end of your main task description' block must survive for both."""
+        for mid in (GROK_US, "us.anthropic.claude-sonnet-5"):
+            blocks = _prepare_prompt_content("Extract this", None, None, model_id=mid)
+            texts = [b.get("text") for b in blocks if isinstance(b, dict)]
+            assert "end of your main task description" in texts
