@@ -335,8 +335,10 @@ def validate_headless_template(main_template_url):
     # lands beside it rather than recomputing the timestamped prefix.
     parsed = urlparse(main_template_url)
     host_parts = parsed.netloc.split(".")
-    region = host_parts[1] if len(host_parts) > 2 else get_env_var(
-        "AWS_DEFAULT_REGION", "us-east-1"
+    region = (
+        host_parts[1]
+        if len(host_parts) > 2
+        else get_env_var("AWS_DEFAULT_REGION", "us-east-1")
     )
     path_parts = [p for p in parsed.path.split("/") if p]
     if len(path_parts) < 2:
@@ -876,6 +878,29 @@ def test_step7_test_studio(stack_name):
         return {"success": False, "error": f"Test Studio test failed: {str(e)}"}
 
 
+def summarize_list_sections(sections, list_field):
+    """Total rows in ``list_field`` across sections, plus a per-section report.
+
+    ``sections`` is ``[(result_json_path, payload), ...]``. Returns
+    ``(total_rows, ["section 1: pages 1-6, 193 rows", ...])``.
+
+    Kept as a pure function so the aggregation that #750 got wrong is unit
+    tested: reading only the first section made a boundary mis-split look like
+    lost extraction rows.
+    """
+    total = 0
+    report = []
+    for path, payload in sections:
+        section_id = path.rsplit("/", 2)[-2]
+        rows = len(payload.get("inference_result", {}).get(list_field) or [])
+        pages = payload.get("split_document", {}).get("page_indices") or []
+        # page_indices are 0-based; report the 1-based page numbers a human sees.
+        page_range = f"{min(pages) + 1}-{max(pages) + 1}" if pages else "unknown"
+        total += rows
+        report.append(f"section {section_id}: pages {page_range}, {rows} rows")
+    return total, report
+
+
 def test_step8_agentic_extraction(stack_name):
     """Step 8: Test agentic extraction with large table"""
     print("Step 8: Testing agentic extraction with Nuveen (532 fund items)...")
@@ -907,48 +932,82 @@ def test_step8_agentic_extraction(stack_name):
             cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}"
             run_command(cmd, check=False)
 
-            cmd = (
-                f"find {result_dir} -path '*/sections/*/result.json' -type f | head -1"
-            )
+            # Read EVERY section, not `head -1`. Row completeness and section
+            # count are separate properties and this step used to conflate them:
+            # a classification mis-split (#750) left 193 of 532 rows in
+            # sections/1, and the failure was reported as "expected 532 fund
+            # items, got 193" — an extraction defect that never happened. Each
+            # dimension now fails with its own message so the failure names the
+            # subsystem that actually broke.
+            cmd = f"find {result_dir} -path '*/sections/*/result.json' -type f"
             find_result = run_command(cmd, check=False)
-            result_file = find_result.stdout.strip()
+            result_files = sorted(
+                (p for p in find_result.stdout.split("\n") if p.strip()),
+                key=lambda p: (
+                    int(p.rsplit("/", 2)[-2]) if p.rsplit("/", 2)[-2].isdigit() else 0
+                ),
+            )
 
-            if result_file:
-                with open(result_file, "r") as f:
-                    result_json = json.load(f)
-
-                doc_class = result_json.get("document_class", {}).get("type")
-                if doc_class == "Estimated2024AnnualTaxableDistributions":
-                    print(f"  ✓ Document class correct: {doc_class}")
-                else:
-                    print(f"❌ Unexpected document class: {doc_class}")
-                    return {
-                        "success": False,
-                        "error": f"Agentic extraction test failed: unexpected document class '{doc_class}'",
-                    }
-
-                fund_info = result_json.get("inference_result", {}).get(
-                    "FundInformation", []
-                )
-                fund_count = len(fund_info)
-                if fund_count == 532:
-                    print(f"  ✓ FundInformation count correct: {fund_count} items")
-                    print("✅ Agentic extraction test completed successfully")
-                    return {"success": True}
-                else:
-                    print(
-                        f"❌ FundInformation count mismatch: expected 532, got {fund_count}"
-                    )
-                    return {
-                        "success": False,
-                        "error": f"Agentic extraction test failed: expected 532 fund items, got {fund_count}",
-                    }
-            else:
+            if not result_files:
                 print("❌ Result file not found")
                 return {
                     "success": False,
                     "error": "Agentic extraction test failed: result file not found",
                 }
+
+            sections = []
+            for path in result_files:
+                with open(path, "r") as f:
+                    sections.append((path, json.load(f)))
+
+            doc_class = sections[0][1].get("document_class", {}).get("type")
+            if doc_class == "Estimated2024AnnualTaxableDistributions":
+                print(f"  ✓ Document class correct: {doc_class}")
+            else:
+                print(f"❌ Unexpected document class: {doc_class}")
+                return {
+                    "success": False,
+                    "error": f"Agentic extraction test failed: unexpected document class '{doc_class}'",
+                }
+
+            total_funds, per_section = summarize_list_sections(
+                sections, "FundInformation"
+            )
+            for line in per_section:
+                print(f"    {line}")
+
+            # Nuveen.pdf is ONE document. More than one section means the
+            # classifier split it (boundary detection), which is a different bug
+            # from losing rows — and it is silent otherwise, because each section
+            # can still be 100% complete and the document still reaches COMPLETED.
+            if len(sections) != 1:
+                print(
+                    f"❌ Classification over-split the document: expected 1 section, got {len(sections)}"
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Agentic extraction test failed: classification over-split "
+                        f"Nuveen.pdf into {len(sections)} sections (expected 1); "
+                        f"{'; '.join(per_section)}. This is a document_boundary "
+                        f"defect, not an extraction defect - see #750."
+                    ),
+                }
+
+            if total_funds == 532:
+                print(f"  ✓ FundInformation count correct: {total_funds} items")
+                print("✅ Agentic extraction test completed successfully")
+                return {"success": True}
+
+            print(f"❌ FundInformation count mismatch: expected 532, got {total_funds}")
+            return {
+                "success": False,
+                "error": (
+                    f"Agentic extraction test failed: expected 532 fund items, got "
+                    f"{total_funds} across {len(sections)} section(s) "
+                    f"({'; '.join(per_section)})"
+                ),
+            }
         else:
             print("❌ Could not extract batch ID from output")
             return {
@@ -1529,9 +1588,9 @@ def _hook_iam_role(iam, role_name):
         }
     )
     try:
-        role_arn = iam.create_role(
-            RoleName=role_name, AssumeRolePolicyDocument=trust
-        )["Role"]["Arn"]
+        role_arn = iam.create_role(RoleName=role_name, AssumeRolePolicyDocument=trust)[
+            "Role"
+        ]["Arn"]
     except iam.exceptions.EntityAlreadyExistsException:
         role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
     iam.attach_role_policy(
@@ -1615,9 +1674,9 @@ def _wait_lambda_ready(lam, fn_name, attempts=20, delay=3):
         except Exception:  # noqa: BLE001 — transient during creation
             time.sleep(delay)
             continue
-        if (
-            cfg.get("State") in (None, "Active")
-            and cfg.get("LastUpdateStatus") in (None, "Successful")
+        if cfg.get("State") in (None, "Active") and cfg.get("LastUpdateStatus") in (
+            None,
+            "Successful",
         ):
             return True
         time.sleep(delay)
@@ -1657,9 +1716,10 @@ def _find_target_execution(sfn, sm_arn, config_version):
         for ex in page.get("executions", []):
             scanned += 1
             try:
-                raw = sfn.describe_execution(
-                    executionArn=ex["executionArn"]
-                ).get("input") or "{}"
+                raw = (
+                    sfn.describe_execution(executionArn=ex["executionArn"]).get("input")
+                    or "{}"
+                )
                 doc_in = json.loads(raw).get("document") or {}
             except (ValueError, TypeError, KeyError):
                 continue
@@ -1682,9 +1742,7 @@ def _resolve_working_bucket(stack_name):
     from the stack's resources.
     """
     cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
-    for page in cf.get_paginator("list_stack_resources").paginate(
-        StackName=stack_name
-    ):
+    for page in cf.get_paginator("list_stack_resources").paginate(StackName=stack_name):
         for r in page.get("StackResourceSummaries", []):
             if (
                 r.get("ResourceType") == "AWS::S3::Bucket"
@@ -1916,9 +1974,7 @@ def test_step14_pipeline_hooks(stack_name):
         # dispatch closed with AccessDenied; one without WORKING_BUCKET raises
         # inside load_hook_document the moment it is handed a compressed
         # document reference (which is what `postprocessing` always gets).
-        lam.tag_resource(
-            Resource=hook_arn, Tags={"idp:feature-id": _HOOK_FEATURE_ID}
-        )
+        lam.tag_resource(Resource=hook_arn, Tags={"idp:feature-id": _HOOK_FEATURE_ID})
         _wait_lambda_ready(lam, fn_name)
         lam.update_function_configuration(
             FunctionName=fn_name,
@@ -2097,7 +2153,9 @@ def test_step14_pipeline_hooks(stack_name):
                     f"--config-version."
                 ),
             }
-        print(f"  ✓ found our execution ({scanned} scanned): {target_arn.rsplit(':', 1)[-1]}")
+        print(
+            f"  ✓ found our execution ({scanned} scanned): {target_arn.rsplit(':', 1)[-1]}"
+        )
 
         found = {}
         hist_token = None
@@ -2192,7 +2250,9 @@ def test_step14_pipeline_hooks(stack_name):
             }
         print(f"  ✓ marker persisted to the tracking row: {marker_seen}")
 
-        print("✅ Pipeline-hook end-to-end test passed (preprocessing + postprocessing)")
+        print(
+            "✅ Pipeline-hook end-to-end test passed (preprocessing + postprocessing)"
+        )
         outcome["ok"] = True
         return {"success": True}
 
@@ -2217,7 +2277,10 @@ def test_step14_pipeline_hooks(stack_name):
                 print(f"  ⚠️  could not delete hook Lambda {fn_name}: {exc}")
         if created_role:
             for call, kwargs in (
-                (iam.delete_role_policy, {"RoleName": role_name, "PolicyName": "hook-s3-kms"}),
+                (
+                    iam.delete_role_policy,
+                    {"RoleName": role_name, "PolicyName": "hook-s3-kms"},
+                ),
                 (
                     iam.detach_role_policy,
                     {
@@ -2319,6 +2382,12 @@ PARALLEL_TEST_STEPS = [
     # reverted to simple single-pass, which times out on the 532-row/17-page doc.
     # Fixed by converting nuveen.yaml to native v0.6 (mode: advanced); live-
     # validated at ~305s extraction / 532 rows. Re-enabled.
+    #
+    # The "got 193 of 532" failure that followed was not extraction either: the
+    # #653 boundary rules read this document's repeated running header as an
+    # opening header block and split it (#750). Fixed by the BOUNDARY sentence in
+    # nuveen.yaml's class description (the rules' own PRECEDENCE escape hatch),
+    # and the step now checks row completeness and section count separately.
     (
         test_step8_agentic_extraction,
         "Step 8",
@@ -3352,9 +3421,7 @@ def generate_deployment_summary(result, stack_name, template_url):
             codebuild_failures = result.get("codebuild_failures")
             if codebuild_failures is None:
                 try:
-                    codebuild_failures = get_codebuild_failure_details(
-                        stack_name, logs
-                    )
+                    codebuild_failures = get_codebuild_failure_details(stack_name, logs)
                     if codebuild_failures:
                         print(
                             f"✅ Captured {len(codebuild_failures)} CodeBuild "
@@ -5029,11 +5096,7 @@ def _is_transient_deploy_race(result):
         rtype = ev.get("resource_type")
         reason = (ev.get("reason") or "").lower()
         for race_type, race_substr, race_statuses in _TRANSIENT_DEPLOY_RACES:
-            if (
-                rtype == race_type
-                and status in race_statuses
-                and race_substr in reason
-            ):
+            if rtype == race_type and status in race_statuses and race_substr in reason:
                 return True
     return False
 
