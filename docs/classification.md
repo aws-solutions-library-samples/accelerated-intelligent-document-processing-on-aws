@@ -236,6 +236,73 @@ Two limits worth knowing before you rely on this:
   rules narrow the gap, they do not close it. If exact section counts matter to you,
   measure on your own documents.
 
+###### Known failure mode: repeating running headers
+
+The rules are wrong on one common document shape, and the fix is a per-class
+setting rather than a change to the rules
+([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)).
+
+A long table — a fund/distribution schedule, a brokerage or transaction
+statement — typically reprints its **title, logo and column headers on every
+page** and paginates with a **bare page number** (`7`), not `Page 7 of 17`. That
+combination defeats the priority order above:
+
+- rules 1–2 never fire, because a lone `7` matches none of the pagination
+  patterns the model is given;
+- rule 3 (opening header block ⇒ `start`) is evaluated **before** rule 4
+  (continuation evidence ⇒ `continue`), and the repeated running header satisfies
+  it — especially when the reprinted column headers themselves carry a date
+  (`NAV as of 10/31/2024`), which rule 3 lists as page-1 evidence;
+- `contextPagesCount: 0` (the default) means rule 4's *"a table continuing from a
+  previous page"* has no preceding page to compare against.
+
+The model says so in its own reasoning: *"The page number '15' at the top right
+indicates this is part of a multi-page document, **but the presence of the full
+title** and structured data table **confirms this is the start** of the
+document's content."*
+
+It is **silent**: each fragment is still 100% complete and the document still
+reaches `COMPLETED`. Only the section count changes — so a downstream consumer
+that reads one section sees a truncated list and blames extraction.
+
+**The supported fix is the `PRECEDENCE` clause: put the boundary rule in the
+class description.** A document type's own boundary instructions override the
+generic rules, which is exactly what this shape needs:
+
+```yaml
+classes:
+  - x-aws-idp-document-type: AnnualDistributions
+    description: >-
+      Annual taxable distributions schedule.
+      BOUNDARY: this is ONE continuous multi-page document - a single table that
+      runs to the disclosures page. Every page reprints the title, logo and table
+      column headers and carries only a bare page number, so only the page
+      numbered 1 is "start"; every other page is "continue".
+```
+
+Name `"start"` and `"continue"` explicitly — those are the values
+`document_boundary` takes, and a paraphrase leaves the mapping to the model.
+
+**Why this is not fixed in the shared prompt.** Every generic lever was measured
+against the three boundary fixtures in `benchmarks/matrices/doc_matrix.yaml`
+(Nova 2 Lite, `temperature: 0`, 10 runs per cell, scored against exact ground
+truth). Each one buys the running-header case at the cost of a case #653 already
+balances:
+
+| prompt / setting | 16-page running-header table (want 1) | `small_narrow` — 3-page statement, no pagination (want 1) | `paginated_3pg` (want 1) | `twodocs_2x20` — two forms back to back (want 2) |
+|---|---|---|---|---|
+| shipped rules | **0/10** | 7/10 | 10/10 | 10/10 |
+| + *"a running header is not an opening block"* | — | 4/10 ↓ | 10/10 | 10/10 |
+| + *"a bare page number > 1 is decisive"* | 10/10 | 2/10 ↓ | 10/10 | 10/10 |
+| + both | 10/10 | 0/10 ↓ | 10/10 | 10/10 |
+| `contextPagesCount: 1`, rules unchanged | 10/10 | 10/10 | 10/10 | **5/10 ↓** |
+| **class-description `BOUNDARY:` sentence** | **10/10** | unaffected | unaffected | unaffected |
+
+`contextPagesCount: 1` is the right lever if your corpus contains no back-to-back
+copies of the same form — it fixes both over-split directions with the shipped
+prompt, at the cost of the over-merge direction and roughly 3× the image tokens
+per classification call.
+
 ⚠️ **A stored or preset `classification.task_prompt` overrides the default, so it
 does not get these rules.** If you customized the prompt, re-apply the block or
 reset to the default. The presets shipped in `config_library/` are kept in sync by
