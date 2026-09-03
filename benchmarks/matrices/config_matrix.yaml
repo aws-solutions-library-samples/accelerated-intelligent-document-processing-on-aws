@@ -60,6 +60,17 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # ocr.image.dpi. Raised 150 -> 300 by #729/#740, and base-ocr.yaml records the
+  # mechanism: "below ~200 dpi Textract silently omits small, faint or skewed
+  # characters - PAGE NUMBERS, box numbers, hand-filled values - from its response
+  # entirely". Page numbers are the primary boundary signal, which makes this axis
+  # a candidate explanation for boundary behaviour that looks like a prompt effect.
+  # 150 is the pre-#740 default and is here to reproduce that world, NOT as a
+  # setting to recommend - see the "Do NOT lower dpi to save cost" note in
+  # base-ocr.yaml.
+  ocr_dpi:
+    '150': {ocr.image.dpi: 150}
+    '300': {ocr.image.dpi: 300}
   # classification.confidence.mode (#731/#673). Turned ON by default (`topk`) in
   # v0.7, so every existing deployment starts paying per-page classification
   # output tokens on upgrade — this axis is how that cost gets measured.
@@ -155,6 +166,7 @@ default_cell:
   section_splitting: llm_determined   # the shipped default; the sweep varies it
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
   class_confidence: topk              # the shipped default since #731
+  ocr_dpi: '300'                      # the shipped default since #740
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
