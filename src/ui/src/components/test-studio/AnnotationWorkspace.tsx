@@ -22,6 +22,7 @@ import {
   Alert,
   AppLayout,
   Badge,
+  Popover,
   Box,
   BreadcrumbGroup,
   Button,
@@ -278,7 +279,23 @@ const AnnotationWorkspace = (): React.JSX.Element => {
         variables: { input: { testSetId } },
       });
       const opened = result.data.openTestSetAnnotationDraft as AnnotationDraft | null;
-      if (opened) setOpenedDraft(opened);
+      if (opened) {
+        setOpenedDraft(opened);
+        // The commitment, confirmed at the moment it is made. Without this the alert
+        // simply vanished and a small badge appeared, and the server's report of what
+        // was preserved went unread.
+        setFlashItems([
+          {
+            type: 'success',
+            content: opened.alreadyOpen
+              ? `Version ${opened.draftVersion} was already open on this set; your corrections continue into it.`
+              : `Version ${opened.baseVersion} preserved (${(opened.snapshotObjectCount ?? 0).toLocaleString()} objects). Your corrections go into version ${opened.draftVersion}.`,
+            dismissible: true,
+            onDismiss: () => setFlashItems([]),
+            id: 'annotation-draft-opened',
+          },
+        ]);
+      }
     } catch (err) {
       logger.error('Could not open an annotation draft:', err);
       setError(`Could not start annotating this set: ${getErrorMessage(err)}`);
@@ -544,8 +561,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   /**
    * The queue link, carrying the transition it belongs to.
    *
-   * The ask, verbatim: "hash the queue link to a version that is a transition
-   * from existing state to next state." Without `?v=`, a shared link means
+   * A link should name the transition it belongs to. Without `?v=`, a shared link means
    * "annotate this set" — which silently becomes a different job once the current
    * transition is published and the next one opens. With it, a stale link can say so.
    *
@@ -663,9 +679,20 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 {draft && (
                   <>
                     {' '}
-                    <Badge color="blue">
-                      v{draft.baseVersion} &rarr; v{draft.draftVersion}
-                    </Badge>
+                    {/* Explained on hover, for the reader who did not click Start
+                        annotating themselves and has nothing else on screen saying
+                        what the two numbers are. */}
+                    <Popover
+                      dismissButton={false}
+                      position="bottom"
+                      size="medium"
+                      triggerType="custom"
+                      content={`Corrections made here go into version ${draft.draftVersion}. Version ${draft.baseVersion}, the labels this set had before, is preserved and can still be scored against.`}
+                    >
+                      <Badge color="blue">
+                        v{draft.baseVersion} &rarr; v{draft.draftVersion}
+                      </Badge>
+                    </Popover>
                   </>
                 )}
               </>
@@ -932,7 +959,6 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                               Reviewed documents are hidden — show them to search those too.
                             </Box>
                           )}
-                          {!showReviewed && <Button onClick={() => setShowReviewed(true)}>Show reviewed documents</Button>}
                         </SpaceBetween>
                       </Box>
                     }
@@ -1006,9 +1032,15 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                 <Alert type="success" header="Already ground truth">
                   This document carries authored ground truth, so there is nothing to draft-label or review — draft labeling skips it
                   deliberately, and nothing here will overwrite it.
+                  {/* Three states, not two. Before a transition is open the editor is
+                      read-only, so promising "you can still correct it below" here
+                      contradicted the alert above it; and the direct save now counts
+                      as a review, so the old copy denying that was false. */}
                   {canSaveDirectToBaseline
-                    ? ' You can still correct it below, including its class; saving writes the ground truth directly rather than recording a review, because there is no draft here to confirm.'
-                    : ' Correcting a document that already has authored ground truth writes it directly rather than recording a review, which an Admin or Author has to do — you can inspect the values below.'}
+                    ? draft
+                      ? ' You can still correct it below, including its class. Saving writes the ground truth directly and counts the document as reviewed; there is no machine draft here to confirm.'
+                      : ' Use Start annotating, above, to correct it.'
+                    : ' Correcting a document that already has authored ground truth writes it directly, which an Admin or Author has to do — you can inspect the values below.'}
                 </Alert>
               )}
               {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}

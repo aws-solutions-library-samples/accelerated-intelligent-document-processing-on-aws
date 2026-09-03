@@ -92,7 +92,7 @@ describe('AnnotationWorkspace edit gating', () => {
   });
 
   it('only promises class editing to someone who can actually save it', () => {
-    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*' You can still correct it below, including its class/);
+    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*draft\s*\?\s*' You can still correct it below, including its class/);
     expect(SOURCE).toMatch(/which an Admin or Author has to do/);
   });
 

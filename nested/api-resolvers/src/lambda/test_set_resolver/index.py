@@ -777,6 +777,9 @@ def publish_test_set_version(args, event=None):
     return result
 
 
+_SNAPSHOT_CONCURRENCY = 16
+
+
 def _snapshot_baselines(test_set_bucket, test_set_id, version):
     """Copy the live baselines to ``{id}/versions/{version}/baseline/``.
 
@@ -790,20 +793,33 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
     source_prefix = f"{test_set_id}/baseline/"
     dest_prefix = f"{test_set_id}/versions/{int(version)}/baseline/"
 
-    copied = 0
+    keys = []
     paginator = s3_client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=test_set_bucket, Prefix=source_prefix):
         for obj in page.get("Contents", []) or []:
             key = obj["Key"]
-            if key.endswith("/"):
-                continue
-            relative = key[len(source_prefix) :]
-            s3_client.copy_object(
-                Bucket=test_set_bucket,
-                CopySource={"Bucket": test_set_bucket, "Key": key},
-                Key=f"{dest_prefix}{relative}",
-            )
-            copied += 1
+            if not key.endswith("/"):
+                keys.append(key)
+
+    def _copy(key):
+        s3_client.copy_object(
+            Bucket=test_set_bucket,
+            CopySource={"Bucket": test_set_bucket, "Key": key},
+            Key=f"{dest_prefix}{key[len(source_prefix) :]}",
+        )
+
+    # Bounded fan-out. Each copy is server-side, so the cost is a round trip, and
+    # this runs inside a synchronous request the dispatcher abandons after 29s: a
+    # sequential pass over a few thousand objects did not fit, and left the draft
+    # unrecorded while the resolver kept copying to its own timeout. Sixteen at a
+    # time fits the set sizes seen so far; beyond that this belongs in an
+    # asynchronous job the UI polls. `list()` re-raises the first failure, so a
+    # partial snapshot is reported as an error rather than as a version.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=_SNAPSHOT_CONCURRENCY
+    ) as pool:
+        list(pool.map(_copy, keys))
+    copied = len(keys)
 
     logger.info(
         f"Snapshotted {copied} baseline object(s) for test set '{test_set_id}' "
@@ -815,12 +831,10 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
 def open_test_set_annotation_draft(args, event=None):
     """Open the version transition that annotating a test set commits you to.
 
-    The requirement, as it was put: "if we start annotations on any
-    dataset, even if we still have ground truth, we're effectively committing that we'll
-    be creating a new version of the dataset. So I think we need to hash the queue link
-    to a version that is a transition from existing state to next state."
+    Starting annotation on a set, even one that already has ground truth, commits to a
+    new version of it, and the queue link should name that transition.
 
-    He was right, and the problem underneath is worse than the queue link. A version was
+    The problem underneath is worse than the queue link. A version was
     a **DynamoDB row only** — ``publish_test_set_version`` records a number, a label and
     a file count, and copies nothing. Annotation writes straight to ``{id}/baseline/``.
     So a run stamped ``TestSetVersion = 3`` could not be reproduced against the labels it

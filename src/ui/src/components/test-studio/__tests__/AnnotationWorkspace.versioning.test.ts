@@ -4,10 +4,8 @@
 /**
  * The version transition an annotation session belongs to, in the UI.
  *
- * The requirement, as it was put: "if we start annotations on any dataset, even if we still have ground
- * truth, we're effectively committing that we'll be creating a new version of the dataset.
- * So I think we need to hash the queue link to a version that is a transition from
- * existing state to next state."
+ * Starting annotation on a set commits to a new version of it, even when the set already
+ * has ground truth, and the queue link should name that transition.
  *
  * Three properties follow, and each is here because getting it wrong reintroduces the
  * silent commitment he objected to:

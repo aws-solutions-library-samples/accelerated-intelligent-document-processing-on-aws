@@ -598,8 +598,7 @@ describe('PageGroupingEditor page ordering', () => {
 /**
  * Seeing a page at readable size.
  *
- * The ask: "one of the dropdown options should be a larger view of the document
- * page; the thumbnail isn't quite large enough to see the detail you might need to see."
+ * The thumbnail is too small to see the detail needed to judge a page.
  * Deciding which section a page belongs to means reading the page, and the card shows it
  * at 112px.
  *

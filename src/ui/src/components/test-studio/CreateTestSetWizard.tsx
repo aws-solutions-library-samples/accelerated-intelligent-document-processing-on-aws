@@ -230,8 +230,8 @@ const CreateTestSetWizard = ({
     const createdId = response.testSetId;
     onCreated(
       source === 'upload-documents'
-        ? `Test set "${createdId}" created. Once the zip is processed, use "Generate draft labels" to label it.`
-        : `Test set "${createdId}" created. The zip is being processed.`,
+        ? `Test set "${name.trim()}" created as ${createdId}. Once the zip is processed, use "Generate draft labels" to label it.`
+        : `Test set "${name.trim()}" created as ${createdId}. The zip is being processed.`,
     );
   };
 

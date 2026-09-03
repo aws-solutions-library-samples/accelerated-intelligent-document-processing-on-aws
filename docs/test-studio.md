@@ -1211,7 +1211,7 @@ transition*, shown in the header as e.g. `v1 → v2`.
 Agreeing to it is what preserves the labels you are moving away from. The set's current
 baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
 bytes it meant when a run scored against it. A set that arrived with its own ground truth
-and was never published gets that state captured first, labelled **As uploaded** — without
+and was never published gets that state captured first as `v1` — without
 it, the labels a set was uploaded with are exactly the ones overwritten with no record of
 what they were.
 
