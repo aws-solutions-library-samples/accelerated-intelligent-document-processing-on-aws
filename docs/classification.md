@@ -1314,11 +1314,23 @@ be more certain than its least certain page.
 
 ### Where it shows up
 
-- **Web UI** — next to the class in the Pages and Sections tables. The page cell
-  is hoverable ("Why this class?") when the model gave a reason or ranked
-  candidates, and the popover lists the alternatives it considered with their
-  probabilities. Nothing is rendered when there is no score, so an unscored run
-  looks exactly as it did before.
+- **Web UI** — a **Class conf.** column in both the **Document Sections** and
+  **Document Pages** tables on the document detail page, beside `Class/Type`
+  rather than inside it. Both columns **sort**, so you can put the
+  least-confident pages first — which is how you find the ones worth a second
+  look. In **Document Pages** the percentage is a link: click it for **"Why this
+  class?"**, the model's own reasoning plus the ranked alternatives it considered
+  with their probabilities. In **Document Sections** it is a plain badge, because
+  a section score is an aggregate (the minimum across its pages) with no
+  reasoning of its own. An unscored page or section shows `—`, never `0%`.
+  The neighbouring **Low-conf. fields** column is a different measurement
+  entirely — per-extracted-field confidence, not the class.
+
+  The number is deliberately shown the same way at every value. There is no
+  configured classification confidence threshold (unlike extraction fields), so a
+  green/amber/red band would assert a pass/fail the system has not defined — and
+  on a classifier that answers ~0.95 for most pages it would paint a coarse flag
+  as a calibrated traffic light.
 - **API** — `Page.ClassConfidence`, `Page.ClassReason`, `Page.ClassCandidates`
   and `Section.Confidence` on `getDocument`, `getDocumentVersion` and the
   document subscription. Named `ClassConfidence` on a page because
