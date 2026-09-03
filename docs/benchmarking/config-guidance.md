@@ -104,7 +104,7 @@ metric each is judged on). Advice for the ones that have been measured is in §7
 | Forcing | `extraction.forced_tool.enabled` | yes — §7 |
 | Schema restatement | `extraction.agentic.restate_schema_in_system_prompt` | yes — §7 |
 | Section splitting | `classification.sectionSplitting` | yes — §7 |
-| Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes — §7 |
+| Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes, but underpowered here — !769 is the authority, §7 |
 | Classification confidence | `classification.confidence.mode` | not yet (cost unmeasured) |
 | Classification model | `classification.model` | held at Sonnet 5 for §7 only |
 | OCR DPI | `ocr.image.dpi` | as a control only — §7 |
@@ -426,17 +426,38 @@ packet** — it emits one all-pages section where two are correct, losing the sp
 (completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
 over-splitting.
 
-### The `<boundary-detection-rules>` prompt block (#653) — unvalidated
+### The `<boundary-detection-rules>` prompt block (#653) — keep it
 
-A full factorial of prompt × `classification.confidence.mode` × `ocr.image.dpi`, 90 runs,
-found **no difference on any shape**: all six arms score 1.00. An earlier, uncontrolled
-figure of 0% → 60% on the unpaginated document **does not reproduce and is retracted**.
+**Validated by GitLab !769**, which measured the same rules on **DocSplit-Poly-Seq**:
+500 packets, 7,330 pages, 2,027 sections, 5,000 packet-runs, five models, 0 failures.
+Split accuracy on multi-section packets improves on four of five models and regresses
+on none — Qwen3-VL +0.117, Opus 5 +0.040, Nova 2 Lite +0.030, Sonnet 5 +0.013 (all
+p<0.05), gpt-5.6-sol +0.004 (ns). Under-split rate is 0.000 in all ten cells, so the
+anti-over-merge clause holds at scale, and page-level *class* accuracy moves at most
+0.015 — the change touches boundaries only. On #653's reported 2-page form Sonnet 5
+goes 6/24 → 10/10; on a 4-page packet of two copies of one form, 1/10 → 5/5.
 
-The defensible conclusion is not "the block does nothing" but that **this corpus cannot
-reproduce the bug the block addresses, so it cannot validate it either** — the generator
-writes clean documents with unambiguous header blocks and explicit `Page N of M` footers,
-and both prompts handle those. Full write-up and reproduction commands:
-`benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md`.
+⚠️ **Still incomplete**: an unpaginated multi-page document is split roughly 40% of the
+time even with the fix, because the rules lean on pagination markers — corpora whose
+scans lack them benefit least. Raising `classification.contextPagesCount` is not the
+answer (0/5 on the 4-page two-copies packet, by merging all four pages). The block sits
+inside the prompt-cache prefix, so it is not re-billed per page.
+
+⚠️ **A customized `classification.task_prompt` wins over the default**, so a stored
+custom prompt does not receive this fix — re-apply it or reset to the default. The
+presets that pin their own prompt are synced, with a guard test
+(`scripts/tests/test_classification_prompt_copies_in_sync.py`).
+
+> **A local factorial here found nothing, and that was a measurement failure, not a
+> result.** 90 runs over prompt × `classification.confidence.mode` × `ocr.image.dpi`
+> scored 1.00 in all six arms — but on **Sonnet 5**, whose true effect !769 puts at
+> +0.013, across three clean synthetic documents at n=5. That test has no power at
+> that effect size. It also led me to "retract" a 0% → 60% figure that had been
+> measured on **Nova 2 Lite**, which was a cross-model comparison rather than a
+> retraction; !769 independently measures that case at 0/5 → 3/5. Details and the
+> corrected write-up:
+> `benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md`. Measure boundary work on
+> DocSplit-Poly-Seq, not on this corpus.
 
 ### Not yet measured
 

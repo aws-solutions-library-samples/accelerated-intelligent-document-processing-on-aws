@@ -1,4 +1,33 @@
-# #653 boundary detection — the prompt change is unvalidated
+# #653 boundary detection — a Sonnet-5 factorial with no detection power
+
+> ## ⚠️ Superseded. Read this first.
+>
+> This file originally concluded that the #653 prompt block was **unvalidated** and
+> that the "0% → 60%" figure should be **retracted**. Both conclusions were wrong,
+> and the error was mine:
+>
+> * **The block is validated.** GitLab **!769** measured the same rules on
+>   **DocSplit-Poly-Seq** — 500 packets, 7,330 pages, 2,027 sections, 5,000
+>   packet-runs, five models, 0 failures. Split accuracy improves on four of five
+>   models (Qwen3-VL +0.117, Opus 5 +0.040, Nova 2 Lite +0.030, Sonnet 5 +0.013,
+>   all p<0.05) and **regresses on none**; under-split rate is 0.000 in all ten
+>   cells. On #653's reported 2-page form Sonnet 5 goes 6/24 → 10/10; on a 4-page
+>   packet of two copies of one form, 1/10 → 5/5. See
+>   [../boundary/FINDINGS.md](../boundary/FINDINGS.md) § Superseded by !769.
+> * **The 0% → 60% figure stands.** It was measured on **Nova 2 Lite** (the shipped
+>   default). This factorial ran on **Sonnet 5**. I retracted a Nova-2-Lite result
+>   because a Sonnet-5 run did not reproduce it — a cross-model comparison, which
+>   is not a retraction of anything. !769 independently measures the unpaginated
+>   case at **0/5 → 3/5**, i.e. the same 0% → 60%.
+> * **Why this run found nothing.** !769 puts Sonnet 5 at **+0.013**, the smallest
+>   significant effect of the five models. Three clean synthetic documents at n=5
+>   cannot resolve +0.013. This is a null result from an underpowered test, not
+>   evidence of absence — and the corpus limitation was already documented in the
+>   sibling findings file before I wrote this one.
+>
+> What still stands from this run, unaffected: the `split-disabled` result below,
+> and the fact that no arm loses rows.
+
 
 **Run:** 2026-09-03, stack `IDP1` (us-west-2, acct 912625584728), develop @ v0.6.7.dev5
 plus PR #744. Classification model `us.anthropic.claude-sonnet-5` throughout — the
@@ -27,24 +56,20 @@ Completeness recall was 1.0 in every run of every arm — no arm loses rows.
 where two are correct). So `sections_correct` does discriminate, and the 1.00s are
 a real result rather than a broken metric.
 
-## What this means, stated carefully
+## What this run does and does not show
 
-The honest conclusion is **not** "the #653 prompt block does nothing". It is:
+It shows that on **three clean synthetic documents at Sonnet 5**, the pre-fix and
+post-fix prompts are indistinguishable — 1.00 everywhere. Given !769 measures
+Sonnet 5's true effect at +0.013, that is the expected outcome of a test with no
+power at that effect size, and it should not have been written up as though the
+feature were unsupported.
 
-> **This corpus cannot reproduce the bug #653 reports, so it cannot validate the
-> fix either.** The prompt change shipped on-by-default and is currently supported
-> by no measurement.
+**The instrument is not vacuous.** In the same runs, `split-disabled` on
+`twodocs_2x20` scores **0.00 in every condition** (it emits one all-pages section
+where two are correct). So `sections_correct` does discriminate; the 1.00s are a
+real measurement of a real null, on documents both prompts handle.
 
-Two things follow:
-
-1. The `<boundary-detection-rules>` block (~652 tokens, inside the cacheable
-   classification prefix, sent per page) is **unjustified by evidence**. It is also
-   not harmful here: no regression on any shape, no row loss.
-2. An earlier, less controlled measurement in the development of PR #737 reported
-   the unpaginated 3-page case going 0% → 60%. **That does not reproduce.** It was
-   taken before #731 (classification confidence) and #740 (OCR dpi 150 → 300)
-   landed, and without the pre-fix control arm this factorial provides. Treat the
-   0% → 60% figure as retracted.
+Completeness recall was 1.0 in every run of every arm — no arm loses rows.
 
 ## Why the corpus probably cannot reproduce it
 
@@ -61,14 +86,19 @@ them out as confounds, and both were ruled out.
 
 ## Recommended next step
 
-Do **not** draw a conclusion about the prompt from this. Either obtain a
-reproducing document and re-run this factorial against it, or revert the block as
-unjustified. Keeping it silently as "probably helps" is the one option the evidence
-does not support.
+**Keep the block.** !769 is the deciding evidence and it is overwhelming relative to
+this run.
 
-The `split-disabled` result is separately actionable and solid: **it is wrong by
-construction on multi-document files** (0/5, one section where two are correct), so
-it must not be recommended as a workaround for packets.
+The useful lesson here is about the corpus, not the fix: this synthetic corpus
+cannot detect a boundary-prompt effect at Sonnet 5, because its documents carry
+unambiguous opening header blocks, distinct account numbers per copy, and explicit
+`Page N of M` footers. Any future boundary work should be measured on
+DocSplit-Poly-Seq (or a corpus like it) rather than here, or on this corpus only at
+a model where the effect is large (Qwen3-VL, +0.117).
+
+The `split-disabled` result is separately actionable and unaffected: **it is wrong by
+construction on multi-document files** (0/5, one section where two are correct), so it
+must not be recommended as a workaround for packets.
 
 ## Reproducing
 
