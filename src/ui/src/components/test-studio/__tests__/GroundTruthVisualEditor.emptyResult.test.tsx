@@ -153,21 +153,21 @@ describe('GroundTruthVisualEditor with no field values', () => {
   });
 
   it('marks an unclassified section in its tab, and names every class from the payload', async () => {
-    // A bare "Section 1" beside "Section 2 (ExxonMobilInvoice)" expressed the missing
+    // A bare "Section 1" beside "Section 2 (Invoice)" expressed the missing
     // class only as absent text, which reads as "this tab shows the number". And only the
     // OPEN tab used to name its class at all, so finding the problem section meant
     // clicking each one — even though the payload carries documentClass for all of them.
     mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
     renderEditor([
       { sectionId: '1', baselineKey: 'ts1/baseline/p.pdf/sections/1/result.json', documentClass: null, pageIndices: [0] },
-      { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'ExxonMobilInvoice', pageIndices: [1] },
+      { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'Invoice', pageIndices: [1] },
     ]);
 
     // findAllByText: a Cloudscape SegmentedControl renders each label more than once
     // (visible plus assistive copies), so the singular query is ambiguous by design.
     expect(await screen.findAllByText('Section 1 (no class)')).not.toHaveLength(0);
     // Named without being opened.
-    expect(screen.getAllByText('Section 2 (ExxonMobilInvoice)')).not.toHaveLength(0);
+    expect(screen.getAllByText('Section 2 (Invoice)')).not.toHaveLength(0);
   });
 
   it('renders the fields normally when there are any', async () => {

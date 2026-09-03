@@ -815,7 +815,7 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
 def open_test_set_annotation_draft(args, event=None):
     """Open the version transition that annotating a test set commits you to.
 
-    Spencer Romo, reviewing the Exxon POC build: "if we start annotations on any
+    The requirement, as it was put: "if we start annotations on any
     dataset, even if we still have ground truth, we're effectively committing that we'll
     be creating a new version of the dataset. So I think we need to hash the queue link
     to a version that is a transition from existing state to next state."

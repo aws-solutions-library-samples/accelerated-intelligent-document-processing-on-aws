@@ -3142,7 +3142,7 @@ class TestTestSetResolver:
 
         A version was a DynamoDB row that copied nothing, so annotating in place changed
         what every recorded version number referred to and a scored run could not be
-        reproduced. Spencer: starting annotation "effectively commit[s] that we'll be
+        reproduced. Starting annotation "effectively commit[s] that we'll be
         creating a new version" — so the state being left has to be captured.
         """
         table, s3 = labeling_env
@@ -3184,7 +3184,7 @@ class TestTestSetResolver:
     def test_a_set_with_no_published_version_gets_its_arriving_labels_captured(
         self, labeling_env
     ):
-        """Spencer's case: "even if we still have ground truth".
+        """The "even if we still have ground truth" case.
 
         An uploaded set has never been published, so without this the labels it arrived
         with would be the ones overwritten, with nothing recording what they were.
@@ -3328,7 +3328,7 @@ class TestTestSetResolver:
     # ------------------------------------------------- zip upload: the set's name
 
     def test_the_supplied_name_is_used_not_the_zip_filename(self, labeling_env):
-        """The bug Spencer hit: he typed a name and got the archive's.
+        """The reported bug: type a name, get the archive's.
 
         `TestSetUploadInput` carried no `name` at all, so the wizard collected and
         validated a name it had nowhere to send, and the resolver derived one from the

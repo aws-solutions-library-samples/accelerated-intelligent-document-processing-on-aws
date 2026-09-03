@@ -157,7 +157,7 @@ interface GroundTruthVisualEditorProps {
  * A section tab's label, naming the class — or naming its absence.
  *
  * An unclassified section used to read as a bare `Section 1` beside a classified
- * `Section 2 (ExxonMobilInvoice)`, so the missing class was expressed only as *absent*
+ * `Section 2 (Invoice)`, so the missing class was expressed only as *absent*
  * parenthetical text. That reads as "this tab just shows the number", not "this section
  * has no class" — and it is the reason the section has no extracted fields, so it is
  * worth saying out loud.

@@ -211,7 +211,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    *
    * Null means annotation has not begun on this set yet and the reviewer has not been
    * told what beginning it entails. Editing ground truth in place used to be silent —
-   * the point of asking first is that the commitment is Spencer's objection, not the
+   * the point of asking first is that the commitment is the objection, not the
    * mechanism.
    */
   const [openedDraft, setOpenedDraft] = useState<AnnotationDraft | null>(null);
@@ -260,7 +260,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   /**
    * Open the version transition this session will work in.
    *
-   * Asked for rather than done on arrival, because the commitment is the thing Spencer
+   * Asked for rather than done on arrival, because the commitment is the thing
    * objected to being invisible: annotating a set that already has ground truth produces
    * a new version of it whether or not anyone said so. The server snapshots the state
    * being left, so agreeing here is also what makes the previous labels recoverable.
@@ -544,7 +544,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
   /**
    * The queue link, carrying the transition it belongs to.
    *
-   * Spencer's ask, in his words: "hash the queue link to a version that is a transition
+   * The ask, verbatim: "hash the queue link to a version that is a transition
    * from existing state to next state." Without `?v=`, a link shared in Slack means
    * "annotate this set" — which silently becomes a different job once the current
    * transition is published and the next one opens. With it, a stale link can say so.

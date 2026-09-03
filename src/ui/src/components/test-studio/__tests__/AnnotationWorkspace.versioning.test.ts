@@ -4,7 +4,7 @@
 /**
  * The version transition an annotation session belongs to, in the UI.
  *
- * Spencer Romo: "if we start annotations on any dataset, even if we still have ground
+ * The requirement, as it was put: "if we start annotations on any dataset, even if we still have ground
  * truth, we're effectively committing that we'll be creating a new version of the dataset.
  * So I think we need to hash the queue link to a version that is a transition from
  * existing state to next state."

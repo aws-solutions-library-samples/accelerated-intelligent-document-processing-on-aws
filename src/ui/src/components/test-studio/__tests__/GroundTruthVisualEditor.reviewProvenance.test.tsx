@@ -12,7 +12,7 @@
  *
  * That path is not an edge case: `completeSectionReview` requires a `reviewObjectKey`,
  * which only a draft-labeling run creates, so an authored-ground-truth document *must*
- * save directly. It is exactly the set Spencer was working.
+ * save directly. It is exactly the kind of set the report came from.
  *
  * The distinction these tests pin is that the tag is written on the direct path and NOT
  * on the review-API path, where the server writes it with token-derived identity.

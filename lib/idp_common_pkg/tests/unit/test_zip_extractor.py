@@ -280,7 +280,7 @@ class TestClassifyZipEntry:
 
 @pytest.mark.unit
 def test_root_level_zip_partitions_into_both_roles():
-    """End-to-end over the helper, in the shape Spencer's zip actually had."""
+    """End-to-end over the helper, in the shape the reported zip actually had."""
     mock_files = [
         Mock(filename="input/document1.pdf", is_dir=lambda: False),
         Mock(filename="input/document2.pdf", is_dir=lambda: False),
