@@ -1,5 +1,12 @@
 # Boundary detection (#653/#726) — a controlled measurement
 
+> **Superseded in part.** Two conclusions below — that the fix does nothing for
+> paginated documents, and that the over-merge case could not be reproduced — held
+> only for this run's 3-document corpus on one model. GitLab !769 measured the same
+> prompt at a scale this run could not, and both conclusions do not survive it. See
+> [§ Superseded by !769](#superseded-by-769). Everything else here stands, including
+> the correction to #726 and the reason the defect was invisible.
+
 Live on IDP1 (`v0.6.7.dev3`, us-west-2), classification on **Nova 2 Lite** (the
 shipped default), `multimodalPageLevelClassification`, `contextPagesCount: 0`,
 `sectionSplitting: llm_determined`, single-class `bank_statement`. 5 repeats per
@@ -80,6 +87,63 @@ AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack IDP1 --suit
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack IDP1 --suite boundaryctl --class bank_statement
 ```
 
-Not measured: Sonnet 5 (#653's reported model, and the stricter test since it
+Not measured here: Sonnet 5 (#653's reported model, and the stricter test since it
 rejects `temperature` and therefore samples); documents with pages scanned out of
-order, which #653 notes the rules cannot fix on page evidence alone.
+order, which #653 notes the rules cannot fix on page evidence alone. Sonnet 5 was
+subsequently measured — see below.
+
+## Superseded by !769
+
+GitLab !769 (Mofijul Islam, who designed the prompt this run measures) ran the same
+rules on **DocSplit-Poly-Seq**: 500 packets, 7,330 pages, 2,027 sections, 5,000
+packet-runs, 0 failures, across five models. That corpus is three orders of
+magnitude larger than the three documents here, so where the two disagree, !769 is
+the better evidence.
+
+Split accuracy on multi-section packets, fix vs. pre-fix prompt:
+
+| model | Δ split accuracy | |
+|---|---|---|
+| Qwen3-VL | **+0.117** | p<0.05 |
+| Opus 5 | **+0.040** | p<0.05 |
+| Nova 2 Lite | **+0.030** | p<0.05 |
+| Sonnet 5 | **+0.013** | p<0.05 |
+| gpt-5.6-sol | +0.004 | not significant |
+
+Paired bootstrap + Wilcoxon. **No model regresses.** Under-split rate is 0.000 in
+all ten cells, so the anti-over-merge clause holds at scale. Page-level *class*
+accuracy moves at most 0.015, confirming the change touches boundaries only.
+
+What this overturns:
+
+- **"Paginated documents were never broken" is too strong.** It is true of
+  `paginated_3pg` — a clean, synthetic, single-class 3-page statement where
+  `Page 2 of 3` is unambiguous. It is not true of paginated documents in general:
+  four of five models improve significantly on a corpus that contains them.
+- **The over-merge case reproduces after all.** This run could not reproduce #653's
+  1/10 because `twodocs_2x20` is two 1-page documents rather than #653's 4-page file
+  of two 2-page documents. !769 ran that shape: **1/10 → 5/5**, and
+  `contextPagesCount: 1` alone scores **0/5** on it by merging all four pages —
+  which independently confirms why raising `contextPagesCount` is not the fix.
+- **Sonnet 5 is measured.** #653's reporter's 2-page form: **6/24 → 10/10**. This
+  also confirms the `temperature`-stripping diagnosis: Sonnet 5, Opus 5 and Claude
+  4.7+ reject `temperature`/`top_p`/`top_k` so `idp_common` strips them and those
+  models sample, while Sonnet 4.5 honours `temperature: 0` and so resolved the
+  ambiguity identically every run. That is why #653 looked model-specific and is not.
+
+What it does **not** overturn: the `small_narrow` 0% → 60% result, the fact that
+`completeness_recall` stays 1.0 so the defect is invisible in the data, the
+correction to #726, or the documented residual — an unpaginated multi-page document
+is still split some of the time.
+
+Two limits !769 adds:
+
+- **The single-document figures do not generalise.** The rules lean on pagination
+  markers, which RVL-CDIP scans mostly lack.
+- **A separate, larger defect:** `llm_determined` over-splits **1.5×–2.3×** on real
+  packets *regardless of prompt*. Prompt work does not address it; it needs its own
+  issue.
+
+Caveat on reproducibility: Qwen3-VL and `gpt-5.6-sol` are not selectable models in
+this repo, so the five-model table cannot be re-run from this checkout. The three
+Bedrock rows (Opus 5, Sonnet 5, Nova 2 Lite) can.
