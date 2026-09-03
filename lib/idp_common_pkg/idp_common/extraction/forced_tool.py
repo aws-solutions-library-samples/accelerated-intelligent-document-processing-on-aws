@@ -55,10 +55,73 @@ logger = logging.getLogger(__name__)
 EXTRACTION_TOOL_NAME = "emit_extracted_fields"
 
 _TOOL_DESCRIPTION = (
-    "Return the fields extracted from the document. Every value must come from "
-    "the document itself; use null for a field the document does not contain. "
-    "Do not invent values and do not add fields the schema does not define."
+    "Return the extracted values as the TOP-LEVEL properties of this tool's input, "
+    "exactly as the schema declares them. Do NOT nest them under a wrapper key "
+    "such as 'fields', 'data' or 'result'. Every value must come from the document "
+    "itself; use null for a field the document does not contain. Do not invent "
+    "values and do not add properties the schema does not define."
 )
+
+#: Wrapper keys a model plausibly invents when it decides to nest its answer.
+#: `fields` is not hypothetical — see :func:`unwrap_tool_payload`.
+_WRAPPER_KEY_HINTS = frozenset(
+    {"fields", "data", "result", "results", "output", "extraction", "values"}
+)
+
+
+def unwrap_tool_payload(
+    tool_input: Optional[Dict[str, Any]],
+    class_schema: Optional[Dict[str, Any]],
+    name_map: Optional[NameMap] = None,
+) -> Optional[Dict[str, Any]]:
+    """Undo a model nesting the whole answer under one off-schema wrapper key.
+
+    Sonnet 5 returned ``{"fields": {...the entire extraction...}}`` on a live run.
+    Because ``fields`` is not a property the class declares, the off-schema-key
+    handling downstream dropped it — and with it every extracted value, including a
+    100-row transaction list. The section still reported ``parsing_succeeded`` and
+    completed, so the loss was silent.
+
+    The tool is named ``emit_extracted_fields`` and asks for "the fields", which
+    plausibly cued the nesting; the description now says not to. This is the belt to
+    that braces, because a prompt instruction is a request, not a guarantee.
+
+    Deliberately narrow, so it can only ever recover a payload and never reshape a
+    legitimate one. Unwraps only when ALL of:
+
+    * the input has exactly one key, and that key is not a declared property;
+    * the key looks like a wrapper (:data:`_WRAPPER_KEY_HINTS`) OR the class
+      declares no property by that name at all;
+    * its value is a dict that shares at least one key with the declared
+      properties — i.e. the payload really is the extraction.
+
+    A single-key input that IS a declared property (a class with one field) is
+    untouched, as is any input whose inner dict looks nothing like the schema.
+    """
+    if not isinstance(tool_input, dict) or len(tool_input) != 1:
+        return tool_input
+    # The payload inside the wrapper is keyed by the SANITIZED names the model was
+    # given, so recognising it needs both spellings. A class whose every property
+    # was renamed (all names contain spaces, say) would otherwise never match.
+    declared = set((class_schema or {}).get("properties") or {})
+    if name_map is not None:
+        declared |= set(name_map.renamed)
+    (key,), (value,) = tool_input.keys(), tool_input.values()
+    if key in declared or not isinstance(value, dict) or not value:
+        return tool_input
+    if key.lower() not in _WRAPPER_KEY_HINTS and declared:
+        # An unrecognised single key: only unwrap if the payload is unmistakable.
+        if not (set(value) & declared):
+            return tool_input
+    if declared and not (set(value) & declared):
+        return tool_input
+    logger.warning(
+        "Forced tool returned its payload nested under the off-schema key %r; "
+        "unwrapping it. Without this the whole extraction would be dropped as an "
+        "off-schema field and the section would report success with no data.",
+        key,
+    )
+    return value
 
 
 def build_extraction_tool_config(

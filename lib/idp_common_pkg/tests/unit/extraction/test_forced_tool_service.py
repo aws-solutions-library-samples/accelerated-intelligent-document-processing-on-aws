@@ -337,3 +337,116 @@ class TestOffByDefault:
         cfg = IDPConfig()
         assert cfg.extraction.forced_tool.enabled is False
         assert cfg.extraction.forced_tool.fallback_to_prompt is True
+
+
+@pytest.mark.unit
+class TestTheWrapperKeyRegression:
+    """The live failure: a 100-row list silently reduced to nothing.
+
+    On a benchmark run against a real stack, Sonnet 5 answered a forced tool call
+    with the ENTIRE extraction nested under one invented key::
+
+        {"fields": {"Account_Number": ..., "Transactions": [ ...100 rows... ]}}
+
+    ``fields`` is not a property the class declares, so the off-schema-key handling
+    dropped it — and with it every extracted value. The section stored
+    ``inference_result: {}``, recorded ``parsing_succeeded: true`` and
+    ``forced_tool.honored: true``, raised no error, and completed. The benchmark
+    scored it COMPLETED with completeness recall **0.0**, three runs out of three.
+
+    The tool is named ``emit_extracted_fields`` and asked for "the fields", which
+    plausibly cued the nesting. The description now forbids it and
+    ``unwrap_tool_payload`` recovers it anyway, because a prompt instruction is a
+    request rather than a guarantee.
+
+    Ruled out on the way here, each by measurement rather than reasoning: the
+    sanitize/restore round trip (100 rows survive it), ``$ref``/``$defs`` in the
+    tool schema (Bedrock returned 100 rows for both the ref'd and dereferenced
+    form, identical output tokens), and the live task/system prompt (100 rows with
+    and without it). Only the wrapper reproduces the loss.
+    """
+
+    PROPS = {
+        "Account Number": {"type": "string", "description": "acct"},
+        "Transactions": {
+            "type": "array",
+            "description": "rows",
+            "items": {
+                "type": "object",
+                "properties": {"Amount": {"type": "number"}},
+            },
+        },
+    }
+
+    def _payload(self, n=100):
+        # Keyed by the SANITIZED names, which is what the model is given.
+        return {
+            "Account_Number": "000123456789",
+            "Transactions": [{"Amount": float(i)} for i in range(n)],
+        }
+
+    def test_a_nested_payload_is_recovered_in_full(self):
+        written, _, doc = _run(
+            _config(self.PROPS),
+            _tool_use_response({"fields": self._payload()}),
+        )
+        assert written["inference_result"]["Account Number"] == "000123456789"
+        assert len(written["inference_result"]["Transactions"]) == 100
+        assert not doc.errors
+
+    @pytest.mark.parametrize("wrapper", ["fields", "data", "result", "output"])
+    def test_the_other_plausible_wrappers_too(self, wrapper):
+        written, _, _ = _run(
+            _config(self.PROPS), _tool_use_response({wrapper: self._payload(5)})
+        )
+        assert len(written["inference_result"]["Transactions"]) == 5
+
+    def test_an_unknown_wrapper_is_recovered_when_the_payload_matches_the_schema(self):
+        """A key we did not anticipate still gets unwrapped, but only because the
+        payload inside is unmistakably the extraction."""
+        written, _, _ = _run(
+            _config(self.PROPS),
+            _tool_use_response({"zzz_unexpected": self._payload(3)}),
+        )
+        assert len(written["inference_result"]["Transactions"]) == 3
+
+    def test_a_flat_response_is_untouched(self):
+        """Guard-the-guard: unwrapping must not disturb a well-behaved reply."""
+        written, _, _ = _run(_config(self.PROPS), _tool_use_response(self._payload(7)))
+        assert len(written["inference_result"]["Transactions"]) == 7
+        assert written["inference_result"]["Account Number"] == "000123456789"
+
+    def test_a_single_field_class_is_not_unwrapped(self):
+        """A class with exactly ONE declared property produces a single-key tool
+        input legitimately. Unwrapping that would destroy the extraction — the
+        precise mirror of the bug being fixed."""
+        written, _, _ = _run(
+            _config({"Account Number": {"type": "string"}}),
+            _tool_use_response({"Account_Number": "12345"}),
+        )
+        assert written["inference_result"]["Account Number"] == "12345"
+
+    def test_a_nested_object_field_is_not_mistaken_for_a_wrapper(self):
+        """A single-key reply whose key IS declared and whose value is an object
+        must survive — it is a group field, not a wrapper."""
+        props = {
+            "Address": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            }
+        }
+        written, _, _ = _run(
+            _config(props), _tool_use_response({"Address": {"city": "Anytown"}})
+        )
+        assert written["inference_result"]["Address"] == {"city": "Anytown"}
+
+    def test_the_description_tells_the_model_not_to_nest(self):
+        """Fix the cue, not just the symptom."""
+        from idp_common.extraction.forced_tool import build_extraction_tool_config
+
+        tc, _ = build_extraction_tool_config(
+            {"type": "object", "properties": self.PROPS}
+        )
+        desc = tc["tools"][0]["toolSpec"]["description"].lower()
+        assert "top-level" in desc
+        assert "wrapper" in desc and "fields" in desc
