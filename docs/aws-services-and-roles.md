@@ -64,8 +64,9 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
-| **AWS Glue** | Data Catalog (database + tables) and crawler for evaluation/reporting metrics | ✓ | ✓ |
-| **Amazon Athena** | Queries evaluation metrics tables (document/section/attribute evaluations) for analytics | ✓ | ✓ |
+| **AWS Glue** | Data Catalog (database + tables) and crawler for evaluation/reporting metrics, including the `metering_hourly`, `metering_daily`, `metering_docs_hourly`, `metering_docs_daily`, `control_plane_hourly`, and `data_plane_lambda_hourly` rollup tables added by the Reporting SQL Layer | ✓ | ✓ |
+| **Amazon Athena** | Queries evaluation/metering/rollup tables for analytics; scheduled `DataMartRollupFunction` writes `INSERT INTO` the rollup tables hourly + daily | ✓ | ✓ |
+| **AWS Resource Groups Tagging API** | The `DataMartRollupFunction` uses `tag:GetResources` to discover Lambdas in this stack's tree (root + nested) for control-plane cost attribution | | ✓ |
 | **Amazon OpenSearch Serverless** | Optional vector store for the Bedrock Knowledge Base (the default vector store is S3 Vectors; `KnowledgeBaseVectorStore: OPENSEARCH_SERVERLESS` selects this instead) | ✓ | ✓ |
 
 ## IAM Role Requirements
@@ -233,6 +234,28 @@ The solution creates various IAM roles to run different components of the system
   * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution`
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
+
+* **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily):
+  * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution` (writes rollup tables via `INSERT INTO`)
+  * `glue:GetDatabase`, `glue:GetTable`, `glue:GetPartitions`, `glue:CreatePartition`, `glue:BatchCreatePartition` (partition management on rollup tables)
+  * `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics` (`*` — API doesn't support resource-level scoping) for reading `AWS/Lambda/Duration`, `AWS/Lambda/Invocations`, `IDPControlPlane/AthenaBytesScanned`, `IDPControlPlane/BedrockInputTokens`, `IDPControlPlane/BedrockOutputTokens`
+  * `tag:GetResources` (`*` — account-scoped API) for tag-based Lambda discovery
+  * `cloudformation:ListStackResources` (scoped to this stack + its nested stacks) to walk the stack tree
+  * `lambda:GetFunctionConfiguration` (scoped to functions in this account/region) for accurate per-Lambda memory + architecture in the cost estimate
+  * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `s3:GetBucketLocation` (reporting bucket only; `GetBucketLocation` is also needed by Athena's `StartQueryExecution` on the OutputLocation bucket). `HeadObject` calls are authorized by `s3:GetObject` — there is no `s3:HeadObject` IAM action
+  * `s3:AbortMultipartUpload`, `s3:ListBucketMultipartUploads`, `s3:ListMultipartUploadParts` (reporting bucket only) — part of AWS's reference policy for Athena `INSERT INTO`, which switches to a multipart upload once a result part exceeds its buffer
+  * `sqs:SendMessage` on its DLQ (async-failure destination)
+  * KMS on the stack CMK
+
+* **Metering Hour Migration Lambda Role** (`MeteringHourMigrationFunction`, one-shot CFN custom resource):
+  * `s3:ListBucket` (reporting bucket) for listing pre-migration parquet files
+  * `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` (scoped to `metering/*` under the reporting bucket) for the copy-then-delete relocation
+  * KMS on the stack CMK
+  * See [Reporting SQL Layer](reporting-sql-layer.md) §2.3 for the migration's purpose (backwards-compat upgrade to the `hour`-partitioned metering layout)
+
+* **Control-Plane Lambda cost-telemetry (in-band, all control-plane Lambdas that hit Athena or Bedrock):**
+  * `cloudwatch:PutMetricData` scoped to namespace `IDPControlPlane` (already granted via the existing app-metrics grant)
+  * The `idp_common.metrics.emit_control_plane_cost_metric` helper emits `IDPControlPlane/{AthenaBytesScanned,BedrockInputTokens,BedrockOutputTokens}` with dims `[Component, FunctionName, Model?]` for the rollup Lambda to aggregate.
 
 * **Glue Crawler Service Role**:
   * `glue:*` (managed `AWSGlueServiceRole`) for crawling reporting data

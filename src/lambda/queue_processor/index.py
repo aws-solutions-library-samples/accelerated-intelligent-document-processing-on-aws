@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
@@ -50,6 +50,24 @@ RECONCILE_GRACE_SECONDS = int(os.environ.get("RECONCILE_GRACE_SECONDS", "300"))
 RECONCILE_SAMPLE_MAX_AGE_SECONDS = int(
     os.environ.get("RECONCILE_SAMPLE_MAX_AGE_SECONDS", str(RECONCILE_GRACE_SECONDS * 4))
 )
+# Clamp: a correction requires GRACE <= sample age <= MAX_AGE. If MAX_AGE were
+# the smaller of the two, that window is EMPTY — every sample gets discarded as
+# stale (the `age > MAX_AGE` branch) before it can ever mature past GRACE, so
+# `reconcile_counter` can never correct and a leaked counter is permanent. That
+# is precisely the un-self-healing state this whole mechanism exists to escape,
+# so a misconfiguration must not be able to reintroduce it silently.
+#
+# The default (GRACE * 4) is safe, but both are independent env vars and an
+# operator raising one without the other is an easy mistake to make.
+if RECONCILE_SAMPLE_MAX_AGE_SECONDS < RECONCILE_GRACE_SECONDS * 2:
+    _clamped = RECONCILE_GRACE_SECONDS * 2
+    logger.warning(
+        f"RECONCILE_SAMPLE_MAX_AGE_SECONDS={RECONCILE_SAMPLE_MAX_AGE_SECONDS} is "
+        f"below 2x RECONCILE_GRACE_SECONDS={RECONCILE_GRACE_SECONDS}, which would "
+        f"leave no window in which a drift sample can mature — the counter could "
+        f"never be reconciled. Clamping to {_clamped}s."
+    )
+    RECONCILE_SAMPLE_MAX_AGE_SECONDS = _clamped
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 
@@ -94,13 +112,28 @@ def update_counter(increment: bool = True) -> bool:
         raise
 
 
-def _count_running_executions(limit: int = 1000) -> Optional[int]:
+def _count_running_executions() -> Optional[int]:
     """Count RUNNING executions of the document-processing state machine.
 
-    Returns None if the count could not be established (API error, or more
-    running executions than `limit`), so callers can decline to act rather than
-    act on a partial number.
+    Returns None if the count could not be established (API error) OR if the
+    count has definitively surpassed ``MAX_CONCURRENT`` — at that point the
+    counter (itself capped at ``MAX_CONCURRENT``) mathematically cannot have
+    leaked, so there is nothing to reconcile.
+
+    Round-15 review fix: the previous hardcoded ``limit=1000`` broke on large
+    stacks where the operator set ``MAX_CONCURRENT`` above 1000. In that
+    regime, a real leak could pin the counter high while actual running
+    executions were >1000, and this probe would return None → reconciliation
+    refused to act → the leak was permanent. Comparing against
+    ``MAX_CONCURRENT`` (with a small margin to survive races between listing
+    and the counter probe) makes the cap correct for any customer-configured
+    limit.
     """
+    # +100 margin: an execution may complete between the ListExecutions page
+    # and the subsequent counter read, so the counter can briefly be higher
+    # than the running count without being leaked. The margin absorbs that
+    # honest race so it doesn't trigger a spurious "already leak-proof" skip.
+    ceiling = MAX_CONCURRENT + 100
     try:
         total = 0
         token = None
@@ -114,14 +147,23 @@ def _count_running_executions(limit: int = 1000) -> Optional[int]:
                 kwargs["nextToken"] = token
             page = sfn.list_executions(**kwargs)
             total += len(page.get("executions", []))
+            if total > ceiling:
+                # Running > MAX_CONCURRENT + margin ⇒ counter can't be leaked
+                # (it is capped at MAX_CONCURRENT). Nothing to reconcile.
+                logger.info(
+                    f"Running executions > MAX_CONCURRENT + margin "
+                    f"({ceiling}); counter can't be leaked — skipping reconcile"
+                )
+                return None
             token = page.get("nextToken")
             if not token:
                 return total
-            if total > limit:
-                # More running than we care to page through; certainly not leaked.
-                logger.info(f"More than {limit} running executions; skipping reconcile")
-                return None
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # Round-16 review fix: BotoCoreError subclasses (endpoint /
+        # timeout / connection reset) bypass ClientError-only handlers
+        # and used to propagate, killing message processing on transient
+        # network blips. Same "return None → caller declines to act"
+        # semantics as the ClientError path.
         logger.warning(f"Could not list executions for reconciliation: {e}")
         return None
 
@@ -160,7 +202,8 @@ def reconcile_counter() -> Optional[int]:
             ).get("Item")
             or {}
         )
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # Round-16 review fix — see _count_running_executions above.
         logger.warning(f"Could not read counter for reconciliation: {e}")
         return None
 
@@ -174,9 +217,13 @@ def reconcile_counter() -> Optional[int]:
 
     if running >= active:
         # No drift. Clear any stale suspicion so a later real leak needs two
-        # fresh samples of its own.
-        if item.get("drift_observed_at"):
-            _put_drift_sample(None, None)
+        # fresh samples of its own. Round-18 review fix (#202): pass the
+        # observed timestamp so the REMOVE is CaS-guarded — a concurrent
+        # refusal path that just wrote a FRESH drift sample must NOT be
+        # clobbered by our clear.
+        prev_at = item.get("drift_observed_at")
+        if prev_at:
+            _put_drift_sample(None, None, replace_older_than=prev_at)
         return None
 
     drift = active - running
@@ -206,7 +253,11 @@ def reconcile_counter() -> Optional[int]:
             f"Discarding stale concurrency drift sample ({age}s old) and "
             f"restarting the observation window."
         )
-        _put_drift_sample(now, running)
+        # Round-17 review fix: pass replace_older_than so the CaS write
+        # can overwrite this specific stale sample. Without it, the
+        # round-16 ``attribute_not_exists`` guard silently no-oped and
+        # the stale sample sat forever.
+        _put_drift_sample(now, running, replace_older_than=prev_at)
         return None
 
     if age < RECONCILE_GRACE_SECONDS:
@@ -254,24 +305,123 @@ def reconcile_counter() -> Optional[int]:
     return target
 
 
-def _put_drift_sample(when: Optional[int], running: Optional[int]) -> None:
-    """Record (or clear) the observation that the counter looks too high."""
+def _put_drift_sample(
+    when: Optional[int],
+    running: Optional[int],
+    replace_older_than: Optional[int] = None,
+) -> None:
+    """Record (or clear) the observation that the counter looks too high.
+
+    Round-17 review fix: the round-16 ``attribute_not_exists`` guard on
+    the SET path silently blocked the round-14 stale-discard flow
+    (``if age > RECONCILE_SAMPLE_MAX_AGE_SECONDS: _put_drift_sample(now, running)``)
+    because that path REQUIRES overwriting the existing stale sample.
+    Now the caller can optionally pass ``replace_older_than`` — the
+    timestamp of the stale sample it already read — and the write
+    fires if the sample is either absent OR still the exact stale one
+    the caller observed (compare-and-swap). A concurrent fresh sample
+    from another refusal path fails the condition and is left alone.
+    """
     try:
         if when is None:
+            # Round-18 review fix (#202): compare-and-swap on the observed
+            # timestamp when clearing. Between the caller's get_item and
+            # this REMOVE, a concurrent refusal path can write a FRESH
+            # drift sample — the round-16 ``attribute_exists`` guard
+            # doesn't distinguish "the sample I saw is still there" from
+            # "some sample is there", so the clear would wipe the fresh
+            # one. Passing ``replace_older_than`` (repurposed here as
+            # "the sample the caller observed") makes the REMOVE fire
+            # only when that specific sample is still present.
+            expr_values: Dict[str, Any] = {}
+            condition = "attribute_exists(drift_observed_at)"
+            if replace_older_than is not None:
+                condition = "drift_observed_at = :prev"
+                expr_values[":prev"] = replace_older_than
+            kwargs_: Dict[str, Any] = {
+                "Key": {"counter_id": COUNTER_ID},
+                "UpdateExpression": "REMOVE drift_observed_at, drift_running",
+                "ConditionExpression": condition,
+            }
+            if expr_values:
+                kwargs_["ExpressionAttributeValues"] = expr_values
+            concurrency_table.update_item(**kwargs_)
+        elif replace_older_than is not None:
+            # Compare-and-swap overwrite: replace ONLY if the existing
+            # sample is still the one the caller saw. Guards against a
+            # concurrent fresh sample from another refusal path.
             concurrency_table.update_item(
                 Key={"counter_id": COUNTER_ID},
-                UpdateExpression="REMOVE drift_observed_at, drift_running",
+                UpdateExpression=(
+                    "SET drift_observed_at = :at, drift_running = :running"
+                ),
+                ExpressionAttributeValues={
+                    ":at": when,
+                    ":running": running,
+                    ":prev": replace_older_than,
+                },
+                ConditionExpression="drift_observed_at = :prev",
             )
         else:
+            # Round-16 review fix: two concurrent refused-message paths
+            # racing would previously clobber each other's sample. Only
+            # WRITE a fresh sample if none exists yet (respecting the
+            # existing "never overwrite" invariant from the round-3
+            # feedback-clock-reset regression). Any existing sample is
+            # kept — reconciliation logic already handles that path.
             concurrency_table.update_item(
                 Key={"counter_id": COUNTER_ID},
                 UpdateExpression=(
                     "SET drift_observed_at = :at, drift_running = :running"
                 ),
                 ExpressionAttributeValues={":at": when, ":running": running},
+                ConditionExpression="attribute_not_exists(drift_observed_at)",
             )
     except ClientError as e:
+        # ConditionalCheckFailedException here is EXPECTED (idempotent
+        # no-op path — another writer already recorded the sample or
+        # the sample doesn't exist to clear). On any other code we
+        # warn and emit ``ConcurrencyDriftSampleWriteFailed`` — a
+        # persistent write failure surfaces as an alarmable metric
+        # (never as a raised exception, because drift-sample recording
+        # is telemetry and must not affect message processing).
+        code = e.response.get("Error", {}).get("Code")
+        if code == "ConditionalCheckFailedException":
+            logger.debug(f"drift-sample write no-op (condition guard): {e}")
+            return
         logger.warning(f"Could not record concurrency drift sample: {e}")
+        # Emit a metric so a stuck reconciliation is visible instead of
+        # silently invisible.
+        try:
+            boto3.client("cloudwatch").put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "ConcurrencyDriftSampleWriteFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass  # telemetry must not affect message processing
+    except BotoCoreError as e:
+        # Round-16 review fix: connection / timeout / endpoint errors
+        # bypass ClientError. Same handling: warn + metric.
+        logger.warning(f"Concurrency drift sample write hit BotoCoreError: {e}")
+        try:
+            boto3.client("cloudwatch").put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "ConcurrencyDriftSampleWriteFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass
 
 
 def _emit_drift_metric(drift: int, active: int, running: int) -> None:
@@ -340,7 +490,11 @@ def check_circuit_breaker() -> tuple[bool, str]:
 
         return True, state
 
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # BotoCoreError (connect/timeout/endpoint) bypasses ClientError.
+        # Matches the round-16 hardening applied to sibling helpers
+        # (_count_running_executions, _put_drift_sample) — a transient
+        # DynamoDB blip must fail-open (return True) rather than raise.
         logger.error(f"Error checking circuit breaker: {e}")
         return True, "ERROR"
 
@@ -452,9 +606,7 @@ def start_workflow(document: Document) -> Dict[str, Any]:
         compressed_document = document.serialize_document(
             working_bucket, "workflow_start", logger
         )
-        logger.info(
-            "Document compressed for Step Functions workflow (always compress)"
-        )
+        logger.info("Document compressed for Step Functions workflow (always compress)")
     else:
         # Fallback to direct document dict if no working bucket
         compressed_document = document.to_dict()
@@ -579,7 +731,11 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             return False, message_id
 
         # X-Ray annotations
-        xray_recorder.put_annotation("document_id", {document.id})
+        # Round-17 review fix: this was ``{document.id}`` — a Python set
+        # literal, not the ID itself. X-Ray annotations accept only
+        # scalar values (str/int/bool/float), so the SDK either rejected
+        # this or recorded a set-repr string instead of the doc ID.
+        xray_recorder.put_annotation("document_id", document.id)
         xray_recorder.put_annotation("processing_stage", "queue_processor")
         current_segment = xray_recorder.current_segment()
         if current_segment:

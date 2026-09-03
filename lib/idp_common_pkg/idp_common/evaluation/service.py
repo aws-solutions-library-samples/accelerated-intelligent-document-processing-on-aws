@@ -35,6 +35,7 @@ from idp_common.evaluation.models import (
 from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
+    attach_page_confidence,
     compute_graded_packet_metrics,
     get_stickler_model,
     load_sections_for_doc_split,
@@ -665,6 +666,81 @@ class EvaluationService:
             )
             return {}, {}
 
+    @staticmethod
+    def _unwrap_confidence_envelope(
+        value: Dict[str, Any],
+        conf_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Strip a synthetic wrapper key off a confidence map, if there is one.
+
+        Some assessment output nests an object's confidence map inside a
+        synthetic key that has no counterpart in the extracted value —
+        ``{"Item #6": {"LineItemRate": {...}, "LineItemDays": {...}}}`` against
+        an inference result of ``{"LineItemRate": 1000.0, "LineItemDays": "..."}``.
+        Left in place, every confidence lookup misses and the whole object
+        scores with no confidence at all, so the envelope has to come off.
+
+        The original heuristic keyed off shape alone: a single non-metadata key
+        whose value held >= 2 confidence children was assumed to be an
+        envelope. That misfires on any class whose schema legitimately declares
+        **one** top-level object property — ``{"InvoiceDetails": {...}}`` is
+        indistinguishable from a wrapper by key count — and the unwrap then
+        silently discarded every confidence score beneath it (issue #713).
+
+        This gates the unwrap on evidence from the data instead:
+
+        1. The candidate key names **no field present in** ``value``. A real
+           field would appear on both sides; a synthetic envelope key appears
+           only on the confidence side. This is the discriminating signal.
+        2. Its contents **do** name at least one field present in ``value``,
+           so unwrapping demonstrably recovers confidence rather than
+           guessing.
+        3. Its contents are not themselves a leaf confidence entry (no
+           ``confidence`` key), which would make it a field's own scores
+           rather than a map of sibling fields.
+
+        Note (1) also makes the unwrap strictly non-destructive: a key absent
+        from ``value`` can never be matched by the caller's per-field lookup,
+        so the envelope contributes nothing before it is stripped. Because the
+        evidence no longer depends on how many children the envelope has, a
+        wrapper around a *single* field is now unwrapped too — previously its
+        confidence was dropped for the same reason.
+
+        Args:
+            value: The extracted object (values only) being annotated.
+            conf_data: The confidence map that may be wrapped in one synthetic key.
+
+        Returns:
+            The inner confidence map when the evidence above holds, otherwise
+            ``conf_data`` unchanged.
+        """
+        candidate_keys = [k for k in conf_data if k != "confidence_threshold"]
+        if len(candidate_keys) != 1:
+            return conf_data
+
+        candidate_key = candidate_keys[0]
+        inner = conf_data[candidate_key]
+        if not isinstance(inner, dict):
+            return conf_data
+
+        if candidate_key in value:
+            # Declared field of this object, not an envelope - leave it alone.
+            return conf_data
+        if "confidence" in inner:
+            # A field's own confidence entry, not a map of sibling fields.
+            return conf_data
+        if not any(k in value for k in inner):
+            # Nothing under it matches this object - unwrapping would recover
+            # no confidence, so there is no evidence it is an envelope.
+            return conf_data
+
+        logger.debug(
+            f"Unwrapping synthetic confidence envelope {candidate_key!r} "
+            f"(absent from extracted value; contents match "
+            f"{sorted(k for k in inner if k in value)})"
+        )
+        return inner
+
     def _convert_to_rich_values(
         self,
         inference_result: Dict[str, Any],
@@ -680,7 +756,8 @@ class EvaluationService:
         confidence and makes it available in the comparison result as 'prediction_confidences'.
 
         Handles wrapper keys (Item_N, Record_N) by detecting and unwrapping them
-        for backward compatibility with existing extraction data.
+        for backward compatibility with existing extraction data. See
+        ``_unwrap_confidence_envelope`` for the evidence that gates the unwrap.
 
         Args:
             inference_result: Actual extraction output (values only)
@@ -733,28 +810,9 @@ class EvaluationService:
                     )
                     return value
 
-            # Object field - check for wrapper keys first
+            # Object field - strip a synthetic confidence envelope first
             if isinstance(value, dict) and isinstance(conf_data, dict):
-                # Check for wrapper pattern: single non-metadata key with nested confidence
-                wrapper_keys = [
-                    k for k in conf_data.keys() if k != "confidence_threshold"
-                ]
-                if len(wrapper_keys) == 1:
-                    wrapper_key = wrapper_keys[0]
-                    wrapper_value = conf_data[wrapper_key]
-
-                    # Detect wrapper by checking if it contains multiple fields with confidence
-                    if isinstance(wrapper_value, dict):
-                        confidence_field_count = sum(
-                            1
-                            for v in wrapper_value.values()
-                            if isinstance(v, dict) and "confidence" in v
-                        )
-
-                        # If multiple confidence fields, treat as wrapper and unwrap
-                        if confidence_field_count >= 2:
-                            # Unwrap: use wrapper contents as confidence data
-                            conf_data = wrapper_value
+                conf_data = self._unwrap_confidence_envelope(value, conf_data)
 
                 # Standard object processing
                 result = {}
@@ -1788,7 +1846,14 @@ class EvaluationService:
                     correctly_classified_pages=page_level["correct_pages"],
                     correctly_split_without_order=split_no_order["correct_sections"],
                     correctly_split_with_order=split_with_order["correct_sections"],
-                    page_details=page_level["page_details"],
+                    # Annotated with the classifier's own confidence in each
+                    # page's class, so `correct` and `predicted_confidence`
+                    # sit side by side — that pairing is the calibration
+                    # measurement (GitHub #673). Absent/None for an unscored
+                    # page, which is the default.
+                    page_details=attach_page_confidence(
+                        page_level["page_details"], actual_document
+                    ),
                     section_details_without_order=split_no_order["section_details"],
                     section_details_with_order=split_with_order["section_details"],
                     predicted_sections=doc_split_calculator.sections_pred,  # Add predicted sections for unmatched display

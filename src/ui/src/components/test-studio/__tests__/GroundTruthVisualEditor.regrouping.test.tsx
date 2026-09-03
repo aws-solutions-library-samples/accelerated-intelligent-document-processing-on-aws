@@ -211,7 +211,7 @@ describe('GroundTruthVisualEditor page regrouping', () => {
 });
 
 /**
- * Where the control lives, after Spencer's review: beside the section pills rather than
+ * Where the control lives, after review: beside the section pills rather than
  * among one section's extracted values.
  *
  * Re-grouping rewrites the document's structure, so sitting it next to the field data made

@@ -447,6 +447,12 @@ def handler(event, context):
                     logger.info(f"Updating existing section: {section_id}")
                     existing_section.classification = classification
                     existing_section.page_ids = [str(pid) for pid in page_ids]
+                    # The class is now the operator's assertion, not the model's
+                    # prediction, so the model's score for the class it replaced
+                    # no longer describes this section. 1.0 follows the same
+                    # convention as the other deterministic assertions (a
+                    # document-name regex match, a single-class configuration).
+                    existing_section.confidence = 1.0
 
                     # Clear extraction data for reprocessing
                     if existing_section.extraction_result_uri:
@@ -483,6 +489,12 @@ def handler(event, context):
                 page_id_str = str(page_id)
                 if page_id_str in document.pages:
                     document.pages[page_id_str].classification = classification
+                    # Operator-asserted class: score it 1.0 like the section
+                    # above, and DROP the model's reason — it argues for the
+                    # class that was just replaced, so keeping it would show a
+                    # justification for "invoice" on a page relabelled "receipt".
+                    document.pages[page_id_str].confidence = 1.0
+                    document.pages[page_id_str].classification_reason = None
                     logger.info(
                         f"Updated page {page_id} classification to {classification}"
                     )
@@ -627,6 +639,11 @@ def process_page_changes(document, modified_pages, modified_section_ids):
         if class_reset:
             logger.info(f"Resetting classification for page {page_id}")
             page.classification = None  # Reset to unclassified
+            # There is no class left, so its confidence and the model's reasoning
+            # for it must go too — otherwise an unclassified page keeps a score
+            # and an argument for a class it no longer has.
+            page.confidence = None
+            page.classification_reason = None
 
             # Find and remove all sections containing this page
             sections_to_remove = []

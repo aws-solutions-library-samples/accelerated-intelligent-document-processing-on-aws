@@ -126,6 +126,42 @@ class TestDocumentRuns:
         assert "ConfidenceThresholdAlerts" not in section
         assert "ProcessingIssues" not in section
 
+    def test_create_document_run_snapshots_classification_signals(self):
+        """A historical run must explain its own classification.
+
+        Class confidence, the model's reason, and the boundary signal are what
+        make "why was this page classified this way, and why did these two
+        documents end up in one section?" answerable after a later run has
+        overwritten the outputs (GitHub #673, #565).
+        """
+        from idp_common.models import Page
+
+        doc = self._completed_document()
+        doc.sections[0].confidence = 0.55
+        doc.pages["1"] = Page(
+            page_id="1",
+            classification="W2",
+            confidence=0.55,
+            classification_reason="Box 1 wage labels",
+            document_boundary="start",
+        )
+        doc.pages["2"] = Page(page_id="2", classification="W2")
+
+        self.service.create_document_run(
+            doc, run_id="r1", manifest_uri="s3://m", file_count=1
+        )
+        item = self.mock_client.put_item.call_args[0][0]
+        scored, unscored = item["Pages"]
+
+        assert scored["ClassConfidence"] == Decimal("0.55")
+        assert scored["ClassReason"] == "Box 1 wage labels"
+        assert scored["Boundary"] == "start"
+        assert item["Sections"][0]["Confidence"] == Decimal("0.55")
+        # An unscored page adds nothing, keeping items byte-identical to before.
+        assert "ClassConfidence" not in unscored
+        assert "ClassReason" not in unscored
+        assert "Boundary" not in unscored
+
     def test_rule_validation_result_uri_persisted_as_flat_scalar(self):
         """The schema/UI read the flat RuleValidationResultUri; both the
         update_document write and the run-record snapshot must carry it,

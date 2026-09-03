@@ -43,6 +43,8 @@ interface ConfigurationVersionsTableProps {
   onActivateVersion?: (versionName: string) => void;
   onDeleteVersions?: (versionNames: string[]) => void;
   onImportAsNewVersion?: () => void;
+  /** Open the "create a profile as a copy of an existing one" modal. */
+  onCreateProfile?: () => void;
   /** Open the revision history for one profile. */
   onShowHistory?: (versionName: string) => void;
   isAdmin?: boolean;
@@ -94,6 +96,7 @@ const ConfigurationVersionsTable = ({
   onActivateVersion,
   onDeleteVersions,
   onImportAsNewVersion,
+  onCreateProfile,
   onShowHistory,
   isAdmin = false,
 }: ConfigurationVersionsTableProps): React.JSX.Element => {
@@ -320,8 +323,11 @@ const ConfigurationVersionsTable = ({
                   Import
                 </Button>
               )}
+              {/* Delete is deliberately NOT the primary button: a destructive action
+                  should not be the visual default on a table whose main job is
+                  creating and opening profiles. */}
               <Button
-                variant="primary"
+                variant="normal"
                 onClick={() => {
                   // Check if any selected versions are active, default, or managed
                   const activeVersions = selectedVersionsForCompare.filter((vId) => {
@@ -350,6 +356,15 @@ const ConfigurationVersionsTable = ({
               >
                 Delete Selected ({selectedVersionsForCompare.length})
               </Button>
+              {/* Creating a profile from an existing one used to require opening the
+                  source profile in the editor and finding "Save as Profile" in the
+                  Actions menu. It is the most common way a profile gets made, so it
+                  belongs here, on the profile-management surface. */}
+              {isAdmin && (
+                <Button variant="primary" onClick={() => onCreateProfile?.()} iconName="add-plus">
+                  Create profile
+                </Button>
+              )}
             </SpaceBetween>
           </SpaceBetween>
         }

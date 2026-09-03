@@ -577,6 +577,15 @@ The Discovery module supports comprehensive configuration through the deployment
 > and raises at runtime. Use a Claude or Nova model for Discovery. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **⚠️ xAI Grok is NOT supported for Discovery either.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) reaches the Converse API and works
+> for extraction, but it rejects `document` content blocks outright — *"This
+> model doesn't support documents"* — because its input modalities are text and
+> image only. Both Grok IDs are absent from the discovery model picklists, and
+> selecting one via a hand-edited config is rejected by config validation at save
+> time. Note this does **not** limit Grok for agentic extraction, which it fully
+> supports. See [xAI Grok Models](grok-models.md).
+
 **Model Parameters:**
 ```yaml
 discovery:

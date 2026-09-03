@@ -1,0 +1,5 @@
+# Intentionally empty. All runtime deps (pyarrow, boto3, idp_common)
+# are provided by IDPCommonReportingLayer, attached to this function in
+# template.yaml. Bundling pyarrow here in addition would push the
+# combined "function code + layers" unzipped size over Lambda's 250 MB
+# limit at update-time. If you need to add a dep, add it to the layer.

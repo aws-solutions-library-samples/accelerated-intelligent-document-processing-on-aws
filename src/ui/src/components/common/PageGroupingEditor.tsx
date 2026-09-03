@@ -4,7 +4,7 @@
 /**
  * Re-group a packet's pages into the right sections, by dragging them.
  *
- * Built for the case that blocked the Exxon POC: a document whose packet split put pages
+ * Built for the motivating case: a document whose packet split put pages
  * in the wrong sections, on a test set carrying annotations that must not be lost. The
  * grouping is ground truth — `split_document.page_indices` is what doc-split scoring
  * reads — so this is an annotation editor, not a layout tool.

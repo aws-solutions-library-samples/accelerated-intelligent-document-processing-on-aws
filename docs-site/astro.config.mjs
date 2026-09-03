@@ -145,6 +145,10 @@ export default defineConfig({
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
             {
+              label: "Classification Confidence",
+              slug: "benchmarking/classification-confidence",
+            },
+            {
               label: "Release Audit Trail",
               // README.md is the index; per-release vX.Y.Z.md entries auto-list.
               items: [{ autogenerate: { directory: "benchmarking/releases" } }],
@@ -207,10 +211,6 @@ export default defineConfig({
                   label: "Sample: Health Insurance Review",
                   slug: "extensions/sample-health-insurance-review",
                 },
-                {
-                  label: "Migration: External Feature for AppSync Removal",
-                  slug: "extensions/migration-prompt-appsync-removal",
-                },
               ],
             },
             {
@@ -235,6 +235,7 @@ export default defineConfig({
           items: [
             { label: "Monitoring", slug: "monitoring" },
             { label: "Reporting Database", slug: "reporting-database" },
+            { label: "Reporting SQL Layer", slug: "reporting-sql-layer" },
             { label: "Capacity Planning", slug: "capacity-planning" },
             { label: "Cost Calculator", slug: "cost-calculator" },
             { label: "Circuit Breaker", slug: "circuit-breaker" },

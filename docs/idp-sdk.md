@@ -1404,6 +1404,7 @@ Upload configuration to a deployed stack.
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
 - `description` (str, optional): Description for the configuration version
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
+- `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
 **Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
 

@@ -291,7 +291,7 @@ Resources:
             description: Use Bedrock Data Automation (BDA) for OCR, classification, extraction, and assessment
             default: false
           enable_blueprint_optimization:
-            order: 2
+            order: 1.5
             type: boolean
             description: Automatically optimize BDA blueprints using ground truth data during discovery to improve extraction accuracy
             default: false
@@ -386,20 +386,20 @@ Resources:
                 properties:
                   dpi:
                     type: number
-                    description: "DPI (dots per inch) for extracting images from PDF pages. Higher values produce better quality but larger images. Default: 150"
+                    description: "DPI (dots per inch) for extracting images from PDF pages. Higher values produce better quality but larger images. Lowering this below 200 makes Textract likely to silently drop small, faint or skewed characters such as page numbers and hand-filled values. Default: 300"
                     minimum: 72
                     maximum: 300
-                    default: 150
+                    default: 300
                     order: 0
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. If not specified, automatic default of 951 pixels is applied to optimize resource usage and token consumption."
+                    description: "Target image width in pixels. Images larger than this will be resized. If not specified, an automatic ceiling of 2600 pixels is applied as an out-of-memory guard; it does not bind for A4 or US Letter at 300 DPI. Note that lowering this only takes effect if it is smaller than the page rendered at the configured DPI - images are never upscaled."
                     minimum: 100
                     maximum: 3500
                     order: 1
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. If not specified, automatic default of 1268 pixels is applied to optimize resource usage and token consumption."
+                    description: "Target image height in pixels. Images larger than this will be resized. If not specified, an automatic ceiling of 3600 pixels is applied as an out-of-memory guard; it does not bind for A4 or US Letter at 300 DPI. Note that lowering this only takes effect if it is smaller than the page rendered at the configured DPI - images are never upscaled."
                     minimum: 100
                     maximum: 3500
                     order: 2
@@ -482,6 +482,7 @@ Resources:
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
+                  - "us.xai.grok-4.6"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -499,6 +500,7 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.xai.grok-4.6"
                 order: 2
                 dependsOn: { field: "backend", value: "bedrock" }
               model_lambda_hook_arn:
@@ -511,9 +513,9 @@ Resources:
               reasoning_effort:
                 type: string
                 title: Reasoning effort
-                enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                 default: "medium"
-                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                 order: 4
                 dependsOn: { field: "model_id", reasoningCapable: true }
               features:
@@ -663,6 +665,7 @@ Resources:
                     - "us.anthropic.claude-opus-4-8:1m"
                     - "us.anthropic.claude-opus-5"
                     - "us.anthropic.claude-opus-5:1m"
+                    - "us.xai.grok-4.6"
                     - "openai.gpt-5.4"
                     - "openai.gpt-5.5"
                     - "openai.gpt-5.6-sol"
@@ -702,6 +705,7 @@ Resources:
                     - "global.anthropic.claude-opus-4-8:1m"
                     - "global.anthropic.claude-opus-5"
                     - "global.anthropic.claude-opus-5:1m"
+                    - "global.xai.grok-4.6"
                 # NOTE: the Web UI edits document classes with the JSON Schema
                 # builder, not this schema-driven form (ConfigurationLayout filters
                 # `classes` out), so this block is descriptive only. Field names here
@@ -933,13 +937,13 @@ Resources:
                 properties:
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. Default: 951"
+                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 0
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. Default: 1268"
+                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 1
@@ -1005,6 +1009,7 @@ Resources:
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
+                  - "us.xai.grok-4.6"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -1023,6 +1028,7 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.xai.grok-4.6"
                 order: 1
               model_lambda_hook_arn:
                 type: string
@@ -1069,9 +1075,9 @@ Resources:
                   reasoning_effort:
                     type: string
                     title: Reasoning effort
-                    enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               classificationMethod:
@@ -1083,7 +1089,7 @@ Resources:
                     "multimodalPageLevelClassification",
                     "textbasedHolisticClassification",
                   ]
-                order: 2
+                order: 3.5
               maxPagesForClassification:
                 type: string
                 title: Pages to classify
@@ -1129,6 +1135,42 @@ Resources:
                 default: "unclassified"
                 order: 9
                 dependsOn: { field: "enforceValidClasses", value: true }
+              confidence:
+                type: object
+                sectionLabel: Class confidence
+                description: "How much confidence the classifier reports in the CLASS it chose (not in the extracted fields — that is Extraction > Confidence). Costs output tokens on every page, because page-level classification is one inference per page."
+                order: 10
+                properties:
+                  mode:
+                    type: string
+                    title: Class confidence mode
+                    description: "'topk' (default) asks the model for its ranked candidate classes with probabilities ('80% W-2, 15% 1099') — better calibrated than a single self-reported number, and it shows you what else the page could have been. 'verbalized' asks for one 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. Measured on a 13-class corpus, topk added ~0.5% to total document cost with no consistent accuracy change; how USEFUL the score is depends strongly on the classification model — see the Classification Confidence benchmark page."
+                    enum: ["topk", "verbalized", "off"]
+                    default: "topk"
+                    order: 0
+                  top_k_candidates:
+                    type: integer
+                    title: Candidates to request
+                    description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                    minimum: 2
+                    maximum: 10
+                    default: 3
+                    order: 1
+                    dependsOn: { field: "mode", value: "topk" }
+                  task_prompt_topk:
+                    type: string
+                    title: Top-K instruction block
+                    format: textarea
+                    description: "The instruction spliced into the classification Task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix, which matters because classification runs per page). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a Task prompt that already contains one is left alone, which is how you take over the wording completely."
+                    order: 2
+                    dependsOn: { field: "mode", value: "topk" }
+                  task_prompt_verbalized:
+                    type: string
+                    title: Verbalized instruction block
+                    format: textarea
+                    description: "The instruction spliced into the classification Task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                    order: 3
+                    dependsOn: { field: "mode", value: "verbalized" }
               system_prompt:
                 type: string
                 title: System prompt
@@ -1240,6 +1282,11 @@ Resources:
                     maximum: 100
                     default: 5
                     order: 2
+                  restate_schema_in_system_prompt:
+                    type: boolean
+                    description: "Repeat the document schema in the agent's system prompt. It is already sent as the extraction tool's input schema — the identical JSON — so this is a duplicate worth roughly 2,600 of the ~6,700 schema tokens in every request (38%). Turning it OFF reclaims that; the agent can still fetch the schema on demand. Kept ON by default because restating a schema often improves how closely the model follows it, so the duplication may be doing real work — measure completeness on your own documents before turning it off. Both copies sit inside the prompt cache, so the dollar saving is much smaller than the token count suggests; the real benefit is context-window headroom, which is what pushes a long document into extra shards. Default: on."
+                    default: true
+                    order: 2.5
                   table_parsing:
                     type: object
                     sectionLabel: Table Parsing Tool (Requires OCR TABLES enabled)
@@ -1293,131 +1340,174 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
-                  validation:
-                    type: object
-                    sectionLabel: Schema Validation & Escalation
-                    description: "Only used when Agentic Extraction is enabled. Validates the agent's output against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce) and optionally escalates failing fields to a stronger model. Off by default."
-                    order: 5
-                    properties:
-                      enabled:
-                        type: boolean
-                        description: "Enable full JSON-Schema validation of the extraction result. Violations are fed back to the agent for self-correction; remaining failures are handled per Fail Action below."
-                        order: 0
-                        default: false
-                      check_formats:
-                        type: boolean
-                        description: "Enforce JSON-Schema 'format' keywords (date, date-time, email, uri, uuid, ...). Note: 'format: date' means ISO-8601 (YYYY-MM-DD); disable this if your schema uses 'format: date' for non-ISO values such as MM/DD/YYYY (or use a 'pattern' instead). Default: on."
-                        order: 1
-                        default: true
-                        dependsOn: { field: "enabled", value: true }
-                      fail_action:
-                        type: string
-                        description: "What to do when validation still fails after the agent's own retries. 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: escalate."
-                        enum: ["warn", "escalate", "reject"]
-                        order: 2
-                        default: "escalate"
-                        dependsOn: { field: "enabled", value: true }
-                      escalation_model:
-                        type: string
-                        description: "Stronger Bedrock model used to re-extract failing fields (used when Fail Action is 'escalate'). Select blank to retry with the extraction model. Can be overridden per document class via the 'x-aws-idp-extraction-escalation-model' schema extension in the Document Schema editor."
-                        order: 3
-                        dependsOn: { field: "fail_action", value: "escalate" }
-                        hideWhen: { field: "extraction.agentic.validation.enabled", value: false }
-                        enum:
-                          - ""
-                          - "us.amazon.nova-lite-v1:0"
-                          - "us.amazon.nova-pro-v1:0"
-                          - "us.amazon.nova-premier-v1:0"
-                          - "us.amazon.nova-2-lite-v1:0"
-                          - "us.amazon.nova-2-lite-v1:0:priority"
-                          - "us.amazon.nova-2-lite-v1:0:flex"
-                          - "global.amazon.nova-2-lite-v1:0"
-                          - "global.amazon.nova-2-lite-v1:0:priority"
-                          - "global.amazon.nova-2-lite-v1:0:flex"
-                          - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "us.anthropic.claude-sonnet-4-6"
-                          - "us.anthropic.claude-sonnet-4-6:1m"
-                          - "us.anthropic.claude-sonnet-5"
-                          - "us.anthropic.claude-sonnet-5:1m"
-                          - "us.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "us.anthropic.claude-opus-4-6-v1"
-                          - "us.anthropic.claude-opus-4-6-v1:1m"
-                          - "us.anthropic.claude-opus-4-7"
-                          - "us.anthropic.claude-opus-4-7:1m"
-                          - "us.anthropic.claude-opus-4-8"
-                          - "us.anthropic.claude-opus-4-8:1m"
-                          - "us.anthropic.claude-opus-5"
-                          - "us.anthropic.claude-opus-5:1m"
-                          - "openai.gpt-5.4"
-                          - "openai.gpt-5.5"
-                          - "openai.gpt-5.6-sol"
-                          - "openai.gpt-5.6-terra"
-                          - "openai.gpt-5.6-luna"
-                          - "eu.amazon.nova-lite-v1:0"
-                          - "eu.amazon.nova-pro-v1:0"
-                          - "eu.amazon.nova-2-lite-v1:0"
-                          - "eu.amazon.nova-2-lite-v1:0:priority"
-                          - "eu.amazon.nova-2-lite-v1:0:flex"
-                          - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "eu.anthropic.claude-sonnet-4-6"
-                          - "eu.anthropic.claude-sonnet-4-6:1m"
-                          - "eu.anthropic.claude-sonnet-5"
-                          - "eu.anthropic.claude-sonnet-5:1m"
-                          - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "eu.anthropic.claude-opus-4-6-v1"
-                          - "eu.anthropic.claude-opus-4-6-v1:1m"
-                          - "eu.anthropic.claude-opus-4-7"
-                          - "eu.anthropic.claude-opus-4-7:1m"
-                          - "eu.anthropic.claude-opus-4-8"
-                          - "eu.anthropic.claude-opus-4-8:1m"
-                          - "eu.anthropic.claude-opus-5"
-                          - "eu.anthropic.claude-opus-5:1m"
-                          - "qwen.qwen3-vl-235b-a22b"
-                          - "us.meta.llama4-maverick-17b-instruct-v1:0"
-                          - "us.meta.llama4-scout-17b-instruct-v1:0"
-                          - "google.gemma-3-27b-it"
-                          - "nvidia.nemotron-nano-12b-v2"
-                          - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-                          - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                          - "global.anthropic.claude-sonnet-4-6"
-                          - "global.anthropic.claude-sonnet-4-6:1m"
-                          - "global.anthropic.claude-sonnet-5"
-                          - "global.anthropic.claude-sonnet-5:1m"
-                          - "global.anthropic.claude-opus-4-5-20251101-v1:0"
-                          - "global.anthropic.claude-opus-4-6-v1"
-                          - "global.anthropic.claude-opus-4-6-v1:1m"
-                          - "global.anthropic.claude-opus-4-7"
-                          - "global.anthropic.claude-opus-4-7:1m"
-                          - "global.anthropic.claude-opus-4-8"
-                          - "global.anthropic.claude-opus-4-8:1m"
-                          - "global.anthropic.claude-opus-5"
-                          - "global.anthropic.claude-opus-5:1m"
-                        default: ""
-                      min_population_ratio:
-                        type: number
-                        description: "Advisory completeness threshold (0-1). After extraction, the fraction of schema-defined fields that came back populated is computed; if it falls below this value a warning is logged and metadata.population_check is flagged (catches silent loss such as nested fields returning null or a table extracting zero rows). Advisory only - never fails extraction. Set to 0 to disable. Default: 0.5."
-                        minimum: 0
-                        maximum: 1
-                        order: 4
-                        default: 0.5
-                        dependsOn: { field: "enabled", value: true }
+              forced_tool:
+                type: object
+                sectionLabel: Schema Enforcement (experimental)
+                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction only (Advanced already sends a tool schema), so this is shown only when Extraction mode is 'simple'."
+                order: 4.05
+                dependsOn: { field: "extraction.mode", value: "simple" }
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Require the model to answer by calling a tool whose input is your document schema. A malformed-JSON reply becomes structurally impossible for the fields the schema declares. Off by default because it is unproven — measure accuracy and completeness on your own documents before enabling it."
+                    default: false
+                    order: 0
+                  fallback_to_prompt:
+                    type: boolean
+                    description: "If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
+                    default: true
+                    order: 1
+                    dependsOn: { field: "enabled", value: true }
+              coercion:
+                type: object
+                sectionLabel: Value Coercion
+                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction only (Advanced already coerces through its generated model), so this is shown only when Extraction mode is 'simple'."
+                # Fractional slots keep these two next to the other
+                # result-handling groups (confidence 3, geometry 4) without
+                # colliding with model (5) / model_lambda_hook_arn (6), whose
+                # integer slots are already taken.
+                order: 4.1
+                dependsOn: { field: "extraction.mode", value: "simple" }
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Repair type/format mismatches before validating. On by default, because the alternative is a wrongly-typed value reaching storage. Turn OFF to leave the model's output exactly as returned - validation (if enabled) will then simply report the mismatches instead of fixing them."
+                    order: 0
+                    default: true
+                  date_order:
+                    type: string
+                    description: "How to read an all-numeric date whose day/month order is ambiguous, e.g. '01/02/2024'. 'auto' (default) refuses to guess and leaves such values untouched, so nothing is silently mis-dated. Choose MDY or DMY only for a corpus whose convention you know - it never overrides a value that is already unambiguous (a 15 cannot be a month whatever this is set to)."
+                    enum: ["auto", "MDY", "DMY"]
+                    order: 1
+                    default: "auto"
+                    dependsOn: { field: "enabled", value: true }
+              validation:
+                type: object
+                sectionLabel: Schema Validation & Escalation
+                description: "Validates the extraction result against the full class JSON Schema (notably 'format' keywords like date/email/uuid that the model's type validation does not enforce), and optionally escalates failing fields to a stronger model. Applies to BOTH Simple and Advanced extraction. On by default at Fail Action 'warn', which adds no inference cost."
+                order: 4.2
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Enable full JSON-Schema validation of the extraction result. In Advanced (agentic) extraction violations are fed back to the agent for self-correction first; Simple extraction has no such loop (re-asking the same model with the same prompt mostly buys another invalid answer at full cost), so it goes straight to Fail Action. Remaining failures are handled per Fail Action below. On by default: at Fail Action 'warn' this is free and only makes an otherwise-silent schema violation visible."
+                    order: 0
+                    default: true
+                  check_formats:
+                    type: boolean
+                    description: "Enforce JSON-Schema 'format' keywords (date, date-time, email, uri, uuid, ...). Note: 'format: date' means ISO-8601 (YYYY-MM-DD); disable this if your schema uses 'format: date' for non-ISO values such as MM/DD/YYYY (or use a 'pattern' instead). Default: on."
+                    order: 1
+                    default: true
+                    dependsOn: { field: "enabled", value: true }
+                  fail_action:
+                    type: string
+                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    enum: ["warn", "escalate", "reject"]
+                    order: 2
+                    default: "warn"
+                    dependsOn: { field: "enabled", value: true }
+                  escalation_model:
+                    type: string
+                    description: "Stronger Bedrock model used to re-extract failing fields (used when Fail Action is 'escalate'). Select blank to retry with the extraction model. Can be overridden per document class via the 'x-aws-idp-extraction-escalation-model' schema extension in the Document Schema editor."
+                    order: 3
+                    dependsOn: { field: "fail_action", value: "escalate" }
+                    hideWhen: { field: "extraction.validation.enabled", value: false }
+                    enum:
+                      - ""
+                      - "us.amazon.nova-lite-v1:0"
+                      - "us.amazon.nova-pro-v1:0"
+                      - "us.amazon.nova-premier-v1:0"
+                      - "us.amazon.nova-2-lite-v1:0"
+                      - "us.amazon.nova-2-lite-v1:0:priority"
+                      - "us.amazon.nova-2-lite-v1:0:flex"
+                      - "global.amazon.nova-2-lite-v1:0"
+                      - "global.amazon.nova-2-lite-v1:0:priority"
+                      - "global.amazon.nova-2-lite-v1:0:flex"
+                      - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "us.anthropic.claude-sonnet-4-6"
+                      - "us.anthropic.claude-sonnet-4-6:1m"
+                      - "us.anthropic.claude-sonnet-5"
+                      - "us.anthropic.claude-sonnet-5:1m"
+                      - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "us.anthropic.claude-opus-4-6-v1"
+                      - "us.anthropic.claude-opus-4-6-v1:1m"
+                      - "us.anthropic.claude-opus-4-7"
+                      - "us.anthropic.claude-opus-4-7:1m"
+                      - "us.anthropic.claude-opus-4-8"
+                      - "us.anthropic.claude-opus-4-8:1m"
+                      - "us.anthropic.claude-opus-5"
+                      - "us.anthropic.claude-opus-5:1m"
+                      - "openai.gpt-5.4"
+                      - "openai.gpt-5.5"
+                      - "openai.gpt-5.6-sol"
+                      - "openai.gpt-5.6-terra"
+                      - "openai.gpt-5.6-luna"
+                      - "eu.amazon.nova-lite-v1:0"
+                      - "eu.amazon.nova-pro-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0:priority"
+                      - "eu.amazon.nova-2-lite-v1:0:flex"
+                      - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-6"
+                      - "eu.anthropic.claude-sonnet-4-6:1m"
+                      - "eu.anthropic.claude-sonnet-5"
+                      - "eu.anthropic.claude-sonnet-5:1m"
+                      - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "eu.anthropic.claude-opus-4-6-v1"
+                      - "eu.anthropic.claude-opus-4-6-v1:1m"
+                      - "eu.anthropic.claude-opus-4-7"
+                      - "eu.anthropic.claude-opus-4-7:1m"
+                      - "eu.anthropic.claude-opus-4-8"
+                      - "eu.anthropic.claude-opus-4-8:1m"
+                      - "eu.anthropic.claude-opus-5"
+                      - "eu.anthropic.claude-opus-5:1m"
+                      - "qwen.qwen3-vl-235b-a22b"
+                      - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                      - "us.meta.llama4-scout-17b-instruct-v1:0"
+                      - "us.xai.grok-4.6"
+                      - "google.gemma-3-27b-it"
+                      - "nvidia.nemotron-nano-12b-v2"
+                      - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                      - "global.anthropic.claude-sonnet-4-6"
+                      - "global.anthropic.claude-sonnet-4-6:1m"
+                      - "global.anthropic.claude-sonnet-5"
+                      - "global.anthropic.claude-sonnet-5:1m"
+                      - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                      - "global.anthropic.claude-opus-4-6-v1"
+                      - "global.anthropic.claude-opus-4-6-v1:1m"
+                      - "global.anthropic.claude-opus-4-7"
+                      - "global.anthropic.claude-opus-4-7:1m"
+                      - "global.anthropic.claude-opus-4-8"
+                      - "global.anthropic.claude-opus-4-8:1m"
+                      - "global.anthropic.claude-opus-5"
+                      - "global.anthropic.claude-opus-5:1m"
+                      - "global.xai.grok-4.6"
+                    default: ""
+                  min_population_ratio:
+                    type: number
+                    description: "Advisory completeness threshold (0-1). After extraction, the fraction of schema-defined fields that came back populated is computed; if it falls below this value a warning is logged and metadata.population_check is flagged (catches silent loss such as nested fields returning null or a table extracting zero rows). Advisory only - never fails extraction. Set to 0 to disable. Default: 0.5."
+                    minimum: 0
+                    maximum: 1
+                    order: 4
+                    default: 0.5
+                    dependsOn: { field: "enabled", value: true }
               image:
                 type: object
                 sectionLabel: Image Processing Settings
                 description: Configure image resolution and processing options for image attachments in extraction
-                order: 15
+                order: 8
                 properties:
                   target_width:
                     type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. Default: 951"
+                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 0
                   target_height:
                     type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. Default: 1268"
+                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                     minimum: 100
                     maximum: 3500
                     order: 1
@@ -1509,6 +1599,7 @@ Resources:
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
+                  - "us.xai.grok-4.6"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -1527,6 +1618,7 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.xai.grok-4.6"
                 order: 5
               model_lambda_hook_arn:
                 type: string
@@ -1550,9 +1642,9 @@ Resources:
                   reasoning_effort:
                     type: string
                     title: Reasoning effort
-                    enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "low"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 1
                     dependsOn: { field: "model", reasoningCapable: true }
                   temperature:
@@ -1702,6 +1794,7 @@ Resources:
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
+                        "us.xai.grok-4.6",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -1719,7 +1812,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.xai.grok-4.6"
                       ]
                     order: 3
                   model_lambda_hook_arn:
@@ -1765,9 +1859,9 @@ Resources:
                       reasoning_effort:
                         type: string
                         title: Reasoning effort
-                        enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                        enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5; xAI Grok, which accepts none|low|medium|high|xhigh but not max). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5."
                         order: 4
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -1793,13 +1887,13 @@ Resources:
                     properties:
                       target_width:
                         type: number
-                        description: "Target image width in pixels. Default: 951"
+                        description: "Target image width in pixels. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                         minimum: 100
                         maximum: 3500
                         order: 0
                       target_height:
                         type: number
-                        description: "Target image height in pixels. Default: 1268"
+                        description: "Target image height in pixels. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                         minimum: 100
                         maximum: 3500
                         order: 1
@@ -1956,6 +2050,7 @@ Resources:
                     "qwen.qwen3-vl-235b-a22b",
                     "us.meta.llama4-maverick-17b-instruct-v1:0",
                     "us.meta.llama4-scout-17b-instruct-v1:0",
+                    "us.xai.grok-4.6",
                     "google.gemma-3-27b-it",
                     "nvidia.nemotron-nano-12b-v2",
                     "global.amazon.nova-2-lite-v1:0",
@@ -1973,7 +2068,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8",
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
-                    "global.anthropic.claude-opus-5:1m"
+                    "global.anthropic.claude-opus-5:1m",
+                    "global.xai.grok-4.6"
                   ]
                 order: 1
               model_lambda_hook_arn:
@@ -2022,9 +2118,9 @@ Resources:
                   reasoning_effort:
                     type: string
                     title: Reasoning effort
-                    enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -2168,6 +2264,7 @@ Resources:
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
+                        "us.xai.grok-4.6",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -2185,7 +2282,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.xai.grok-4.6"
                       ]
                     order: 1
                   model_params:
@@ -2225,9 +2323,9 @@ Resources:
                       reasoning_effort:
                         type: string
                         title: Reasoning effort
-                        enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                        enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                         order: 5
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -2660,7 +2758,6 @@ Resources:
                       - "us.amazon.nova-pro-v1:0"
                       - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
-                      - "us.anthropic.claude-3-5-haiku-20241022-v1:0"
                       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
@@ -2673,6 +2770,7 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
+                      - "us.xai.grok-4.6"
                     order: 1
                   temperature:
                     type: number
@@ -2862,6 +2960,7 @@ Resources:
                       - "global.anthropic.claude-opus-4-8:1m"
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
+                      - "global.xai.grok-4.6"
                       - "eu.amazon.nova-lite-v1:0"
                       - "eu.amazon.nova-pro-v1:0"
                       - "eu.amazon.nova-2-lite-v1:0"
@@ -2885,6 +2984,7 @@ Resources:
                       - "qwen.qwen3-vl-235b-a22b"
                       - "us.meta.llama4-maverick-17b-instruct-v1:0"
                       - "us.meta.llama4-scout-17b-instruct-v1:0"
+                      - "us.xai.grok-4.6"
                       - "google.gemma-3-27b-it"
                       - "nvidia.nemotron-nano-12b-v2"
                     default: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -2914,6 +3014,7 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
+                      - "us.xai.grok-4.6"
                       - "global.amazon.nova-pro-v1:0"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
@@ -2929,6 +3030,7 @@ Resources:
                       - "global.anthropic.claude-opus-4-8:1m"
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
+                      - "global.xai.grok-4.6"
                       - "eu.amazon.nova-pro-v1:0"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
@@ -2999,6 +3101,7 @@ Resources:
                     "us.anthropic.claude-opus-4-8:1m",
                     "us.anthropic.claude-opus-5",
                     "us.anthropic.claude-opus-5:1m",
+                    "us.xai.grok-4.6",
                     "openai.gpt-5.4",
                     "openai.gpt-5.5",
                     "openai.gpt-5.6-sol",
@@ -3036,7 +3139,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8",
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
-                    "global.anthropic.claude-opus-5:1m"
+                    "global.anthropic.claude-opus-5:1m",
+                    "global.xai.grok-4.6"
                   ]
                 order: 1
               model_lambda_hook_arn:
@@ -3085,9 +3189,9 @@ Resources:
                   reasoning_effort:
                     type: string
                     title: Reasoning effort
-                    enum: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high) and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max). Controls how much the model reasons before answering. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -3189,6 +3293,7 @@ Resources:
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
+                        "us.xai.grok-4.6",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -3206,7 +3311,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.xai.grok-4.6"
                       ]
                     default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     order: 0
@@ -3294,6 +3400,7 @@ Resources:
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
+                        "us.xai.grok-4.6",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -3311,7 +3418,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.xai.grok-4.6"
                       ]
                     default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     order: 0
@@ -3798,6 +3906,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -3819,7 +3930,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -3867,6 +3986,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -3913,7 +4035,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Encrypt
@@ -3996,6 +4126,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           TRACKING_TABLE: !Ref TrackingTable
@@ -4013,7 +4146,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action: 
               - states:SendTaskSuccess
@@ -4238,6 +4379,11 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
+        # The rollup Lambda discovers stack membership via the native
+        # aws:cloudformation:stack-name tag; no idp:stack tag needed here.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4295,6 +4441,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4409,6 +4563,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4461,6 +4618,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4568,6 +4733,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4621,6 +4789,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4734,6 +4910,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4791,6 +4970,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -4880,6 +5067,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -4927,6 +5117,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5027,6 +5225,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc pipeline result stitching. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5073,6 +5274,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5122,6 +5331,9 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5179,6 +5391,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5349,6 +5569,10 @@ Resources:
       Timeout: 900
       MemorySize: 256
       Tracing: Active
+      Tags:
+        # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
+        # See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Role: !GetAtt PipelineHooksDispatcherFunctionRole.Arn
       Environment:
         Variables:
@@ -5403,6 +5627,9 @@ Resources:
       Timeout: 900
       MemorySize: 4096
       Tracing: Active
+      Tags:
+        # Data plane — runs per document.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5459,6 +5686,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5541,6 +5776,13 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Pin idp_common.metrics.put_metric to the stack namespace so
+          # any future emit from imported evaluation modules matches the
+          # PutMetricData IAM Condition below. Round-27 review fix
+          # (adversarial pass): this function's condition was in place
+          # but the env var was missing — currently latent (no put_metric
+          # call today) but a future addition would silently AccessDenied.
+          METRIC_NAMESPACE: !Ref StackName
           TRACKING_TABLE: !Ref TrackingTable
           OUTPUT_BUCKET: !Ref OutputBucket
       LoggingConfig:
@@ -5560,7 +5802,15 @@ Resources:
         - Statement:
           - Effect: Allow
             Action: cloudwatch:PutMetricData
-            Resource: '*'
+            Resource: "*"
+            # Round-22 hardening: scope PutMetricData to the stack's own
+            # metric namespace so a compromised Lambda can't spam metrics
+            # to arbitrary namespaces or names that trigger alarms on
+            # neighbouring stacks. Data-plane Lambdas emit to
+            # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+            Condition:
+              StringEquals:
+                "cloudwatch:namespace": !Ref StackName
           - Effect: Allow
             Action:
               - kms:Decrypt
@@ -5607,6 +5857,10 @@ Resources:
           - "index.handler"
       Timeout: 300
       MemorySize: 1024
+      Tags:
+        # Data plane — per-doc policy classification for rule validation.
+        # See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -5646,6 +5900,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5705,6 +5967,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule validation. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5762,6 +6027,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5849,6 +6122,9 @@ Resources:
       # Runtime: python3.12
       Timeout: 900
       MemorySize: 4096
+      Tags:
+        # Data plane — per-doc rule-validation orchestration. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -5908,6 +6184,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -6027,6 +6311,14 @@ Resources:
             - Effect: Allow
               Action: cloudwatch:PutMetricData
               Resource: "*"
+              # Round-22 hardening: scope PutMetricData to the stack's own
+              # metric namespace so a compromised Lambda can't spam metrics
+              # to arbitrary namespaces or names that trigger alarms on
+              # neighbouring stacks. Data-plane Lambdas emit to
+              # METRIC_NAMESPACE=<StackName> via idp_common.metrics.put_metric.
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
             - Effect: Allow
               Action:
                 - sagemaker-mlflow:*

@@ -5,6 +5,7 @@
 Pytest configuration file for the IDP Common package tests.
 """
 
+import importlib
 import os
 import sys
 from unittest.mock import MagicMock
@@ -24,16 +25,59 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 # Mock external dependencies that may not be available in test environments
 # These mocks need to be set up before any imports that might use these packages
 
-# Mock strands modules for agent functionality
-sys.modules["strands"] = MagicMock()
-sys.modules["strands.models"] = MagicMock()
-sys.modules["strands.hooks"] = MagicMock()
-sys.modules["strands.hooks.events"] = MagicMock()
 
-# Mock bedrock_agentcore modules for secure code execution
-sys.modules["bedrock_agentcore"] = MagicMock()
-sys.modules["bedrock_agentcore.tools"] = MagicMock()
-sys.modules["bedrock_agentcore.tools.code_interpreter_client"] = MagicMock()
+def _stub_if_absent(*module_names: str) -> None:
+    """Install a MagicMock for each module ONLY when it is genuinely absent.
+
+    This used to stub unconditionally, and for ``strands`` that was actively
+    harmful: ``strands-agents`` is a real dependency of the ``[all]`` extra, which
+    both ``make dev`` and CI install, so the stub replaced a package that WAS
+    importable. Every agentic test guards itself with
+    ``pytest.importorskip``-style detection (``from strands.types.agent import
+    AgentInput``), that import saw a MagicMock without the attribute, and 42 tests
+    reported "strands-agents package not installed" and skipped — permanently, in
+    every environment, including CI.
+
+    Skipped tests read as green. So the agentic extraction path had 42 tests that
+    could never fail, which is the same failure mode as having no tests at all
+    except that it looks covered. Stubbing only what is missing keeps the suite
+    runnable in a bare environment while letting a properly installed one actually
+    exercise the code.
+    """
+    for name in module_names:
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            sys.modules[name] = MagicMock()
+
+
+_stub_if_absent(
+    "strands",
+    "strands.models",
+    "strands.hooks",
+    "strands.hooks.events",
+)
+
+# Agent submodules some test modules used to stub for themselves; centralized
+# here so no single module can replace a real installed package for every module
+# imported after it.
+_stub_if_absent(
+    "strands.agent",
+    "strands.agent.conversation_manager",
+    "strands.tools",
+    "strands.tools.mcp",
+)
+
+# bedrock_agentcore (secure code execution) is not a test dependency, so in
+# practice these are always stubbed — routed through the same helper so the rule
+# is uniform rather than a second, differently-behaved mechanism.
+_stub_if_absent(
+    "bedrock_agentcore",
+    "bedrock_agentcore.tools",
+    "bedrock_agentcore.tools.code_interpreter_client",
+)
 
 # PIL module is now used directly for document conversion functionality
 # No mocking needed as PIL is a required dependency for the OCR module

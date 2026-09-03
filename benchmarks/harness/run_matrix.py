@@ -25,6 +25,7 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_configs import _resolve_value as _resolve_axis_value
 from make_configs import set_path as _set_path
 
 import lib
@@ -194,18 +195,32 @@ def launch(stack, testset_id, version, context):
     return result.get("testRunId")
 
 
-def load_plan(suite, klass):
+def load_plan(suite, klass, overrides=()):
     matrix = yaml.safe_load(open(CFG_MATRIX))
     docm = yaml.safe_load(open(DOC_MATRIX))
     suite_spec = matrix["suites"][suite]
     # cells: read the index written by make_configs.py
-    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}.yaml")
+    # Must match make_configs' namespacing, or a --set run silently reads the
+    # index of a DIFFERENT variant and every result is attributed to the wrong
+    # configuration.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_configs import override_slug
+
+    slug = override_slug(list(overrides))
+    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}{slug}.yaml")
     if not os.path.exists(idx_path):
+        setflags = "".join(f" --set {o}" for o in overrides)
         sys.exit(
-            f"Run make_configs.py --suite {suite} --class {klass} first ({idx_path} missing)"
+            f"Run make_configs.py --suite {suite} --class {klass}{setflags} first "
+            f"({idx_path} missing)"
         )
     cells = yaml.safe_load(open(idx_path))["cells"]
     # docs: may be an explicit list, a named group, or "*"
+    if "docs" not in suite_spec:
+        sys.exit(
+            f"suite '{suite}' declares no `docs:` — a suite with cells but no "
+            f"documents cannot run. Add a docs list or group in config_matrix.yaml."
+        )
     dg = suite_spec["docs"]
     groups = docm["groups"]
     if isinstance(dg, list):
@@ -216,7 +231,51 @@ def load_plan(suite, klass):
         )
     else:
         doc_ids = [dg]
+    doc_ids, skipped = _docs_for_class(doc_ids, docm, klass)
+    if skipped:
+        print(
+            f"note: {len(skipped)} doc(s) in suite '{suite}' belong to another "
+            f"document class and are NOT run here: {skipped}\n"
+            f"      run them with --class <their class> (configs are per class)."
+        )
+    if not doc_ids:
+        sys.exit(
+            f"suite '{suite}' has no docs for class '{klass}' — every doc it names "
+            f"belongs to a different class. Check --class."
+        )
     return cells, doc_ids, int(suite_spec.get("repeats", 1))
+
+
+def _docs_for_class(doc_ids, docm, klass):
+    """Split ``doc_ids`` into (runnable under ``klass``, belonging elsewhere).
+
+    A suite may legitimately name documents of several classes — the enforcement
+    suite runs a transaction-list doc AND a flat form, because the feature it
+    measures behaves differently on each. But configs are built per class, so a
+    document scored under another class's schema produces a meaningless number
+    that looks like a real one. ``run_matrix`` used to run every named doc under
+    whatever ``--class`` was passed, despite a comment claiming otherwise; this is
+    that comment, implemented.
+
+    A synthetic doc's class is its generator (``gen``); a reference doc names its
+    config explicitly. Anything unrecognized is left in rather than dropped —
+    silently skipping a document would be its own kind of wrong answer.
+    """
+    by_id = {d["id"]: d for d in docm.get("synthetic", [])}
+    for d in docm.get("reference", []):
+        by_id[d["id"]] = d
+    keep, other = [], []
+    for doc_id in doc_ids:
+        spec = by_id.get(doc_id)
+        if spec is None:
+            keep.append(doc_id)  # unknown: let the existing missing-PDF error fire
+            continue
+        doc_class = spec.get("gen") or spec.get("config")
+        if doc_class is None or doc_class == klass:
+            keep.append(doc_id)
+        else:
+            other.append(doc_id)
+    return keep, other
 
 
 def _dig(d, dotted):
@@ -265,8 +324,14 @@ def verify_config_axes(cells):
                 # (ocr.features becomes [{name: X}, ...]). Reusing the generator's
                 # own function means this check can never disagree with it over a
                 # shape transform — only over a real value difference.
+                # `@file:` axis values (the frozen pre-#653 prompt) name a file
+                # whose CONTENTS get written, so the index's literal
+                # "@file:foo.txt" will never equal what is on disk. Resolve it the
+                # same way make_configs does, or this check reports a mismatch on
+                # a config it generated correctly — which is exactly what it did
+                # the first time boundaryctl ran.
                 probe: dict = {}
-                _set_path(probe, dotted, want)
+                _set_path(probe, dotted, _resolve_axis_value(want))
                 want_written = _dig(probe, dotted)
                 got = _dig(cfg, dotted)
                 if str(got) != str(want_written):
@@ -292,6 +357,18 @@ def main():
     ap.add_argument("--stack", required=True)
     ap.add_argument("--suite", default="core")
     ap.add_argument("--class", dest="klass", default="bank_statement")
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="AXIS=VALUE",
+        help=(
+            "The same --set overrides used to build the configs. Required to "
+            "locate the right index: make_configs namespaces its output by "
+            "overrides, so omitting them here reads a different variant's plan."
+        ),
+    )
     ap.add_argument("--estimate", action="store_true")
     ap.add_argument(
         "--native-upload",
@@ -317,7 +394,7 @@ def main():
         if not v:
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
-    cells, doc_ids, repeats = load_plan(a.suite, a.klass)
+    cells, doc_ids, repeats = load_plan(a.suite, a.klass, a.overrides)
     if a.repeats is not None:
         repeats = a.repeats
     # only synthetic docs handled by this class run here; reference docs use their own config
@@ -365,8 +442,17 @@ def main():
         pdf = os.path.join(DOCS, d + ".pdf")
         if not os.path.exists(pdf):
             continue  # reference docs handled separately
-        while len([x for x in inflight if not poll_done(x)]) >= a.max_inflight:
+        # PRUNE finished runs instead of re-polling them. This list used to grow
+        # for the whole suite and every slot check polled ALL of it, so the cost of
+        # deciding whether to launch was O(runs launched so far) DynamoDB queries —
+        # quadratic over a suite. Observed: a 12-run suite averaged 2.5 min/run
+        # while a 30-run suite degraded to 8 min/run, and raising --max-inflight
+        # barely helped because the CHECK was the bottleneck, not the concurrency.
+        # A 171-run grid would have polled ~14,000 times to launch its last run.
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
+            inflight = [x for x in inflight if not poll_done(x)]
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
         rec = {

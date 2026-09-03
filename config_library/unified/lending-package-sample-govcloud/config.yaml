@@ -721,15 +721,17 @@ classes:
       statement_end_date:
         format: date
         description: >-
-          The ending date of the statement period in MM/DD/YYYY format,
-          indicating when  the reporting period concluded.
+          The ending date of the statement period, in ISO-8601 format
+          (YYYY-MM-DD) to match this field's `format: date`, indicating when
+          the reporting period concluded.
         type: string
         x-aws-idp-evaluation-method: DATE
       statement_start_date:
         format: date
         description: >-
-          The beginning date of the statement period in MM/DD/YYYY format,
-          indicating  when the reporting period began.
+          The beginning date of the statement period, in ISO-8601 format
+          (YYYY-MM-DD) to match this field's `format: date`, indicating when
+          the reporting period began.
         type: string
         x-aws-idp-evaluation-method: DATE
       account_holder_name:

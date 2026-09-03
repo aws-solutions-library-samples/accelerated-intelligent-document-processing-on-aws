@@ -92,6 +92,29 @@ def run_athena_query(
                 )  # semgrep-ignore: arbitrary-sleep - Intentional delay. Duration is hardcoded and not user-controlled.
                 attempts += 1
 
+        # Emit AthenaBytesScanned for the control-plane cost KPI —
+        # the analytics agent is control plane (user-triggered SQL over
+        # metering). Fire-and-forget; failures are swallowed by the helper
+        # so this can't affect the caller's query result.
+        try:
+            data_scanned = (
+                response.get("QueryExecution", {})
+                .get("Statistics", {})
+                .get("DataScannedInBytes")
+            )
+            if data_scanned is not None:
+                from idp_common.metrics import emit_control_plane_cost_metric
+
+                emit_control_plane_cost_metric(
+                    component="analytics-agent",
+                    athena_bytes=int(data_scanned),
+                )
+        except Exception as e:  # nosec — telemetry must not affect the caller
+            # WARNING (not silent) so a future packaging/import regression
+            # doesn't silently zero the analytics-agent's Athena spend in
+            # control_plane_hourly. Round-5 review fix.
+            logger.warning(f"Failed to emit analytics-agent Athena cost metric: {e!r}")
+
         # Check final state
         if state == "SUCCEEDED":
             # Get query results

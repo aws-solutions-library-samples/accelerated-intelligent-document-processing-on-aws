@@ -70,6 +70,22 @@ X_AWS_IDP_PAGE_TYPES = "x-aws-idp-page-types"
 # field is empty).
 X_AWS_IDP_SOURCE_PAGE_TYPES = "x-aws-idp-source-page-types"
 
+# On a class whose schema is already modelled as a PACKET of records — i.e. its
+# top level declares an array of objects, one per record — names that array as
+# the "instance axis". The extraction service then reports
+# `Section.instance_count = len(inference_result[<that property>])`, so a section
+# holding several documents is visible at a glance in the UI.
+#
+# This is the zero-cost half of multi-instance support: it changes NOTHING about
+# the extraction shape, the prompt, or any downstream consumer — it only tells
+# the pipeline which existing array counts as "one document per element". It
+# exists so configs that already solved multi-record packets by hand (the
+# workaround validated in GitHub #565) get the instance count and the UI badge
+# without restructuring their schema or migrating their evaluation baselines.
+#
+# Must name an existing top-level property whose type is an array of objects.
+X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
+
 # ============================================================================
 # AWS IDP Policy/Rule Type Extensions
 # ============================================================================

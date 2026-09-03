@@ -31,6 +31,11 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common import bedrock, image, s3, utils
+from idp_common.classification.class_confidence import (
+    append_class_confidence_block,
+    resolve_class_and_confidence,
+    resolve_top_k,
+)
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
@@ -55,7 +60,11 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document, Section, Status
-from idp_common.utils import extract_json_from_text, extract_structured_data_from_text
+from idp_common.utils import (
+    extract_json_from_text,
+    extract_structured_data_from_text,
+    parse_confidence,
+)
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
 
 logger = logging.getLogger(__name__)
@@ -68,6 +77,28 @@ class PageContextData:
     page_id: str
     text_content: Optional[str] = None
     image_content: Optional[bytes] = None
+
+
+def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
+    """Aggregate per-page classification confidence to one section score.
+
+    Returns the MINIMUM, and ``None`` (not scored) if the list is empty or if
+    ANY page is unscored.
+
+    Two deliberate choices:
+
+    - **min, not mean.** A mean hides the single page the classifier was unsure
+      about, which is exactly the page a reviewer needs to look at; and a
+      section's class cannot be more certain than its least certain page.
+    - **``None`` absorbs.** If any page in the section has no score, the section
+      genuinely has no score — reporting the min of the *scored* subset would
+      quietly present a partial aggregate as a whole-section number.
+    """
+    if not values:
+        return None
+    if any(v is None for v in values):
+        return None
+    return min(v for v in values if v is not None)
 
 
 class ClassificationService:
@@ -404,10 +435,18 @@ class ClassificationService:
             classifications.keys(), key=lambda k: classifications[k]
         )
 
-        # Apply to all pages in original document
+        # Apply to all pages in original document.
+        #
+        # Confidence is deliberately left unscored (None) for EVERY page here,
+        # including the pages that were classified: this path exists because
+        # maxPagesForClassification stopped the classifier early, so the class is
+        # extrapolated from a sample to pages the model never saw. There is no
+        # defensible score for those pages, and reporting one for the sampled
+        # pages only would attach a per-page number to a document-level guess.
+        # (It previously claimed 1.0 for all of them.)
         for page_id, page in original_document.pages.items():
             page.classification = primary_classification
-            page.confidence = 1.0  # High confidence for applied classification
+            page.confidence = None
 
         # Create single section with all pages
         section = self._create_section(
@@ -563,9 +602,77 @@ class ClassificationService:
             "after_images": after_images,
         }
 
-    def _classify_pages_multimodal(self, document: Document) -> Document:
+    def _pin_page_class(
+        self, page_result: PageClassification, class_name: str
+    ) -> PageClassification:
+        """Overwrite a page result's class with a class already known to be right.
+
+        Used when the document's name matched a class's
+        ``x-aws-idp-document-name-regex`` but the model still had to run for the
+        per-page ``document_boundary`` signal (GitHub issue #705). The regex match
+        is a deterministic assertion by the operator, so it wins over the model's
+        class guess and carries confidence 1.0 — the same class/confidence the
+        zero-inference short-circuit assigns.
+
+        Pinning happens *before* section splitting so boundaries are derived from
+        the boundary signal alone. Otherwise ``_create_llm_determined_sections``
+        would also split on class flips that are about to be overwritten anyway.
+
+        Error results are pinned too: ``metadata["error"]`` is left intact, so the
+        page's failure is still collected into ``document.errors``.
+        """
+        if page_result.classification.doc_type != class_name:
+            logger.debug(
+                "Pinning page %s class '%s' -> '%s' (document name regex match)",
+                page_result.page_id,
+                page_result.classification.doc_type,
+                class_name,
+            )
+        page_result.classification.doc_type = class_name
+        page_result.classification.confidence = 1.0
+        return page_result
+
+    @staticmethod
+    def _apply_page_result(page: Any, page_result: PageClassification) -> None:
+        """Copy one page's classification result onto the DECLARED Page fields.
+
+        The whole metadata dict is also stashed on the page by the callers via
+        ``setattr``, but that writes an attribute which is not a dataclass field:
+        it is absent from ``Document.to_dict``, so it never survives the Step
+        Functions hop or reaches DynamoDB (GitHub #565). Everything that has to
+        outlive this invocation — class, confidence, reason, boundary — is copied
+        here instead.
+
+        Shared by the cache-hit and fresh-inference branches so a cache hit
+        cannot silently produce a page with fewer signals than a miss (before
+        this existed, the cached branch dropped ``document_boundary`` entirely).
+        """
+        classification = page_result.classification
+        page.classification = classification.doc_type
+        page.confidence = classification.confidence
+        reason = classification.metadata.get("classification_reason")
+        if reason:
+            page.classification_reason = str(reason)
+        candidates = classification.metadata.get("classification_candidates")
+        if candidates:
+            page.classification_candidates = candidates
+        boundary = classification.metadata.get("document_boundary")
+        if boundary:
+            page.document_boundary = str(boundary).lower()
+
+    def _classify_pages_multimodal(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
         """
         Classify pages using multimodal page-level classification.
+
+        Args:
+            document: Document object to classify
+            forced_class: When set, every page result's class is overwritten with
+                this value before sections are built. Set by the
+                document-name-regex path, where the name determines the class but
+                the per-page boundary signal still has to come from the model
+                (GitHub issue #705). See ``_pin_page_class``.
         """
         # Page-level classification with document boundary detection
         t0 = time.time()
@@ -581,6 +688,12 @@ class ClassificationService:
                 document
             )
             all_page_results = list(cached_page_classifications.values())
+            if forced_class:
+                # Cached results were produced by an earlier attempt that may not
+                # have had the pin applied; pin them too so every result in the
+                # list agrees.
+                for cached_result in all_page_results:
+                    self._pin_page_class(cached_result, forced_class)
             combined_metering = {}
             errors_lock = threading.Lock()  # Thread safety for error collection
             failed_page_exceptions = {}  # Store original exceptions for failed pages
@@ -593,12 +706,7 @@ class ClassificationService:
                 else:
                     # Update document with cached classification
                     cached_result = cached_page_classifications[page_id]
-                    document.pages[
-                        page_id
-                    ].classification = cached_result.classification.doc_type
-                    document.pages[
-                        page_id
-                    ].confidence = cached_result.classification.confidence
+                    self._apply_page_result(document.pages[page_id], cached_result)
 
                     setattr(
                         document.pages[page_id],
@@ -670,6 +778,8 @@ class ClassificationService:
                         page_id = futures[future]
                         try:
                             page_result = future.result()
+                            if forced_class:
+                                self._pin_page_class(page_result, forced_class)
                             all_page_results.append(page_result)
 
                             # Check if there was an error in the classification
@@ -678,13 +788,12 @@ class ClassificationService:
                                     error_msg = f"Error classifying page {page_id}: {page_result.classification.metadata['error']}"
                                     document.errors.append(error_msg)
 
-                            # Update the page in the document
-                            document.pages[
-                                page_id
-                            ].classification = page_result.classification.doc_type
-                            document.pages[
-                                page_id
-                            ].confidence = page_result.classification.confidence
+                            # Update the page in the document — class, confidence,
+                            # reason and boundary onto DECLARED fields, so they
+                            # survive the Step Functions hop and reach DynamoDB.
+                            self._apply_page_result(
+                                document.pages[page_id], page_result
+                            )
 
                             # Copy metadata (including boundary information) to the page
                             setattr(
@@ -1086,9 +1195,65 @@ class ClassificationService:
         task_prompt = self.config.classification.task_prompt
         if not task_prompt:
             raise ValueError("No task_prompt found in classification configuration")
-        config["task_prompt"] = task_prompt
+        config["task_prompt"] = self._compose_class_confidence_prompt(task_prompt)
 
         return config
+
+    def _compose_class_confidence_prompt(self, task_prompt: str) -> str:
+        """Splice the class-confidence instruction block in, when enabled.
+
+        No-op in the default ``off`` mode, so the shipped prompt stays exactly as
+        it was. A custom prompt that already carries a ``<class-confidence>``
+        block is left alone (the splice is idempotent), and the response parser
+        honours a ``confidence``/``candidates`` key regardless of this setting —
+        the mode composes the *instruction*, it does not gate the *parsing*.
+        """
+        confidence_cfg = self.config.classification.confidence
+        mode = confidence_cfg.mode
+        if mode == "off":
+            return task_prompt
+
+        if self.classification_method != self.MULTIMODAL_PAGE_LEVEL:
+            # The holistic prompt returns segments, not one object per page, so
+            # the page-level block would describe the wrong shape. Its per-segment
+            # `confidence` IS parsed, so a holistic deployment can still be scored
+            # by asking for it in its own prompt.
+            logger.warning(
+                "classification.confidence.mode=%s is only composed for %s; "
+                "%s prompts must request confidence themselves (a per-segment "
+                "'confidence' key is parsed if present).",
+                mode,
+                self.MULTIMODAL_PAGE_LEVEL,
+                self.classification_method,
+            )
+            return task_prompt
+
+        if mode == "topk":
+            top_k = resolve_top_k(
+                confidence_cfg.top_k_candidates, len(self.valid_doc_types)
+            )
+            block = confidence_cfg.task_prompt_topk
+        else:  # verbalized
+            top_k = None
+            block = confidence_cfg.task_prompt_verbalized
+
+        if not block:
+            logger.warning(
+                "classification.confidence.mode=%s but its prompt block is empty; "
+                "no confidence will be requested. Restore it from the system "
+                "defaults (base-classification.yaml).",
+                mode,
+            )
+            return task_prompt
+
+        composed = append_class_confidence_block(task_prompt, block, top_k)
+        if composed is not task_prompt:
+            logger.info(
+                "Requesting class confidence in %s mode%s",
+                mode,
+                f" (top {top_k} candidates)" if top_k else "",
+            )
+        return composed
 
     def _prepare_prompt_from_template(
         self,
@@ -1632,6 +1797,12 @@ class ClassificationService:
             metering: Dict[str, Any] = {}
             doc_type = ""
             document_boundary = "continue"
+            # Both OPTIONAL outputs, reset per attempt below so a retry's values
+            # never leak from the rejected attempt: the confidence the model
+            # reported for a class we threw away does not apply to the new one.
+            confidence: Optional[float] = None
+            classification_reason: Optional[str] = None
+            candidates: List[Dict[str, Any]] = []
             validation_error: Optional[str] = None
 
             for attempt in range(max_retries + 1):
@@ -1672,6 +1843,9 @@ class ClassificationService:
                 )
 
                 # Try to extract structured data (JSON or YAML) from the response
+                confidence = None
+                classification_reason = None
+                candidates = []
                 try:
                     classification_data, detected_format = (
                         extract_structured_data_from_text(classification_text)
@@ -1681,6 +1855,24 @@ class ClassificationService:
                         document_boundary = classification_data.get(
                             "document_boundary", "continue"
                         )
+                        # All optional. `confidence` has been a documented part
+                        # of this response shape for a long time but was
+                        # discarded (GitHub #673); `classification_reason` is
+                        # asked for by the DEFAULT prompt — those output tokens
+                        # were bought on every page and dropped; `candidates` is
+                        # what classification.confidence.mode=topk requests.
+                        # Parsing is NOT gated on the mode: a custom prompt that
+                        # asks for any of these is honoured, and a prompt that
+                        # asks for none simply yields None/[].
+                        confidence, candidates = resolve_class_and_confidence(
+                            reported_class=doc_type,
+                            reported_confidence=classification_data.get("confidence"),
+                            reported_candidates=classification_data.get("candidates"),
+                            valid_classes=self.valid_doc_types,
+                        )
+                        reason = classification_data.get("classification_reason")
+                        if isinstance(reason, str) and reason.strip():
+                            classification_reason = reason.strip()
                         logger.info(
                             f"Parsed classification response as {detected_format}: {classification_data}"
                         )
@@ -1736,6 +1928,12 @@ class ClassificationService:
                     )
                     logger.error(f"Page {page_id}: {validation_error}")
                     doc_type = fallback
+                    # The class is now ours, not the model's, so neither its
+                    # confidence, its reasoning nor its ranked alternatives
+                    # describe the stored class.
+                    confidence = None
+                    classification_reason = None
+                    candidates = []
 
             t1 = time.time()
             logger.info(
@@ -1751,12 +1949,24 @@ class ClassificationService:
             }
             if validation_error:
                 metadata["validation_error"] = validation_error
+            # Travels in metadata alongside document_boundary so the cache and
+            # the section builders carry it, and is copied onto the declared
+            # Page.classification_reason field by _classify_pages_multimodal.
+            if classification_reason:
+                metadata["classification_reason"] = classification_reason
+            # The ranked runner-up classes ("80% W-2, 15% 1099"), which are the
+            # actual answer to "what else could this have been?". Travels the
+            # same way as the reason above.
+            if candidates:
+                metadata["classification_candidates"] = candidates
 
             return PageClassification(
                 page_id=page_id,
                 classification=DocumentClassification(
                     doc_type=doc_type,
-                    confidence=1.0,  # Default confidence
+                    # None unless the model was asked for a confidence and
+                    # returned a usable one — see parse_confidence.
+                    confidence=confidence,
                     metadata=metadata,
                 ),
                 image_uri=image_uri,
@@ -1849,7 +2059,11 @@ class ClassificationService:
                     page_id=page_id,
                     classification=DocumentClassification(
                         doc_type=doc_type,
-                        confidence=1.0,  # Default confidence since SageMaker doesn't provide it
+                        # Not scored: the UDOP endpoint returns a prediction with
+                        # no score, so there is nothing to report. This used to
+                        # claim 1.0, which asserted certainty the endpoint never
+                        # expressed.
+                        confidence=None,
                         metadata={
                             "metering": metering,
                             "document_boundary": "continue",
@@ -2139,7 +2353,13 @@ class ClassificationService:
                             page_id=page_id,
                             classification=DocumentClassification(
                                 doc_type=page_data["classification"]["doc_type"],
-                                confidence=page_data["classification"]["confidence"],
+                                # .get: a cache entry written before confidence
+                                # was optional (or by a run that produced none)
+                                # has no key, and a missing score is not an
+                                # error — it reads back as not scored.
+                                confidence=page_data["classification"].get(
+                                    "confidence"
+                                ),
                                 metadata=page_data["classification"]["metadata"],
                             ),
                             image_uri=page_data.get("image_uri"),
@@ -2246,6 +2466,26 @@ class ClassificationService:
         - textbasedHolisticClassification: Processes the entire document as a packet
           to identify document segments across pages using a holistic approach.
 
+        Single-class configurations short-circuit the class decision (no backend
+        call) but still honor ``sectionSplitting``: ``disabled`` yields one
+        all-pages section and ``page`` yields one section per page.
+        ``llm_determined`` runs the normal backend so boundary detection really
+        happens — it is the default, and silently degrading it would collapse
+        every multi-document packet by construction, which is the #686 bug
+        itself. The zero-inference short-circuit therefore applies only when no
+        boundary decision is needed: ``disabled``, ``page``, or a single-page
+        document. See ``_can_skip_backend_for_single_class`` and
+        ``_create_single_class_sections``.
+
+        A document whose *name* matches a class's
+        ``x-aws-idp-document-name-regex`` follows the same three-way rule
+        (GitHub issue #705): ``disabled`` / ``page`` / a single-page document need
+        no model call, while multi-page ``llm_determined`` runs classification for
+        the per-page boundary signal with the class pinned to the regex-matched
+        one. Knowing *what* a packet contains says nothing about *where* each
+        record starts, so the name match cannot substitute for boundary
+        detection. See ``_can_skip_backend_for_regex_match``.
+
         Args:
             document: Document object to classify and update
 
@@ -2260,80 +2500,44 @@ class ClassificationService:
                 error_message="Document has no pages to classify",
             )
 
-        # Check for document name regex match (single-class configurations only)
+        # Check for a document-name regex match. The document's NAME asserts its
+        # class, so no inference is needed for the class decision — but section
+        # boundaries are a separate question, and skipping them along with the
+        # class hard-coded ONE all-pages section regardless of sectionSplitting
+        # (GitHub issue #705, the #686 defect reached by a different trigger).
+        forced_class: Optional[str] = None
         regex_matched_class = self._check_document_name_regex(document)
         if regex_matched_class:
+            if self._can_skip_backend_for_regex_match(document, regex_matched_class):
+                logger.info(
+                    f"Classifying all pages as '{regex_matched_class}' based on "
+                    f"document name regex match, and sectionSplitting needs no "
+                    f"boundary detection. Skipping LLM classification."
+                )
+                document = self._create_single_class_sections(
+                    document, class_name=regex_matched_class
+                )
+                document = self._update_document_status(document)
+                return document
+
+            # Multi-page `llm_determined`: the class stays the regex-matched one,
+            # but the per-page document_boundary signal it needs only exists if
+            # the model runs. Fall through to the normal path with the class
+            # pinned, so the boundaries are real and the regex stays
+            # authoritative over the class (which is what the feature promises).
+            forced_class = regex_matched_class
+
+        # If there's only one document class defined, the class decision is
+        # predetermined — but only skip the backend when the configured
+        # sectionSplitting strategy genuinely needs no model output.
+        if self._can_skip_backend_for_single_class(document):
             logger.info(
-                f"Classifying all pages as '{regex_matched_class}' based on document name regex match. Skipping LLM classification."
+                f"Only one document class '{self.single_class_name}' is defined "
+                f"and sectionSplitting needs no boundary detection. Classifying "
+                f"all pages as this class without calling backend."
             )
-
-            # Set all pages to the regex-matched class
-            for page_id, page in document.pages.items():
-                page.classification = regex_matched_class
-                page.confidence = 1.0
-
-            # Create a single section containing all pages
-            page_ids = list(document.pages.keys())
-            section = self._create_section(
-                section_id="1",
-                doc_type=regex_matched_class,
-                pages=page_ids,
-                confidence=1.0,
-            )
-
-            if isinstance(section, Section):
-                document.sections = [section]
-            else:
-                document.sections = [
-                    Section(
-                        section_id=section.section_id,
-                        classification=section.classification.doc_type,
-                        page_ids=[page.page_id for page in section.pages],
-                    )
-                ]
-
-            # Update document status
+            document = self._create_single_class_sections(document)
             document = self._update_document_status(document)
-
-            return document
-
-        # If there's only one document class defined, automatically classify all pages as that class
-        # without calling any backend service
-        if self.has_single_class:
-            logger.info(
-                f"Only one document class '{self.single_class_name}' is defined. Automatically classifying all pages as this class without calling backend."
-            )
-
-            # Set all pages to the single class
-            for page_id, page in document.pages.items():
-                page.classification = self.single_class_name
-                page.confidence = 1.0
-
-            # Create a single section containing all pages
-            page_ids = list(document.pages.keys())
-            section = self._create_section(
-                section_id="1",
-                doc_type=(
-                    self.single_class_name if self.single_class_name else "undefined"
-                ),
-                pages=page_ids,
-                confidence=1.0,
-            )
-
-            if isinstance(section, Section):
-                document.sections = [section]
-            else:
-                document.sections = [
-                    Section(
-                        section_id=section.section_id,
-                        classification=section.classification.doc_type,
-                        page_ids=[page.page_id for page in section.pages],
-                    )
-                ]
-
-            # Update document status
-            document = self._update_document_status(document)
-
             return document
 
         # Check for limited page classification
@@ -2357,17 +2561,22 @@ class ClassificationService:
             limited_document = self._limit_pages_for_classification(document)
 
             if limited_document.id != document.id:  # Pages were actually limited
-                # Classify the limited document
+                # Classify the limited document.
+                # NOTE: _apply_limited_classification_to_all_pages collapses the
+                # result into one all-pages section for every config, so
+                # maxPagesForClassification still overrides sectionSplitting here
+                # — a pre-existing limitation of that setting, not specific to the
+                # regex path.
                 if self.classification_method == self.TEXTBASED_HOLISTIC:
                     logger.info(
                         f"Classifying limited document with {len(limited_document.pages)} pages using holistic packet method"
                     )
                     classified_limited = self.holistic_classify_document(
-                        limited_document
+                        limited_document, forced_class=forced_class
                     )
                 else:
                     classified_limited = self._classify_pages_multimodal(
-                        limited_document
+                        limited_document, forced_class=forced_class
                     )
 
                 # Apply results to all pages in original document
@@ -2381,9 +2590,9 @@ class ClassificationService:
             logger.info(
                 f"Classifying document with {len(document.pages)} pages using holistic packet method"
             )
-            return self.holistic_classify_document(document)
+            return self.holistic_classify_document(document, forced_class=forced_class)
 
-        return self._classify_pages_multimodal(document)
+        return self._classify_pages_multimodal(document, forced_class=forced_class)
 
     def classify_pages(self, pages: Dict[str, Dict[str, Any]]) -> ClassificationResult:
         """
@@ -2451,6 +2660,198 @@ class ClassificationService:
             return self._create_per_page_sections(document, page_results)
         else:  # llm_determined (default)
             return self._create_llm_determined_sections(document, page_results)
+
+    def _needs_boundary_detection(self, document: Document) -> bool:
+        """True when the configured ``sectionSplitting`` needs a model signal.
+
+        Shared by both short-circuits — the single-class one (GitHub issue #686)
+        and the document-name-regex one (GitHub issue #705). Both predetermine
+        the *class*, and neither predetermines the section *boundaries*:
+
+        - ``disabled`` — one section over all pages. Nothing to detect.
+        - ``page`` — one section per page. Nothing to detect.
+        - **single-page document, any strategy** — one page cannot be split, so
+          the result is identical either way and inference would be pure waste.
+
+        ``llm_determined`` on a multi-page document does need the model: that is
+        where boundaries come from. It is also the config *default*, so treating
+        it as "nothing to detect" is what collapses every multi-document packet
+        into one section by construction — the bug both issues report.
+        """
+        strategy = self.config.classification.sectionSplitting.lower()
+        if strategy in ("disabled", "page"):
+            return False
+
+        # One page cannot be split, whatever the strategy says.
+        return len(document.pages) > 1
+
+    def _can_skip_backend_for_regex_match(
+        self, document: Document, class_name: str
+    ) -> bool:
+        """True when a document-name-regex match needs no backend call at all.
+
+        ``x-aws-idp-document-name-regex`` derives the *class* from the document's
+        name, so no inference is needed to make that decision. Section
+        boundaries, however, are a separate question — and this path used to skip
+        them along with the class, hard-coding ONE section spanning every page
+        regardless of ``sectionSplitting`` (GitHub issue #705). A packet holding
+        several separate documents of the matched class therefore collapsed into
+        a single section and extraction returned only the first record;
+        ``sectionSplitting: page`` was silently ignored.
+
+        The same three-way rule as the single-class short-circuit applies (see
+        ``_needs_boundary_detection``). Note that "the class came from the
+        filename" does not make boundary detection unnecessary: knowing *what* a
+        packet contains says nothing about *where* one record ends and the next
+        begins. So for a multi-page ``llm_determined`` document this returns
+        False and classification runs — with the class pinned to the
+        regex-matched one (``forced_class``), so the model's contribution is the
+        per-page ``document_boundary`` signal and the regex stays authoritative
+        over the class, exactly as the feature documents.
+
+        BEHAVIOUR AND COST CHANGE, deliberate: ``llm_determined`` is the
+        *default*, so a regex-matched **multi-page** document now incurs
+        classification inference where it previously incurred none — the
+        performance shortcut no longer skips the model for those. Single-page
+        matches (the common "name the file and skip the LLM" case) keep the
+        zero-inference path, and ``sectionSplitting: disabled`` is the explicit
+        opt-out for multi-page files that are always one document.
+        """
+        if self._needs_boundary_detection(document):
+            logger.info(
+                "Document name regex matched class '%s' but sectionSplitting='%s' "
+                "needs boundary detection across %d pages: running classification "
+                "for the per-page boundary signal with the class pinned to '%s'. "
+                "Set sectionSplitting: disabled (or page) to skip inference "
+                "entirely.",
+                class_name,
+                self.config.classification.sectionSplitting.lower(),
+                len(document.pages),
+                class_name,
+            )
+            return False
+        return True
+
+    def _can_skip_backend_for_single_class(self, document: Document) -> bool:
+        """True when a single-class config needs no backend call at all.
+
+        A single-class configuration makes the *class* decision predetermined, so
+        classification used to skip the backend entirely. But section boundaries
+        are a separate question, and skipping them along with the class is what
+        made ``sectionSplitting`` a no-op for these configs (GitHub issue #686).
+
+        The backend can only be skipped when the configured strategy genuinely
+        needs no model output:
+
+        - ``disabled`` — one section over all pages. Nothing to detect.
+        - ``page`` — one section per page. Nothing to detect.
+        - **any strategy on a single-page document** — there is no boundary
+          decision to make on one page, so the result is identical either way and
+          an inference call would be pure waste. This keeps the common
+          "one document per file" single-class deployment at zero classification
+          cost, which is what the original short-circuit was really protecting.
+
+        ``llm_determined`` on a multi-page document is NOT skippable. It asks for
+        boundary detection, boundaries come from the model, so the model must
+        run. Silently returning one all-pages section instead is the bug.
+
+        Note the cost consequence: ``llm_determined`` is the *default*, so a
+        multi-page single-class deployment that never set ``sectionSplitting``
+        now performs classification inference where it previously performed none.
+        That is the correct trade — the previous behaviour merged every record in
+        a multi-record packet into one section and extraction returned only the
+        first — and ``sectionSplitting: disabled`` is the explicit opt-out for
+        deployments that know one file is always one document.
+        """
+        if not self.has_single_class:
+            return False
+
+        if not self._needs_boundary_detection(document):
+            return True
+
+        logger.info(
+            "Single-class configuration '%s' with sectionSplitting='%s': running "
+            "classification for boundary detection across %d pages. Set "
+            "sectionSplitting: disabled to skip it when one file is always one "
+            "document.",
+            self.single_class_name,
+            self.config.classification.sectionSplitting.lower(),
+            len(document.pages),
+        )
+        return False
+
+    def _create_single_class_sections(
+        self, document: Document, class_name: Optional[str] = None
+    ) -> Document:
+        """
+        Assign every page to one known class and split into sections according to
+        the configured ``sectionSplitting`` strategy.
+
+        This serves both zero-inference short-circuits, which differ only in how
+        the class was determined:
+
+        - the configuration defines exactly one document class (GitHub issue
+          #686) — ``class_name`` omitted, ``self.single_class_name`` is used;
+        - the document's name matched a class's
+          ``x-aws-idp-document-name-regex`` (GitHub issue #705) — the matched
+          class is passed in as ``class_name``.
+
+        In both cases the *class decision* is predetermined, so no backend call
+        is needed to make it. Boundary detection is a separate question, though,
+        and used to be skipped along with it — every packet collapsed into one
+        section spanning all pages regardless of ``sectionSplitting``. For a "one
+        record type per packet" configuration that silently merged every record
+        in the packet into a single section, and extraction then returned only
+        the first one.
+
+        Only reached when ``_can_skip_backend_for_single_class`` /
+        ``_can_skip_backend_for_regex_match`` say the backend is genuinely
+        unnecessary, so the strategies handled here are the ones that need no
+        model output:
+
+        - ``disabled`` — one section over all pages.
+        - ``page`` — one section per page. This is the documented escape hatch
+          for multi-record packets and now actually works.
+        - any strategy on a **single-page** document, where there is no boundary
+          decision to make.
+
+        ``llm_determined`` on a multi-page document does not arrive here at all —
+        it falls through to real classification, because boundaries come from the
+        model and a knob that asks for boundary detection has to perform it.
+
+        Args:
+            document: Document whose pages should all be classified as
+                ``class_name``
+            class_name: The predetermined class. Defaults to the sole configured
+                class; the document-name-regex path passes the matched class.
+
+        Returns:
+            Document with pages classified and sections created per strategy
+        """
+        class_name = class_name or self.single_class_name or "undefined"
+
+        # Synthesize the page-result list the shared section builders expect, so
+        # `disabled` and `page` reuse exactly the same code (and the same page
+        # sorting) as the multi-class path instead of duplicating it here.
+        page_results = [
+            PageClassification(
+                page_id=page_id,
+                classification=DocumentClassification(
+                    doc_type=class_name, confidence=1.0
+                ),
+            )
+            for page_id in document.pages
+        ]
+
+        strategy = self.config.classification.sectionSplitting.lower()
+
+        if strategy == "page":
+            return self._create_per_page_sections(document, page_results)
+
+        # `disabled`, or any strategy on a single-page document — one section.
+        # A multi-page `llm_determined` document never reaches here (it goes
+        # through real classification), so there is nothing to warn about.
+        return self._create_single_section(document, page_results)
 
     def _create_single_section(
         self, document: Document, page_results: List[PageClassification]
@@ -2527,16 +2928,35 @@ class ClassificationService:
                 f"All pages are unclassifiable types, using first page's class: '{first_classification}'"
             )
 
-        # Set all pages to this classification
+        # Set all pages to this classification.
+        #
+        # A page that voted for the winning class keeps its own score; a page
+        # that predicted something else is now labelled with a class it did NOT
+        # predict, so its score (which was about a different class) says nothing
+        # about this one and becomes unscored. Previously every page was
+        # rewritten to 1.0, which asserted certainty precisely where the pages
+        # had disagreed.
+        confidence_by_page = {
+            r.page_id: r.classification.confidence for r in sorted_results
+        }
+        predicted_by_page = {
+            r.page_id: r.classification.doc_type for r in sorted_results
+        }
         for page_id in document.pages:
             document.pages[page_id].classification = first_classification
-            document.pages[page_id].confidence = 1.0
+            document.pages[page_id].confidence = (
+                confidence_by_page.get(page_id)
+                if predicted_by_page.get(page_id) == first_classification
+                else None
+            )
 
         # Create single section with all pages
         section = Section(
             section_id="1",
             classification=first_classification,
-            confidence=1.0,
+            confidence=aggregate_page_confidence(
+                [document.pages[page_id].confidence for page_id in document.pages]
+            ),
             page_ids=list(document.pages.keys()),
         )
         document.sections = [section]
@@ -2610,6 +3030,47 @@ class ClassificationService:
         if not sorted_results:
             return document
 
+        # The per-page document_boundary signal drives every merge decision
+        # below, but it is persisted nowhere: the DynamoDB page record and the
+        # S3 document.json page dict both carry `Class` only. Emit the whole map
+        # as one line so "why did these two documents end up in one section?"
+        # can be answered without correlating N interleaved per-page
+        # classification logs from the thread pool.
+        #
+        # An absent key is reported distinctly from a literal "continue",
+        # because the two have very different diagnoses: the model omitting the
+        # field (we default to "continue" below and at :1681) merges pages by
+        # accident, whereas an explicit "continue" is the model's judgement.
+        # That distinction is the one that was expensive to recover in #565.
+        boundary_map = {
+            r.page_id: (
+                str(r.classification.metadata["document_boundary"]).lower()
+                if "document_boundary" in r.classification.metadata
+                else "(absent)"
+            )
+            for r in sorted_results
+        }
+        # Capped: a 500-page packet would otherwise put every page's signal in one
+        # log record. The pages that matter for diagnosing a merge are the ones
+        # that said "start" plus the ones where the field was absent, so those are
+        # always named; the rest are counted. The full per-page value is persisted
+        # on the page record anyway (Page.document_boundary).
+        _notable = {
+            page_id: signal
+            for page_id, signal in boundary_map.items()
+            if signal != "continue"
+        }
+        if len(boundary_map) <= 50:
+            logger.info(f"Page document_boundary signals: {boundary_map}")
+        else:
+            logger.info(
+                "Page document_boundary signals over %d pages: %d 'continue', "
+                "notable (start/absent): %s",
+                len(boundary_map),
+                len(boundary_map) - len(_notable),
+                dict(list(_notable.items())[:50]),
+            )
+
         current_group = 1
         current_type = sorted_results[0].classification.doc_type
         current_pages = [sorted_results[0]]
@@ -2622,11 +3083,16 @@ class ClassificationService:
             if result.classification.doc_type == current_type and boundary != "start":
                 current_pages.append(result)
             else:
-                # Create section with current group
+                # Create section with current group. The section's confidence is
+                # the weakest page in it (None if any page is unscored) — see
+                # aggregate_page_confidence.
                 section = self._create_section(
                     section_id=str(current_group),
                     doc_type=current_type,
                     pages=[p.page_id for p in current_pages],
+                    confidence=aggregate_page_confidence(
+                        [p.classification.confidence for p in current_pages]
+                    ),
                 )
                 if isinstance(section, Section):
                     document.sections.append(section)
@@ -2635,6 +3101,7 @@ class ClassificationService:
                         Section(
                             section_id=section.section_id,
                             classification=section.classification.doc_type,
+                            confidence=section.classification.confidence,
                             page_ids=[page.page_id for page in section.pages],
                         )
                     )
@@ -2649,6 +3116,9 @@ class ClassificationService:
             section_id=str(current_group),
             doc_type=current_type,
             pages=[p.page_id for p in current_pages],
+            confidence=aggregate_page_confidence(
+                [p.classification.confidence for p in current_pages]
+            ),
         )
         if isinstance(section, Section):
             document.sections.append(section)
@@ -2657,6 +3127,7 @@ class ClassificationService:
                 Section(
                     section_id=section.section_id,
                     classification=section.classification.doc_type,
+                    confidence=section.classification.confidence,
                     page_ids=[page.page_id for page in section.pages],
                 )
             )
@@ -2685,7 +3156,11 @@ class ClassificationService:
             return sorted(results, key=lambda x: x.page_id)
 
     def _create_section(
-        self, section_id: str, doc_type: str, pages: List[Any], confidence: float = 1.0
+        self,
+        section_id: str,
+        doc_type: str,
+        pages: List[Any],
+        confidence: Optional[float] = None,
     ) -> Union[DocumentSection, Section]:
         """
         Create a document section based on the input type.
@@ -2694,7 +3169,9 @@ class ClassificationService:
             section_id: ID for the section
             doc_type: Document type for the section
             pages: List of pages (either PageClassification or page_ids)
-            confidence: Confidence score for the classification
+            confidence: Confidence in the section's class, or None for not
+                scored (the default — callers that have a score pass it, usually
+                from aggregate_page_confidence)
 
         Returns:
             Either DocumentSection or Section depending on the input pages type
@@ -2764,6 +3241,9 @@ class ClassificationService:
                         section_id=str(current_group),
                         doc_type=current_type,
                         pages=current_pages,
+                        confidence=aggregate_page_confidence(
+                            [p.classification.confidence for p in current_pages]
+                        ),
                     )
                 )
                 current_group += 1
@@ -2776,6 +3256,9 @@ class ClassificationService:
                 section_id=str(current_group),
                 doc_type=current_type,
                 pages=current_pages,
+                confidence=aggregate_page_confidence(
+                    [p.classification.confidence for p in current_pages]
+                ),
             )
         )
 
@@ -2917,7 +3400,9 @@ class ClassificationService:
 
         return pages_content
 
-    def holistic_classify_document(self, document: Document) -> Document:
+    def holistic_classify_document(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
         """
         Classify a document using holistic packet classification.
 
@@ -2926,8 +3411,16 @@ class ClassificationService:
         this method can handle documents where individual pages might not be clearly
         classifiable on their own.
 
+        Single-class configurations short-circuit the class decision here too,
+        and honor ``sectionSplitting`` the same way — see
+        ``_create_single_class_sections`` and GitHub issue #686.
+
         Args:
             document: Document object to classify
+            forced_class: When set, every returned segment's type is overwritten
+                with this value, so the model's contribution is the segment
+                *ranges* only. Set by the document-name-regex path in
+                ``classify_document`` (GitHub issue #705).
 
         Returns:
             Document: Updated Document object with classifications and sections
@@ -2940,33 +3433,18 @@ class ClassificationService:
                 error_message="Document has no pages to classify",
             )
 
-        # If there's only one document class defined, automatically classify all pages as that class
-        # without calling any backend service
-        if self.has_single_class:
+        # Same as the page-level path: the class is predetermined, but the
+        # section boundaries are not (GitHub issue #686). Holistic packet
+        # classification returns segment ranges, which IS boundary detection, so
+        # llm_determined falls through to it rather than being skipped.
+        if self._can_skip_backend_for_single_class(document):
             logger.info(
-                f"Only one document class '{self.single_class_name}' is defined. Automatically classifying all pages as this class without calling backend."
+                f"Only one document class '{self.single_class_name}' is defined "
+                f"and sectionSplitting needs no boundary detection. Classifying "
+                f"all pages as this class without calling backend."
             )
-
-            # Set all pages to the single class
-            for page_id, page in document.pages.items():
-                page.classification = self.single_class_name
-                page.confidence = 1.0
-
-            # Create a single section containing all pages
-            page_ids = list(document.pages.keys())
-            section = Section(
-                section_id="1",
-                classification=(
-                    self.single_class_name if self.single_class_name else "undefined"
-                ),
-                confidence=1.0,
-                page_ids=page_ids,
-            )
-            document.sections = [section]
-
-            # Update document status
+            document = self._create_single_class_sections(document)
             document = self._update_document_status(document)
-
             return document
 
         t0 = time.time()
@@ -3052,6 +3530,20 @@ class ClassificationService:
                 if not segments:
                     raise ValueError("No segments found in the classification result")
 
+                if forced_class:
+                    # The document's NAME already asserts the class; the model was
+                    # invoked only for the segment RANGES (GitHub issue #705).
+                    # Setting the key unconditionally also rescues a segment whose
+                    # type the model omitted, which the validation below would
+                    # otherwise drop along with its boundary.
+                    for segment in segments:
+                        if isinstance(segment, dict):
+                            segment["type"] = forced_class
+
+                # Per-segment confidence, keyed by the segment's index so the
+                # section builders below can reuse what was parsed here.
+                segment_confidences: Dict[int, Optional[float]] = {}
+
                 # Update page classifications based on segments
                 for i, segment in enumerate(segments):
                     # Validate segment data
@@ -3066,6 +3558,18 @@ class ClassificationService:
                     start_page = segment["ordinal_start_page"]
                     end_page = segment["ordinal_end_page"]
                     doc_type = segment["type"]
+                    # Optional, exactly as on the page-level path: used when the
+                    # holistic prompt asks each segment for a confidence, None
+                    # otherwise. A forced class is the operator's own assertion,
+                    # so the model's number does not describe it.
+                    segment_confidence = (
+                        None
+                        if forced_class
+                        else parse_confidence(
+                            segment.get("confidence"), context=f"segment {i}"
+                        )
+                    )
+                    segment_confidences[i] = segment_confidence
 
                     # Check if the doc_type is valid
                     if doc_type not in self.valid_doc_types:
@@ -3080,7 +3584,11 @@ class ClassificationService:
                             if page_id in document.pages:
                                 # Update page classification
                                 document.pages[page_id].classification = doc_type
-                                document.pages[page_id].confidence = 1.0
+                                # Every page in a segment inherits the segment's
+                                # score — the holistic method makes ONE decision
+                                # per segment, so there is no per-page signal to
+                                # report (and no basis for claiming 1.0).
+                                document.pages[page_id].confidence = segment_confidence
                     except Exception as e:
                         logger.error(f"Error processing segment {i}: {e}")
                         continue
@@ -3096,7 +3604,15 @@ class ClassificationService:
                             Section(
                                 section_id="1",
                                 classification=first_classification,
-                                confidence=1.0,
+                                # One section spanning segments the model may
+                                # have scored differently: the weakest of them,
+                                # unscored if any segment had no score.
+                                confidence=aggregate_page_confidence(
+                                    [
+                                        page.confidence
+                                        for page in document.pages.values()
+                                    ]
+                                ),
                                 page_ids=list(document.pages.keys()),
                             )
                         ]
@@ -3152,12 +3668,14 @@ class ClassificationService:
                             logger.warning(f"No valid pages found for segment {i}")
                             continue
 
-                        # Create and add the section
+                        # Create and add the section, carrying the confidence the
+                        # model reported for this segment (None if it reported
+                        # none — see the parse above).
                         document.sections.append(
                             Section(
                                 section_id=str(i + 1),
                                 classification=doc_type,
-                                confidence=1.0,
+                                confidence=segment_confidences.get(i),
                                 page_ids=page_ids,
                             )
                         )

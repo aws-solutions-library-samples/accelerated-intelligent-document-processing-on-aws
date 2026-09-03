@@ -82,6 +82,64 @@ conditionally on the value it sampled.
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
 in flight and the Step Functions widget shows nothing starting is the leak.
 
+### Stale Output Purge on Re-upload
+
+OCR has a retry-safe recovery path: on a Step Functions retry the document is
+reloaded with `pages={}`, so before re-OCRing it scans
+`s3://<OutputBucket>/<key>/pages/` and reuses any page that already has all four
+of its files (`rawText.json`, `result.json`, `textConfidence.json`, `image.*`).
+That is what makes a throttled OCR retry cheap — and it is also why uploading a
+**different** document under an **existing** filename used to produce the
+previous document's extraction ([#719](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/719)).
+Two paths now purge before processing: the queue sender removes `<key>/pages/`
+on every upload event, and the **Reprocess** action removes everything under
+`<key>/` except `<key>/runs/` (matching its "start over" intent).
+
+This failure is quiet in the same way the concurrency leak is: if the purge only
+partly succeeds, the document processes, reports success, and silently carries
+text from the old document — recovery needs just **one** surviving complete page
+to skip OCR for it. Processing deliberately continues on a purge failure (a
+possibly-stale extraction beats a dropped upload or a refused reprocess), so the
+signal has to come from a metric rather than the document's own status.
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`StaleOutputPurgeFailed`** — published (value `1`) whenever a purge raises.
+  Both the ingest path and the reprocess path publish it, with no dimensions and
+  into the **root** stack's namespace, so one metric and one alarm cover both.
+  Published only on failure, so no data means every purge succeeded.
+
+One alarm publishes to `AlertsTopic`:
+
+- **`StaleOutputPurgeFailedAlarm`** — any occurrence within 5 minutes. Unlike
+  concurrency drift there is no self-healing path: the stale pages sit in S3
+  until someone removes them, and every later upload of that key inherits the
+  same wrong results — so this alarms on the **first** failure rather than on a
+  sustained trend.
+
+Two dashboard widgets are paired on the main dashboard: **Stale Output Purge
+Failures** (the count across both paths) and **Stale Output Purge Failures —
+affected keys** (a Logs Insights table over the Queue Sender log group).
+
+**Recovering:** identify the affected keys, then delete
+`s3://<OutputBucket>/<key>/pages/` and re-upload or reprocess the document.
+The log widget covers the ingest path; for the reprocess path, query the
+`ReprocessDocumentResolverFunction` log group (in the API-resolvers nested
+stack) instead. The two paths log different messages:
+
+| Path | Log group | Message |
+|---|---|---|
+| Upload / re-upload | `QueueSender` | `Failed to purge previous output data for <key>` |
+| Reprocess action | `ReprocessDocumentResolverFunction` | `Failed to delete previous output data for <key>` |
+
+The most common cause is a KMS or bucket-policy change that denies
+`s3:DeleteObject` to the purging role — check that before assuming a transient
+S3 error.
+
+**Note:** because the purge runs on every upload, a re-upload of a
+byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
+scratch.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:
@@ -116,9 +174,69 @@ Each pattern includes additional monitoring tailored to its specific workflow:
 - UDOP model latency and throughput
 - GPU utilization metrics
 
+## Alarms the Stack Creates
+
+Subscribe an email address or a chat webhook to the alarm's SNS topic to receive
+these — the alarms exist whether or not anything is subscribed, so a stack with
+no subscription raises alarms that nobody sees.
+
+All of them set `TreatMissingData: notBreaching`, so an idle stack reads `OK`
+rather than `INSUFFICIENT_DATA`. That is deliberate: for these signals "no
+documents processed" genuinely means "no failures", and leaving alarms parked in
+`INSUFFICIENT_DATA` makes a **broken** alarm indistinguishable from a quiet one
+(see the `WorkflowErrorsAlarm` note below).
+
+| Alarm | Fires when | Topic | Tuned by |
+|---|---|---|---|
+| `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
+| `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
+| `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
+| `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
+| `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
+| `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
+
+`AlertsTopic` carries the display name **Workflow Alerts**.
+`BedrockServiceOutageAlarm` is created only when the circuit breaker is enabled
+and reports to its own topic, since it drives automated back-off rather than
+human attention.
+
+### `WorkflowErrorsAlarm` — the primary failure signal
+
+`ErrorThreshold` defaults to `1`, so this is an **alert on any failed
+execution** rather than on a rate. That matches document processing, where each
+failed execution is a document that did not get processed; a percentage
+threshold would stay silent on a low-volume day when everything failed. Raise
+`ErrorThreshold` if you routinely submit documents you expect to fail (malformed
+uploads, for instance) and only want to hear about clusters.
+
+Note that this counts *failed executions*. A document that fails in a way the
+state machine catches and handles finishes as a **successful** execution, so it
+does not appear here — use the **Processing Issues** column in the Web UI and the
+Processing Report for those. `ExecutionsTimedOut` and `ExecutionsAborted` are
+also separate metrics and are not covered by this alarm.
+
+> ⚠️ **Before release 0.6.7 this alarm never fired.** It was defined against
+> `ExecutionsFailedCount`, which is not a metric Step Functions publishes, so it
+> received no datapoints and stayed in `INSUFFICIENT_DATA` through real failures
+> ([#746](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/746)).
+> If you upgrade a stack that has been failing silently, expect notifications to
+> start arriving immediately — that is the fix working, not a new problem.
+
+### `SlowExecutionsAlarm` — check the threshold against your documents
+
+This compares the **average** execution time over 5 minutes against
+`ExecutionTimeThresholdMs`. The 300-second default suits small documents; large
+packets, agentic extraction, and summarization all routinely exceed it, so a
+deployment that processes those should raise the parameter or the alarm will
+report normal operation as a problem. Because it is an average, one slow document
+in a busy 5-minute window will not trip it — this is a "the whole pipeline is
+slow" signal, not a per-document one.
+
 ## Setting Up Alerts
 
-You can configure CloudWatch alarms for critical metrics:
+Beyond the built-in alarms you can add your own for metrics specific to your
+deployment:
 
 1. **Error Rate Thresholds**: Alert when error rates exceed acceptable levels
 2. **Processing Time Anomalies**: Detect unusual latency spikes

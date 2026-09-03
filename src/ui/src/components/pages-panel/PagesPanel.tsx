@@ -14,11 +14,13 @@ import {
   Modal,
   Alert,
 } from '@cloudscape-design/components';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
@@ -31,6 +33,12 @@ const logger = new ConsoleLogger('PagesPanel');
 interface PageItem {
   Id: string;
   Class?: string | null;
+  /** Confidence in Class (0-1). Absent/null = not scored — see ClassConfidence. */
+  ClassConfidence?: number | null;
+  /** The model's stated evidence for Class, when the prompt asked for one. */
+  ClassReason?: string | null;
+  /** Ranked alternatives from classification.confidence.mode: topk. */
+  ClassCandidates?: ({ Class?: string | null; Probability?: number | null } | null)[] | null;
   ImageUri?: string;
   TextUri?: string;
   TextConfidenceUri?: string;
@@ -166,6 +174,21 @@ const createViewColumnDefinitions = (
     isResizable: true,
   },
   {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
+    isResizable: true,
+  },
+  {
     id: 'thumbnail',
     header: 'Thumbnail',
     cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
@@ -205,6 +228,21 @@ const createEditColumnDefinitions = (
     cell: (item: PageItem) => <EditableClassCell item={item} onResetClass={onResetClass} classificationIndex={classificationIndex} />,
     minWidth: 250,
     width: 250,
+    isResizable: true,
+  },
+  {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
     isResizable: true,
   },
   {
@@ -500,6 +538,14 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
 
   const tableItems = isEditMode ? editedPages : pages || [];
 
+  // Sorting via the design system's own collection hook rather than a hand-rolled
+  // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
+  // the direction, so every column that declares a sort works. Starts unsorted,
+  // so the default view keeps its existing order. `sortedItems` feeds the table
+  // ONLY — `tableItems` still feeds everything else, which must stay in document
+  // order however the table is sorted.
+  const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
+
   return (
     <SpaceBetween size="l">
       <Container
@@ -537,8 +583,8 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
       >
         <Table
           columnDefinitions={columnDefinitions}
-          items={tableItems}
-          sortingDisabled
+          items={sortedItems}
+          {...collectionProps}
           variant="embedded"
           resizableColumns
           stickyHeader

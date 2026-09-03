@@ -842,11 +842,29 @@ To satisfy both, create **two base path mappings to the same `api` stage**:
 | Base path | Serves |
 |---|---|
 | *(empty)* | the app shell at `https://idp.example.gov/` — the OAuth redirect target |
-| `api` | the SPA assets at `https://idp.example.gov/api/...` |
+| `api` | the SPA assets at `https://idp.example.gov/api/...` **and the data transport** `POST /api/op/{field}` |
 
-`VITE_API_BASE_URL` points at the raw execute-api `/api` URL, so backend data operations
-(`POST /op/{field}`) are unaffected by the custom domain — the vanity domain only serves the UI
-shell + assets and anchors the OAuth origin.
+> The `api` mapping is **load-bearing for data operations**, not only for assets: the bundle's
+> API base is `https://idp.example.gov/api` (see below). A deployment that maps only the root
+> will load the SPA and then 404 every `/op/{field}` call. Verify both mappings with
+> `aws apigateway get-base-path-mappings --domain-name <host>` — you should see one entry with
+> `basePath: "(none)"` and one with `basePath: "api"`, both on stage `api`.
+
+`VITE_API_BASE_URL` is built as **`https://idp.example.gov/api`** whenever `CustomDomainUrl` is
+set under APIGateway hosting, so backend data operations (`POST /op/{field}`) travel to the same
+origin the browser is on and resolve through the `api` base-path mapping. This is required, not
+cosmetic: the raw `<api-id>.execute-api.<region>.amazonaws.com` hostname usually does **not**
+resolve for a client outside the VPC that owns the execute-api endpoint, so a bundle pinned to
+it loads the SPA shell from the vanity domain and then fails every data call — Test Studio's
+`getTestSets`, document lists, everything — while looking like a backend outage.
+
+Consequence: once `CustomDomainUrl` is set, **access the app via the vanity domain only**. The
+raw execute-api URL will serve the shell but its data calls now target the vanity host (which
+is the intended single-origin model — the same conclusion the troubleshooting table below
+already reaches for OAuth).
+
+Under **CloudFront** hosting the API base stays the execute-api URL: the distribution has one S3
+origin and no `/api` behaviour, so a custom domain in front of it cannot route to the API.
 
 > **Validate in a non-production deployment first.** Confirm the full login round-trip *and*
 > that the SPA loads and routes correctly through the vanity domain before requesting any
@@ -960,6 +978,8 @@ VPC that hosts the private API; the Route 53 private-hosted-zone A-alias avoids 
 | **Custom domain: shell loads at root but assets 404 under `/api/`** | The **`api`** base path mapping is missing. Add it (in addition to the empty mapping) so `https://<host>/api/...` resolves the SPA assets. |
 | **Custom domain: OAuth returns to root but raw execute-api `/api/` URL now fails** | Expected once `CustomDomainUrl` is set — the SPA uses `window.location.origin` (root), which the raw execute-api host has no `/api/` for. Access the app via the vanity domain only. |
 | **Custom domain doesn't resolve inside the VPC** | A plain CNAME plus `PrivateDnsEnabled: true` on the execute-api endpoint can fail to resolve within the endpoint's VPC. Use a Route 53 **private hosted zone** with an **A-alias** to the VPCE DNS name instead. |
+| **Test Studio: `POST .../op/getTestSets 504` (empty body), other pages fine** | A resolver's own S3 calls were aimed at the S3 **interface VPC endpoint** hostname from a Lambda that is not VPC-attached, so they hang on unroutable private addresses until API Gateway abandons the integration at 29s. Fixed in the accelerator by splitting the presign client (keeps `S3_ENDPOINT_URL`) from the data-plane client (never uses it) in `test_set_resolver` and `upload_resolver`. If you see it on an older build, confirm with `aws lambda get-function-configuration --function-name <stack>-…TestSetResolver… --query '{s3:Environment.Variables.S3_ENDPOINT_URL, vpc:VpcConfig.SubnetIds}'` — an endpoint set with no subnets is the signature — and check the resolver log group for `Task timed out` with no `Returning N test sets` line. Since the same release the dispatcher answers this class of failure with a 504 that *names* the field instead of a bodiless one. |
+| **A data operation returns 504 `{"errorType":"Timeout"}`** | The named field took longer than the 29s REST API integration ceiling. That ceiling is not raisable without an account quota increase, so the operation needs to become a start/poll pair rather than a longer timeout. Check the named resolver's log group for what it was waiting on. |
 
 ---
 
@@ -967,7 +987,8 @@ VPC that hosts the private API; the Route 53 private-hosted-zone A-alias avoids 
 
 - [ ] Stack status `CREATE_COMPLETE`
 - [ ] `ApplicationWebURL` output is the execute-api `/api/` URL and loads the UI from inside the VPC
-- [ ] (Mode B only) `S3_ENDPOINT_URL` env on `UploadResolverFunction` is `https://bucket.vpce-<id>-<random>.s3.<region>.vpce.amazonaws.com`
+- [ ] (Mode B only) `S3_ENDPOINT_URL` env on `UploadResolverFunction` is `https://bucket.vpce-<id>-<random>.s3.<region>.vpce.amazonaws.com` — it is consumed **only** for presigned URLs handed to the browser; the resolvers' own S3 calls deliberately use the regular S3 endpoint (see the 504 row above)
+- [ ] (Custom domain only) the built bundle's API base is the vanity domain: `grep -o 'https://[^"]*/api' index-*.js` in `WebUIBucket` shows `https://<your-host>/api`, not the execute-api host
 - [ ] Lambda subnet route table has no `0.0.0.0/0` route (fully air-gapped) — or the expected NAT route for Mode A uploads
 - [ ] Browser DevTools → request to the `/api/` origin succeeds (execute-api endpoint id in `x-amzn-vpce-id`)
 - [ ] Login succeeds and live document status updates appear
