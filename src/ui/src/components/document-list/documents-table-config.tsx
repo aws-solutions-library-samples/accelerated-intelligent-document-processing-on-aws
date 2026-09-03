@@ -367,7 +367,24 @@ export const DocumentsPreferences = ({
 
 // number of shards per day used by the list documents API
 export const DOCUMENT_LIST_SHARDS_PER_DAY = 6;
+
+/**
+ * `periodsToLoad` sentinel for the Latest option: fetch the newest documents with
+ * no date bounds at all, rather than everything inside a window.
+ *
+ * A sentinel in the same value the other options set keeps one code path for
+ * persistence, the dropdown's display text, and the reload-on-change effect. It is
+ * negative so it cannot collide with a real shard count — but note
+ * `getInitialPeriodsToLoad` in GenAIIDPLayout takes `Math.abs` of the stored value,
+ * so it has to be recognised there before that runs.
+ */
+export const LATEST_PERIODS = -2;
+
 const TIME_PERIOD_DROPDOWN_CONFIG: Record<string, TimePeriodConfig> = {
+  // First, because "the most recent work" is the most common intent and the
+  // window options cannot express it: before this, a list with nothing in the last
+  // 30 days was empty with no option left to widen to.
+  'load-latest': { count: LATEST_PERIODS, text: 'Latest' },
   'refresh-2h': { count: 0.5, text: '2 hrs' },
   'refresh-4h': { count: 1, text: '4 hrs' },
   'refresh-8h': { count: DOCUMENT_LIST_SHARDS_PER_DAY / 3, text: '8 hrs' },

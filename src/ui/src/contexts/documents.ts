@@ -27,6 +27,8 @@ export interface DocumentsContextValue {
   /** Which submission partition the list is showing (production vs Test Studio). */
   documentView: DocumentView;
   setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
+  /** The Latest load stopped with more documents available beyond what was fetched. */
+  latestTruncated: boolean;
   toolsOpen: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
   reprocessDocuments: (objectKeys: string[], version?: string, revision?: number) => Promise<unknown>;

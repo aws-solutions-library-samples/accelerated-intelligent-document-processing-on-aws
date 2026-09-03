@@ -34,7 +34,7 @@ import CapacityPlanningLayout from '../capacity-planning/CapacityPlanningLayout'
 import CustomModelsLayout from '../custom-models/CustomModelsLayout';
 import { FinetuningJobDetail } from '../custom-models';
 
-import { DOCUMENT_LIST_SHARDS_PER_DAY, PERIODS_TO_LOAD_STORAGE_KEY } from '../document-list/documents-table-config';
+import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS, PERIODS_TO_LOAD_STORAGE_KEY } from '../document-list/documents-table-config';
 
 const logger = new ConsoleLogger('GenAIIDPLayout');
 
@@ -55,7 +55,13 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
     // default to 2 hours - half of one (4hr) shard period
     let periods = 0.5;
     try {
-      const periodsFromStorage = Math.abs(JSON.parse(localStorage.getItem(PERIODS_TO_LOAD_STORAGE_KEY) ?? '0'));
+      const stored = JSON.parse(localStorage.getItem(PERIODS_TO_LOAD_STORAGE_KEY) ?? '0');
+      // Checked before the Math.abs below, which would otherwise turn the negative
+      // Latest sentinel into a plausible-looking shard count (2 periods / 8 hours).
+      if (stored === LATEST_PERIODS) {
+        return LATEST_PERIODS;
+      }
+      const periodsFromStorage = Math.abs(stored);
       // prettier-ignore
       if (
         !Number.isFinite(periodsFromStorage)
@@ -87,6 +93,7 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
     setCustomDateRange,
     documentView,
     setDocumentView,
+    latestTruncated,
     deleteDocuments,
     reprocessDocuments,
     abortWorkflows,
@@ -107,6 +114,7 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
     setCustomDateRange,
     documentView,
     setDocumentView,
+    latestTruncated,
     toolsOpen,
     deleteDocuments,
     reprocessDocuments,

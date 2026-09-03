@@ -35,7 +35,10 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 
 ## Document List
 
-The default page lists processed documents for a time period chosen with **Load** (2 hours through 30 days, or a custom range).
+The default page lists processed documents, over a scope chosen with the **Load** menu:
+
+- **Latest** — the most recent documents regardless of age. Use this when you want your last run rather than a particular window; it is also the cheapest option, since a time period loads *every* document in its range while Latest stops after the newest 200. Capped at 200 documents: when more exist beyond those loaded, the header counter reads `(200+)` instead of `(200)`.
+- **A time window** — 2 hours through 30 days, or **Custom range…** for explicit start and end dates.
 
 ### Production vs Test Studio documents
 

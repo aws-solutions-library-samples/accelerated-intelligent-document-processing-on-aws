@@ -5,12 +5,15 @@ import { describe, expect, it } from 'vitest';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
 import {
   COLUMN_DEFINITIONS_MAIN,
+  DOCUMENT_LIST_SHARDS_PER_DAY,
   KEY_COLUMN_ID,
+  LATEST_PERIODS,
   TEST_RUN_COLUMN_ID,
   buildDownloadMenuItems,
   testRunIdFromObjectKey,
   type MappedDocument,
 } from '../documents-table-config';
+import { resolveDateRange } from '../../../hooks/use-graphql-api';
 
 const row = (overrides: Partial<MappedDocument> = {}): MappedDocument =>
   ({
@@ -137,5 +140,31 @@ describe('COLUMN_DEFINITIONS_MAIN', () => {
 
   it('changes nothing else about the production columns', () => {
     expect(ids('TEST').filter((id) => id !== TEST_RUN_COLUMN_ID)).toEqual(ids('PRODUCTION'));
+  });
+});
+
+describe('resolveDateRange', () => {
+  it('returns no bounds for Latest, so the query runs newest-first over the whole partition', () => {
+    expect(resolveDateRange(LATEST_PERIODS, null)).toBeNull();
+  });
+
+  it('converts a shard count into a window ending now', () => {
+    const range = resolveDateRange(DOCUMENT_LIST_SHARDS_PER_DAY, null);
+    expect(range).not.toBeNull();
+    const hours = (Date.parse(range!.endDateTime) - Date.parse(range!.startDateTime)) / 3_600_000;
+    expect(hours).toBeCloseTo(24, 3);
+  });
+
+  it('never produces a start after the end — the Latest sentinel is negative, and would if treated as a period', () => {
+    for (const periods of [0.5, 1, DOCUMENT_LIST_SHARDS_PER_DAY * 30]) {
+      const range = resolveDateRange(periods, null);
+      expect(Date.parse(range!.startDateTime)).toBeLessThan(Date.parse(range!.endDateTime));
+    }
+  });
+
+  it('lets a custom range win over both, matching the dropdown clearing one for the other', () => {
+    const custom = { startDateTime: '2026-01-01T00:00:00.000Z', endDateTime: '2026-01-02T00:00:00.000Z' };
+    expect(resolveDateRange(DOCUMENT_LIST_SHARDS_PER_DAY, custom)).toBe(custom);
+    expect(resolveDateRange(LATEST_PERIODS, custom)).toBe(custom);
   });
 });

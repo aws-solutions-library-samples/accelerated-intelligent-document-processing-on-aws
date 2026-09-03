@@ -15,13 +15,34 @@ import {
   reprocessDocument,
   abortWorkflow,
 } from '../graphql/generated';
-import { DOCUMENT_LIST_SHARDS_PER_DAY } from '../components/document-list/documents-table-config';
+import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../components/document-list/documents-table-config';
 import { Document } from '../types/documents';
 
 // Under the HTTP API transport there are no GraphQL subscriptions; the document
 // list is kept fresh by polling instead. AppSync deployments keep using
 // subscriptions (real-time) unchanged.
 const DOCUMENT_LIST_POLL_INTERVAL_MS = 5000;
+
+/** Rows per listDocuments request (the resolver's MAX_PAGE_SIZE). */
+const PAGE_SIZE = 200;
+
+/**
+ * How many documents the Latest option aims to load, and the hard ceiling on
+ * requests it will spend getting there.
+ *
+ * Latest is unbounded in time, so it needs a stop condition that the windowed
+ * options get for free. Counting *delivered* rows rather than requests is the
+ * important part: the resolver applies the reviewer RBAC FilterExpression and the
+ * config-version scope filter AFTER DynamoDB's Limit, so a page of 200 can arrive
+ * with 3 rows in it. Stopping after a fixed number of pages would silently hand a
+ * scoped user a near-empty list and call it "the latest 200".
+ *
+ * The page ceiling then bounds the pathological case — a caller whose scope
+ * matches almost nothing would otherwise walk the whole partition looking for 200
+ * survivors. When it bites, the list says so rather than implying completeness.
+ */
+const LATEST_TARGET_COUNT = 200;
+const LATEST_MAX_PAGES = 10;
 
 const client = generateClient();
 
@@ -59,6 +80,7 @@ interface UseGraphQlApiReturn {
   setCustomDateRange: React.Dispatch<React.SetStateAction<DateRange | null>>;
   documentView: DocumentView;
   setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
+  latestTruncated: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
   reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
@@ -87,6 +109,21 @@ const getDateRangeForPeriod = (periodsToLoad: number): DateRange => {
   };
 };
 
+/**
+ * The range to query, or null for Latest — which means *no* date bounds. The GSI is
+ * keyed (ItemType, InitialEventTime) and queried newest-first, so an unbounded
+ * query returns the most recent documents regardless of age; the resolver already
+ * handles absent start/end times.
+ *
+ * A custom range always wins, matching how the dropdown clears one when the other
+ * is chosen.
+ */
+export const resolveDateRange = (periodsToLoad: number, customDateRange: DateRange | null): DateRange | null => {
+  if (customDateRange) return customDateRange;
+  if (periodsToLoad === LATEST_PERIODS) return null;
+  return getDateRangeForPeriod(periodsToLoad);
+};
+
 const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2 }: UseGraphQlApiParams = {}): UseGraphQlApiReturn => {
   const [periodsToLoad, setPeriodsToLoad] = useState<number>(initialPeriodsToLoad);
   const [isDocumentsListLoading, setIsDocumentsListLoading] = useState<boolean>(false);
@@ -97,6 +134,8 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   // returns days later, sees none of their uploads, and concludes documents were
   // lost. Every mount starts on the production list.
   const [documentView, setDocumentView] = useState<DocumentView>('PRODUCTION');
+  /** Latest stopped with pages remaining, so the list is a prefix of the partition. */
+  const [latestTruncated, setLatestTruncated] = useState<boolean>(false);
   const { setErrorMessage } = useAppContext();
 
   // Ref to track customDateRange in subscription callbacks (closures capture stale state)
@@ -220,30 +259,38 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   const hasListBeenRequestedRef = useRef<boolean>(false);
 
   /**
-   * Fetch documents for a date range using the GSI-based listDocuments query.
-   * Drains every page in the range; the GSI query returns document list fields
-   * directly (no getDocument calls needed).
+   * Fetch documents using the GSI-based listDocuments query. A date range drains
+   * every page inside it; `null` means Latest, which is unbounded in time and stops
+   * once LATEST_TARGET_COUNT rows have been delivered (or LATEST_MAX_PAGES spent).
+   * The GSI query returns document list fields directly (no getDocument calls).
    *
    * `view` selects the submission partition. It is threaded as an argument rather
    * than read from state because the callers fire from a setTimeout and an
    * interval, where captured state goes stale.
    */
-  const sendSetDocumentsForDateRange = async (dateRange: DateRange, view: DocumentView): Promise<void> => {
+  const sendSetDocumentsForDateRange = async (dateRange: DateRange | null, view: DocumentView): Promise<void> => {
+    const isLatest = dateRange === null;
     try {
-      logger.info('Fetching documents via GSI', { ...dateRange, view });
+      logger.info('Fetching documents via GSI', { ...(dateRange ?? { latest: true }), view });
       let totalLoaded = 0;
+      let pagesFetched = 0;
       let currentToken: string | null = null;
 
       do {
         const variables: Record<string, unknown> = {
-          startDateTime: dateRange.startDateTime,
-          endDateTime: dateRange.endDateTime,
-          limit: 200,
+          limit: PAGE_SIZE,
           view,
         };
+        // Omitted entirely for Latest: the resolver falls back to a bare
+        // ItemType key condition, which is newest-first over the whole partition.
+        if (dateRange) {
+          variables.startDateTime = dateRange.startDateTime;
+          variables.endDateTime = dateRange.endDateTime;
+        }
         if (currentToken) {
           variables.nextToken = currentToken;
         }
+        pagesFetched += 1;
 
         const response = await client.graphql({
           query: listDocuments,
@@ -266,7 +313,27 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
         }
 
         logger.debug(`Fetched ${pageDocs.length} documents (total: ${totalLoaded}), hasMore=${!!currentToken}`);
+
+        if (isLatest && totalLoaded >= LATEST_TARGET_COUNT) {
+          logger.info(`Latest: reached ${totalLoaded} documents in ${pagesFetched} page(s)`);
+          break;
+        }
+        if (isLatest && pagesFetched >= LATEST_MAX_PAGES) {
+          // Only reachable when server-side filtering discards most of each page,
+          // since LATEST_MAX_PAGES * PAGE_SIZE is well above the target otherwise.
+          logger.warn(
+            `Latest: stopped at ${totalLoaded} documents after the ${LATEST_MAX_PAGES}-page ceiling. ` +
+              'Server-side filtering (reviewer scope or config-version scope) is discarding most rows.',
+          );
+          break;
+        }
       } while (currentToken);
+
+      // "More exist than were loaded" — true whichever stop condition fired, and
+      // shown in the header counter as "N+" so a capped list never reads as
+      // complete. Always assigned, so the marker clears when the user switches to a
+      // windowed period or a later run comes back short of the cap.
+      setLatestTruncated(isLatest && !!currentToken);
 
       logger.info(`Total documents loaded: ${totalLoaded}`);
       setIsDocumentsListLoading(false);
@@ -293,8 +360,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
         // merges and keeps rows the response did not mention, so without clearing
         // first, switching away from TEST would leave its documents in the list.
         setDocuments([]);
-        const dateRange = customDateRange || getDateRangeForPeriod(periodsToLoad);
-        sendSetDocumentsForDateRange(dateRange, documentViewRef.current);
+        sendSetDocumentsForDateRange(resolveDateRange(periodsToLoad, customDateRange), documentViewRef.current);
       }, 1);
     }
   }, [isDocumentsListLoading]);
@@ -331,8 +397,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
   // usePolling hook pauses while the tab is hidden.
   const pollDocuments = useCallback(() => {
     if (!hasListBeenRequestedRef.current) return;
-    const dateRange = customDateRangeRef.current || getDateRangeForPeriod(periodsToLoad);
-    void sendSetDocumentsForDateRange(dateRange, documentViewRef.current);
+    void sendSetDocumentsForDateRange(resolveDateRange(periodsToLoad, customDateRangeRef.current), documentViewRef.current);
   }, [periodsToLoad]);
 
   usePolling(pollDocuments, {
@@ -406,6 +471,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2
     setCustomDateRange,
     documentView,
     setDocumentView,
+    latestTruncated,
     deleteDocuments,
     reprocessDocuments,
     abortWorkflows,

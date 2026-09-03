@@ -115,6 +115,7 @@ const DocumentList = (): React.JSX.Element => {
     setCustomDateRange,
     documentView,
     setDocumentView,
+    latestTruncated,
     getDocumentDetailsFromIds,
     deleteDocuments,
     reprocessDocuments,
@@ -502,6 +503,13 @@ const DocumentList = (): React.JSX.Element => {
             documents={documents}
             selectedItems={collectionProps.selectedItems}
             totalItems={filteredDocumentList}
+            // Latest is capped, so on a capped load the plain "(N)" would read as
+            // the whole partition. "(N+)" says the list is a prefix of it. Only
+            // overridden when nothing is selected — the "(selected/total)" form
+            // carries more useful information than the marker does.
+            counter={
+              latestTruncated && (collectionProps.selectedItems ?? []).length === 0 ? `(${filteredDocumentList.length}+)` : undefined
+            }
             updateTools={() => setToolsOpen(true)}
             loading={isDocumentsListLoading}
             setIsLoading={setIsDocumentsListLoading}
