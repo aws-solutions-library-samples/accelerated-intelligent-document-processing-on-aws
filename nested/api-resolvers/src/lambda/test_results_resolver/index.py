@@ -1400,18 +1400,37 @@ def _build_config_comparison(configs):
     return differences
 
 
-def _execute_athena_query(query, database):
-    """Execute Athena query and return results"""
+def _execute_athena_query(query, database, reuse_max_age_minutes: int = 60):
+    """Execute Athena query and return results.
+
+    ``reuse_max_age_minutes`` opts into Athena's per-query result cache
+    (``ResultReuseByAgeConfiguration``). Every query in this resolver is
+    scoped by ``document_id LIKE '<test_run_id>/%'`` — a test run's rows
+    are written before the run completes and never mutated afterwards, so
+    a completed run's result set is immutable. Repeat views of the same
+    Test Studio results page therefore hit cache instead of re-scanning
+    metering. Athena's `primary` workgroup does not enable reuse by
+    default (see docs/reporting-sql-layer.md §2). Pass ``0`` to disable.
+    """
     try:
         # Get query result location from environment
         result_location = os.environ.get("ATHENA_OUTPUT_LOCATION")
 
+        start_kwargs = {
+            "QueryString": query,
+            "QueryExecutionContext": {"Database": database},
+            "ResultConfiguration": {"OutputLocation": result_location},
+        }
+        if reuse_max_age_minutes > 0:
+            start_kwargs["ResultReuseConfiguration"] = {
+                "ResultReuseByAgeConfiguration": {
+                    "Enabled": True,
+                    "MaxAgeInMinutes": reuse_max_age_minutes,
+                }
+            }
+
         # Start query execution
-        response = athena.start_query_execution(
-            QueryString=query,
-            QueryExecutionContext={"Database": database},
-            ResultConfiguration={"OutputLocation": result_location},
-        )
+        response = athena.start_query_execution(**start_kwargs)
 
         query_execution_id = response["QueryExecutionId"]
 

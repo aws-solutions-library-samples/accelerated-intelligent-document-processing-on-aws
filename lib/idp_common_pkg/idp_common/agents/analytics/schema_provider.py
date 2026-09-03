@@ -177,6 +177,166 @@ with a partition filter.
 """
 
 
+def get_rollup_tables_description() -> str:
+    """
+    Detailed description of the six Phase-1 reporting rollup tables.
+
+    Consumers should prefer these tables over raw `metering` for any query
+    spanning more than the current hour — they scan hundreds of rows
+    instead of millions. See `docs/reporting-sql-layer.md`.
+    """
+    return """
+## Reporting Rollup Tables (prefer over raw `metering` for wide ranges)
+
+The six Phase-1 rollup tables aggregate raw `metering` and CloudWatch
+data on a schedule. Use them for any question that spans more than the
+current hour. Raw `metering` remains the source for the current partial
+hour and per-document drilldown.
+
+### Tier picker (which table for which range)
+
+| Requested range | Cost tier | Volume tier (docs, pages) | Live tail |
+|---|---|---|---|
+| `< 2h` | raw `metering` (with `date`/`hour` filter) | raw `metering` (`MAX(number_of_pages)` per doc) | n/a |
+| `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for current hour |
+| `> 24h` | `metering_daily` | `metering_docs_daily` (see fan-out note below) | `metering_hourly` / `metering_docs_hourly` for current day |
+
+### Cost-vs-docs column split (Phase-1)
+
+Cost columns live on `metering_hourly` / `metering_daily`. Document
+volume columns (`n_docs`, `sum_pages`) live on the SEPARATE
+`metering_docs_hourly` / `metering_docs_daily` tables — grouping by
+`service_api` on the volume grain would fan `number_of_pages` out by the
+number of (service, unit) rows a doc touched.
+
+- **NEVER** `SELECT n_docs FROM metering_hourly` — column does not exist.
+- **NEVER** `SELECT sum_pages FROM metering_hourly` — column does not exist.
+- **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column does not exist.
+- **NEVER** `GROUP BY service_api` or `unit` on `metering_docs_*` — those columns don't exist.
+
+### 1. `metering_hourly`
+- **Grain**: (hour, config_version, service_api, unit)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`
+- **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
+- **Partitioned by**: `date`, `hour`
+- **Freshness**: sealed hour N is written at N+1:05 UTC.
+
+### 2. `metering_daily`
+- **Grain**: (day, config_version, service_api, unit)
+- **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`
+- ⚠️ `hour_ts` does NOT exist on this table. Query `day` instead.
+- **Partitioned by**: `date`
+- **Freshness**: sealed day D is written at D+1 00:15 UTC.
+
+### 3. `metering_docs_hourly`
+- **Grain**: (hour, config_version)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `n_docs`, `sum_pages`
+- **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the hour.
+- **Partitioned by**: `date`, `hour`
+
+### 4. `metering_docs_daily`
+- **Grain**: (day, config_version)
+- **Columns**: `day` (DATE), `config_version`, `n_docs`, `sum_pages`
+- **⚠️ `n_docs` is a doc-hours count, NOT a cross-day unique-doc count** — it's
+  `SUM(hourly n_docs)`, so a doc that appears in 3 hours during the day counts as 3.
+  For strict unique docs across days, query raw `metering` with `COUNT(DISTINCT document_id)`.
+- **Partitioned by**: `date`
+
+### 5. `control_plane_hourly`
+- **Grain**: (hour, function_name, component, bedrock_model)
+- **Columns**: `hour_ts`, `function_name`, `component`, `bedrock_model` (nullable),
+  `invocations`, `duration_ms_sum`, `athena_bytes_sum`, `bedrock_tokens_in`,
+  `bedrock_tokens_out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`
+- **Use for**: "What is IDP infrastructure costing when I'm not processing docs?"
+  Broken down by `component` (`monitor-dashboard`, `monitor-agent`, `analytics-agent`,
+  `doc-chat`, `test-runner`, `config-mgmt`, `rollup-lambda`, etc.).
+- **Partitioned by**: `date`, `hour`
+
+### 6. `data_plane_lambda_hourly`
+- **Grain**: (hour, function_name, component)
+- **Columns**: `hour_ts`, `function_name`, `component`, `invocations`,
+  `duration_ms_sum`, `est_lambda_cost`
+- **Use for**: Lambda compute cost of pipeline Lambdas (OCR/Classification/Extraction/etc.).
+  Bedrock and Textract API cost for these Lambdas is already in `metering_hourly` per doc,
+  so this table intentionally omits those to avoid double-count.
+- **Combine with `control_plane_hourly` for total Lambda compute:**
+  `SUM(est_lambda_cost)` over both tables.
+- **Partitioned by**: `date`, `hour`
+
+### Athena result reuse
+
+Sealed rollup partitions never change. Consumers can safely opt into
+Athena's result cache per query — it is OFF by default on the `primary`
+workgroup. Set `ResultReuseConfiguration.ResultReuseByAgeConfiguration`
+(e.g. `MaxAgeInMinutes=60`) on each `StartQueryExecution`. Never set it
+on queries against raw `metering` for the *current* hour — the partition
+is still being written.
+
+### Sample queries
+
+```sql
+-- Cost this week by service (fast — 7 daily rows per service)
+SELECT service_api, SUM(sum_cost) AS total_cost
+FROM metering_daily
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY service_api
+ORDER BY total_cost DESC
+
+-- Doc-hours and page-hours by config version this month.
+-- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
+-- n_docs) — a doc appearing in 3 hours of a day counts as 3. For a
+-- strict cross-day unique-doc count, query raw metering with
+-- COUNT(DISTINCT document_id) and accept the wider scan.
+SELECT config_version, SUM(n_docs) AS doc_hours, SUM(sum_pages) AS page_hours
+FROM metering_docs_daily
+WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+GROUP BY config_version
+ORDER BY doc_hours DESC
+
+-- Hour-of-day cost pattern (24h)
+SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
+FROM metering_hourly
+WHERE date >= date_format(current_date - interval '1' day, '%Y-%m-%d')
+GROUP BY hour(hour_ts)
+ORDER BY hod
+
+-- Cost 24h — must UNION metering_hourly (sealed hours) with raw metering
+-- (current partial hour). This is the tier-picker "live tail" pattern.
+WITH sealed AS (
+  SELECT SUM(sum_cost) AS cost
+  FROM metering_hourly
+  WHERE hour_ts >= date_add('hour', -24, current_timestamp)
+    AND hour_ts <  date_trunc('hour', current_timestamp)
+),
+tail AS (
+  SELECT SUM(CAST(estimated_cost AS DOUBLE)) AS cost
+  FROM metering
+  WHERE date = date_format(current_date, '%Y-%m-%d')
+    AND hour = date_format(CAST(current_timestamp AS timestamp), '%H')
+)
+SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
+
+-- Control-plane cost by component last week
+SELECT component,
+       SUM(est_lambda_cost + est_athena_cost + est_bedrock_cost) AS total_cost
+FROM control_plane_hourly
+WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY component
+ORDER BY total_cost DESC
+
+-- Total Lambda compute (data plane + control plane) last 7 days
+SELECT SUM(est_lambda_cost) AS lambda_cost
+FROM (
+  SELECT est_lambda_cost FROM control_plane_hourly
+  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+  UNION ALL
+  SELECT est_lambda_cost FROM data_plane_lambda_hourly
+  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+)
+```
+"""
+
+
 def get_evaluation_tables_description() -> str:
     """
     Get comprehensive description of the evaluation tables.
@@ -834,6 +994,17 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
 
         if table_name == "metering":
             detailed_info += get_metering_table_description()
+            detailed_info += "\n---\n\n"
+
+        elif table_name in {
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        }:
+            detailed_info += get_rollup_tables_description()
             detailed_info += "\n---\n\n"
 
         elif table_name.startswith("document_evaluations") or table_name in [

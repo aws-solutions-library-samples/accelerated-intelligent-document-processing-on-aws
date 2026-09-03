@@ -15,6 +15,8 @@ import pytest
 from idp_common.agents.analytics.schema_provider import (
     get_database_overview,
     get_metering_table_description,
+    get_rollup_tables_description,
+    get_table_info,
 )
 
 
@@ -210,6 +212,66 @@ class TestDatabaseOverviewMirrorsDetail:
             "overview block must explicitly mention hour_ts (and disclaim "
             "it for the daily table) — otherwise the LLM emits "
             "SELECT hour_ts FROM metering_daily → COLUMN_NOT_FOUND"
+        )
+
+    def test_get_table_info_routes_rollup_names(self):
+        """Phase-2 regression pin: when the LLM asks for a rollup table
+        by name (``metering_hourly``, ``metering_docs_daily``,
+        ``control_plane_hourly``, etc.) the second-step disclosure must
+        return the detailed rollup description, NOT the ``Unknown
+        Table`` error the pre-Phase-2 code returned. Without this the
+        LLM's tier-picker path silently degrades and it falls back to
+        raw ``metering``.
+        """
+        for name in (
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        ):
+            info = get_table_info([name])
+            assert "Unknown Table" not in info, (
+                f"get_table_info(['{name}']) returned 'Unknown Table' — "
+                f"the rollup name is not wired into the router."
+            )
+            # Rollup description must include the tier-picker table
+            assert "Tier picker" in info, (
+                f"get_table_info(['{name}']) missing tier-picker guidance"
+            )
+
+    def test_rollup_description_covers_all_six_tables(self):
+        """The rollup description must name each of the six Phase-1
+        tables (four metering-derived + two Lambda-cost). Missing any
+        of them means the LLM's second-step disclosure can't compare
+        the tier options.
+        """
+        desc = get_rollup_tables_description()
+        for table in (
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        ):
+            assert table in desc, f"rollup description missing table `{table}`"
+
+    def test_rollup_description_pins_cost_vs_docs_split(self):
+        """Phase-1's cost-vs-docs column split is the class of bug most
+        likely to bite the LLM: it groups by `service_api` on the
+        docs table (COLUMN_NOT_FOUND) or selects `sum_pages` on the
+        cost table (also COLUMN_NOT_FOUND). Pin the negative rules.
+        """
+        desc = get_rollup_tables_description()
+        assert "NEVER" in desc and "sum_pages FROM metering_hourly" in desc, (
+            "rollup description must explicitly forbid selecting "
+            "sum_pages from metering_hourly"
+        )
+        assert "sum_cost FROM metering_docs_hourly" in desc, (
+            "rollup description must explicitly forbid selecting "
+            "sum_cost from the docs tables"
         )
 
     def test_overview_warns_docs_tables_omit_service_api_and_unit(self, stub_config):
