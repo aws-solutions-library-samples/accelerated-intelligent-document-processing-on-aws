@@ -26,6 +26,58 @@ import { getMyProfile } from '../graphql/generated';
 
 /** Cognito groups this app understands. Keep in sync with the roles above. */
 const APP_GROUPS = ['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer'];
+
+/** The scope half of the profile — the only part this hook reads. */
+interface ProfileScope {
+  allowedConfigVersions: string[] | null;
+  allowedTestSets: string[] | null;
+}
+
+/**
+ * One in-flight `getMyProfile` per signed-in user, shared by every mounted consumer.
+ *
+ * This hook is called by the navigation, the annotation landing page, the annotation
+ * workspace, each feature page and more — all mounted at once, each previously running
+ * its own effect, so one page load issued six identical profile calls (measured on a
+ * live stack). The answer is per-user and does not change while the page is open.
+ *
+ * Keyed by user, not a bare boolean, because signing out and back in as someone else
+ * is a normal thing to do here (it is how the annotator role gets tested) and a
+ * key-less cache would hand the new session the previous user's scope — failing OPEN
+ * for the least-privileged role, which is the one this scope exists to constrain.
+ */
+let profileScopeCache: { key: string; promise: Promise<ProfileScope> } | null = null;
+
+/**
+ * Drop the cached scope. For tests, mirroring `resetSharedAuthSession` — module state
+ * otherwise leaks between cases and the second one asserts against the first's answer.
+ */
+export const resetSharedProfileScope = (): void => {
+  profileScopeCache = null;
+};
+
+const fetchProfileScopeShared = (key: string): Promise<ProfileScope> => {
+  if (profileScopeCache?.key !== key) {
+    const promise = (async (): Promise<ProfileScope> => {
+      const client = generateClient();
+      const result = await client.graphql({ query: getMyProfile });
+      const profile = result.data.getMyProfile;
+      const versions = (profile?.allowedConfigVersions ?? []).filter((v): v is string => v !== null);
+      const sets = (profile?.allowedTestSets ?? []).filter((v): v is string => v !== null);
+      return {
+        allowedConfigVersions: versions.length > 0 ? versions : null,
+        allowedTestSets: sets.length > 0 ? sets : null,
+      };
+    })().catch((err) => {
+      // Do not cache a failure: the next mount should be able to retry rather than
+      // inherit a permanent "unrestricted" default from one transient error.
+      if (profileScopeCache?.key === key) profileScopeCache = null;
+      throw err;
+    });
+    profileScopeCache = { key, promise };
+  }
+  return profileScopeCache.promise;
+};
 interface UserRoleReturn {
   groups: string[];
   isAdmin: boolean;
@@ -97,17 +149,13 @@ const useUserRole = (): UserRoleReturn => {
         // Fetch user profile for allowedConfigVersions (skip for Admin - always unrestricted)
         if (!groupsArray.includes('Admin')) {
           try {
-            const client = generateClient();
-            const result = await client.graphql({ query: getMyProfile });
-            const profile = result.data.getMyProfile;
-            if (profile?.allowedConfigVersions && profile.allowedConfigVersions.length > 0) {
-              const versions = profile.allowedConfigVersions.filter((v): v is string => v !== null);
-              setAllowedConfigVersions(versions.length > 0 ? versions : null);
-            }
-            if (profile?.allowedTestSets && profile.allowedTestSets.length > 0) {
-              const sets = profile.allowedTestSets.filter((v): v is string => v !== null);
-              setAllowedTestSets(sets.length > 0 ? sets : null);
-            }
+            // Shared across every mounted consumer of this hook — see
+            // fetchProfileScopeShared. Keyed on the token's subject so a different
+            // signed-in user never reads the previous one's scope.
+            const subject = (session?.tokens?.idToken?.payload?.sub as string | undefined) ?? 'unknown';
+            const scope = await fetchProfileScopeShared(subject);
+            if (scope.allowedConfigVersions) setAllowedConfigVersions(scope.allowedConfigVersions);
+            if (scope.allowedTestSets) setAllowedTestSets(scope.allowedTestSets);
           } catch (profileErr) {
             console.warn('Could not fetch user profile for scope:', profileErr);
             // Non-critical - default to unrestricted
