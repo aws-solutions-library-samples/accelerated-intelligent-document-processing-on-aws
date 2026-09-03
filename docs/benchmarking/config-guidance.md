@@ -459,12 +459,35 @@ presets that pin their own prompt are synced, with a guard test
 > `benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md`. Measure boundary work on
 > DocSplit-Poly-Seq, not on this corpus.
 
-### Not yet measured
+### `classification.confidence.mode` — measured; worth it depends on the classifier
 
-`classification.confidence.mode` defaults to `topk` as of v0.7, which spends output tokens
-on **every page**. Its cost is documented from first principles in
-[configuration.md](../configuration.md) but has not been benchmarked; `class_confidence` is
-now an axis, so it can be.
+Defaults to `topk` as of v0.7, spending output tokens on **every page**. Measured under
+#673 on **DocSplit-Poly-Seq** (20 documents, 298 pages per model, `topk` + an `off`
+control, stack `IDPBench066`):
+
+| model | mode | cost/page | output tok/page | class accuracy | calibration separation |
+|---|---|---|---|---|---|
+| Nova 2 Lite (default) | `topk` | $0.000901 | 198.5 | 0.846 | **0.044** |
+| Nova 2 Lite | `off` | $0.000767 | 154.1 | 0.832 | — |
+| Claude Haiku 4.5 | `topk` | $0.005728 | 352.4 | 0.852 | **0.207** |
+| Claude Haiku 4.5 | `off` | $0.004985 | 267.9 | 0.859 | — |
+
+**Cost is ~+17% of the classification step** on the default classifier, which is a small
+share of a typical bill because classification is cheap next to extraction — but it
+scales with **page count**, not section count.
+
+**The number that decides whether to pay it is the separation, and it is
+model-dependent.** On Nova 2 Lite it is **0.044**: mean confidence 0.947 when the page
+is classified correctly against 0.903 when it is wrong, with the median 0.95 in *both*
+cases — a score that can barely rank right from wrong, and one you cannot usefully
+threshold. On Haiku 4.5 the same setting yields **0.207**, which is actionable.
+
+**Guidance:** if you route classification through Nova 2 Lite and intend to *act* on the
+score — threshold it, queue pages for review — measure the separation on your own corpus
+first, because the default classifier's is near zero. If you only want the score for
+after-the-fact triage, or you classify with a stronger model, it is cheap enough to
+leave on. `mode: off` returns the previous behaviour. Full analysis:
+[classification.md](../classification.md) § Classification Confidence.
 
 ---
 
