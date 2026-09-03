@@ -569,7 +569,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    *
    * Deliberately a link rather than an in-app handoff: the alternative considered
    * was routing a question to a subject-matter expert's own queue, which assumes
-   * a customer organised that way. A URL works for anyone with Slack, and the
+   * an organisation structured that way. A URL works for anyone with a chat tool, and the
    * recipient's access is still checked on arrival — the link only navigates.
    */
   const buildFieldLink = useCallback(

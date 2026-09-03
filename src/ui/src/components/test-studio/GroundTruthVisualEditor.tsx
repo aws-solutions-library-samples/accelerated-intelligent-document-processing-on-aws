@@ -960,8 +960,8 @@ const GroundTruthVisualEditor = ({
                               label="Ask someone about this field"
                               description={
                                 <>
-                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Paste it in Slack when
-                                  you need a second opinion on a value.
+                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Share it when you need a
+                                  second opinion on a value.
                                 </>
                               }
                             >
