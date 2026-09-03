@@ -259,7 +259,7 @@ describe('PageGroupingEditor multi-select', () => {
     expect(screen.getByText(/4 pages selected/)).toBeInTheDocument();
 
     // Moving the run empties Section 2, which correctly blocks the save until the now
-    // empty section is deleted — so this is the whole merge, which is Spencer's case:
+    // empty section is deleted — so this is the whole merge, which is the motivating case:
     // one wrong split becomes one correct section in three actions rather than five.
     await movePageTo(3, '1');
     expect(screen.getByRole('button', { name: /Save grouping/i })).toBeDisabled();

@@ -198,7 +198,7 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # worked. Per-set scope is asserted in the handler below, as for the others.
     "getDraftLabelJob",
     # Correcting a wrong packet split is annotation work, exactly as correcting a wrong
-    # class is — and it is the correction Spencer's customer needs most. Per-set scope
+    # class is — and it is the correction most often needed in practice. Per-set scope
     # asserted in the dispatch below.
     "updateTestSetDocumentSections",
 )

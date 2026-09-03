@@ -3072,8 +3072,8 @@ class TestTestSetResolver:
     def test_regrouping_preserves_every_field_value(self, labeling_env):
         """The whole reason this mutation exists rather than a re-extract.
 
-        Spencer's blocker was a wrong packet split on a document carrying annotations he
-        could not lose. Re-running extraction would fix the grouping and destroy the
+        The motivating case was a wrong packet split on a document carrying
+        annotations that could not be lost. Re-running extraction would fix the grouping and destroy the
         annotations, so this writes the grouping and nothing else.
         """
         table, s3 = labeling_env

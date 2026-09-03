@@ -447,8 +447,8 @@ operations:
     args: { input: {} }
   updateTestSetDocumentSections:
     # Annotator corrects a wrong packet split in their own set — the same kind of
-    # annotation work as reextractTestSetDocument, and the correction Spencer's
-    # customer needs most. The resolver additionally enforces allowedTestSets per set,
+    # annotation work as reextractTestSetDocument, and the correction most
+    # often needed in practice. The resolver additionally enforces allowedTestSets per set,
     # and writes only the grouping and class: field values, labelSource and edit
     # history are preserved.
     groups: [Admin, Author, Annotator]

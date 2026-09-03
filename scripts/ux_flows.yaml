@@ -9,7 +9,7 @@
 #
 # Ids match the user stories in the ground-truth correction QA plan, so a finding
 # can be referenced the same way in either place. That numbering exists so
-# Spencer's customer-derived stories can be logged against the same ids rather
+# stories gathered in review can be logged against the same ids rather
 # than described free-form and reported twice in different words.
 #
 # This file is the FALLBACK and the memory — not the definition of scope. A
@@ -170,7 +170,7 @@ flows:
     ux_watch:
       - Does a refused page leave the annotator somewhere useful, or stranded?
 
-# Flows to add with Spencer, from the Exxon engagement. Listed rather than
+# Flows still to add, gathered in review. Listed rather than
 # invented so it is visible that they are known-missing rather than overlooked:
 #
 #   1.3   Creating a set from a partially-labelled folder is refused clearly.
