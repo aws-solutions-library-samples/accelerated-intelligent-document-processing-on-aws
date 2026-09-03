@@ -1,0 +1,39 @@
+{
+  "document_type": "Pay-Statement",
+  "instance_axis": "instances",
+  "expected_instance_count": 3,
+  "page_count": 4,
+  "why_this_is_a_reproducer": "Three same-class records whose boundaries fall mid-page, under a document-wide N/4 footer and an identical per-page banner. No page-level section split can separate them.",
+  "instances": [
+    {
+      "CheckNumber": "77310468",
+      "PayDate": "04/15/2026",
+      "PayPeriodStart": "04/01/2026",
+      "PayPeriodEnd": "04/15/2026",
+      "GrossEarnings": "6,250.00",
+      "TotalTaxes": "1,520.41",
+      "TotalDeductions": "625.00",
+      "NetPay": "4,104.59"
+    },
+    {
+      "CheckNumber": "77298351",
+      "PayDate": "03/31/2026",
+      "PayPeriodStart": "03/16/2026",
+      "PayPeriodEnd": "03/31/2026",
+      "GrossEarnings": "7,450.67",
+      "TotalTaxes": "1,904.56",
+      "TotalDeductions": "888.16",
+      "NetPay": "4,657.95"
+    },
+    {
+      "CheckNumber": "77284207",
+      "PayDate": "03/13/2026",
+      "PayPeriodStart": "03/01/2026",
+      "PayPeriodEnd": "03/15/2026",
+      "GrossEarnings": "27,450.49",
+      "TotalTaxes": "8,217.89",
+      "TotalDeductions": "2,745.04",
+      "NetPay": "16,487.56"
+    }
+  ]
+}
