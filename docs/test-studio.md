@@ -1186,9 +1186,9 @@ for the one difference that matters there.
 ### Asking someone about one field
 
 Some values cannot be settled by whoever is reviewing — the reviewer may not know
-what a particular reference number means on this customer's paperwork. Clicking a
+what a particular reference number means on the documents at hand. Clicking a
 field reveals **Copy link to field**, which produces a URL that opens the same
-document with that field selected and scrolled into view. Paste it into Slack or
+document with that field selected and scrolled into view. Paste it into a chat message or
 a ticket to ask for a second opinion.
 
 The link is just navigation: the recipient's access is still checked on arrival,

@@ -14,7 +14,7 @@
 #
 # This file is the FALLBACK and the memory — not the definition of scope. A
 # review normally starts from whatever the user asks for at run time ("look at
-# the annotation flow", "here are three things my customer struggled with"), and
+# the annotation flow", "here are three things users struggled with"), and
 # nothing here needs editing to review something new.
 #
 # What it holds that a runtime prompt cannot:
@@ -31,7 +31,7 @@
 #   id          Story id (see above). Stable — findings reference it.
 #   title       What the person is trying to do.
 #   persona     Which group to run as. The session helper creates this user.
-#   priority    p0 = a customer-blocking flow; p1 = important; p2 = nice.
+#   priority    p0 = a blocking flow; p1 = important; p2 = nice.
 #   setup       Preconditions the agent must establish or verify before starting.
 #   steps       What to do, in order, in the UI.
 #   expect      Functional pass criteria. Objective — these are pass/fail.

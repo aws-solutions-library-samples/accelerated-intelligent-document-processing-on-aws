@@ -9,7 +9,7 @@ already (`make test`, `api-test`, `stacktest-*`, SRT, ZAP, benchmarks) and none 
 it opens a browser, so everything below the UI can be green while a button does
 nothing or a mode is unexplained. That is not hypothetical: correcting a
 document's classification in a test set shipped broken for several versions and
-was found by a customer.
+was found in the field.
 
 **This is primarily a visual review, not an acceptance-test suite.** The
 deliverable is *feedback a designer or engineer can act on*, with functional
@@ -23,7 +23,7 @@ not load.
 
 ## Setup — one time, then never again
 
-Assumes a **disposable dev stack**. Do not point this at anything a customer
+Assumes a **disposable dev stack**. Do not point this at anything in production
 uses: the review saves edits, re-extracts documents and can reset labels.
 
 ### 1. Install the browser MCP server (once)
@@ -129,7 +129,7 @@ skip this entirely — the reviewer's own account is fine on a disposable stack.
 ## Where the use cases come from
 
 **Whatever the user asks for, first.** "Look at the annotation flow", "review the
-config editor", "here are three things my customer struggled with" — take it and
+config editor", "here are three things users struggled with" — take it and
 go. No file needs editing to review something new, and a use case someone brings
 today is worth more than one written down months ago.
 
