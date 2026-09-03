@@ -28,7 +28,6 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
-import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
@@ -112,6 +111,10 @@ const ClassCell = ({
     <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
   );
 
+  // Only rendered when the section holds more than one document, so a normal
+  // section is just its class name.
+  const instances = <MultiInstanceBadge item={item} />;
+
   if (item.Excluded) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
@@ -120,10 +123,11 @@ const ClassCell = ({
       </SpaceBetween>
     );
   }
-  if (!mismatch) return <span>{item.Class}</span>;
+  if (!mismatch && !instances) return <span>{item.Class}</span>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
       <span>{item.Class}</span>
+      {instances}
       {mismatch}
     </SpaceBetween>
   );
@@ -131,29 +135,28 @@ const ClassCell = ({
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
 
-// Instance count cell. `InstanceCount` is how many separate documents of this
-// section's Class extraction found in it:
-//   absent / 0 -> undetermined (older documents, or extraction that failed
-//                 before producing a result). Rendered as "-": it is not a
-//                 problem and must not read as "0 instances".
-//   1          -> the normal case. Rendered quietly, in secondary text.
+// Multi-instance annotation, rendered INSIDE the class cell rather than in a
+// column of its own. `InstanceCount` is how many separate documents of this
+// section's Class extraction found in it, and it is worth screen space in
+// exactly one case:
 //   > 1        -> the section holds several distinct documents that
-//                 classification did not split apart. Emphasised with a Badge
-//                 (the same Badge vocabulary ClassCell uses for "Skipped") plus
-//                 a hover Popover, following the StatusCell precedent.
+//                 classification did not split apart. A Badge (the same Badge
+//                 vocabulary the "Skipped" annotation uses) plus a hover Popover.
+//   1, 0, absent -> nothing at all. A column showed "1" on every row of a normal
+//                 document and cost width the table did not have (it wrapped its
+//                 own header to "Instanc/es" and pushed Actions off the panel).
+//                 It also distinguished "1" from "undetermined" — a diagnostic
+//                 distinction, still available on the API and in the Processing
+//                 Report, that no reader of this table was acting on.
 // The *warning* for the unflagged case is owned by the Status column (backend
-// raises a `extraction_multi_instance_detected` ProcessingIssue), so this
-// column deliberately stays factual rather than alarming — a class configured
-// for multiple instances is working as intended.
-const InstancesCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+// raises a `extraction_multi_instance_detected` ProcessingIssue), so this stays
+// factual rather than alarming — a class configured for multiple instances is
+// working as intended.
+const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element | null => {
   const count = item.InstanceCount ?? 0;
 
-  if (count <= 0) {
-    return <Box color="text-status-inactive">-</Box>;
-  }
-
-  if (count === 1) {
-    return <Box color="text-body-secondary">1</Box>;
+  if (count <= 1) {
+    return null;
   }
 
   return (
@@ -684,27 +687,6 @@ const createColumnDefinitions = (
       isResizable: true,
     },
     {
-      id: 'instances',
-      header: 'Instances',
-      cell: (item: SectionItem) => <InstancesCell item={item} />,
-      sortingField: 'InstanceCount',
-      minWidth: 110,
-      width: 110,
-      isResizable: true,
-    },
-    {
-      id: 'classConfidence',
-      header: 'Class conf.',
-      // Confidence in the section's CLASS — the minimum across its pages. A
-      // static badge, deliberately not clickable: the per-page reasoning lives
-      // in the Document Pages table, and a section aggregate has none of its own.
-      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
-      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
-      minWidth: 130,
-      width: 130,
-      isResizable: true,
-    },
-    {
       id: 'confidenceAlerts',
       header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
@@ -793,27 +775,6 @@ const createPattern1EditColumnDefinitions = (
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
       minWidth: 120,
       width: 120,
-      isResizable: true,
-    },
-    {
-      id: 'instances',
-      header: 'Instances',
-      cell: (item: SectionItem) => <InstancesCell item={item} />,
-      sortingField: 'InstanceCount',
-      minWidth: 110,
-      width: 110,
-      isResizable: true,
-    },
-    {
-      id: 'classConfidence',
-      header: 'Class conf.',
-      // Confidence in the section's CLASS — the minimum across its pages. A
-      // static badge, deliberately not clickable: the per-page reasoning lives
-      // in the Document Pages table, and a section aggregate has none of its own.
-      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
-      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
-      minWidth: 130,
-      width: 130,
       isResizable: true,
     },
     {
