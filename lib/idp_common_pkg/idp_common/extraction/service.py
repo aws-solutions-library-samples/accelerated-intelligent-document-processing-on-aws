@@ -268,7 +268,17 @@ class ExtractionService:
 
     def _get_class_schema(self, class_label: str) -> dict[str, Any]:
         """
-        Get JSON Schema for a specific document class from configuration.
+        Get the EFFECTIVE JSON Schema for a document class from configuration.
+
+        "Effective" because a class flagged ``x-aws-idp-multi-instance: true``
+        (Synthesize mode, GitHub #715) has its schema replaced by an
+        ``instances[]`` List-of-Class wrapper here, at the single point every
+        other part of this service reads the schema from. Wrapping here rather
+        than at each call site is what makes the prompt, the generated Pydantic
+        model, the JSON-Schema validator, the off-schema filter, the completeness
+        check and the instance-count resolver all inherit the transform without
+        knowing about it. The transform is a no-op (returning the same object)
+        for every unflagged class, which is all of them by default.
 
         Args:
             class_label: The document class name
@@ -276,6 +286,8 @@ class ExtractionService:
         Returns:
             JSON Schema for the class, or empty dict if not found
         """
+        from idp_common.schema.multi_instance import wrap_class_schema
+
         # Access classes through IDPConfig - returns List of dicts
         classes_config = self.config.classes
 
@@ -285,7 +297,7 @@ class ExtractionService:
                 X_AWS_IDP_DOCUMENT_TYPE, ""
             )
             if class_id.lower() == class_label.lower():
-                return class_obj
+                return wrap_class_schema(class_obj)
 
         return {}
 

@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Iterator
 from typing import Any, Callable
 
 from idp_common import utils
@@ -327,20 +328,59 @@ def reconcile_assessment_to_data(
     return assessment
 
 
+def _iter_confidence_leaves(node: Any) -> Iterator[dict[str, Any]]:
+    """Yield every confidence leaf in an assessment subtree.
+
+    A leaf is a dict carrying a ``confidence`` key. Groups (nested objects) and
+    inner lists are traversed rather than mistaken for leaves.
+    """
+    if isinstance(node, dict):
+        if "confidence" in node:
+            yield node
+            return
+        for value in node.values():
+            yield from _iter_confidence_leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_confidence_leaves(item)
+
+
 def _row_confidence_missing(row_assess: Any) -> bool:
     """True if a reconciled list-row assessment still lacks a real confidence.
 
-    A row is 'missing' when it is the null placeholder or any of its per-column
-    leaves has ``confidence is None`` — i.e. the model didn't actually score it.
-    """
-    if isinstance(row_assess, dict):
-        if "confidence" in row_assess:
-            return row_assess.get("confidence") is None
+    A row is 'missing' when it carries no confidence leaf at all (the null
+    placeholder case) or when any leaf it does carry has ``confidence is None``
+    — i.e. the model didn't actually score it.
+
+    **Recurses.** It used to look one level down only::
+
         leaves = [v for v in row_assess.values() if isinstance(v, dict)]
-        if not leaves:
-            return True
         return any(leaf.get("confidence") is None for leaf in leaves)
-    return True
+
+    which treated a NESTED GROUP inside a row as a leaf. A group has no
+    ``confidence`` key of its own, so ``leaf.get("confidence")`` was None and the
+    row was reported unscored **however well the model had scored it** — and an
+    inner list was skipped entirely by the ``isinstance(v, dict)`` filter, so a
+    row consisting only of scalars-plus-a-list could not be judged at all.
+
+    Measured live on a 3-record pay statement whose rows carry an ``Employee``
+    group and an ``Earnings`` list: every leaf came back at 0.99–1.0 confidence
+    with OCR geometry, ``truncated_calls: 0`` — and the section still reported
+    ``assessment_incomplete`` (**error**, rendering it Incomplete in the UI) for
+    all 3 rows after burning a `claude-sonnet-5:1m` escalation call that
+    recovered 0, because a stronger model reproduces the identical shape. The
+    ladder had no way out.
+
+    Pre-existing for any list-of-object attribute whose rows contain a group or
+    an inner list; multi-instance sections (#715) make every record a row, so it
+    became universal there.
+    """
+    if not isinstance(row_assess, dict):
+        return True
+    leaves = list(_iter_confidence_leaves(row_assess))
+    if not leaves:
+        return True
+    return any(leaf.get("confidence") is None for leaf in leaves)
 
 
 def _missing_row_indices(assessment_list: Any, data_list: Any) -> list[int]:

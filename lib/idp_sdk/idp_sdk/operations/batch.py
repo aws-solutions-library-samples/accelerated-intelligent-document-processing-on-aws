@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from idp_sdk._core.document_processor import _section_instances
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
     IDPConfigurationError,
@@ -1104,14 +1105,27 @@ class BatchOperation:
                     if explainability:
                         confidence = {}
 
+                        def confidence_of(val):
+                            """Mirror one explainability node's shape.
+
+                            Lists are mirrored as lists so a list attribute's
+                            per-row confidence survives instead of being dropped
+                            — including a multi-instance class (#715), whose
+                            entire result sits under one `instances` list and
+                            which would otherwise report NO confidence at all.
+                            """
+                            if isinstance(val, dict):
+                                if "confidence" in val:
+                                    return val["confidence"]
+                                return {k: confidence_of(v) for k, v in val.items()}
+                            if isinstance(val, list):
+                                return [confidence_of(v) for v in val]
+                            return None
+
                         def extract_confidences(obj, target_dict):
                             for key, val in obj.items():
-                                if isinstance(val, dict):
-                                    if "confidence" in val:
-                                        target_dict[key] = val["confidence"]
-                                    else:
-                                        target_dict[key] = {}
-                                        extract_confidences(val, target_dict[key])
+                                if isinstance(val, (dict, list)):
+                                    target_dict[key] = confidence_of(val)
 
                         for item in explainability:
                             extract_confidences(item, confidence)
@@ -1126,6 +1140,10 @@ class BatchOperation:
                 "document_id": doc_id,
                 "document_class": document_class,
                 "fields": fields,
+                # Multi-instance classes (#715) return one entry per document
+                # found in the section; None for a single-record class. Additive
+                # — `fields` still carries the raw shape.
+                "instances": _section_instances(fields),
                 "confidence": confidence,
                 "page_count": page_count,
                 "status": status,
@@ -1136,6 +1154,7 @@ class BatchOperation:
                 "document_id": doc_id,
                 "document_class": None,
                 "fields": None,
+                "instances": None,
                 "confidence": None,
                 "page_count": None,
                 "status": "ERROR",

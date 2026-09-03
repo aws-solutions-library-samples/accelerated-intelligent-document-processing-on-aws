@@ -19,10 +19,46 @@ Key features:
 - Null vs zero distinction
 """
 
-from typing import Any, Dict, Optional, Tuple
+import logging
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from idp_common.schema.multi_instance import INSTANCES_KEY
 
 from .exceptions import ExtractionError
 from .models import RuleJSON
+
+logger = logging.getLogger(__name__)
+
+# `name`, `name[0]`, `name[0][2]`, `name[-1]`. Anything else in the brackets is a
+# syntax error rather than a silent miss — a typo'd subscript that resolved to
+# None would look exactly like an absent optional parameter, which is the failure
+# mode this whole module's error handling exists to avoid.
+_SUBSCRIPT_RE = re.compile(r"^(?P<key>[^\[\]]*)(?P<subs>(?:\[-?\d+\])*)$")
+
+
+def _split_subscripts(
+    component: str, path: str, rule_id: Optional[str]
+) -> Tuple[str, List[int]]:
+    """Split ``name[0][2]`` into ``("name", [0, 2])``.
+
+    A component with no subscripts returns an empty index list, so the ordinary
+    dot-notation path is unaffected.
+    """
+    match = _SUBSCRIPT_RE.match(component)
+    if not match:
+        raise ExtractionError(
+            message=(
+                f"Invalid list subscript in path component {component!r} (in "
+                f"path {path!r}); expected name[<integer>]"
+            ),
+            operation="extract_path",
+            rule_id=rule_id,
+            data_path=path,
+        )
+    subs = match.group("subs")
+    indices = [int(value) for value in re.findall(r"\[(-?\d+)\]", subs)]
+    return match.group("key"), indices
 
 
 class DataExtractor:
@@ -161,6 +197,15 @@ class DataExtractor:
         Supports paths like:
         - "documents.tax_bill.inference_result.amount"
         - "sap_data.transaction.financial_details.purchase_price"
+        - "documents.pay_statement.inference_result.instances[0].NetPay"
+        - "documents.invoice.inference_result.instances[1].line_items[2].amount"
+
+        List subscripts (``name[i]``, and chains like ``name[0][1]``) exist so a
+        rule can address a specific element of a list — necessary for a
+        multi-instance class (GitHub #715), whose extraction result is
+        ``{"instances": [ … ]}``, and useful for any list attribute. A negative
+        index counts from the end, as in Python. An out-of-range index resolves to
+        ``None``, the same as a missing key.
 
         Uses caching to avoid redundant traversal of the same path.
 
@@ -199,6 +244,8 @@ class DataExtractor:
         for component in components:
             traversed_path.append(component)
 
+            key, indices = _split_subscripts(component, path, rule_id)
+
             # Check if current level is a dictionary
             if not isinstance(current, dict):
                 # Path goes deeper but current value is not a dict
@@ -207,18 +254,46 @@ class DataExtractor:
                 return None
 
             # Check if component exists at current level
-            if component not in current:
-                # Path component doesn't exist
-                # Provide helpful error context with available keys
-                list(current.keys()) if isinstance(current, dict) else []
-
-                # For optional parameters, return None instead of raising error
-                # The caller will handle required vs optional logic
+            if key not in current:
+                # Path component doesn't exist. Returning None (rather than
+                # raising) is deliberate — the caller decides required vs
+                # optional — but that means a path that has become WRONG looks
+                # identical to an optional parameter that is simply absent, and
+                # the rule quietly stops firing. The one case where we can
+                # confidently name the cause is a multi-instance class (#715),
+                # whose result is {"instances": [...]}: say so instead of
+                # leaving the author to wonder why the rule went silent.
+                if INSTANCES_KEY in current and key != INSTANCES_KEY:
+                    logger.warning(
+                        "Rule path '%s' looks for '%s' at '%s', which is not "
+                        "there — but that level DOES have a '%s' list, so this "
+                        "looks like a multi-instance class whose records sit one "
+                        "level down. The rule will NOT fire as written. Address "
+                        "an instance explicitly, e.g. '%s[0].%s'.",
+                        path,
+                        key,
+                        ".".join(traversed_path[:-1]) or "<root>",
+                        INSTANCES_KEY,
+                        INSTANCES_KEY,
+                        key,
+                    )
                 self._cache[cache_key] = None
                 return None
 
             # Move to next level
-            current = current[component]
+            current = current[key]
+
+            for index in indices:
+                if not isinstance(current, (list, tuple)):
+                    self._cache[cache_key] = None
+                    return None
+                try:
+                    current = current[index]
+                except IndexError:
+                    # Out of range is a miss, not an error — same contract as a
+                    # missing key, so an optional parameter still behaves.
+                    self._cache[cache_key] = None
+                    return None
 
         # Cache and return the result
         self._cache[cache_key] = current

@@ -540,6 +540,42 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     # against unexpected shapes; this one should be too.
     raw = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
     path = raw if isinstance(raw, str) else str(raw)
+    root = _first_path_segment(path)
+
+    # Multi-instance (GitHub #715): a class flagged x-aws-idp-multi-instance has
+    # its schema wrapped in a single `instances` array, so EVERY leaf's path is
+    # `instances[i].Field` and the rule above would group the entire section
+    # under one giant attribute called "instances" — the per-attribute report
+    # would lose all of its granularity precisely for the documents that have the
+    # most records in them. Step past the synthesized root so a multi-instance
+    # class reports the same per-attribute breakdown a single-record class does.
+    #
+    # Narrow on purpose: this is ONLY the wrapper's reserved key. A user's own
+    # list attribute still groups under itself, which is the intended design (a
+    # list is one attribute).
+    if root == _INSTANCES_ROOT:
+        remainder = path[len(root) :]
+        # `instances[3].Field` -> `Field`; `instances[3]` (a row-level verdict
+        # with no leaf) has nothing below it and stays on the wrapper root.
+        after_index = remainder.split("].", 1)
+        if len(after_index) == 2 and after_index[1]:
+            return _first_path_segment(after_index[1])
+        if remainder.startswith("."):
+            return _first_path_segment(remainder[1:])
+
+    return root
+
+
+# The synthesized multi-instance wrapper key. Duplicated as a literal rather than
+# imported from idp_common.schema.multi_instance to keep this module free of
+# further imports (it is the cross-Lambda contract module and is imported very
+# widely); the transform module's INSTANCES_KEY is the source of truth and a test
+# asserts the two agree.
+_INSTANCES_ROOT = "instances"
+
+
+def _first_path_segment(path: str) -> str:
+    """Everything before the first ``[`` or ``.`` in a field path."""
     idx_bracket = path.find("[")
     idx_dot = path.find(".")
     cuts = [i for i in (idx_bracket, idx_dot) if i >= 0]

@@ -213,6 +213,54 @@ class SaveReportingData:
 
         return flattened
 
+    def _multi_instance_records(
+        self, class_label: Optional[str], extraction_data: Dict[str, Any]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Instance records of a multi-instance section, or None (GitHub #715).
+
+        A class flagged ``x-aws-idp-multi-instance`` produces
+        ``inference_result = {"instances": [...]}``. Left alone, ``_flatten_json_data``
+        ``json.dumps``'s that list into a SINGLE opaque
+        ``inference_result.instances`` Athena column: N columns collapse to 1 and
+        every existing dashboard query against the class's fields returns NULL.
+
+        So a wrapped section fans out into one parquet row per instance, exactly
+        as the existing top-level-list branch already does — same column names a
+        single-record class produces, plus ``record_index``. Glue tables are
+        crawler-discovered, so there is no static column list to update.
+
+        Returns None (leave the section on the ordinary single-row path) when the
+        class is not flagged, the class is unknown, or the wrapper is absent or
+        empty. The config is the source of truth here, not the shape of the
+        output: a Designate-mode class that happens to name its own array
+        ``instances`` must keep its existing reporting shape.
+        """
+        if not class_label:
+            return None
+
+        from idp_common.config.schema_constants import (
+            ID_FIELD,
+            X_AWS_IDP_DOCUMENT_TYPE,
+        )
+        from idp_common.schema.multi_instance import (
+            is_multi_instance,
+            unwrap_instances,
+        )
+
+        flagged = False
+        for class_obj in self.config.classes or []:
+            if not isinstance(class_obj, dict):
+                continue
+            class_id = class_obj.get(ID_FIELD) or class_obj.get(X_AWS_IDP_DOCUMENT_TYPE)
+            if isinstance(class_id, str) and class_id.lower() == class_label.lower():
+                flagged = is_multi_instance(class_obj)
+                break
+        if not flagged:
+            return None
+
+        records = unwrap_instances(extraction_data.get("inference_result"))
+        return records or None
+
     def _create_dynamic_schema(self, records: List[Dict[str, Any]]) -> pa.Schema:
         """
         Create a PyArrow schema dynamically from a list of records.
@@ -1269,20 +1317,46 @@ class SaveReportingData:
 
                 # Handle different data structures
                 if isinstance(extraction_data, dict):
-                    # Flatten the JSON data
-                    flattened_data = self._flatten_json_data(extraction_data)
-
-                    # Add section metadata
-                    flattened_data["section_id"] = section.section_id
-                    flattened_data["document_id"] = document_id
-                    flattened_data["section_classification"] = section.classification
-                    flattened_data["section_confidence"] = section.confidence
-                    flattened_data["timestamp"] = timestamp
-                    flattened_data["config_version"] = (
-                        document.config_version or "default"
+                    # Multi-instance (#715): one row per instance, so the class's
+                    # fields keep their own Athena columns instead of collapsing
+                    # into a single opaque `inference_result.instances` blob.
+                    instances = self._multi_instance_records(
+                        section.classification, extraction_data
                     )
+                    if instances is not None:
+                        for i, instance in enumerate(instances):
+                            per_instance = dict(extraction_data)
+                            per_instance["inference_result"] = instance
+                            flattened_item = self._flatten_json_data(per_instance)
+                            flattened_item["section_id"] = section.section_id
+                            flattened_item["document_id"] = document_id
+                            flattened_item["section_classification"] = (
+                                section.classification
+                            )
+                            flattened_item["section_confidence"] = section.confidence
+                            flattened_item["timestamp"] = timestamp
+                            flattened_item["record_index"] = i
+                            flattened_item["config_version"] = (
+                                document.config_version or "default"
+                            )
+                            section_records.append(flattened_item)
+                    else:
+                        # Flatten the JSON data
+                        flattened_data = self._flatten_json_data(extraction_data)
 
-                    section_records.append(flattened_data)
+                        # Add section metadata
+                        flattened_data["section_id"] = section.section_id
+                        flattened_data["document_id"] = document_id
+                        flattened_data["section_classification"] = (
+                            section.classification
+                        )
+                        flattened_data["section_confidence"] = section.confidence
+                        flattened_data["timestamp"] = timestamp
+                        flattened_data["config_version"] = (
+                            document.config_version or "default"
+                        )
+
+                        section_records.append(flattened_data)
 
                 elif isinstance(extraction_data, list):
                     # Handle list of records

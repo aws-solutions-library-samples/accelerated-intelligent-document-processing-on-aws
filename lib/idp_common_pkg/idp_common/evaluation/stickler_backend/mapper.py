@@ -1082,8 +1082,18 @@ class SticklerConfigMapper:
 
         logger.info(f"Building Stickler configs for {len(classes)} document classes")
 
-        for class_schema in classes:
+        # Evaluation reads class schemas FROM CONFIG, not from the extraction
+        # output, so it must derive the multi-instance wrapper independently
+        # (GitHub #715, plan D2). Without this, a class flagged
+        # x-aws-idp-multi-instance produces a Stickler model built from the FLAT
+        # schema: the prediction's only key is `instances`, zero declared fields
+        # match, and the section SILENTLY scores 0.0. A no-op for unflagged
+        # classes.
+        from idp_common.schema.multi_instance import wrap_class_schema
+
+        for raw_class_schema in classes:
             try:
+                class_schema = wrap_class_schema(raw_class_schema)
                 doc_type = class_schema.get(X_AWS_IDP_DOCUMENT_TYPE)
                 if not doc_type:
                     logger.warning("Document class missing x-aws-idp-document-type")

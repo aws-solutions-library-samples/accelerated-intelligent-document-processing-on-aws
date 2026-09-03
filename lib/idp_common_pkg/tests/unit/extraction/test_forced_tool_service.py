@@ -156,12 +156,57 @@ class TestTheToolReachesBedrock:
         assert kwargs["tool_choice"] == {"tool": {"name": EXTRACTION_TOOL_NAME}}
 
     def test_the_tool_schema_carries_the_class_fields(self):
+        from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
         _, kwargs, _ = _run(
             _config(_SIMPLE_PROPS),
             _tool_use_response({"invoice_number": "INV-1", "total_amount": 100.0}),
         )
         schema = kwargs["tool_config"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
+        # The class's own fields, plus the multi-instance detection probe (#753).
+        # A forced tool whose input schema OMITS the probe would make the count
+        # structurally impossible to return — which is precisely the regression
+        # #753 warns about for forced tool use, so the probe must ride the
+        # toolSpec, not just the prompt.
+        assert set(schema["properties"]) == {
+            "invoice_number",
+            "total_amount",
+            INSTANCE_PROBE_FIELD,
+        }
+
+    def test_the_probe_is_absent_from_the_tool_schema_when_detection_is_off(self):
+        from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+        config = _config(_SIMPLE_PROPS)
+        config["extraction"]["multi_instance_detection"] = {"enabled": False}
+        _, kwargs, _ = _run(
+            config,
+            _tool_use_response({"invoice_number": "INV-1", "total_amount": 100.0}),
+        )
+        schema = kwargs["tool_config"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
         assert set(schema["properties"]) == {"invoice_number", "total_amount"}
+        assert INSTANCE_PROBE_FIELD not in schema["properties"]
+
+    def test_a_probe_returned_by_the_tool_never_reaches_the_inference_result(self):
+        """Off-schema for the CLASS, so it must be stripped before the
+        off-schema filter, assessment, reporting and evaluation ever see it."""
+        from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+        written, _, _ = _run(
+            _config(_SIMPLE_PROPS),
+            _tool_use_response(
+                {
+                    "invoice_number": "INV-1",
+                    "total_amount": 100.0,
+                    INSTANCE_PROBE_FIELD: 3,
+                }
+            ),
+        )
+        assert INSTANCE_PROBE_FIELD not in written["inference_result"]
+        assert written["metadata"]["instance_probe"] == 3
+        assert written["metadata"]["instance_source"] == "suspected"
+        assert written["metadata"]["instance_count"] == 3
+        assert written["metadata"]["instance_extracted_count"] == 1
 
 
 @pytest.mark.unit

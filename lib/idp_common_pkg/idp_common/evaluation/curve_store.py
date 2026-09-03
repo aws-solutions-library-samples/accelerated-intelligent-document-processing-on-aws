@@ -364,12 +364,34 @@ def _flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
             found.update(_flatten_confidences(child, path))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            # Index into the path so a table row's field stays distinct, but only
-            # for multi-element lists: explainability_info arrives wrapped in a
-            # single-element list, which must not add a path level.
-            path = prefix if len(node) == 1 else f"{prefix}[{index}]"
-            found.update(_flatten_confidences(child, path))
+            found.update(_flatten_confidences(child, _list_child_path(prefix, index)))
     return found
+
+
+def _list_child_path(prefix: str, index: int) -> str:
+    """Path for element ``index`` of a list found at ``prefix``.
+
+    The un-indexed case is ONLY the outermost list: ``explainability_info``
+    arrives wrapped in a single-element list, which must not add a path level.
+
+    This used to be ``prefix if len(node) == 1 else f"{prefix}[{index}]"`` — keyed
+    on list LENGTH rather than on depth, so any single-element list lost its
+    index. That made the key depend on the data: a one-row table produced
+    ``Transactions.date`` while a two-row table produced ``Transactions[0].date``,
+    and confidence-curve keys therefore did not join across documents. Multi-
+    instance sections (#715) make it acute — every field of a one-instance section
+    keys as ``instances.Field`` and of a two-instance section as
+    ``instances[0].Field``.
+
+    ⚠ Consequence: keys for single-element lists change shape (``F.x`` ->
+    ``F[0].x``). Curve points already stored under the old key for a
+    single-element list will not join with new ones; they were already failing to
+    join with the multi-element form, so this makes one consistent shape out of
+    two inconsistent ones rather than breaking a working join.
+    """
+    if not prefix:
+        return prefix
+    return f"{prefix}[{index}]"
 
 
 def _flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
@@ -381,8 +403,7 @@ def _flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
             found.update(_flatten_values(child, path))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            path = prefix if len(node) == 1 else f"{prefix}[{index}]"
-            found.update(_flatten_values(child, path))
+            found.update(_flatten_values(child, _list_child_path(prefix, index)))
     elif prefix:
         found[prefix] = node
     return found
