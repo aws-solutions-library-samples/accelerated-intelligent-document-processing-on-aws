@@ -17,6 +17,8 @@
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -186,6 +188,22 @@ describe('PageGroupingEditor', () => {
     for (const id of [1, 2, 3, 4]) {
       expect(screen.getByRole('button', { name: new RegExp(`^Move page ${id}\\b`) })).toBeInTheDocument();
     }
+  });
+
+  it('renders that menu outside the scrolling column it sits in', () => {
+    // Measured on the annotate surface, where the section column is a 320px
+    // `overflow: auto` box: the menu ran to 628px against a container ending at 596px,
+    // so its last item was clipped away, and it inherited the column's 118px width,
+    // wrapping all three labels onto two lines each. The keyboard route above was
+    // therefore reachable but unreadable, and "Move later" was not reachable at all.
+    //
+    // Asserted on the prop rather than on measured geometry: jsdom has no layout, so a
+    // dimension-based test here would pass whatever the markup did. Cloudscape's
+    // expandToViewport is what portals the menu out of the clipping ancestor — the same
+    // remedy the drag preview needed when it moved to a body-level overlay.
+    const source = readFileSync(join(__dirname, '..', 'PageGroupingEditor.tsx'), 'utf-8');
+    const menu = source.slice(source.indexOf('<ButtonDropdown'), source.indexOf('<ButtonDropdown') + 900);
+    expect(menu).toMatch(/expandToViewport/);
   });
 
   it('locks the class control when the caller cannot change classes', async () => {

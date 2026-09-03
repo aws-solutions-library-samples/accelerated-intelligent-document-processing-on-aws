@@ -255,6 +255,13 @@ const PageCard = ({
         <ButtonDropdown
           variant="icon"
           ariaLabel={`Move ${moving}`}
+          /* Portals the menu instead of rendering it inside the section column, which is
+             a scrolling `overflow: auto` box: the menu is taller than the column, so its
+             last item was clipped away, and it inherited the column's width, wrapping
+             every label onto two lines. Same failure as the drag preview before it moved
+             to a body-level overlay — a positioned element cannot escape a scrolling
+             ancestor by z-index alone. */
+          expandToViewport
           /* Reordering has to be reachable without a pointer: a drag-only route would put
              this section's page order — a scored field — out of reach of a keyboard or
              screen-reader user. Grouped so "earlier/later" reads as position and the
