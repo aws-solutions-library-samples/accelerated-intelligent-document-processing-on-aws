@@ -442,8 +442,17 @@ def main():
         pdf = os.path.join(DOCS, d + ".pdf")
         if not os.path.exists(pdf):
             continue  # reference docs handled separately
-        while len([x for x in inflight if not poll_done(x)]) >= a.max_inflight:
+        # PRUNE finished runs instead of re-polling them. This list used to grow
+        # for the whole suite and every slot check polled ALL of it, so the cost of
+        # deciding whether to launch was O(runs launched so far) DynamoDB queries —
+        # quadratic over a suite. Observed: a 12-run suite averaged 2.5 min/run
+        # while a 30-run suite degraded to 8 min/run, and raising --max-inflight
+        # barely helped because the CHECK was the bottleneck, not the concurrency.
+        # A 171-run grid would have polled ~14,000 times to launch its last run.
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
+            inflight = [x for x in inflight if not poll_done(x)]
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
         rec = {

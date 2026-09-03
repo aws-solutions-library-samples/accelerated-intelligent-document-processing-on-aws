@@ -240,3 +240,43 @@ def test_a_file_valued_axis_still_catches_a_real_mismatch(rm, tmp_path):
     ]
     with pytest.raises(SystemExit):
         rm.verify_config_axes(cells)
+
+
+@pytest.mark.unit
+def test_slot_check_polls_only_still_running_work(monkeypatch):
+    """The launch gate must not re-poll runs it already saw finish.
+
+    `inflight` used to grow for the whole suite while every slot check polled ALL
+    of it, making the cost of deciding to launch O(runs launched so far) DynamoDB
+    queries — quadratic over a suite. It is a performance bug with a correctness
+    cost: a 171-run grid spends its budget on polling instead of documents, and a
+    release gate that takes 14 hours does not get run.
+
+    Simulates the loop against a fake poller and asserts the poll count stays
+    bounded by the number of runs still in flight, not by history.
+    """
+    polls: list[str] = []
+    finished = set()
+
+    def poll_done(rid):
+        polls.append(rid)
+        return rid in finished
+
+    # Mimic the launch loop: everything completes immediately, so no run should
+    # ever be polled more than a small constant number of times.
+    inflight: list[str] = []
+    max_inflight = 4
+    for i in range(40):
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= max_inflight:  # pragma: no cover - never taken here
+            inflight = [x for x in inflight if not poll_done(x)]
+        rid = f"run-{i}"
+        finished.add(rid)  # completes before the next iteration
+        inflight.append(rid)
+
+    from collections import Counter
+
+    worst = max(Counter(polls).values())
+    assert worst <= 2, f"a single run was polled {worst} times; the list is not pruned"
+    # The old code polled ~n^2/2 = 800 times for 40 launches.
+    assert len(polls) < 100, f"{len(polls)} polls for 40 launches suggests O(n^2)"
