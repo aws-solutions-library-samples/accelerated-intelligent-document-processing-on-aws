@@ -25,6 +25,7 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_configs import _resolve_value as _resolve_axis_value
 from make_configs import set_path as _set_path
 
 import lib
@@ -323,8 +324,14 @@ def verify_config_axes(cells):
                 # (ocr.features becomes [{name: X}, ...]). Reusing the generator's
                 # own function means this check can never disagree with it over a
                 # shape transform — only over a real value difference.
+                # `@file:` axis values (the frozen pre-#653 prompt) name a file
+                # whose CONTENTS get written, so the index's literal
+                # "@file:foo.txt" will never equal what is on disk. Resolve it the
+                # same way make_configs does, or this check reports a mismatch on
+                # a config it generated correctly — which is exactly what it did
+                # the first time boundaryctl ran.
                 probe: dict = {}
-                _set_path(probe, dotted, want)
+                _set_path(probe, dotted, _resolve_axis_value(want))
                 want_written = _dig(probe, dotted)
                 got = _dig(cfg, dotted)
                 if str(got) != str(want_written):
@@ -435,8 +442,17 @@ def main():
         pdf = os.path.join(DOCS, d + ".pdf")
         if not os.path.exists(pdf):
             continue  # reference docs handled separately
-        while len([x for x in inflight if not poll_done(x)]) >= a.max_inflight:
+        # PRUNE finished runs instead of re-polling them. This list used to grow
+        # for the whole suite and every slot check polled ALL of it, so the cost of
+        # deciding whether to launch was O(runs launched so far) DynamoDB queries —
+        # quadratic over a suite. Observed: a 12-run suite averaged 2.5 min/run
+        # while a 30-run suite degraded to 8 min/run, and raising --max-inflight
+        # barely helped because the CHECK was the bottleneck, not the concurrency.
+        # A 171-run grid would have polled ~14,000 times to launch its last run.
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
+            inflight = [x for x in inflight if not poll_done(x)]
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
         rec = {

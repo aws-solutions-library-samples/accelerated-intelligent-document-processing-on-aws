@@ -3904,6 +3904,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 forced_tool_choice,
                 restore_extracted_fields,
                 should_force_tool,
+                unwrap_tool_payload,
             )
 
             ft_cfg = self.config.extraction.forced_tool
@@ -3943,9 +3944,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # has explicitly asked for it to be a failure.
             forced_tool_input = None
             if force:
+                # Unwrap BEFORE restoring names: the wrapper key is the model's
+                # invention and is not in the name map, while the payload inside it
+                # is keyed by the sanitized names the map knows about.
                 forced_tool_input = restore_extracted_fields(
-                    bedrock.extract_tool_use_from_response(
-                        dict(response_with_metering), tool_name=EXTRACTION_TOOL_NAME
+                    unwrap_tool_payload(
+                        bedrock.extract_tool_use_from_response(
+                            dict(response_with_metering),
+                            tool_name=EXTRACTION_TOOL_NAME,
+                        ),
+                        self._class_schema,
+                        tool_name_map,
                     ),
                     tool_name_map,
                 )
