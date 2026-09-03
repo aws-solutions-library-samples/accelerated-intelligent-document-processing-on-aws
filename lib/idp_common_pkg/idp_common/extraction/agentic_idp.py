@@ -1336,6 +1336,7 @@ def _prepare_prompt_content(
     prompt: str | Message | Image.Image,
     page_images: list[bytes] | None,
     existing_data: BaseModel | None,
+    model_id: str | None = None,
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1347,6 +1348,10 @@ def _prepare_prompt_content(
         prompt: Input content (text string, PIL Image, or Message dict)
         page_images: Optional list of page image bytes to include
         existing_data: Optional existing extraction data to update
+        model_id: Target model. Used ONLY to decide whether a trailing
+            ``cachePoint`` block may be appended — a model that does not support
+            prompt caching rejects the whole request (see below). When None the
+            cachePoint is appended, preserving the historical behavior.
 
     Returns:
         List of ContentBlock objects ready for agent invocation
@@ -1425,10 +1430,24 @@ def _prepare_prompt_content(
     prompt_content = [
         x for x in prompt_content if x.get("cachePoint", {}).get("type") != "default"
     ]
-    prompt_content += [
-        ContentBlock(text="end of your main task description"),
-        ContentBlock(cachePoint=CachePoint(type="default")),
-    ]
+    prompt_content.append(ContentBlock(text="end of your main task description"))
+
+    # Append the trailing cachePoint ONLY for a model that supports prompt
+    # caching. This is not an optimization — Bedrock rejects the ENTIRE request
+    # for a model that doesn't: "AccessDeniedException: You invoked an
+    # unsupported model or your request did not allow prompt caching". xAI Grok
+    # is such a model, so leaving this unconditional failed every document in
+    # agentic extraction (verified live on stack IDP1, 2026-09-03).
+    #
+    # `model_id is None` keeps the historical behavior for callers that don't
+    # pass it (only the tests, today).
+    if model_id is None or supports_prompt_caching(model_id):
+        prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
+    else:
+        logger.info(
+            "Omitting prompt cachePoint (model does not support prompt caching)",
+            extra={"model_id": model_id},
+        )
     return prompt_content
 
 
@@ -2003,7 +2022,10 @@ async def structured_output_async(
 
     # Prepare prompt content
     prompt_content = _prepare_prompt_content(
-        prompt=prompt, page_images=page_images, existing_data=existing_data
+        prompt=prompt,
+        page_images=page_images,
+        existing_data=existing_data,
+        model_id=model_id,
     )
 
     # Track token usage
