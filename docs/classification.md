@@ -1314,17 +1314,21 @@ be more certain than its least certain page.
 
 ### Where it shows up
 
-- **Web UI** — a **Class conf.** column in both the **Document Sections** and
-  **Document Pages** tables on the document detail page, beside `Class/Type`
-  rather than inside it. Both columns **sort**, so you can put the
-  least-confident pages first — which is how you find the ones worth a second
-  look. In **Document Pages** the percentage is a link: click it for **"Why this
+- **Web UI** — a **Class conf.** column in the **Document Pages** table on the
+  document detail page, beside `Class/Type` rather than inside it. It **sorts**,
+  so you can put the least-confident pages first — which is how you find the ones
+  worth a second look. The percentage is a link: click it for **"Why this
   class?"**, the model's own reasoning plus the ranked alternatives it considered
-  with their probabilities. In **Document Sections** it is a plain badge, because
-  a section score is an aggregate (the minimum across its pages) with no
-  reasoning of its own. An unscored page or section shows `—`, never `0%`.
-  The neighbouring **Low-conf. fields** column is a different measurement
-  entirely — per-extracted-field confidence, not the class.
+  with their probabilities. A page the model scored but did not explain shows the
+  number as plain text; an unscored page shows `—`, never `0%`.
+
+  The **Document Sections** table deliberately does not show a section's class
+  confidence. It is an aggregate (the minimum across the section's pages) of
+  numbers already listed per page in the table directly below, and two extra
+  columns squeezed that table until its own headers wrapped. `Section.Confidence`
+  is still on the API and still lands in the reporting lake as
+  `section_confidence`. The **Low-conf. fields** column there is a different
+  measurement entirely — per-extracted-field confidence, not the class.
 
   The number is deliberately shown the same way at every value. There is no
   configured classification confidence threshold (unlike extraction fields), so a
