@@ -391,25 +391,41 @@ context-window headroom, not dollars. Per-document token counts cannot measure i
 (83k/54k/115k *within* one arm), because agentic turn count is non-deterministic; the
 per-*request* saving from static analysis is the defensible figure.
 
-### `extraction.forced_tool.enabled` — leave off; it is not yet proven
+### `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
 
 Declares the class schema as a required Converse tool instead of describing it in prose.
-Two defects had to be fixed before it ran at all (both in PR #744): schema-document
-metadata that Bedrock rejects, and a wrapper key that silently discarded the entire
-extraction. The A/B below therefore measured broken code and **must be re-run**:
+Measured on a quiesced stack at Sonnet 5, 3 repeats:
 
-| arm | n | failures | completeness recall |
-|---|---|---|---|
-| `force-off` | 6 | 0 | 1.0 every run |
-| `force-on` | 6 | 0 | **0.167 mean** (0.0 three times on a 100-row list) |
+| arm | n | failures | completeness recall | cell accuracy | honored rate | cost |
+|---|---|---|---|---|---|---|
+| `force-off` | 6 | 0 | 1.0 every run | 1.0 | — | $0.259 |
+| `force-on` | 6 | 0 | **1.0 every run** | 1.0 | **1.0** | $0.226 |
 
-Every one of those runs reported `COMPLETED`, and `forced_tool.honored` was 1.0 — the model
-called the tool exactly as asked. That is the value of the honored-rate metric: without it,
-"forcing had no effect" and "forcing never ran" are indistinguishable in the output.
+On `kv_form` both arms score `typed_accuracy` 1.0 with 0 failures.
 
-⚠️ **Do not read this as an argument against tool use.** Advanced (agentic) extraction has
-always used tool-based structured output and scored completeness recall **1.0 on all 12
-runs** of the restatement A/B above, on the same stack.
+**Forcing is honored on every run and makes no measurable difference to accuracy or
+completeness** — the null hypothesis the feature was built to test. Cost moves in
+opposite directions on the two classes (−13% and +20%) at n=3–6, so there is nothing to
+claim there either.
+
+The **honored rate** is what makes that readable: without it, "forcing had no effect" and
+"forcing quietly fell back to the prompt" are indistinguishable in the output.
+
+**Guidance: leave it off.** It is not broken and not harmful, it simply buys nothing on
+this corpus. What it buys in principle is unchanged — a malformed-JSON parse failure
+becomes structurally impossible for the fields the schema declares — so if your corpus
+produces parse failures it may be worth measuring there.
+
+> Two earlier attempts at this A/B measured defective code and are void: Bedrock rejects
+> a schema whose `$id` is not a URI-reference (IDP sets it to the class name), and a
+> model that nests its answer under a `fields` key had the entire extraction dropped as
+> an off-schema field — recall 0.0 while reporting COMPLETED. Both fixed in PR #744; this
+> run is the live confirmation, the same cells going recall **0.167 → 1.0**. Details:
+> `benchmarks/results/v0.6.7/forcing/FINDINGS.md`.
+
+⚠️ **Not a verdict on tool use generally.** Advanced (agentic) extraction has always used
+tool-based structured output and scored completeness recall 1.0 across all 12 runs of the
+restatement A/B above.
 
 ### `classification.sectionSplitting` — `disabled` is not a workaround for packets
 
