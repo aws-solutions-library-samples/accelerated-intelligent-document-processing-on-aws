@@ -154,7 +154,8 @@ when the probabilities sum to more than 1.0** — a distribution cannot exceed 1
 whereas a sum below 1 legitimately means "possibly some other class" and
 inflating the top candidate to absorb it would manufacture confidence.
 
-`resolve_top_k` clamps the requested candidate count to
+`resolve_top_k` clamps the requested count —
+`classification.confidence.top_k_candidates` (default **3**) — to
 `[2, len(valid_doc_types)]`: asking for more candidates than there are classes
 invites invented ones, and a single candidate is a verbalized confidence with
 extra syntax — the calibration benefit comes precisely from having to rank

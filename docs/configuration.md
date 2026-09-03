@@ -313,6 +313,31 @@ extraction:
 **For large documents**, prefer **Advanced (agentic) extraction** — it shards both
 extraction and confidence assessment and yields the best-calibrated confidence.
 
+### Classification confidence (`classification.confidence.*`)
+
+Separate from the extraction confidence above, and **on by default** — so an
+existing deployment that never set it starts paying for it on upgrade.
+
+```yaml
+classification:
+  confidence:
+    mode: topk          # topk (default) | off
+    top_k_candidates: 3 # alternative classes returned per page
+```
+
+Each page's classification returns its top-K candidate classes with
+probabilities, giving a per-page confidence you can threshold on and a visible
+reason when a page is ambiguous.
+
+⚠️ **It costs output tokens on every page.** Unlike extraction confidence, which
+is per *section*, this scales with page count. Measured at roughly **+17% of the
+classification step**, which is a small share of a typical bill because
+classification is cheap relative to extraction — but on a page-heavy corpus it is
+not free. Set `mode: off` to return to the previous behaviour.
+
+See [Classification](./classification.md) for the full reference, including how the
+score reaches the UI and what a `None` confidence means.
+
 ### v0.5 → v0.6 config migration
 
 - **Confidence and geometry moved under `extraction.*`** in v0.6: the former top-level `assessment.*` confidence settings are now `extraction.confidence.*`, and `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr` are now `extraction.geometry.mode`. HITL moved to the top-level `hitl.*` block.

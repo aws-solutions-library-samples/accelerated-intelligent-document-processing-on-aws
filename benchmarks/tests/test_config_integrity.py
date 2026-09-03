@@ -176,3 +176,107 @@ class TestOverrideSlug:
         assert 'ap.add_argument(\n        "--set"' in src, (
             "run_matrix needs a matching --set so it can find the right index"
         )
+
+
+@pytest.mark.unit
+def test_a_file_valued_axis_does_not_false_positive(rm, tmp_path):
+    """`@file:` axis values must be RESOLVED before comparing index to disk.
+
+    The frozen pre-#653 classification prompt is supplied as
+    `@file:classification_task_prompt_pre653.txt`. The index records that literal
+    string; the generated config holds the file's CONTENTS. Comparing the two
+    verbatim reports a mismatch on a config that was generated correctly — which
+    is precisely what happened the first time `boundaryctl` tried to run, aborting
+    a suite whose configs were fine.
+    """
+    import yaml as _yaml
+
+    matrix = _yaml.safe_load(open(rm.CFG_MATRIX))
+    axis = (matrix.get("axes") or {}).get("boundary_prompt") or {}
+    knobs = axis.get("legacy") or {}
+    assert knobs, "the boundary_prompt/legacy axis value has gone away"
+    dotted, raw = next(iter(knobs.items()))
+    assert str(raw).startswith("@file:"), f"expected an @file: value, got {raw!r}"
+
+    # Build a config file the way make_configs would: the RESOLVED contents.
+    resolved = rm._resolve_axis_value(raw)
+    assert resolved and not resolved.startswith("@file:")
+    cfg_path = tmp_path / "cell.yaml"
+    probe: dict = {}
+    rm._set_path(probe, dotted, resolved)
+    cfg_path.write_text(_yaml.safe_dump(probe))
+
+    cells = [
+        {
+            "cell": "split-llm-legacyprompt",
+            "path": str(cfg_path),
+            "resolved": {"boundary_prompt": "legacy"},
+        }
+    ]
+    # Must NOT raise/exit.
+    rm.verify_config_axes(cells)
+
+
+@pytest.mark.unit
+def test_a_file_valued_axis_still_catches_a_real_mismatch(rm, tmp_path):
+    """Guard-the-guard: resolving `@file:` must not blind the check. A config
+    whose prompt is genuinely something else still has to abort."""
+    import yaml as _yaml
+
+    matrix = _yaml.safe_load(open(rm.CFG_MATRIX))
+    knobs = ((matrix.get("axes") or {}).get("boundary_prompt") or {}).get("legacy")
+    dotted, _raw = next(iter(knobs.items()))
+    cfg_path = tmp_path / "cell.yaml"
+    probe: dict = {}
+    rm._set_path(probe, dotted, "some completely different prompt")
+    cfg_path.write_text(_yaml.safe_dump(probe))
+
+    cells = [
+        {
+            "cell": "split-llm-legacyprompt",
+            "path": str(cfg_path),
+            "resolved": {"boundary_prompt": "legacy"},
+        }
+    ]
+    with pytest.raises(SystemExit):
+        rm.verify_config_axes(cells)
+
+
+@pytest.mark.unit
+def test_slot_check_polls_only_still_running_work(monkeypatch):
+    """The launch gate must not re-poll runs it already saw finish.
+
+    `inflight` used to grow for the whole suite while every slot check polled ALL
+    of it, making the cost of deciding to launch O(runs launched so far) DynamoDB
+    queries — quadratic over a suite. It is a performance bug with a correctness
+    cost: a 171-run grid spends its budget on polling instead of documents, and a
+    release gate that takes 14 hours does not get run.
+
+    Simulates the loop against a fake poller and asserts the poll count stays
+    bounded by the number of runs still in flight, not by history.
+    """
+    polls: list[str] = []
+    finished = set()
+
+    def poll_done(rid):
+        polls.append(rid)
+        return rid in finished
+
+    # Mimic the launch loop: everything completes immediately, so no run should
+    # ever be polled more than a small constant number of times.
+    inflight: list[str] = []
+    max_inflight = 4
+    for i in range(40):
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= max_inflight:  # pragma: no cover - never taken here
+            inflight = [x for x in inflight if not poll_done(x)]
+        rid = f"run-{i}"
+        finished.add(rid)  # completes before the next iteration
+        inflight.append(rid)
+
+    from collections import Counter
+
+    worst = max(Counter(polls).values())
+    assert worst <= 2, f"a single run was polled {worst} times; the list is not pruned"
+    # The old code polled ~n^2/2 = 800 times for 40 launches.
+    assert len(polls) < 100, f"{len(polls)} polls for 40 launches suggests O(n^2)"

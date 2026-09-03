@@ -1343,8 +1343,9 @@ Resources:
               forced_tool:
                 type: object
                 sectionLabel: Schema Enforcement (experimental)
-                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction; Advanced already sends a tool schema."
+                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction only (Advanced already sends a tool schema), so this is shown only when Extraction mode is 'simple'."
                 order: 4.05
+                dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean
@@ -1360,12 +1361,13 @@ Resources:
               coercion:
                 type: object
                 sectionLabel: Value Coercion
-                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction; Advanced already coerces through its generated model."
+                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction only (Advanced already coerces through its generated model), so this is shown only when Extraction mode is 'simple'."
                 # Fractional slots keep these two next to the other
                 # result-handling groups (confidence 3, geometry 4) without
                 # colliding with model (5) / model_lambda_hook_arn (6), whose
                 # integer slots are already taken.
                 order: 4.1
+                dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean

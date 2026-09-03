@@ -562,6 +562,24 @@ If truly no-UI-needed catch-up is required, a Test-Studio-side completion
 listener could enqueue into the aggregation queue directly. That is not
 shipped today.
 
+### Where a run's documents appear
+
+A run copies its inputs into the input bucket under a `{test_run_id}/` prefix, so
+each one becomes a first-class document with its own status, confidence alerts and
+cost — that is the point, since it makes a test run's numbers comparable to real
+traffic. It also means the tracking table fills with documents nobody uploaded, so
+the copier tags them (`submission-source` / `test-set-id` S3 object metadata) and
+they are recorded under `ItemType = test-document` instead of `document` — a
+separate `TypeDateIndex` partition, not a filter.
+
+The consequence for day-to-day use: **test-run documents do not appear in the
+Document List's default Production view.** Switch the **Production / Test Studio**
+control beside the search box to see them, with a **Test Run** column linking back
+to the run's results (see [web-ui.md](web-ui.md#production-vs-test-studio-documents)).
+Their mutating actions are held there deliberately — reprocessing or deleting a
+document a run was scored against invalidates that run's metrics and the confidence
+calibration derived from them, so rerun or delete from **Test Executions** instead.
+
 ## Test Sets
 
 ### Creating Test Sets
