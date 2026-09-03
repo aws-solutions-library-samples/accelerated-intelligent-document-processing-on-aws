@@ -124,7 +124,10 @@ export const resolveDateRange = (periodsToLoad: number, customDateRange: DateRan
   return getDateRangeForPeriod(periodsToLoad);
 };
 
-const useGraphQlApi = ({ initialPeriodsToLoad = DOCUMENT_LIST_SHARDS_PER_DAY * 2 }: UseGraphQlApiParams = {}): UseGraphQlApiReturn => {
+// Same default as resolveInitialPeriodsToLoad, so a caller that passes nothing and
+// one whose storage is empty land on the same scope. These previously disagreed
+// (2 days here, 2 hours there).
+const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiParams = {}): UseGraphQlApiReturn => {
   const [periodsToLoad, setPeriodsToLoad] = useState<number>(initialPeriodsToLoad);
   const [isDocumentsListLoading, setIsDocumentsListLoading] = useState<boolean>(false);
   const [documents, setDocuments] = useState<Document[]>([]);

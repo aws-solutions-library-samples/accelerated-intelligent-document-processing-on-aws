@@ -10,6 +10,7 @@ import {
   LATEST_PERIODS,
   TEST_RUN_COLUMN_ID,
   buildDownloadMenuItems,
+  resolveInitialPeriodsToLoad,
   testRunIdFromObjectKey,
   type MappedDocument,
 } from '../documents-table-config';
@@ -166,5 +167,38 @@ describe('resolveDateRange', () => {
     const custom = { startDateTime: '2026-01-01T00:00:00.000Z', endDateTime: '2026-01-02T00:00:00.000Z' };
     expect(resolveDateRange(DOCUMENT_LIST_SHARDS_PER_DAY, custom)).toBe(custom);
     expect(resolveDateRange(LATEST_PERIODS, custom)).toBe(custom);
+  });
+});
+
+describe('resolveInitialPeriodsToLoad', () => {
+  it('defaults to Latest when nothing is stored, so a quiet stack never opens on an empty table', () => {
+    // 0 is what the caller passes for an absent localStorage key.
+    expect(resolveInitialPeriodsToLoad(0)).toBe(LATEST_PERIODS);
+  });
+
+  it('round-trips the Latest sentinel instead of reading it back as a window', () => {
+    // Math.abs(-2) is 2, a perfectly plausible shard count — the sentinel has to be
+    // recognised before that normalisation runs.
+    expect(resolveInitialPeriodsToLoad(LATEST_PERIODS)).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad(LATEST_PERIODS)).not.toBe(Math.abs(LATEST_PERIODS));
+  });
+
+  it('keeps a stored window, so an existing preference survives the default change', () => {
+    expect(resolveInitialPeriodsToLoad(0.5)).toBe(0.5);
+    expect(resolveInitialPeriodsToLoad(DOCUMENT_LIST_SHARDS_PER_DAY)).toBe(DOCUMENT_LIST_SHARDS_PER_DAY);
+    expect(resolveInitialPeriodsToLoad(DOCUMENT_LIST_SHARDS_PER_DAY * 30)).toBe(DOCUMENT_LIST_SHARDS_PER_DAY * 30);
+  });
+
+  it('normalises a negative window to its magnitude, as before', () => {
+    expect(resolveInitialPeriodsToLoad(-6)).toBe(6);
+  });
+
+  it('falls back to Latest for values it cannot use', () => {
+    expect(resolveInitialPeriodsToLoad(DOCUMENT_LIST_SHARDS_PER_DAY * 30 + 1)).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad('nonsense')).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad(null)).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad(undefined)).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad(Number.NaN)).toBe(LATEST_PERIODS);
+    expect(resolveInitialPeriodsToLoad(Number.POSITIVE_INFINITY)).toBe(LATEST_PERIODS);
   });
 });

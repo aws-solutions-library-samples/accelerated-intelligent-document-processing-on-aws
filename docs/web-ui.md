@@ -37,8 +37,10 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 
 The default page lists processed documents, over a scope chosen with the **Load** menu:
 
-- **Latest** — the most recent documents regardless of age. Use this when you want your last run rather than a particular window; it is also the cheapest option, since a time period loads *every* document in its range while Latest stops after the newest 200. Capped at 200 documents: when more exist beyond those loaded, the header counter reads `(200+)` instead of `(200)`.
-- **A time window** — 2 hours through 30 days, or **Custom range…** for explicit start and end dates.
+- **Latest** (the default) — the most recent documents regardless of age. It is the default because a time window shows an empty table whenever the stack has been quiet for longer than the window, which reads as a broken deployment rather than as "nothing recent"; Latest is empty only when there are genuinely no documents. It is also the cheapest option, since a time window loads *every* document in its range while Latest stops after the newest 200. Capped at 200 documents: when more exist beyond those loaded, the header counter reads `(200+)` instead of `(200)`.
+- **A time window** — 2 hours through 30 days, or **Custom range…** for explicit start and end dates. Pick one of these when you want activity in a specific period rather than the most recent work.
+
+Your choice is remembered, so changing it once sticks for later visits.
 
 ### Production vs Test Studio documents
 

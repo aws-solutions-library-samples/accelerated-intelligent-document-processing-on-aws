@@ -61,6 +61,13 @@ const logger = new ConsoleLogger('DocumentList');
  */
 const HYDRATION_CHUNK_SIZE = 5;
 
+/**
+ * Width of the Find documents field. Roughly double Cloudscape's content-sized
+ * default for a TextFilter sharing a horizontal container, which is cramped for
+ * document keys — they are S3 object keys and often carry a folder prefix.
+ */
+const FILTER_WIDTH = '340px';
+
 const DocumentList = (): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
   const [documentList, setDocumentList] = useState<MappedDocument[]>([]);
@@ -554,12 +561,17 @@ const DocumentList = (): React.JSX.Element => {
           // documents is in the table, and the text filter narrows within it.
           <SpaceBetween size="xs" direction="horizontal" alignItems="center">
             <DocumentViewSelector documentView={documentView} setDocumentView={setDocumentView} disabled={isDocumentsListLoading} />
-            <TextFilter
-              {...filterProps}
-              filteringAriaLabel="Filter documents"
-              filteringPlaceholder="Find documents"
-              countText={getFilterCounterText(filteredItemsCount ?? 0)}
-            />
+            {/* TextFilter fills its container, and a horizontal SpaceBetween sizes
+                children to their content — so it needs an explicit width here or it
+                collapses to roughly half of what it had as the sole filter child. */}
+            <div style={{ width: FILTER_WIDTH }}>
+              <TextFilter
+                {...filterProps}
+                filteringAriaLabel="Filter documents"
+                filteringPlaceholder="Find documents"
+                countText={getFilterCounterText(filteredItemsCount ?? 0)}
+              />
+            </div>
           </SpaceBetween>
         }
         wrapLines={preferences.wrapLines}

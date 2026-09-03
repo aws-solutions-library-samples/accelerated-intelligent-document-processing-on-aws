@@ -380,6 +380,34 @@ export const DOCUMENT_LIST_SHARDS_PER_DAY = 6;
  */
 export const LATEST_PERIODS = -2;
 
+/** Widest window the stored preference may name, in shard periods (30 days). */
+const MAX_STORED_PERIODS = DOCUMENT_LIST_SHARDS_PER_DAY * 30;
+
+/**
+ * Resolve the list's initial load scope from whatever is in localStorage.
+ *
+ * Defaults to Latest rather than a window: with a window, a stack that has been
+ * quiet longer than the window opens on an empty table, which reads as a broken
+ * deployment rather than as "nothing recent". Latest is empty only when the stack
+ * genuinely holds no documents. It matters most for the Reviewer role, whose queue
+ * is age-agnostic — a document pending review for three days was invisible under
+ * the previous 2-hour default.
+ *
+ * Only reachable when nothing is stored, so this changes first-run behaviour
+ * (fresh deployment, new browser, cleared storage) and leaves anyone with a saved
+ * preference on it.
+ */
+export const resolveInitialPeriodsToLoad = (stored: unknown): number => {
+  // Checked before the Math.abs below, which would read the negative Latest
+  // sentinel back as a plausible-looking 2 shard periods (8 hours).
+  if (stored === LATEST_PERIODS) return LATEST_PERIODS;
+
+  const periods = Math.abs(Number(stored));
+  if (!Number.isFinite(periods) || periods > MAX_STORED_PERIODS) return LATEST_PERIODS;
+  // 0 covers both an absent key and an explicit 0, neither of which names a window.
+  return periods > 0 ? periods : LATEST_PERIODS;
+};
+
 const TIME_PERIOD_DROPDOWN_CONFIG: Record<string, TimePeriodConfig> = {
   // First, because "the most recent work" is the most common intent and the
   // window options cannot express it: before this, a list with nothing in the last

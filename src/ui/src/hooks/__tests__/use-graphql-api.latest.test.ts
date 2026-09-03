@@ -13,8 +13,8 @@
  * filter-after-limit trap the ItemType partitioning was introduced to avoid.
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
 // Hoisted: the hook builds its GraphQL client at module scope, before ordinary
 // top-level consts in this file are initialized.
@@ -76,6 +76,12 @@ const load = async (periods: number) => {
 beforeEach(() => {
   graphql.mockReset();
   setErrorMessage.mockReset();
+});
+
+// Unmount between tests: a hook still paging when a test ends would keep consuming
+// the next test's mockResolvedValueOnce queue and make failures look unrelated.
+afterEach(() => {
+  cleanup();
 });
 
 describe('Latest', () => {
@@ -149,6 +155,22 @@ describe('Latest', () => {
 
     expect(variablesOf(1)).toMatchObject({ view: 'TEST' });
     expect(variablesOf(1)).not.toHaveProperty('startDateTime');
+  });
+});
+
+describe('default scope', () => {
+  it('is Latest when the caller passes no period, matching the storage default', async () => {
+    // The two used to disagree — 2 days here against 2 hours in GenAIIDPLayout.
+    graphql.mockResolvedValue(page(5, 0, null));
+    const hook = renderHook(() => useGraphQlApi());
+
+    await act(async () => {
+      hook.result.current.setIsDocumentsListLoading(true);
+    });
+    await waitFor(() => expect(graphql).toHaveBeenCalled());
+
+    expect(variablesOf(0)).not.toHaveProperty('startDateTime');
+    expect(variablesOf(0)).not.toHaveProperty('endDateTime');
   });
 });
 
