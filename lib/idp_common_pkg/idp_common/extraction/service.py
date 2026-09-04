@@ -1971,6 +1971,73 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         return value
 
+    def _adapt_to_instances_wrapper(
+        self,
+        extracted_fields: Any,
+        recovered_instances: list[dict[str, Any]] | None,
+    ) -> tuple[Any, list[dict[str, Any]] | None]:
+        """Rescue a multi-instance response that ignored the wrapper (#715).
+
+        For a class in Synthesize mode the requested shape is
+        ``{"instances": [ … ]}``, but a model can answer in either of two other
+        shapes, and BOTH are total data loss without this:
+
+        - **A bare top-level array** of records. ``_normalize_list_result``
+          reduces it to element 0, and the off-schema filter — whose only allowed
+          top-level key is now ``instances`` — then deletes even that, emitting
+          ``{}``. Every record lost, from a response that contained all of them.
+        - **A single flat record** (the shape the class had before the flag was
+          set). Same ending: the filter deletes every key and emits ``{}``.
+
+        Both are re-expressed as the wrapper. Deliberately forgiving rather than
+        strict: the alternative to accepting a recoverable shape here is throwing
+        the section's data away, and this feature exists precisely to stop records
+        being discarded silently.
+
+        No-op for an unflagged class, and for a response that already used the
+        wrapper.
+        """
+        from idp_common.schema.multi_instance import INSTANCES_KEY, is_wrapped
+
+        if not is_wrapped(self._class_schema):
+            return extracted_fields, recovered_instances
+
+        # Already correct.
+        if isinstance(extracted_fields, dict) and isinstance(
+            extracted_fields.get(INSTANCES_KEY), list
+        ):
+            return extracted_fields, recovered_instances
+
+        # Shape 1: a bare array, already split out by _normalize_list_result.
+        if recovered_instances:
+            logger.warning(
+                "Class '%s' is multi-instance but the model returned a bare "
+                "array of %d record(s) instead of the '%s' wrapper; adopting the "
+                "array as the instance list",
+                self._class_label,
+                len(recovered_instances),
+                INSTANCES_KEY,
+            )
+            return {INSTANCES_KEY: list(recovered_instances)}, None
+
+        # Shape 2: a single flat record. Only when it actually looks like one —
+        # an error/raw_output sentinel must stay a parse failure.
+        if isinstance(extracted_fields, dict) and extracted_fields:
+            record_properties = (self._class_schema.get(SCHEMA_PROPERTIES) or {}).get(
+                INSTANCES_KEY, {}
+            ).get("items", {}).get(SCHEMA_PROPERTIES) or {}
+            if record_properties and set(extracted_fields) & set(record_properties):
+                logger.warning(
+                    "Class '%s' is multi-instance but the model returned a single "
+                    "flat record instead of the '%s' wrapper; adopting it as one "
+                    "instance",
+                    self._class_label,
+                    INSTANCES_KEY,
+                )
+                return {INSTANCES_KEY: [extracted_fields]}, None
+
+        return extracted_fields, recovered_instances
+
     def _resolve_instance_reporting(
         self, result: ExtractionResult
     ) -> tuple[int, dict[str, Any]]:
@@ -4307,6 +4374,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             probe_value = self._read_instance_probe(extracted_fields)
             if probe_value is not None:
                 instance_probe = probe_value
+
+            # Multi-instance (#715): re-express a response that ignored the
+            # wrapper, BEFORE the off-schema filter deletes every key and emits
+            # {}. Must run after the probe is popped so the probe cannot end up
+            # inside a synthesized instance.
+            if parsing_succeeded:
+                extracted_fields, recovered_instances = (
+                    self._adapt_to_instances_wrapper(
+                        extracted_fields, recovered_instances
+                    )
+                )
             if recovered_instances:
                 # A multi-instance array response carries the probe inside every
                 # element; strip it from all of them so the recovered instances

@@ -622,3 +622,80 @@ def test_reporting_undetermined_stays_zero_and_emits_nothing():
     )
     assert count == 0
     assert meta == {}
+
+
+# --------------------------------------------------------------------------
+# Synthesize mode: rescuing a response that ignored the wrapper (#715).
+#
+# The requested shape is {"instances": [...]}. A bare array or a single flat
+# record would otherwise be deleted entirely by the off-schema filter — whose
+# only allowed top-level key is now `instances` — emitting {}. Total data loss
+# from a response that contained the data.
+# --------------------------------------------------------------------------
+
+
+def _wrapped_svc() -> ExtractionService:
+    from idp_common.schema.multi_instance import wrap_class_schema
+
+    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": False}}})
+    svc = ExtractionService(config=cfg)
+    svc._class_schema = wrap_class_schema(
+        {
+            "$id": "Pay-Statement",
+            "type": "object",
+            "x-aws-idp-multi-instance": True,
+            "properties": {
+                "CheckNumber": {"type": "string"},
+                "NetPay": {"type": "string"},
+            },
+        }
+    )
+    svc._class_label = "Pay-Statement"
+    return svc
+
+
+def test_a_bare_array_becomes_the_instance_list():
+    svc = _wrapped_svc()
+    records = [{"CheckNumber": "1"}, {"CheckNumber": "2"}, {"CheckNumber": "3"}]
+    fields, recovered = svc._adapt_to_instances_wrapper(records[0], records)
+    assert fields == {"instances": records}
+    # No longer "recovered" — they are the result now.
+    assert recovered is None
+
+
+def test_a_single_flat_record_becomes_one_instance():
+    svc = _wrapped_svc()
+    fields, recovered = svc._adapt_to_instances_wrapper({"CheckNumber": "1"}, None)
+    assert fields == {"instances": [{"CheckNumber": "1"}]}
+    assert recovered is None
+
+
+def test_a_correctly_wrapped_response_is_untouched():
+    svc = _wrapped_svc()
+    payload = {"instances": [{"CheckNumber": "1"}]}
+    fields, recovered = svc._adapt_to_instances_wrapper(payload, None)
+    assert fields is payload
+    assert recovered is None
+
+
+def test_an_unflagged_class_is_never_adapted():
+    svc = _svc()
+    records = [{"patient_name": "A"}, {"patient_name": "B"}]
+    fields, recovered = svc._adapt_to_instances_wrapper(records[0], records)
+    assert fields == records[0]
+    assert recovered == records
+
+
+def test_a_parse_failure_sentinel_is_not_adopted_as_a_record():
+    """`{"error": ...}` / `{"raw_output": ...}` must stay a parse failure, not
+    become a bogus instance."""
+    svc = _wrapped_svc()
+    for sentinel in ({"error": "boom"}, {"raw_output": "prose"}):
+        fields, _ = svc._adapt_to_instances_wrapper(sentinel, None)
+        assert fields is sentinel
+
+
+def test_an_empty_response_is_not_turned_into_an_instance():
+    svc = _wrapped_svc()
+    fields, _ = svc._adapt_to_instances_wrapper({}, None)
+    assert fields == {}
