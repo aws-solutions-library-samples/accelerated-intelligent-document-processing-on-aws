@@ -742,28 +742,31 @@ extraction:
 - **Detection only.** It never changes the extracted data, never fails a section,
   and never turns on a schema flag for you. Fixing the loss is
   `x-aws-idp-multi-instance` (below) or splitting the section.
-- **OFF by default, and gated on evidence.** It adds a question to the extraction
-  request for every Simple-mode section, and the benchmark A/B did **not** clear
-  it. Completeness was perfect and identical on both arms (30/30 runs, exact row
-  counts) and cost moved −0.4% — but scalar accuracy was consistently a little
-  worse with it on, in the same direction across three independent batches: on the
-  one document that deviated, 5 of 10 runs lost a scalar field with it on against
-  2 of 10 with it off. That is not statistically significant at n=10 and may be an
-  artifact of a two-field accuracy denominator — and the ambiguity is exactly the
-  point. A diagnostic is not worth a measured-but-unexplained accuracy risk on
-  every existing extraction.
-- **Turn it on** for any corpus where one section can hold several documents of
-  the same class. That is the case it exists for, and there the trade is obviously
-  worth it: the alternative is shipping one record out of three with no signal at
-  all. Set it per configuration profile, so a multi-record corpus gets the warning
-  while the rest of your deployment is untouched.
-- **Applies to Simple extraction**, on both the prompt and the forced-tool paths.
-  **Advanced (agentic) extraction is not covered yet** — it validates through a
-  generated Pydantic model and shards the work by field, so an auxiliary property
-  would be dropped on some paths and duplicated on others.
-- The auxiliary field is stripped before anything downstream sees the result, so
-  it never appears in `inference_result`, in confidence, in reporting columns, or
-  in an evaluation diff.
+- **OFF by default — but it is very good at its job.** Measured on two real
+  labeled corpora, 80 paired Test Studio runs (same documents both sides, only the
+  toggle differing):
+
+  | on 40 real bank-check images, against committed ground truth | |
+  |---|---|
+  | multi-check images found | **18 of 18** |
+  | false alarms on the 22 single-check images | **0** |
+  | precision / recall | **1.000 / 1.000** |
+  | count reported *exactly* right | **18 of 18** (2 to 8 checks) |
+  | token cost | input **+1.8%**, output **−0.5%** |
+
+  Without it, those 18 documents each silently lose between 1 and 7 checks. That is
+  #565, on a real corpus, and detection catches every one of them.
+
+- **Why it is off anyway.** On a corpus with *no* multi-record documents to find, it
+  is pure cost: `RealKIE-FCC-Verified` lost about **1.3 accuracy points** with it on
+  (0.7678 → 0.7552; worse on 14 of 40 documents, better on 1, sign test
+  **p = 0.001**), spread diffusely over four attributes rather than any single
+  failure mode. A default has to be safe for the deployment that gets no benefit,
+  so the default is off.
+
+- **So: turn it on when your documents can contain several records of one class**,
+  and leave it off when they cannot. It is per configuration profile, so a
+  multi-record corpus can have it while the rest of your deployment does not.
 
 ### Multi-instance sections (`x-aws-idp-multi-instance`)
 

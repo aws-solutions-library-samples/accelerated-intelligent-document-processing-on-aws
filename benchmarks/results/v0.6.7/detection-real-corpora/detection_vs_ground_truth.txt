@@ -1,0 +1,48 @@
+Detection accuracy vs committed ground truth — OmniAI-OCR-Benchmark, detection ON
+run: OmniAI-OCR-Benchmark-20260904-113203
+
+document                          probe  flagged  GT checks  verdict
+BANK_CHECK_102.png                    6     True          6  TRUE POSITIVE
+BANK_CHECK_115.png                    1    False          1  correct silence
+BANK_CHECK_143.png                    1    False          1  correct silence
+BANK_CHECK_152.png                    1    False          1  correct silence
+BANK_CHECK_159.png                    8     True          8  TRUE POSITIVE
+BANK_CHECK_165.png                    1    False          1  correct silence
+BANK_CHECK_17.png                     1    False          1  correct silence
+BANK_CHECK_201.png                    3     True          3  TRUE POSITIVE
+BANK_CHECK_252.png                    1    False          1  correct silence
+BANK_CHECK_275.png                    1    False          1  correct silence
+BANK_CHECK_280.png                    1    False          1  correct silence
+BANK_CHECK_285.png                    1    False          1  correct silence
+BANK_CHECK_289.png                    1    False          1  correct silence
+BANK_CHECK_292.png                    2     True          2  TRUE POSITIVE
+BANK_CHECK_322.png                    1    False          1  correct silence
+BANK_CHECK_355.png                    7     True          7  TRUE POSITIVE
+BANK_CHECK_369.png                    2     True          2  TRUE POSITIVE
+BANK_CHECK_377.png                    1    False          1  correct silence
+BANK_CHECK_404.png                    5     True          5  TRUE POSITIVE
+BANK_CHECK_408.png                    1    False          1  correct silence
+BANK_CHECK_420.png                    1    False          1  correct silence
+BANK_CHECK_442.png                    4     True          4  TRUE POSITIVE
+BANK_CHECK_449.png                    1    False          1  correct silence
+BANK_CHECK_503.png                    1    False          1  correct silence
+BANK_CHECK_508.png                    4     True          4  TRUE POSITIVE
+BANK_CHECK_544.png                    1    False          1  correct silence
+BANK_CHECK_553.png                    8     True          8  TRUE POSITIVE
+BANK_CHECK_558.png                    1    False          1  correct silence
+BANK_CHECK_577.png                    6     True          6  TRUE POSITIVE
+BANK_CHECK_606.png                    3     True          3  TRUE POSITIVE
+BANK_CHECK_618.png                    2     True          2  TRUE POSITIVE
+BANK_CHECK_623.png                    1    False          1  correct silence
+BANK_CHECK_626.png                    1    False          1  correct silence
+BANK_CHECK_648.png                    1    False          1  correct silence
+BANK_CHECK_691.png                    2     True          2  TRUE POSITIVE
+BANK_CHECK_706.png                    3     True          3  TRUE POSITIVE
+BANK_CHECK_707.png                    4     True          4  TRUE POSITIVE
+BANK_CHECK_751.png                    8     True          8  TRUE POSITIVE
+BANK_CHECK_763.png                    2     True          2  TRUE POSITIVE
+BANK_CHECK_805.png                    1    False          1  correct silence
+
+TP=18  FP=0  FN=0  TN=22
+precision=1.000  recall=1.000
+exact count match on true positives: 18/18

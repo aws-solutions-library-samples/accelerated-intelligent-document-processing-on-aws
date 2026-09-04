@@ -54,23 +54,25 @@ extraction:
   # extraction_multi_instance_suspected warning is raised and the section's
   # instance count reflects the model's answer.
   multi_instance_detection:
-    # OFF by default, and gated on evidence rather than on the argument that a
-    # data-loss guard should default on. It adds a property to the extraction
-    # request for every Simple-mode section, and the benchmark A/B did not clear
-    # it: completeness was perfect and identical on both arms (30/30 runs, exact
-    # row counts) and cost moved -0.4%, but scalar accuracy was consistently worse
-    # with it ON, in the same direction across three independent batches — 5 of 10
-    # runs lost a scalar field with it on vs 2 of 10 with it off, on the one
-    # document that deviated. Not significant at that n, and possibly an artifact
-    # of a two-field accuracy denominator; that ambiguity is the point.
+    # OFF by default — but not because it works badly. Measured on two real
+    # labeled corpora (80 paired Test Studio runs):
     #
-    # TURN IT ON for any corpus where one section can hold several documents of the
-    # same class — that is the case it exists for, and there the trade is clearly
-    # worth it. Detection NEVER changes the extracted data or a class's schema
-    # flags; turning a class into a List-of-Class shape stays an explicit opt-in
-    # (x-aws-idp-multi-instance / x-aws-idp-instance-array).
-    # Applies to Simple extraction (prompt and forced-tool paths); Advanced
-    # (agentic) extraction is not covered.
+    #   * It is EXCELLENT at the job. On 40 bank-check images with committed
+    #     ground truth it found all 18 multi-check images, raised 0 false alarms
+    #     on the 22 single-check images, and got the count exactly right on all
+    #     18 (2 to 8 checks). Precision and recall both 1.000.
+    #   * Token cost is negligible: input +1.8%, output -0.5%.
+    #   * On a corpus with NO multi-record documents to find, it is pure cost:
+    #     RealKIE-FCC-Verified lost ~1.3 accuracy points (0.7678 -> 0.7552, worse
+    #     on 14 of 40 docs, better on 1, sign test p=0.001), spread diffusely
+    #     across four attributes rather than any one failure mode.
+    #
+    # A default has to be safe for the corpus that gets no benefit, so it ships
+    # off. TURN IT ON, per configuration profile, whenever one section can hold
+    # several documents of the same class — there the measurement says it will be
+    # right, and the alternative is shipping one record out of N with no signal.
+    # Detection NEVER changes the extracted data or a class's schema flags.
+    # Simple extraction only (prompt and forced-tool paths).
     enabled: false
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.

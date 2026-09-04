@@ -18,11 +18,14 @@ anything else in a build. It answers three questions:
 **Stack:** `IDPMulti`, us-west-2, `v0.6.7.dev9` built from
 `feature/multi-instance-sections`.
 **Suites:** `multiinstance`, `midetect`, `midetectlong`
-(`benchmarks/matrices/config_matrix.yaml`).
+(`benchmarks/matrices/config_matrix.yaml`), plus four **Test Studio** runs over the
+`OmniAI-OCR-Benchmark` and `RealKIE-FCC-Verified` test sets for §2.
 **Scored data:** `benchmarks/results/v0.6.7/{multiinstance,midetect,midetectlong}/`.
 **Pricing:** `config_library/pricing.yaml`, rates as of 2026-09.
 
-> Every number here comes from `benchmarks/harness/aggregate.py` over live runs.
+> Every number here comes from a live run: §1 via `benchmarks/harness/aggregate.py`,
+> §2 from the Test Studio runs' own evaluation reports and metering. None are
+> recalled from memory.
 
 ---
 
@@ -51,70 +54,114 @@ wrong data, no warning. So a row-count metric prefers the arm that produces the
 wrong answer quietly. That is exactly the failure #753 exists to make visible, and
 it is also why the metric alone cannot decide the default.
 
-## 2. What does detection cost on ordinary documents?
+## 2. Detection, measured on real labeled corpora
 
-`detect-off` vs `detect-on`, identical but for
-`extraction.multi_instance_detection.enabled`, on genuinely **single-document**
-docs (`tiny_form`, `small_narrow`, `longdesc_100`). `repeats: 5` → 15 runs/arm.
+The synthetic grid could not answer this properly: three documents with a
+**two-field** accuracy denominator, where one field flip moves a cell mean by
+0.033. So the question was re-asked with **Test Studio** — the product's own test
+execution — over two real labeled corpora, two configuration profiles that differ
+in nothing but `extraction.multi_instance_detection.enabled`, and `numberOfFiles`
+taking the same deterministic first N. **80 paired runs**, scored against each test
+set's committed baselines. Paired on document, because document difficulty
+dominates variance on a real corpus.
 
-| metric | detect-off | detect-on | delta |
+### 2a. Does it find real multi-record documents? Yes — perfectly.
+
+`OmniAI-OCR-Benchmark`, first 40 documents (all `BANK_CHECK` — scanned check
+images, some holding several checks on one sheet). The class's baseline is a
+`checks` array, so ground truth states exactly how many checks each image contains.
+
+| | |
+|---|---|
+| true positives | **18** |
+| false positives | **0** |
+| false negatives | **0** |
+| correct silences | **22** |
+| precision / recall | **1.000 / 1.000** |
+| count reported **exactly** right | **18 of 18** (counts of 2, 3, 4, 5, 6, 7 and 8) |
+
+It flagged every multi-check image, stayed silent on every single-check image, and
+got the number right every time. Without it, each of those 18 documents silently
+ships **1 to 7 checks fewer** than it contains — #565, on a real corpus.
+
+> **A near-miss worth recording.** The first reading of this run was "18 false
+> positives on single-page images — the probe misfires badly on bank checks." That
+> was wrong, and it was one query away from being reported as the headline. What
+> corrected it was checking the ground truth: the baseline's `checks` array had
+> 2–8 entries on exactly those 18 documents. A plausible story about a failure is
+> not evidence of one.
+
+### 2b. What does it cost?
+
+| metric | detection off | detection on | delta |
 |---|---|---|---|
-| runs completed | 15/15 | 15/15 | — |
-| rows extracted | exact, every run | exact, every run | **0** |
-| scalar accuracy | 1.000 (σ 0) | 0.967 (σ 0.129) | **−0.033** |
-| cost / doc | $0.11634 | $0.11591 | **−0.4 %** |
-| **false positives** | 0 | **0** | — |
+| **OmniAI-OCR-Benchmark** (40 paired docs) | | | |
+| weighted accuracy | 0.9380 | 0.9461 | **+0.0081** |
+| better / worse / identical | — | 7 / 6 / 27 | sign test **p = 1.000** |
+| input tokens | 7,759 | 7,900 | **+1.82 %** |
+| output tokens | 1,580 | 1,571 | **−0.53 %** |
+| **RealKIE-FCC-Verified** (40 paired docs) | | | |
+| weighted accuracy | 0.7678 | 0.7552 | **−0.0126** |
+| better / worse / identical | — | 1 / **14** / 25 | sign test **p = 0.0010** |
+| input tokens | 95,020 | 94,262 | **−0.80 %** |
+| output tokens | 6,833 | 6,609 | **−3.28 %** |
 
-- **Completeness is untouched.** 30/30 runs extracted the exact expected row count.
-  No truncation, no gaps, no duplicates, no failures.
-- **Cost is flat.** −0.4 %, inside noise. The probe is one extra output integer.
-- **False-positive rate is 0**, which is #753's own acceptance criterion: no
-  `extraction_multi_instance_suspected` on any genuinely single-document section, in
-  any run of any arm.
-- **Scalar accuracy is consistently, unexplainedly worse with it on.**
+- **Tokens and cost are a non-issue** on both corpora: ±2 %, in both directions.
+  The probe is one extra output integer.
+- **On the OCR benchmark there is no accuracy effect at all** — p = 1.000, and the
+  point estimate slightly favours detection *on*.
+- **On RealKIE there is a real one.** Worse on 14 of 40 documents and better on 1
+  is significant at p = 0.001; it is not noise. The loss is **diffuse** —
+  `AgencyCommission` −2 documents, `PaymentTerms` −2, `Agency` −1, `LineItems` −1 —
+  so it reads as a small general perturbation from adding a question to the
+  request, not a specific failure mode. RealKIE is a single-class forms corpus with
+  **no** multi-record documents, so on it the feature is pure cost with zero
+  benefit, which is exactly the shape of deployment a default has to protect.
 
-### The accuracy signal, chased down
+### 2c. Why the earlier synthetic result was not good enough
 
-One document (`longdesc_100`) accounted for every deviation, so it was run 10×
-per arm on its own (`midetectlong`):
+The synthetic grid reported "scalar accuracy consistently worse, 5/10 vs 2/10 on
+one document, not significant" and **zero** false positives. Both readings were too
+weak to act on, and one was misleading:
 
-| arm | runs at full scalar accuracy | mean |
-|---|---|---|
-| `detect-off` | 8 / 10 | 0.90 |
-| `detect-on` | **5 / 10** | **0.75** |
+- the FP result came from three synthetic bank-statement documents, a corpus with
+  no multi-record instances in it at all — it could not have found a false
+  positive, so "0" carried no information;
+- the accuracy signal came from a two-field metric on one unstable document.
 
-The document is unstable on one of its two scalar fields even with detection off
-(2/10 failures), but it fails **more than twice as often** with detection on.
-Pooled over all three batches (repeats 3, 5, 10): `detect-off` 16/18 vs
-`detect-on` 11/18.
+The real corpora answered both in one pass, and answered them differently: FP is 0
+because detection is *accurate*, not because the test was blind, and the accuracy
+cost is real but corpus-dependent.
 
-**This is not statistically significant** — Fisher's exact on the n=10 pair gives
-p ≈ 0.35, pooled p ≈ 0.12 — and it may well be an artifact of the metric:
-`scalar_accuracy` on this corpus has a **two-field denominator**, so a single field
-flip moves a cell mean by 0.033 mechanically. But the direction was the same in
-all three independent batches and never once favoured detection.
+## 3. So detection ships OFF by default — and the guidance is now specific
 
-## 3. So detection ships OFF by default
+Not "gated on evidence we could not resolve". The evidence resolved:
 
-#753 set the gate itself: *"must be A/B'd: adding a meta field to the response can
-perturb extraction quality"* and *"false-positive rate measured on the benchmark
-corpus, not assumed."* The FP criterion passed. The perturbation criterion did not
-clear: a consistent, unexplained accuracy movement in the wrong direction is not a
-result you ship to the extraction request of **every existing Simple-mode
-section** on the strength of a diagnostic.
+> **Turn it on when a section can hold several documents of the same class.** It
+> will find them, count them correctly, and cost you about 2 % more input tokens.
+> **Leave it off when it cannot** — there it buys nothing and costs about a point
+> of accuracy.
 
-With `enabled: false` the extraction prompt and the forced toolSpec are
-**byte-identical to earlier releases**, which is the strongest no-regression
-guarantee available.
-
-**Turn it on** for any corpus where one section can hold several documents of the
-same class. There the alternative is shipping one record out of three with no
-signal at all, and the trade is obviously worth it. It is per-configuration-profile,
-so a multi-record corpus can have the warning while the rest of a deployment is
-untouched.
+It is per configuration profile, so a multi-record corpus can have it while the
+rest of a deployment does not. With it off the extraction prompt and the forced
+toolSpec are byte-identical to earlier releases.
 
 ## Honesty notes
 
+- **The synthetic grid nearly produced the wrong conclusion twice.** First it
+  reported 0 false positives from a corpus that contained no multi-record
+  documents — a number with no information in it that read like a clean bill of
+  health. Then the real run's 18 warnings were nearly reported as false alarms
+  before the ground truth was checked. Both would have been confidently wrong.
+  The lesson is the same one both times: an instrument that cannot see the
+  phenomenon will still return a number.
+- **§2 used Test Studio rather than the benchmark harness**, because the harness
+  silently skips reference corpora: `run_matrix.py` `continue`s on any doc with
+  no local PDF, with a comment claiming reference docs are "handled separately"
+  and nothing handling them, while `analyze.score_reference` sits fully
+  implemented. So a suite naming `realkie` or `ocr_bench` — including
+  `core_docs` — runs nothing for it. Not fixed here (out of scope for this
+  feature); worth its own issue.
 - **A harness bug was found and fixed mid-study, and it mattered.**
   `analyze.py` collected scalar fields from the **top level** of
   `inference_result`, so a wrapped result — whose only top-level key is
@@ -136,7 +183,31 @@ untouched.
   strength the sample supports, and the one that could not be resolved is the one
   that decided the default.
 
-## Reproduce
+## Reproduce the Test Studio A/B (§2)
+
+Two profiles per corpus differing only in the toggle, then the TestRunner Lambda —
+the same entry point the Test Studio UI uses. `numberOfFiles` takes the first N
+deterministically, so both arms see identical documents.
+
+```bash
+# one profile per arm, derived from the corpus's own shipped config
+idp-cli config-upload --stack-name <STACK> --config-file <cfg-with-toggle>.yaml \
+    --config-profile mid-off-ocr --version-description "detection off"
+# launch: testSetId + configVersion + configRevision + numberOfFiles
+aws lambda invoke --function-name <STACK>-...-TestRunnerFunction-... \
+    --payload '{"arguments":{"input":{"testSetId":"ocr-benchmark",
+       "configVersion":"mid-off-ocr","configRevision":1,"numberOfFiles":40}}}' out.json
+# then compare per document
+idp-cli test-result --stack-name <STACK> --test-run-id <id>
+idp-cli test-compare --stack-name <STACK> --test-run-ids <off-id> <on-id>
+```
+
+Accuracy per document is `overall_metrics.weighted_overall_score` from each
+document's own `evaluation/results.json`; the detection verdict is the presence of
+`extraction_multi_instance_suspected` on the section, checked against the
+baseline's record count.
+
+## Reproduce the synthetic suites (§1)
 
 ```bash
 python3 benchmarks/harness/gen_corpus.py

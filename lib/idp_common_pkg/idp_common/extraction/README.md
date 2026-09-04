@@ -701,15 +701,24 @@ Not limited to unflagged classes: a class in Designate or Synthesize mode whose
 array came back with fewer records than the model reports is under-extracting,
 which is the same data loss.
 
-Config: `extraction.multi_instance_detection.enabled`, default **false**, gated on
-evidence — the benchmark A/B (`benchmarks` suite `midetect`, and `midetectlong` for
-the follow-up) did not clear it. Completeness was perfect and identical on both
-arms (30/30 runs, exact row counts) and cost moved −0.4%, but scalar accuracy was
-consistently worse with it on, in the same direction across three batches: 5/10
-runs lost a scalar field with it on vs 2/10 with it off on the one document that
-deviated. Not significant at that n and possibly an artifact of a two-field
-accuracy denominator — which is the reason it is off rather than the reason to
-dismiss it. Turn it on for a corpus that actually has multi-record sections.
+Config: `extraction.multi_instance_detection.enabled`, default **false**.
+
+Measured on two real labeled corpora via Test Studio, 80 paired runs (identical
+documents per pair, only the toggle differing) — see
+`docs/benchmarking/feature-multi-instance.md`:
+
+* **It works.** On 40 bank-check images from the OmniAI OCR benchmark, scored
+  against their committed baselines: 18 true positives, **0 false positives**, 0
+  false negatives, 22 correct silences. Precision and recall **1.000**, and the
+  reported count was **exactly** right on all 18 (2 to 8 checks per image).
+* **Tokens are negligible:** input +1.8%, output −0.5%.
+* **On a corpus with nothing to find it is pure cost.** RealKIE-FCC-Verified:
+  0.7678 → 0.7552 weighted score, worse on 14 of 40 documents and better on 1,
+  sign test **p = 0.001**. The loss is diffuse (four attributes, one or two
+  documents each), not a single failure mode.
+
+Hence off by default and a strong recommendation to turn it on per configuration
+profile for any corpus whose sections can hold several documents of one class.
 
 Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
 extraction validates through a generated Pydantic model and shards by field, so an
