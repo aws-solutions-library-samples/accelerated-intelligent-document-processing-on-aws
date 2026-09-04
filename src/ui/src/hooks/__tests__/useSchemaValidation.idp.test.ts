@@ -137,6 +137,43 @@ describe('IDP class-level preflight validation', () => {
     expect(r.errors.some((e) => e.message.includes('must be an array'))).toBe(true);
   });
 
+  // ---------------------------------------------------------------------------
+  // `derefLocal` walks user-supplied JSON. It must terminate and never throw —
+  // this runs on every keystroke in the designer, so a hang or an exception here
+  // takes the whole editor down.
+  // ---------------------------------------------------------------------------
+
+  it('terminates on a circular $ref instead of hanging', () => {
+    const schema = {
+      name: 'X',
+      'x-aws-idp-instance-array': 'records',
+      attributes: {
+        properties: { records: { $ref: '#/$defs/A' } },
+        $defs: { A: { $ref: '#/$defs/B' }, B: { $ref: '#/$defs/A' } },
+      },
+    };
+    // Unresolvable in the end, so it degrades to the un-dereferenced type check.
+    expect(validate(schema).valid).toBe(false);
+  });
+
+  it('does not throw on hostile or malformed $defs and $ref values', () => {
+    const cases: unknown[] = [
+      { records: { $ref: '#/$defs/__proto__' } },
+      { records: { $ref: '#/$defs/constructor' } },
+      { records: { $ref: '' } },
+      { records: { $ref: 'https://example.com/schema.json' } },
+      { records: { $ref: 42 } },
+      { records: { type: 'array', items: { $ref: '#/$defs/__proto__' } } },
+      { records: null },
+      { records: [] },
+    ];
+    for (const properties of cases) {
+      expect(() => validate({ name: 'X', 'x-aws-idp-instance-array': 'records', attributes: { properties, $defs: [] } })).not.toThrow();
+    }
+    // And nothing was written onto Object.prototype by resolving "__proto__".
+    expect(({} as Record<string, unknown>).type).toBeUndefined();
+  });
+
   it('rejects both keys on one class', () => {
     const r = validate(cls({ 'x-aws-idp-instance-array': 'records', 'x-aws-idp-multi-instance': true }, { records: recordsArray }));
     expect(r.valid).toBe(false);

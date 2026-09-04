@@ -469,6 +469,31 @@ describe('SchemaInspector "Documents per section"', () => {
     expect(screen.getByText(/Select which array holds one record per document/)).toBeInTheDocument();
   });
 
+  it('does not carry a pending mode across a class switch', () => {
+    // The mode is held in component state so "Designate, nothing chosen yet" is
+    // representable (see above). That state must not outlive the class it belongs
+    // to: pick Designate on a class with two candidate arrays — so nothing is
+    // written to the schema — then switch classes, and the second class would
+    // otherwise render in Designate mode with a picker it never asked for.
+    const twoArrays = {
+      ...scalars,
+      statements: { type: 'array', items: { type: 'object', properties: {} } },
+      transactions: { type: 'array', items: { type: 'object', properties: {} } },
+    };
+    const { rerender } = render(<SchemaInspector selectedClass={docClass({}, twoArrays)} onUpdate={vi.fn()} onUpdateClass={vi.fn()} />);
+    fireEvent.click(screen.getByText('Several — this class already lists them'));
+    expect(screen.getByText('Record array')).toBeInTheDocument();
+
+    rerender(
+      <SchemaInspector
+        selectedClass={{ ...docClass({}, scalars), id: 'class-2', name: 'Invoice' }}
+        onUpdate={vi.fn()}
+        onUpdateClass={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Record array')).not.toBeInTheDocument();
+  });
+
   it('preselects the sole candidate, because with one array there is no choice to make', () => {
     const onUpdateClass = renderClass(docClass({}, { ...scalars, records: { type: 'array', items: { type: 'object', properties: {} } } }));
     fireEvent.click(screen.getByText('Several — this class already lists them'));

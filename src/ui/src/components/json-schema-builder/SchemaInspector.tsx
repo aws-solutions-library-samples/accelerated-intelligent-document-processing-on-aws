@@ -600,7 +600,13 @@ const SchemaInspector = ({
                 />
               </FormField>
 
-              {!isRuleSchema && <MultiInstanceModeField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
+              {/* Keyed on the class so the pending-mode state below cannot leak across a
+                  class switch: without it, selecting Designate on class A (2 candidate
+                  arrays, so nothing is written yet) and then selecting class B would
+                  show B in Designate mode with a picker it never asked for. */}
+              {!isRuleSchema && (
+                <MultiInstanceModeField key={selectedClass.id} selectedClass={selectedClass} onUpdateClass={onUpdateClass} />
+              )}
 
               {!isRuleSchema && (
                 <>
