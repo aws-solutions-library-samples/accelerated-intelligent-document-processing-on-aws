@@ -79,6 +79,38 @@ class TestControlPlaneCostHookDeltaEmission:
         assert second_kwargs["bedrock_tokens_in"] == 80
         assert second_kwargs["bedrock_tokens_out"] == 40
 
+    def test_regressing_usage_emits_new_totals_not_over_delta(self):
+        """Regression: if ``accumulated_usage`` regresses (Strands
+        event-loop metrics were reset) the previous clamp-to-zero
+        implementation would still update the baseline to the smaller
+        number, so the NEXT tick over-emitted the pre-existing tokens.
+        The fix treats a regression as a fresh baseline — emit the new
+        totals as-is, and the next non-regressing tick emits an honest
+        delta against the reset value.
+        """
+        hook = ControlPlaneCostHook(
+            component="analytics-agent",
+            bedrock_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        )
+
+        with patch(
+            "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric"
+        ) as mock_emit:
+            hook._on_after_invocation(_make_after_invocation_event(200, 100))
+            # Regression: metrics reset to 30/15.
+            hook._on_after_invocation(_make_after_invocation_event(30, 15))
+            # Normal growth from the new baseline.
+            hook._on_after_invocation(_make_after_invocation_event(80, 40))
+
+        # Tick 1: fresh baseline, full 200/100.
+        # Tick 2: regression, emit the new totals 30/15 as-is (not clamped
+        #         to zero, which would leave a stale 200/100 baseline).
+        # Tick 3: 80-30=50 in, 40-15=25 out — honest delta over the reset.
+        assert mock_emit.call_count == 3
+        third = mock_emit.call_args_list[2].kwargs
+        assert third["bedrock_tokens_in"] == 50
+        assert third["bedrock_tokens_out"] == 25
+
     def test_no_new_tokens_no_emission(self):
         """When accumulated_usage didn't change (e.g. the agent
         short-circuited without hitting Bedrock) the hook must skip
@@ -109,11 +141,17 @@ class TestControlPlaneCostHookDeltaEmission:
             bedrock_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         )
 
+        # Build a purpose-built type so setting the property doesn't
+        # mutate the shared MagicMock class (which would leak the
+        # raising property into unrelated tests via other MagicMock
+        # instances).
+        class _BrokenAgent:
+            @property
+            def event_loop_metrics(self):
+                raise RuntimeError("no metrics")
+
         broken_event = MagicMock()
-        # Force accumulated_usage access to raise.
-        type(broken_event.agent).event_loop_metrics = property(
-            lambda _self: (_ for _ in ()).throw(RuntimeError("no metrics"))
-        )
+        broken_event.agent = _BrokenAgent()
 
         with patch(
             "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric"

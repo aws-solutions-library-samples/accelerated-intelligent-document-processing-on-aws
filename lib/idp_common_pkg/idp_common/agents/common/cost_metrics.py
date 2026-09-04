@@ -63,8 +63,18 @@ class ControlPlaneCostHook(HookProvider):
             logger.warning("ControlPlaneCostHook: failed to read usage: %s", exc)
             return
 
-        delta_in = max(0, total_in - self._last_input_tokens)
-        delta_out = max(0, total_out - self._last_output_tokens)
+        # If either counter regressed below the last-seen baseline, the
+        # Strands event loop was reset (e.g. a reused agent whose metrics
+        # were cleared between invocations). Treating that as a per-tick
+        # delta and clamping to zero would then leave the baseline at the
+        # smaller number and cause the NEXT tick to over-emit the tokens
+        # that pre-existed the reset. Instead: emit the full new totals
+        # (the baseline is stale anyway) and reset our snapshot.
+        if total_in < self._last_input_tokens or total_out < self._last_output_tokens:
+            delta_in, delta_out = total_in, total_out
+        else:
+            delta_in = total_in - self._last_input_tokens
+            delta_out = total_out - self._last_output_tokens
         self._last_input_tokens = total_in
         self._last_output_tokens = total_out
 

@@ -216,52 +216,52 @@ number of (service, unit) rows a doc touched.
 
 ### 1. `metering_hourly`
 - **Grain**: (hour, config_version, service_api, unit)
-- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
-- **Partitioned by**: `date`, `hour`
-- **Freshness**: sealed hour N is written at N+1:05 UTC.
+- **Partitioned by**: `date`, `hour`. **Always add a `date` (or `date` + `hour`) filter** so Athena partition-projects instead of listing every partition.
+- **Freshness**: sealed hour N is written at N+1:05 UTC. **The most recent complete clock-hour is NOT yet sealed** — safe cut-off is `hour_ts < date_trunc('hour', current_timestamp) - interval '1' hour` (skip current + previous).
 
 ### 2. `metering_daily`
 - **Grain**: (day, config_version, service_api, unit)
-- **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`
+- **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition key `date` (VARCHAR YYYY-MM-DD; equals `CAST(day AS VARCHAR)`)
 - ⚠️ `hour_ts` does NOT exist on this table. Query `day` instead.
-- **Partitioned by**: `date`
+- **Partitioned by**: `date`. Filter on `date` (VARCHAR) for partition pruning, NOT on `day` alone.
 - **Freshness**: sealed day D is written at D+1 00:15 UTC.
 
 ### 3. `metering_docs_hourly`
 - **Grain**: (hour, config_version)
-- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `n_docs`, `sum_pages`
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `n_docs`, `sum_pages`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the hour.
-- **Partitioned by**: `date`, `hour`
+- **Partitioned by**: `date`, `hour`. Same partition-filter rule as `metering_hourly`.
 
 ### 4. `metering_docs_daily`
 - **Grain**: (day, config_version)
-- **Columns**: `day` (DATE), `config_version`, `n_docs`, `sum_pages`
+- **Columns**: `day` (DATE), `config_version`, `n_docs`, `sum_pages`, plus partition key `date` (VARCHAR YYYY-MM-DD)
 - **⚠️ `n_docs` is a doc-hours count, NOT a cross-day unique-doc count** — it's
   `SUM(hourly n_docs)`, so a doc that appears in 3 hours during the day counts as 3.
   For strict unique docs across days, query raw `metering` with `COUNT(DISTINCT document_id)`.
-- **Partitioned by**: `date`
+- **Partitioned by**: `date`.
 
 ### 5. `control_plane_hourly`
 - **Grain**: (hour, function_name, component, bedrock_model)
 - **Columns**: `hour_ts`, `function_name`, `component`, `bedrock_model` (nullable),
   `invocations`, `duration_ms_sum`, `athena_bytes_sum`, `bedrock_tokens_in`,
-  `bedrock_tokens_out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`
+  `bedrock_tokens_out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Use for**: "What is IDP infrastructure costing when I'm not processing docs?"
   Broken down by `component` (`monitor-dashboard`, `monitor-agent`, `analytics-agent`,
   `doc-chat`, `test-runner`, `config-mgmt`, `rollup-lambda`, etc.).
-- **Partitioned by**: `date`, `hour`
+- **Partitioned by**: `date`, `hour`.
 
 ### 6. `data_plane_lambda_hourly`
 - **Grain**: (hour, function_name, component)
 - **Columns**: `hour_ts`, `function_name`, `component`, `invocations`,
-  `duration_ms_sum`, `est_lambda_cost`
+  `duration_ms_sum`, `est_lambda_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Use for**: Lambda compute cost of pipeline Lambdas (OCR/Classification/Extraction/etc.).
   Bedrock and Textract API cost for these Lambdas is already in `metering_hourly` per doc,
   so this table intentionally omits those to avoid double-count.
 - **Combine with `control_plane_hourly` for total Lambda compute:**
   `SUM(est_lambda_cost)` over both tables.
-- **Partitioned by**: `date`, `hour`
+- **Partitioned by**: `date`, `hour`.
 
 ### Athena result reuse
 
@@ -276,10 +276,10 @@ is still being written.
 
 ```sql
 -- Cost this week by service (fast — 7 daily rows per service)
-SELECT service_api, SUM(sum_cost) AS total_cost
+SELECT "service_api", SUM("sum_cost") AS total_cost
 FROM metering_daily
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY service_api
+WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY "service_api"
 ORDER BY total_cost DESC
 
 -- Doc-hours and page-hours by config version this month.
@@ -287,51 +287,78 @@ ORDER BY total_cost DESC
 -- n_docs) — a doc appearing in 3 hours of a day counts as 3. For a
 -- strict cross-day unique-doc count, query raw metering with
 -- COUNT(DISTINCT document_id) and accept the wider scan.
-SELECT config_version, SUM(n_docs) AS doc_hours, SUM(sum_pages) AS page_hours
+SELECT "config_version", SUM("n_docs") AS doc_hours, SUM("sum_pages") AS page_hours
 FROM metering_docs_daily
-WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
-GROUP BY config_version
+WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+GROUP BY "config_version"
 ORDER BY doc_hours DESC
 
--- Hour-of-day cost pattern (24h)
-SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
+-- Hour-of-day cost pattern (24h). Partition-pruned to yesterday+today
+-- so Athena only lists the 2 date partitions this window can touch.
+SELECT hour("hour_ts") AS hod, SUM("sum_cost") AS cost
 FROM metering_hourly
-WHERE date >= date_format(current_date - interval '1' day, '%Y-%m-%d')
-GROUP BY hour(hour_ts)
+WHERE "date" IN (
+    date_format(current_date, '%Y-%m-%d'),
+    date_format(current_date - interval '1' day, '%Y-%m-%d')
+)
+  AND "hour_ts" >= date_add('hour', -24, current_timestamp)
+GROUP BY hour("hour_ts")
 ORDER BY hod
 
--- Cost 24h — must UNION metering_hourly (sealed hours) with raw metering
--- (current partial hour). This is the tier-picker "live tail" pattern.
+-- Cost 24h — sealed hours from metering_hourly + live tail from raw metering.
+-- Three subtleties baked in:
+--  1. The `date` partition filter is REQUIRED on every arm, or Athena
+--     enumerates every partition dir instead of pruning.
+--  2. Sealed hour N is written at N+1:05 UTC — the just-completed clock
+--     hour is NOT yet in metering_hourly. The sealed CTE therefore stops
+--     TWO hours ago (`- interval '1' hour` after date_trunc), and the
+--     raw-metering tail picks up BOTH the current partial hour AND that
+--     previous unsealed hour. Between HH:00 and HH:04 the raw scan is
+--     still cheap because the two-hour window partition-prunes to at
+--     most two `(date, hour)` partitions.
+--  3. SUM over an empty scan returns NULL, and NULL + anything = NULL —
+--     COALESCE both arms to 0 or the whole query returns NULL when
+--     either half has no rows.
 WITH sealed AS (
-  SELECT SUM(sum_cost) AS cost
+  SELECT COALESCE(SUM("sum_cost"), 0) AS cost
   FROM metering_hourly
-  WHERE hour_ts >= date_add('hour', -24, current_timestamp)
-    AND hour_ts <  date_trunc('hour', current_timestamp)
+  WHERE "date" IN (
+      date_format(current_date, '%Y-%m-%d'),
+      date_format(current_date - interval '1' day, '%Y-%m-%d')
+  )
+    AND "hour_ts" >= date_add('hour', -24, current_timestamp)
+    AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
 ),
 tail AS (
-  SELECT SUM(CAST(estimated_cost AS DOUBLE)) AS cost
+  SELECT COALESCE(SUM(CAST("estimated_cost" AS DOUBLE)), 0) AS cost
   FROM metering
-  WHERE date = date_format(current_date, '%Y-%m-%d')
-    AND hour = date_format(CAST(current_timestamp AS timestamp), '%H')
+  WHERE "date" IN (
+      date_format(current_date, '%Y-%m-%d'),
+      date_format(current_date - interval '1' day, '%Y-%m-%d')
+  )
+    AND CAST("hour" AS integer) IN (
+      hour(current_timestamp),
+      hour(date_add('hour', -1, current_timestamp))
+    )
 )
 SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
 
 -- Control-plane cost by component last week
-SELECT component,
-       SUM(est_lambda_cost + est_athena_cost + est_bedrock_cost) AS total_cost
+SELECT "component",
+       SUM("est_lambda_cost" + "est_athena_cost" + "est_bedrock_cost") AS total_cost
 FROM control_plane_hourly
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY component
+WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY "component"
 ORDER BY total_cost DESC
 
 -- Total Lambda compute (data plane + control plane) last 7 days
-SELECT SUM(est_lambda_cost) AS lambda_cost
+SELECT SUM("est_lambda_cost") AS lambda_cost
 FROM (
-  SELECT est_lambda_cost FROM control_plane_hourly
-  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+  SELECT "est_lambda_cost" FROM control_plane_hourly
+  WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
   UNION ALL
-  SELECT est_lambda_cost FROM data_plane_lambda_hourly
-  WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+  SELECT "est_lambda_cost" FROM data_plane_lambda_hourly
+  WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 )
 ```
 """
