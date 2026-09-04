@@ -155,12 +155,17 @@ WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY service_api
 ORDER BY total_cost DESC
 
--- Docs processed by config version, last 30 days
-SELECT config_version, SUM(n_docs) AS docs, SUM(sum_pages) AS pages
+-- Doc-hours and page-hours by config version, last 30 days.
+-- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
+-- n_docs), so a doc appearing in 3 hours of a day is counted 3 times.
+-- Label the output as doc_hours/page_hours accordingly; for strict
+-- cross-day unique-doc counts, query raw metering with
+-- COUNT(DISTINCT document_id) and accept the wider scan.
+SELECT config_version, SUM(n_docs) AS doc_hours, SUM(sum_pages) AS page_hours
 FROM metering_docs_daily
 WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
 GROUP BY config_version
-ORDER BY docs DESC
+ORDER BY doc_hours DESC
 
 -- Hour-of-day cost pattern for the last 7 days
 SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
@@ -306,17 +311,21 @@ GROUP BY hour("hour_ts")
 ORDER BY hod
 
 -- Cost 24h — sealed hours from metering_hourly + live tail from raw metering.
--- Three subtleties baked in:
+-- Four subtleties baked in:
 --  1. The `date` partition filter is REQUIRED on every arm, or Athena
 --     enumerates every partition dir instead of pruning.
 --  2. Sealed hour N is written at N+1:05 UTC — the just-completed clock
 --     hour is NOT yet in metering_hourly. The sealed CTE therefore stops
 --     TWO hours ago (`- interval '1' hour` after date_trunc), and the
 --     raw-metering tail picks up BOTH the current partial hour AND that
---     previous unsealed hour. Between HH:00 and HH:04 the raw scan is
---     still cheap because the two-hour window partition-prunes to at
---     most two `(date, hour)` partitions.
---  3. SUM over an empty scan returns NULL, and NULL + anything = NULL —
+--     previous unsealed hour.
+--  3. The tail must not use `date IN (today, yesterday) AND hour IN (H, H-1)`
+--     — that's a cross-product matching FOUR (date, hour) partitions,
+--     including yesterday-at-the-same-hour (25-26h ago), inflating the
+--     answer. Use a `timestamp` window instead: it partition-prunes on
+--     `date` while precisely bounding the 2-hour window and handling day
+--     rollover correctly (at 00:30 UTC the previous 2 hours span yesterday).
+--  4. SUM over an empty scan returns NULL, and NULL + anything = NULL —
 --     COALESCE both arms to 0 or the whole query returns NULL when
 --     either half has no rows.
 WITH sealed AS (
@@ -336,10 +345,7 @@ tail AS (
       date_format(current_date, '%Y-%m-%d'),
       date_format(current_date - interval '1' day, '%Y-%m-%d')
   )
-    AND CAST("hour" AS integer) IN (
-      hour(current_timestamp),
-      hour(date_add('hour', -1, current_timestamp))
-    )
+    AND "timestamp" >= date_add('hour', -2, current_timestamp)
 )
 SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
 

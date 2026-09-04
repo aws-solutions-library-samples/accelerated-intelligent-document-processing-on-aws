@@ -111,6 +111,37 @@ class TestControlPlaneCostHookDeltaEmission:
         assert third["bedrock_tokens_in"] == 50
         assert third["bedrock_tokens_out"] == 25
 
+    def test_asymmetric_regression_only_resets_the_dropped_counter(self):
+        """Regression pin: if one counter grows and the other regresses,
+        the growing counter must still emit an honest DELTA — not its
+        cumulative total. The pre-fix code treated any regression as a
+        full reset and re-emitted the still-growing counter from scratch
+        (input 100→150 while output 50→30 would emit 150 input tokens
+        instead of the true 50-token delta).
+        """
+        hook = ControlPlaneCostHook(
+            component="analytics-agent",
+            bedrock_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        )
+
+        with patch(
+            "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric"
+        ) as mock_emit:
+            hook._on_after_invocation(_make_after_invocation_event(100, 50))
+            # Input grew (100 → 150); output regressed (50 → 30).
+            hook._on_after_invocation(_make_after_invocation_event(150, 30))
+
+        assert mock_emit.call_count == 2
+        second = mock_emit.call_args_list[1].kwargs
+        assert second["bedrock_tokens_in"] == 50, (
+            "input counter grew from 100 to 150 — honest delta is 50, "
+            "not the pre-fix over-emit of 150"
+        )
+        assert second["bedrock_tokens_out"] == 30, (
+            "output counter regressed to 30 — treated as fresh baseline, "
+            "emit the new total"
+        )
+
     def test_no_new_tokens_no_emission(self):
         """When accumulated_usage didn't change (e.g. the agent
         short-circuited without hitting Bedrock) the hook must skip

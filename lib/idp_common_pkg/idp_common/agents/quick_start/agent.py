@@ -9,6 +9,7 @@ from typing import Optional
 import boto3
 import strands
 
+from ..common.cost_metrics import ControlPlaneCostHook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .tools import (
     activate_config_version,
@@ -186,7 +187,12 @@ def create_quick_start_agent(
         model_id=model_id or DEFAULT_MODEL_ID, boto_session=session
     )
 
-    hooks = kwargs.get("hooks", [])
+    hooks = list(kwargs.get("hooks", []))
+    hooks.append(
+        ControlPlaneCostHook(
+            component="quick-start", bedrock_model=model_id or DEFAULT_MODEL_ID
+        )
+    )
 
     return strands.Agent(
         tools=tools,

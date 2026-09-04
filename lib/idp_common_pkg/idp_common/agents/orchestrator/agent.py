@@ -16,6 +16,7 @@ import boto3
 import strands
 from strands import tool
 
+from ..common.cost_metrics import ControlPlaneCostHook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_chat_companion_model_id
 
@@ -323,8 +324,13 @@ Example:
         boto_session=session,
     )
 
-    # Get hooks from kwargs if provided
-    hooks = kwargs.get("hooks", [])
+    # Get hooks from kwargs if provided; append the control-plane cost hook
+    # so the orchestrator's own routing/decision Bedrock calls land in
+    # control_plane_hourly under component="chat-orchestrator".
+    hooks = list(kwargs.get("hooks", []))
+    hooks.append(
+        ControlPlaneCostHook(component="chat-orchestrator", bedrock_model=model_id)
+    )
 
     orchestrator = strands.Agent(
         system_prompt=system_prompt,

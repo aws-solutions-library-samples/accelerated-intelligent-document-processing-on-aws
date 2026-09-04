@@ -278,7 +278,12 @@ def create_analytics_agent(
     WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
     GROUP BY "config_version"
 
-    -- Per-document drilldown or current-hour tail — raw metering only
+    -- Single-hour drilldown — raw metering for one specific (date, hour)
+    -- partition. Use this shape when the user asks about a specific hour
+    -- (e.g. "cost for the 14:00-15:00 window today"), NOT as a 24h "tail":
+    -- the 24h tail pattern needs BOTH the current partial hour AND the
+    -- previous unsealed hour combined with the sealed hourly rollup — see
+    -- get_table_info(['metering_hourly']) for the sealed+tail template.
     SELECT "context", SUM(CAST("estimated_cost" AS DOUBLE)) AS total_cost
     FROM metering
     WHERE "date" = date_format(current_date, '%Y-%m-%d')
@@ -369,16 +374,19 @@ def create_analytics_agent(
         model_id=model_id, boto_session=session
     )
 
-    # Create the Strands agent with tools and system prompt
-    # Register the control-plane cost hook so Bedrock token counts are
-    # emitted per invocation and rolled up into control_plane_hourly.
+    # Preserve caller-supplied hooks (e.g. DynamoDBMemoryHookProvider from
+    # AgentFactory.create_conversational_agent) and APPEND the control-plane
+    # cost hook — hardcoding a fresh list would silently drop the memory
+    # provider and break chat history persistence.
+    hooks = list(kwargs.get("hooks", []))
+    hooks.append(
+        ControlPlaneCostHook(component="analytics-agent", bedrock_model=model_id)
+    )
     strands_agent = strands.Agent(
         tools=tools,
         system_prompt=system_prompt,
         model=bedrock_model,
-        hooks=[
-            ControlPlaneCostHook(component="analytics-agent", bedrock_model=model_id)
-        ],
+        hooks=hooks,
     )
 
     logger.info("Analytics agent created successfully")

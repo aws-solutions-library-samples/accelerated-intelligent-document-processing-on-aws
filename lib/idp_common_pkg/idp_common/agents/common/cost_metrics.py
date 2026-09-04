@@ -64,17 +64,19 @@ class ControlPlaneCostHook(HookProvider):
             return
 
         # If either counter regressed below the last-seen baseline, the
-        # Strands event loop was reset (e.g. a reused agent whose metrics
-        # were cleared between invocations). Treating that as a per-tick
-        # delta and clamping to zero would then leave the baseline at the
-        # smaller number and cause the NEXT tick to over-emit the tokens
-        # that pre-existed the reset. Instead: emit the full new totals
-        # (the baseline is stale anyway) and reset our snapshot.
-        if total_in < self._last_input_tokens or total_out < self._last_output_tokens:
-            delta_in, delta_out = total_in, total_out
-        else:
+        # Strands event loop was reset for that counter. Handle each
+        # counter INDEPENDENTLY — treating the whole hook as reset when
+        # only one counter drops would re-emit the still-growing counter
+        # in full (e.g. input 100→150 while output 50→30 shouldn't emit
+        # 150 input tokens, only the true 50-token delta).
+        if total_in >= self._last_input_tokens:
             delta_in = total_in - self._last_input_tokens
+        else:
+            delta_in = total_in  # reset — new baseline starts at 0
+        if total_out >= self._last_output_tokens:
             delta_out = total_out - self._last_output_tokens
+        else:
+            delta_out = total_out
         self._last_input_tokens = total_in
         self._last_output_tokens = total_out
 
