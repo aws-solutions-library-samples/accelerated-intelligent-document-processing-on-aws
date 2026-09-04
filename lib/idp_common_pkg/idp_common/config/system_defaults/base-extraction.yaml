@@ -40,6 +40,15 @@ extraction:
     # Defaults to `full` because restating a schema in prose plausibly improves
     # adherence, and on a list-heavy document an agent that drifts from the schema
     # returns fewer ROWS. Judge a change on completeness, not on token count.
+    #
+    # MEASURED (45 runs, benchmark `proseschema` suite): shrinking it costs no
+    # completeness and no accuracy on either path — and buys nothing measurable
+    # either. Every copy sits inside the prompt cache (~a tenth of input price), and
+    # the reclaimed tokens do NOT reduce shard count: plan_shards budgets against OCR
+    # page text only and compute_sizing_plan never subtracts prompt overhead, so they
+    # come off a blanket context_buffer reserve that was already unused (#775). This
+    # is an instrument for measuring the question on your own documents, not a tuning
+    # recommendation.
     prose_schema: full
     max_concurrent_batches: 10            # >1 enables sharding (upper bound on parallelism & shard count)
     shard_token_budget: 0                 # 0 = auto-size from model context window (minus context_buffer)

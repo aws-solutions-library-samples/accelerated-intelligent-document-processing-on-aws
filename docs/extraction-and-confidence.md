@@ -239,10 +239,27 @@ you turn it off, judge the result on **completeness**, not on the token count.
 
 > **One-time cost on the first request after a change.** These copies sit inside the
 > prompt cache, which is why the dollar saving is roughly a tenth of the token count
-> and the real benefit is context-window headroom. Changing the setting changes the
+> and it does **not** make long documents split into fewer parts — the schema text is not
+> counted when the pipeline decides how to split a document, so the reclaimed tokens come
+> out of a safety margin that was already unused ([#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775)). Measured on the benchmark
+> suite: no completeness or accuracy cost, and no benefit either. Changing the setting changes the
 > cached prefix, so the first request per document class after the change is a cache
 > miss. There is nothing to do about it and nothing to worry about — it is one
 > request.
+
+> **What to expect if you turn it off: nothing much, and that is measured.** On the
+> benchmark suite it cost no completeness and no accuracy — and it did not save
+> anything measurable either. Two reasons, both worth knowing before you tune:
+> the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
+> of input price; and reclaiming them does **not** make a long document split into
+> fewer parts, because the schema text is not counted when the pipeline decides how
+> to split a document — the tokens come out of a safety margin that was already
+> unused. Earlier versions of this page and of the setting's own description said
+> the payoff was context-window headroom; that was wrong, and making it true is
+> tracked in
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
+> Treat this as a setting for measuring the question on your own documents, not as
+> a recommended optimisation.
 
 **Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
 **Configuration → Prompt Preview → System Prompt** tab ends with the

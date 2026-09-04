@@ -368,8 +368,13 @@ class AgenticConfig(BaseModel):
             "A/B knob, not a recommendation. The agent can still fetch the schema "
             "on demand via get_extraction_schema_reminder, which is unaffected. "
             "Both copies sit inside the prompt-cache prefix, so the dollar saving "
-            "is roughly a tenth of the token count; the real win is context-window "
-            "headroom, which is what pushes a document into sharding early."
+            "is roughly a tenth of the token count. It does NOT reduce shard "
+            "count: plan_shards budgets against OCR page text only, and "
+            "compute_sizing_plan never subtracts prompt overhead — it is absorbed "
+            "by the blanket context_buffer, so the reclaimed tokens come off a "
+            "reserve that was already unused (#775). Measured on the benchmark "
+            "suite: no completeness or accuracy cost, and no measurable benefit "
+            "either. Treat it as a neutral instrument, not an optimisation."
         ),
     )
     prose_schema: str = Field(

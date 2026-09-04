@@ -1140,9 +1140,15 @@ Two related behaviours worth knowing:
 - **Smaller in dollars than it looks.** All copies sit inside the prompt-cache
   prefix, so on a repeated-class workload they are cache reads at roughly a tenth of
   input price.
-- **Larger in capability.** The redundant tokens consume the same context budget that
-  `context_buffer` / `shard_token_budget` manage, so removing them can keep a
-  document out of an extra shard.
+- **It does NOT reduce shard count.** `plan_shards` budgets against **OCR page text
+  only**, and `compute_sizing_plan` derives that budget as
+  `max_input × (1 - context_buffer)` minus an output and an image reserve — prompt
+  overhead is subtracted nowhere, so the reclaimed tokens come off a blanket reserve
+  that is already ~60,000 tokens wide on a 200K-window model and was already unused.
+  `max_pages_per_shard` (default 5) closes shards on page count regardless. There is
+  therefore **no shard-count, cost or latency mechanism** behind either knob today,
+  which is why the benchmark found no benefit. Making the budget subtract measured
+  prompt overhead — the change that would make these knobs pay — is [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
 - **One-time cache invalidation.** The prose precedes `<<CACHEPOINT>>` and tools
   render before the system prompt, so changing the rendering invalidates the cached
   prefix once per class, on the first request after the change.
