@@ -1,0 +1,3 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+detect-off,9,0,0.11593,0.06475,0.5585,0.0285,0.1672,1.0,1.0,73.06206
+detect-on,9,0,0.1183,0.06527,0.5518,0.0287,0.1781,1.0,0.94444,82.20529
