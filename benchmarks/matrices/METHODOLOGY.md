@@ -18,6 +18,20 @@ that would break reproducibility) so a regenerated corpus is byte-comparable.
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
 
+> ⚠️ **`run_matrix.py` cannot launch reference corpora yet ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).**
+> It launches one local PDF per run, and a reference doc is a test *set* on the
+> stack with no PDF under `corpus/docs/`. It used to drop them silently, so a
+> suite naming `core_docs` measured **7 of its 9 documents** and reported like a
+> full sweep — losing exactly the two corpora with real documents and
+> human-verified labels. The launcher now names them, excludes them from the plan
+> count, and records `docs_named` / `docs_run` / `docs_unlaunchable` in
+> `runmap.json`; **check `docs_unlaunchable` before quoting a suite's result as
+> covering its whole document list.** The scorer for them
+> (`analyze.score_reference()`) is fully implemented and reachable — only the
+> launcher is missing. Until it exists, run reference corpora through Test Studio
+> (`harness/detection_ab_teststudio.py` invokes the same TestRunner Lambda the
+> Test Studio UI does) and report them as a separate arm.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).

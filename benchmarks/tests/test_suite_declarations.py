@@ -350,3 +350,66 @@ def test_a_suite_may_still_name_a_control_explicitly(matrix):
     ]
     got = make_configs.cells_for_suite(matrix, "boundaryctl")
     assert [c["id"] for c in got] == ["split-llm-legacyprompt"]
+
+
+# ---------------------------------------------------------------------------
+# #766: a suite naming a reference corpus measured 7 of its 9 documents and
+# reported like a clean sweep. run_matrix launches one local PDF per run, the
+# reference corpora are test SETS on the stack, and the launch loop `continue`d
+# past them under a comment claiming they were "handled separately" — nothing
+# handled them. This is the same dangerous shape as the dropped control arm
+# above: a benchmark that crashes gets fixed, one that quietly measures less
+# gets published.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_reference_docs_have_no_local_pdf_so_they_cannot_be_launched(docm):
+    """Pins the premise the loudness depends on.
+
+    If a reference corpus ever DOES get a local PDF, the warning below becomes
+    wrong and this test says so rather than letting the harness keep claiming a
+    doc is unlaunchable.
+    """
+    docs_dir = os.path.join(BENCH, "corpus", "docs")
+    for d in docm.get("reference", []):
+        assert not os.path.exists(os.path.join(docs_dir, d["id"] + ".pdf")), (
+            f"reference doc {d['id']} now has a local PDF — run_matrix could "
+            f"launch it, and the '#766 not launchable' warning is now misleading."
+        )
+
+
+@pytest.mark.unit
+def test_core_docs_still_names_the_reference_corpora(docm):
+    """The skip has to stay *reachable*, or this guard is vacuous: `core_docs` is
+    the group most suites use and it is where the 7-of-9 shortfall happens."""
+    core_docs = docm["groups"]["core_docs"]
+    reference = {d["id"] for d in docm.get("reference", [])}
+    assert reference & set(core_docs), (
+        "core_docs no longer names any reference corpus; if that was deliberate, "
+        "delete this test — otherwise the group lost its only real-document "
+        "coverage."
+    )
+
+
+@pytest.mark.unit
+def test_run_matrix_reports_unlaunchable_docs_instead_of_dropping_them():
+    """The launcher must name the shortfall and record it in the manifest.
+
+    Asserted on the source rather than by running a grid (that needs a live
+    stack): the two things that made the old behavior invisible were the bare
+    ``continue`` and the absence of any manifest field distinguishing "did not
+    run" from "scored nothing".
+    """
+    src = open(os.path.join(HARNESS, "run_matrix.py")).read()
+    assert "continue  # reference docs handled separately" not in src, (
+        "the silent skip is back: reference docs are dropped from the launch "
+        "loop with no warning and no record (#766)."
+    )
+    assert "docs_unlaunchable" in src, (
+        "runmap.json no longer records which named documents were not run, so a "
+        "partial grid is indistinguishable from a complete one (#766)."
+    )
+    assert "CANNOT be launched" in src, (
+        "run_matrix no longer prints the unlaunchable documents (#766)."
+    )
