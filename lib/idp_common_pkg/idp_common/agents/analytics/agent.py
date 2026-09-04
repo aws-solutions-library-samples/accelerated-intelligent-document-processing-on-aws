@@ -388,7 +388,7 @@ def create_analytics_agent(
     # AgentFactory.create_conversational_agent) and APPEND the control-plane
     # cost hook — hardcoding a fresh list would silently drop the memory
     # provider and break chat history persistence.
-    hooks = list(kwargs.get("hooks", []))
+    hooks = list(kwargs.get("hooks") or [])
     hooks.append(
         ControlPlaneCostHook(component="analytics-agent", bedrock_model=model_id)
     )

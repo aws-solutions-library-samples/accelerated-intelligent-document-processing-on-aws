@@ -6,7 +6,6 @@ Schema provider for analytics agents - generates comprehensive database descript
 """
 
 import logging
-import re
 from typing import Any, Dict, Generator, Optional
 
 from idp_common.config import get_config
@@ -341,100 +340,6 @@ FROM (
 )
 ```
 """
-
-
-# Header format used by ``get_rollup_tables_description`` for per-table
-# sections. The slicer discovers section order and boundaries via this
-# pattern rather than a hand-maintained list, so a rename / add /
-# reorder in the description needs no code change. Character class is
-# ``\w+`` so a future table like ``metering_hourly_v2`` isn't silently
-# skipped. The trailing "Athena result reuse" heading (also a `###`,
-# but numberless) is the sentinel for the LAST per-table section's end.
-_ROLLUP_SECTION_HEADER_RE = re.compile(r"^### \d+\. `(\w+)`", re.MULTILINE)
-_ROLLUP_APPENDIX_HEADER = "### Athena result reuse"
-
-
-def _discover_rollup_sections() -> "list[tuple[str, int]]":
-    """Return [(table_name, start_offset)] in document order, plus a
-    sentinel for the appendix. Derived from the description string so
-    a rename / add / reorder in ``get_rollup_tables_description`` needs
-    no code change. The appendix sentinel is ALWAYS appended, even if
-    the appendix heading was renamed — in that case we anchor the
-    sentinel to the end of the string so the last-table slice degrades
-    to "everything after this section" rather than raising IndexError.
-    """
-    full = get_rollup_tables_description()
-    sections: list[tuple[str, int]] = [
-        (m.group(1), m.start()) for m in _ROLLUP_SECTION_HEADER_RE.finditer(full)
-    ]
-    appendix_at = full.find(_ROLLUP_APPENDIX_HEADER)
-    sections.append(("__appendix__", appendix_at if appendix_at > -1 else len(full)))
-    return sections
-
-
-def _get_rollup_table_body(table_name: str) -> str:
-    """Return ONLY the per-table body of one rollup section — no shared
-    preamble, no shared footer. Meant for concatenation by the caller
-    (``get_table_info``) so a multi-rollup request emits shared context
-    once rather than N times.
-
-    Returns empty string for an unknown table (caller decides how to
-    signal that; ``get_table_info`` already gates on a name whitelist).
-    """
-    sections = _discover_rollup_sections()
-    names = [n for n, _ in sections if n != "__appendix__"]
-    if table_name not in names:
-        return ""
-    full = get_rollup_tables_description()
-    idx = names.index(table_name)
-    body_start = sections[idx][1]
-    # sections always ends with the appendix sentinel — see
-    # ``_discover_rollup_sections`` — so this index is always safe.
-    body_end = sections[idx + 1][1]
-    return full[body_start:body_end]
-
-
-def _rollup_shared_preamble() -> str:
-    """The intro / tier picker / cost-vs-docs split block that lives
-    before the first per-table section. Emitted ONCE by
-    ``get_table_info`` regardless of how many rollup tables were asked
-    about."""
-    full = get_rollup_tables_description()
-    sections = _discover_rollup_sections()
-    if not sections or sections[0][0] == "__appendix__":
-        return full  # no per-table sections found — degrade to full
-    return full[: sections[0][1]]
-
-
-def _rollup_shared_footer() -> str:
-    """The Athena-reuse note + sample-queries appendix that lives after
-    the last per-table section. Emitted ONCE by ``get_table_info``.
-    Returns empty string if the appendix heading was renamed (the
-    per-table bodies still carry the important per-table info)."""
-    full = get_rollup_tables_description()
-    footer_start = full.find(_ROLLUP_APPENDIX_HEADER)
-    return full[footer_start:] if footer_start > -1 else ""
-
-
-def get_single_rollup_table_description(table_name: str) -> str:
-    """Return the rollup-description slice for ONE requested table.
-
-    Composes shared preamble + one table body + shared footer. For
-    multi-table requests, ``get_table_info`` bypasses this helper and
-    builds the response directly so shared context isn't duplicated
-    per table (the previous R5 wiring emitted the ~5 KB shared
-    preamble/footer N times, inverting the token-cost win the moment
-    the LLM asked for 2+ rollups in one call).
-
-    Section boundaries are discovered from the description string via
-    the ``### <n>. `<name>``` header pattern (see
-    ``_ROLLUP_SECTION_HEADER_RE``). Falls back to the full description
-    if the requested table isn't found.
-    """
-    body = _get_rollup_table_body(table_name)
-    if not body:
-        return get_rollup_tables_description()  # unknown — safe default
-    return _rollup_shared_preamble() + body + _rollup_shared_footer()
 
 
 def get_evaluation_tables_description() -> str:
@@ -1089,25 +994,6 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
 
     detailed_info = f"# Detailed Schema Information for {len(table_names)} Table(s)\n\n"
 
-    _rollup_names = {
-        "metering_hourly",
-        "metering_daily",
-        "metering_docs_hourly",
-        "metering_docs_daily",
-        "control_plane_hourly",
-        "data_plane_lambda_hourly",
-    }
-
-    # Collect requested rollup tables so the shared preamble/footer
-    # (~5 KB of tier-picker, cost-vs-docs split rules, Athena reuse
-    # notes, sample queries) is emitted ONCE rather than N times when
-    # the LLM legitimately asks about e.g. `metering_hourly` +
-    # `metering_docs_hourly` together (the tier-picker prompt actively
-    # encourages that pairing for cost + volume questions).
-    requested_rollups = [
-        t.lower().strip() for t in table_names if t.lower().strip() in _rollup_names
-    ]
-
     for table_name in table_names:
         table_name = table_name.lower().strip()
 
@@ -1115,12 +1001,24 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
             detailed_info += get_metering_table_description()
             detailed_info += "\n---\n\n"
 
-        elif table_name in _rollup_names:
-            # Emit ONLY the per-table body here; the shared preamble/
-            # footer is emitted once at the end for the whole rollup
-            # group. That keeps a 2-table lookup at ~2× table-body
-            # size, not (2 × table-body) + (2 × 5 KB shared).
-            detailed_info += _get_rollup_table_body(table_name)
+        elif table_name in {
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        }:
+            # The six rollup tables are one conceptual unit — the tier
+            # picker, cost-vs-docs split rule, and sample joins are all
+            # cross-cutting — so we return the full 6-table description
+            # whenever any rollup is requested. Same pattern as the
+            # evaluation / rule-validation helpers below. An earlier
+            # attempt to slice per-table added ~200 lines of discovery /
+            # composition / fallback machinery to save ~$0.0002 per
+            # cache-hit call and produced 4 rounds of review churn;
+            # reverted.
+            detailed_info += get_rollup_tables_description()
             detailed_info += "\n---\n\n"
 
         elif table_name.startswith("document_evaluations") or table_name in [
@@ -1144,20 +1042,6 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
         else:
             detailed_info += f"## Unknown Table: {table_name}\n\n"
             detailed_info += "**Error**: Table name not recognized.\n"
-
-    # If any rollup tables were requested, wrap the concatenated bodies
-    # in the shared preamble + footer once. Otherwise the response
-    # would be per-table bodies without the tier picker / cost-vs-docs
-    # split rules the bodies implicitly reference.
-    if requested_rollups:
-        detailed_info = (
-            detailed_info.replace(
-                "# Detailed Schema Information for",
-                _rollup_shared_preamble() + "\n# Detailed Schema Information for",
-                1,
-            )
-            + _rollup_shared_footer()
-        )
 
     logger.debug(f"Table Info: {detailed_info}")
     return detailed_info

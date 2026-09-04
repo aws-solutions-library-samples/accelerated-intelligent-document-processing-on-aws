@@ -187,7 +187,7 @@ def create_quick_start_agent(
         model_id=model_id or DEFAULT_MODEL_ID, boto_session=session
     )
 
-    hooks = list(kwargs.get("hooks", []))
+    hooks = list(kwargs.get("hooks") or [])
     hooks.append(
         ControlPlaneCostHook(
             component="quick-start", bedrock_model=model_id or DEFAULT_MODEL_ID

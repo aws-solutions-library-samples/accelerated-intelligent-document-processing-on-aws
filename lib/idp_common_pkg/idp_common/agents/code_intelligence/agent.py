@@ -171,7 +171,7 @@ Remember: NEVER use read_wiki_contents! NEVER send sensitive data to external se
 """
 
             # Preserve caller-supplied hooks; APPEND the control-plane cost hook.
-            hooks = list(kwargs.get("hooks", []))
+            hooks = list(kwargs.get("hooks") or [])
             hooks.append(
                 ControlPlaneCostHook(
                     component="code-intelligence", bedrock_model=model_id

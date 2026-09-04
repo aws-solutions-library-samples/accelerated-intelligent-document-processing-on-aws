@@ -79,7 +79,7 @@ def create_error_analyzer_agent(
 
     # Preserve caller-supplied hooks; APPEND the control-plane cost hook so
     # AgentFactory-provided memory / monitoring providers aren't overwritten.
-    hooks = list(kwargs.get("hooks", []))
+    hooks = list(kwargs.get("hooks") or [])
     hooks.append(
         ControlPlaneCostHook(component="error-analyzer", bedrock_model=model_id)
     )

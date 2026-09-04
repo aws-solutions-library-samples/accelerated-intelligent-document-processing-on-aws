@@ -85,9 +85,13 @@ class ControlPlaneCostHook(HookProvider):
         if delta_in == 0 and delta_out == 0:
             return
 
+        # Pass None (not 0) for a zero-side counter so
+        # ``emit_control_plane_cost_metric`` skips its ``PutMetricData``
+        # datum — publishing a 0-valued CloudWatch datum burns metric
+        # budget and adds a stream that will never yield useful signal.
         emit_control_plane_cost_metric(
             component=self.component,
-            bedrock_tokens_in=delta_in,
-            bedrock_tokens_out=delta_out,
+            bedrock_tokens_in=delta_in if delta_in > 0 else None,
+            bedrock_tokens_out=delta_out if delta_out > 0 else None,
             bedrock_model=self.bedrock_model,
         )
