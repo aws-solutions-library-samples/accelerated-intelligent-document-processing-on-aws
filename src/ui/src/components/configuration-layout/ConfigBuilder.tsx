@@ -1653,6 +1653,17 @@ const ConfigBuilder = ({
       );
     } else if (
       property.format !== 'single-line' &&
+      // A DECLARED scalar type beats the path-name heuristic below. That heuristic
+      // exists to give free-text fields a roomy editor, but it matched on the path,
+      // so a boolean whose name merely ENDS in "prompt" was rendered as a textarea:
+      // `extraction.forced_tool.fallback_to_prompt` and
+      // `extraction.agentic.restate_schema_in_system_prompt` both shipped as free
+      // text where every other true/false setting is a toggle. Typing anything into
+      // one stored a STRING, and the backend config model only accepts the
+      // spellings pydantic reads as a bool: `off` happened to work, while `disabled`
+      // — or an empty box, or `yes ` with a trailing space — is a ValidationError on
+      // the config rather than a setting.
+      !['boolean', 'number', 'integer'].includes(String(property.type)) &&
       (property.format === 'textarea' ||
         property.format === 'text-area' || // back-compat alias for 'textarea'
         path.toLowerCase().includes('prompt') ||
