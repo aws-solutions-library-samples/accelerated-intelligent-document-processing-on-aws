@@ -15,6 +15,7 @@ import pytest
 from idp_common.agents.analytics.schema_provider import (
     get_database_overview,
     get_rollup_tables_description,
+    get_single_rollup_table_description,
     get_table_info,
 )
 
@@ -191,6 +192,112 @@ def stub_config():
     cfg = MagicMock()
     cfg.classes = []  # no document classes → dynamic sections stay empty
     return cfg
+
+
+@pytest.mark.unit
+class TestRollupProgressiveDisclosure:
+    """Round-5 review: ``get_table_info(['metering_hourly'])`` returned
+    the full 6-table description regardless of which was requested,
+    wasting ~4x the tokens. ``get_single_rollup_table_description``
+    slices out only the requested table's section (+ shared preamble
+    and Athena-reuse notes).
+    """
+
+    def test_single_table_omits_other_rollup_sections(self):
+        result = get_single_rollup_table_description("metering_hourly")
+        # The requested section IS present.
+        assert "### 1. `metering_hourly`" in result
+        # The OTHER per-table sections are NOT present.
+        for other in (
+            "### 2. `metering_daily`",
+            "### 3. `metering_docs_hourly`",
+            "### 4. `metering_docs_daily`",
+            "### 5. `control_plane_hourly`",
+            "### 6. `data_plane_lambda_hourly`",
+        ):
+            assert other not in result, (
+                f"section {other!r} leaked into the metering_hourly-only "
+                f"slice — progressive-disclosure win is lost"
+            )
+
+    def test_single_table_slice_is_smaller_than_full(self):
+        """Sanity check: the sliced response is meaningfully shorter
+        than the full 6-table description. If a future refactor makes
+        the slicer return everything, this test catches it. The current
+        slicer keeps the shared preamble, one table's section, the
+        Athena-reuse note, and the sample-queries appendix — measured
+        savings ~27% today; further reduction possible by filtering
+        samples per-table (follow-up)."""
+        full = get_rollup_tables_description()
+        one = get_single_rollup_table_description("metering_hourly")
+        assert len(one) < len(full) * 0.85, (
+            f"slicer returned {len(one)} chars vs full {len(full)} — "
+            "should be at most ~85% of full to justify the extra function"
+        )
+
+    def test_last_table_slice_ends_at_athena_reuse(self):
+        """The slicer must handle the last table's section correctly —
+        its end marker is the shared 'Athena result reuse' section,
+        not the 'next table' section which doesn't exist."""
+        result = get_single_rollup_table_description("data_plane_lambda_hourly")
+        assert "### 6. `data_plane_lambda_hourly`" in result
+        # It should include the section body AND the Athena reuse notes.
+        assert "Athena result reuse" in result
+        # But NOT the earlier tables' sections.
+        assert "### 5. `control_plane_hourly`" not in result
+
+    def test_unknown_rollup_falls_back_to_full(self):
+        """Defensive: if a caller passes an unknown rollup name, the
+        slicer returns the full description rather than an empty string."""
+        result = get_single_rollup_table_description("metering_hourly_typo")
+        assert "### 1. `metering_hourly`" in result
+        assert "### 6. `data_plane_lambda_hourly`" in result
+
+    def test_last_table_slice_survives_appendix_rename(self, monkeypatch):
+        """Round-6 review: if the ``### Athena result reuse`` heading
+        is ever renamed, ``find()`` returns -1 and the last-table slice
+        used to raise IndexError (the appendix sentinel wasn't
+        appended). The fix appends the sentinel unconditionally,
+        anchored to ``len(full)`` when the heading isn't found, so the
+        last table's body degrades to "everything after this section"
+        rather than crashing."""
+        from idp_common.agents.analytics import schema_provider
+
+        original = schema_provider.get_rollup_tables_description()
+        renamed = original.replace("### Athena result reuse", "### Athena reuse notes")
+        monkeypatch.setattr(
+            schema_provider,
+            "get_rollup_tables_description",
+            lambda: renamed,
+        )
+        # Must NOT raise. Result should be a non-empty string that
+        # contains the requested section header.
+        result = schema_provider.get_single_rollup_table_description(
+            "data_plane_lambda_hourly"
+        )
+        assert result
+        assert "### 6. `data_plane_lambda_hourly`" in result
+
+    def test_multi_rollup_get_table_info_dedupes_shared_context(self):
+        """Round-6 review: ``get_table_info(['metering_hourly',
+        'metering_docs_hourly'])`` used to concat two full slices
+        (shared preamble+footer emitted twice), making the response
+        LARGER than the full 6-table description (14 320 vs 10 013
+        chars) — a token-cost regression on the exact multi-table
+        pattern the tier-picker prompt encourages. Fix: emit shared
+        context once for the whole rollup group."""
+        two = get_table_info(["metering_hourly", "metering_docs_hourly"])
+        full = get_rollup_tables_description()
+        assert len(two) < len(full) * 1.1, (
+            f"two-rollup response ({len(two)} chars) must not exceed the "
+            f"full 6-table description ({len(full)}) — shared "
+            f"preamble/footer duplication regression."
+        )
+        # Sanity: the "### Sample queries" appendix must appear only ONCE.
+        assert two.count("### Sample queries") == 1, (
+            "sample-queries appendix must be emitted exactly once, not "
+            "once per requested rollup"
+        )
 
 
 @pytest.mark.unit

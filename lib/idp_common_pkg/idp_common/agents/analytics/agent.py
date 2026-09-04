@@ -255,9 +255,10 @@ def create_analytics_agent(
     
     ## Standard Query Templates:
     ```sql
-    -- Document classification count
+    -- Document classification count (substitute the specific document type,
+    -- e.g. document_sections_w2 or document_sections_invoice)
     SELECT COUNT(DISTINCT "document_id")
-    FROM document_sections_{type}
+    FROM document_sections_{{type}}
     WHERE "date" = CAST(CURRENT_DATE AS VARCHAR)
 
     -- Cost analysis for a WIDE range — prefer the rollup, not raw metering
@@ -279,11 +280,20 @@ def create_analytics_agent(
     GROUP BY "config_version"
 
     -- Single-hour drilldown — raw metering for one specific (date, hour)
-    -- partition. Use this shape when the user asks about a specific hour
-    -- (e.g. "cost for the 14:00-15:00 window today"), NOT as a 24h "tail":
-    -- the 24h tail pattern needs BOTH the current partial hour AND the
-    -- previous unsealed hour combined with the sealed hourly rollup — see
-    -- get_table_info(['metering_hourly']) for the sealed+tail template.
+    -- partition. NOT for a 24h "tail" query — that needs BOTH the current
+    -- partial hour AND the previous unsealed hour combined with the sealed
+    -- hourly rollup; see get_table_info(['metering_hourly']) for that template.
+    --
+    -- (a) Specific past hour — substitute <YYYY-MM-DD> and <HH> with the
+    --     user-requested date + zero-padded hour (angle-bracket tokens are
+    --     placeholders, NOT literal SQL — replace them, do not quote them):
+    SELECT "context", SUM(CAST("estimated_cost" AS DOUBLE)) AS total_cost
+    FROM metering
+    WHERE "date" = '<YYYY-MM-DD>'
+      AND "hour" = '<HH>'
+    GROUP BY "context"
+
+    -- (b) Current hour — derive date+hour from the current timestamp:
     SELECT "context", SUM(CAST("estimated_cost" AS DOUBLE)) AS total_cost
     FROM metering
     WHERE "date" = date_format(current_date, '%Y-%m-%d')
