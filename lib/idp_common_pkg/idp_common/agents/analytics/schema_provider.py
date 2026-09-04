@@ -121,59 +121,242 @@ ORDER BY total_cost DESC
 
 ### Prefer Rollup Tables for Wide Time Ranges
 
-For queries spanning **> 2 hours** of history, prefer the reporting rollup
-tables — they aggregate the raw `metering` table hourly/daily so a
-question like "cost this month" scans a few hundred rows instead of
-millions. See `docs/reporting-sql-layer.md`.
+For queries spanning **> 2 hours** of history, raw `metering` is the
+wrong grain — the six Phase-1 rollup tables aggregate this data hourly
+or daily so a "cost this month" question scans a few hundred rows
+instead of millions.
 
-- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`
-  (TIMESTAMP), `config_version`, `service_api`, `unit`. Aggregate
-  columns: `sum_value` (a **quantity** — tokens / pages / seconds;
-  the denominator is `unit`) and `sum_cost` (USD). ⚠️ **`sum_value`
-  is NOT a cost — do not sum it as dollars.** Use `sum_cost` for
-  $ questions. **NEVER SELECT `n_docs` or `sum_pages` from this
-  table** — those live on `metering_docs_hourly` (the Phase-1
-  doc-vs-cost split — see `docs/reporting-sql-layer.md`).
-  Partitioned by `date` + `hour`.
-- **`metering_daily`** — daily grain of the same aggregates as
-  `metering_hourly`. Keyed on **`day` (DATE)** instead of
-  `hour_ts` (do NOT `SELECT hour_ts FROM metering_daily` — it
-  doesn't exist), plus `config_version`, `service_api`, `unit`.
-  Same `sum_value` (quantity) and `sum_cost` (USD) columns.
-  Partitioned by `date`.
-- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain
-  volume (`n_docs`, `sum_pages`) per `config_version`. Use these
-  for "how many docs / pages did config X process?" rollup
-  questions. Partitioned by `date` (+ `hour` on the hourly table).
-
-Query patterns:
-```sql
--- Cost this week by service (fast — scans ~7 daily rows per service)
-SELECT service_api, SUM(sum_cost) AS total_cost
-FROM metering_daily
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY service_api
-ORDER BY total_cost DESC
-
--- Docs processed by config version, last 30 days
-SELECT config_version, SUM(n_docs) AS docs, SUM(sum_pages) AS pages
-FROM metering_docs_daily
-WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
-GROUP BY config_version
-ORDER BY docs DESC
-
--- Hour-of-day cost pattern for the last 7 days
-SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
-FROM metering_hourly
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY hour(hour_ts)
-ORDER BY hod
-```
+**Call `get_table_info(['metering_hourly'])`** (or `_daily`, `_docs_hourly`,
+`_docs_daily`, `control_plane_hourly`, `data_plane_lambda_hourly`) for
+the full column list, tier picker, cost-vs-docs split rules, and
+sample SQL. That single description is the canonical source — this
+metering bullet does NOT duplicate it, to prevent drift.
 
 **Fallback rule**: for the *current* hour (before the hourly rollup
 fires) OR when the question needs `document_id`-grain detail (per-doc
 cost, join to sections/evaluations), you MUST query raw `metering`
 with a partition filter.
+"""
+
+
+def get_rollup_tables_description() -> str:
+    """
+    Detailed description of the six Phase-1 reporting rollup tables.
+
+    Consumers should prefer these tables over raw `metering` for any query
+    spanning more than the current hour — they scan hundreds of rows
+    instead of millions. See `docs/reporting-sql-layer.md`.
+    """
+    return """
+## Reporting Rollup Tables (prefer over raw `metering` for wide ranges)
+
+The six Phase-1 rollup tables aggregate raw `metering` and CloudWatch
+data on a schedule. Use them for any question that spans more than the
+current hour. Raw `metering` remains the source for the current partial
+hour and per-document drilldown.
+
+### Tier picker (which table for which range)
+
+| Requested range | Cost tier | Volume tier (docs, pages) | Live tail |
+|---|---|---|---|
+| `< 2h` | raw `metering` (with `date`/`hour` filter) | raw `metering` (`MAX(number_of_pages)` per doc) | n/a |
+| `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for current hour |
+| `> 24h` | `metering_daily` | `metering_docs_daily` (see fan-out note below) | `metering_hourly` / `metering_docs_hourly` for current day |
+
+### Cost-vs-docs column split (Phase-1)
+
+Cost columns live on `metering_hourly` / `metering_daily`. Document
+volume columns (`n_docs`, `sum_pages`) live on the SEPARATE
+`metering_docs_hourly` / `metering_docs_daily` tables — grouping by
+`service_api` on the volume grain would fan `number_of_pages` out by the
+number of (service, unit) rows a doc touched.
+
+- **NEVER** `SELECT n_docs FROM metering_hourly` — column does not exist.
+- **NEVER** `SELECT sum_pages FROM metering_hourly` — column does not exist.
+- **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column does not exist.
+- **NEVER** `GROUP BY service_api` or `unit` on `metering_docs_*` — those columns don't exist.
+
+### 1. `metering_hourly`
+- **Grain**: (hour, config_version, service_api, unit)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
+- **Partitioned by**: `date`, `hour`. **Always add a `date` (or `date` + `hour`) filter** so Athena partition-projects instead of listing every partition.
+- **Freshness**: sealed hour N is written at N+1:05 UTC. **The most recent complete clock-hour is NOT yet sealed** — safe cut-off is `hour_ts < date_trunc('hour', current_timestamp) - interval '1' hour` (skip current + previous).
+
+### 2. `metering_daily`
+- **Grain**: (day, config_version, service_api, unit)
+- **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition key `date` (VARCHAR YYYY-MM-DD; equals `CAST(day AS VARCHAR)`)
+- ⚠️ `hour_ts` does NOT exist on this table. Query `day` instead.
+- **Partitioned by**: `date`. Filter on `date` (VARCHAR) for partition pruning, NOT on `day` alone.
+- **Freshness**: sealed day D is written at D+1 00:15 UTC.
+
+### 3. `metering_docs_hourly`
+- **Grain**: (hour, config_version)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `n_docs`, `sum_pages`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the hour.
+- **Partitioned by**: `date`, `hour`. Same partition-filter rule as `metering_hourly`.
+
+### 4. `metering_docs_daily`
+- **Grain**: (day, config_version)
+- **Columns**: `day` (DATE), `config_version`, `n_docs`, `sum_pages`, plus partition key `date` (VARCHAR YYYY-MM-DD)
+- **⚠️ `n_docs` is a doc-hours count, NOT a cross-day unique-doc count** — it's
+  `SUM(hourly n_docs)`, so a doc that appears in 3 hours during the day counts as 3.
+  For strict unique docs across days, query raw `metering` with `COUNT(DISTINCT document_id)`.
+- **Partitioned by**: `date`.
+
+### 5. `control_plane_hourly`
+- **Grain**: (hour, function_name, component, bedrock_model)
+- **Columns**: `hour_ts`, `function_name`, `component`, `bedrock_model` (nullable),
+  `invocations`, `duration_ms_sum`, `athena_bytes_sum`, `bedrock_tokens_in`,
+  `bedrock_tokens_out`, `est_lambda_cost`, `est_athena_cost`, `est_bedrock_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Use for**: "What is IDP infrastructure costing when I'm not processing docs?"
+  Broken down by `component` (`monitor-dashboard`, `monitor-agent`, `analytics-agent`,
+  `doc-chat`, `test-runner`, `config-mgmt`, `rollup-lambda`, etc.).
+- **Partitioned by**: `date`, `hour`.
+
+### 6. `data_plane_lambda_hourly`
+- **Grain**: (hour, function_name, component)
+- **Columns**: `hour_ts`, `function_name`, `component`, `invocations`,
+  `duration_ms_sum`, `est_lambda_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Use for**: Lambda compute cost of pipeline Lambdas (OCR/Classification/Extraction/etc.).
+  Bedrock and Textract API cost for these Lambdas is already in `metering_hourly` per doc,
+  so this table intentionally omits those to avoid double-count.
+- **Combine with `control_plane_hourly` for total Lambda compute:**
+  `SUM(est_lambda_cost)` over both tables.
+- **Partitioned by**: `date`, `hour`.
+
+### Note on result reuse (operator context)
+
+Sealed rollup partitions never change, so queries against them are
+safe candidates for Athena's per-query result cache — but that's a
+boto3 `StartQueryExecution` parameter set by whichever consumer runs
+the query, not something you (the SQL-writing agent) control. Assume
+your SQL runs against fresh data; ignore this note. See
+`docs/reporting-sql-layer.md` §2 for the operator/consumer side.
+
+### Sample queries
+
+```sql
+-- Cost this week by service (fast — 7 daily rows per service)
+SELECT "service_api", SUM("sum_cost") AS total_cost
+FROM metering_daily
+WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY "service_api"
+ORDER BY total_cost DESC
+
+-- Doc-hours and page-hours by config version this month.
+-- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
+-- n_docs) — a doc appearing in 3 hours of a day counts as 3. For a
+-- strict cross-day unique-doc count, query raw metering with
+-- COUNT(DISTINCT document_id) and accept the wider scan.
+SELECT "config_version", SUM("n_docs") AS doc_hours, SUM("sum_pages") AS page_hours
+FROM metering_docs_daily
+WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+GROUP BY "config_version"
+ORDER BY doc_hours DESC
+
+-- Hour-of-day cost pattern (24h). Partition-pruned to yesterday+today
+-- so Athena only lists the 2 date partitions this window can touch.
+-- The freshness cut-off (`hour_ts < date_trunc('hour', current_timestamp)
+-- - interval '1' hour`) excludes the two hours that may still be
+-- unsealed: hour N-1 (rollup writes at N+1:05, so 0-5 min after each
+-- clock hour it isn't yet in the table) and the current partial hour N.
+-- Copying the template WITHOUT this cut-off silently returns partial
+-- data during the HH:00-HH:04 window.
+SELECT hour("hour_ts") AS hod, SUM("sum_cost") AS cost
+FROM metering_hourly
+WHERE "date" IN (
+    date_format(current_date, '%Y-%m-%d'),
+    date_format(current_date - interval '1' day, '%Y-%m-%d')
+)
+  AND "hour_ts" >= date_trunc('hour', date_add('hour', -24, current_timestamp))
+  AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
+GROUP BY hour("hour_ts")
+ORDER BY hod
+
+-- Cost 24h — sealed hours from metering_hourly + live tail from raw metering.
+-- Four subtleties baked in:
+--  1. The `date` partition filter is REQUIRED on every arm, or Athena
+--     enumerates every partition dir instead of pruning.
+--  2. Sealed hour N is written at N+1:05 UTC — the just-completed clock
+--     hour is NOT yet in metering_hourly during HH:00-HH:04. The sealed
+--     CTE therefore stops one full hour before `date_trunc(hour, now)`,
+--     and the raw-metering tail picks up BOTH the current partial hour
+--     AND the previous (potentially-still-unsealed) hour.
+--  3. Sealed upper bound and tail lower bound MUST use the same
+--     expression (`date_add('hour', -1, date_trunc('hour', current_timestamp))`)
+--     so the seam is exact — no overlap, no gap. Using
+--     `date_add('hour', -2, current_timestamp)` for the tail creates
+--     a 0-60 minute overlap with sealed (double-counts up to an hour
+--     of cost). Using `date_trunc('hour', current_timestamp)` for the
+--     tail creates a 0-60 minute gap during the HH:00-HH:04 window
+--     when hour H-1 isn't yet in metering_hourly.
+--  4. SUM over an empty scan returns NULL, and NULL + anything = NULL —
+--     COALESCE both arms to 0 or the whole query returns NULL when
+--     either half has no rows.
+WITH sealed AS (
+  SELECT COALESCE(SUM("sum_cost"), 0) AS cost
+  FROM metering_hourly
+  WHERE "date" IN (
+      date_format(current_date, '%Y-%m-%d'),
+      date_format(current_date - interval '1' day, '%Y-%m-%d')
+  )
+    -- Floor the lower bound to the hour so a bucket like 03:00 (which
+    -- represents 03:00-04:00) isn't excluded just because
+    -- date_add('hour', -24, current_timestamp) landed at 03:30. Comparing
+    -- an hour-start against a non-hour-aligned time silently dropped up to
+    -- 59 minutes of data at the trailing edge.
+    AND "hour_ts" >= date_trunc('hour', date_add('hour', -24, current_timestamp))
+    AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
+),
+tail AS (
+  -- Prune to the exact 2 `(date, hour)` partitions we need. `date IN (...)`
+  -- alone would enumerate 48 hour subdirs (2 dates × 24). Trino's
+  -- tuple-IN pushes both partition columns into the projection, so
+  -- Athena reads at most 2 partition dirs (~80 MB) instead of ~1.9 GB.
+  -- The row-level `timestamp` filter is still needed for correctness at
+  -- the seam (the previous hour partition contains rows before AND
+  -- after the seal boundary).
+  SELECT COALESCE(SUM(CAST("estimated_cost" AS DOUBLE)), 0) AS cost
+  FROM metering
+  WHERE ("date", "hour") IN (
+      (
+          date_format(current_timestamp, '%Y-%m-%d'),
+          date_format(current_timestamp, '%H')
+      ),
+      (
+          date_format(date_add('hour', -1, current_timestamp), '%Y-%m-%d'),
+          date_format(date_add('hour', -1, current_timestamp), '%H')
+      )
+  )
+    AND "timestamp" >= date_add('hour', -1, date_trunc('hour', current_timestamp))
+)
+SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
+
+-- Control-plane cost by component last week.
+-- Sum each cost column separately (not `SUM(a + b + c)`): with the
+-- combined form, if any single column is NULL in a row the whole row's
+-- contribution becomes NULL and that row drops out of the aggregate.
+-- Three separate SUMs are NULL-safe by default.
+SELECT "component",
+       COALESCE(SUM("est_lambda_cost"), 0)
+         + COALESCE(SUM("est_athena_cost"), 0)
+         + COALESCE(SUM("est_bedrock_cost"), 0) AS total_cost
+FROM control_plane_hourly
+WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+GROUP BY "component"
+ORDER BY total_cost DESC
+
+-- Total Lambda compute (data plane + control plane) last 7 days
+SELECT SUM("est_lambda_cost") AS lambda_cost
+FROM (
+  SELECT "est_lambda_cost" FROM control_plane_hourly
+  WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+  UNION ALL
+  SELECT "est_lambda_cost" FROM data_plane_lambda_hourly
+  WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+)
+```
 """
 
 
@@ -829,6 +1012,13 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
 
     detailed_info = f"# Detailed Schema Information for {len(table_names)} Table(s)\n\n"
 
+    # Track which conceptual "group" descriptions have already been
+    # emitted so `get_table_info(['metering_hourly', 'metering_docs_hourly'])`
+    # doesn't emit the full 6-table rollup description twice. Same for
+    # the evaluation and rule-validation groups — each is a single
+    # helper that already covers all tables in its group.
+    emitted_groups: set[str] = set()
+
     for table_name in table_names:
         table_name = table_name.lower().strip()
 
@@ -836,17 +1026,39 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
             detailed_info += get_metering_table_description()
             detailed_info += "\n---\n\n"
 
+        elif table_name in {
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        }:
+            # The six rollup tables are one conceptual unit — the tier
+            # picker, cost-vs-docs split rule, and sample joins are all
+            # cross-cutting — so we return the full 6-table description
+            # whenever any rollup is requested. Same pattern as the
+            # evaluation / rule-validation helpers below.
+            if "rollup" not in emitted_groups:
+                detailed_info += get_rollup_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("rollup")
+
         elif table_name.startswith("document_evaluations") or table_name in [
             "document_evaluations",
             "section_evaluations",
             "attribute_evaluations",
         ]:
-            detailed_info += get_evaluation_tables_description()
-            detailed_info += "\n---\n\n"
+            if "evaluation" not in emitted_groups:
+                detailed_info += get_evaluation_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("evaluation")
 
         elif table_name in ["rule_validation_summary", "rule_validation_details"]:
-            detailed_info += get_rule_validation_tables_description()
-            detailed_info += "\n---\n\n"
+            if "rule_validation" not in emitted_groups:
+                detailed_info += get_rule_validation_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("rule_validation")
 
         elif table_name.startswith("document_sections_"):
             # Extract the class name from table name

@@ -297,6 +297,11 @@ Every hour, for the sealed hour N-1:
 | `monitor-dashboard` | Dashboard resolver + Athena reads it issues | Page open in IDP Monitor UI |
 | `monitor-agent` | Scheduled AI-summary agent | EventBridge hourly cron |
 | `analytics-agent` | Natural-language → SQL agent, agent-chat processor | User question / chat |
+| `chat-orchestrator` | Chat companion's top-level orchestrator agent (routes user prompts to specialised sub-agents) | User chat |
+| `error-analyzer` | Chat companion's error-analysis agent | User question about a failed doc |
+| `code-intelligence` | Chat companion's code-intelligence agent (DeepWiki MCP) | User question about the codebase |
+| `quick-start` | Chat companion's quick-start / bootstrap agent | User setup flow |
+| `external-mcp` | Chat companion's user-registered external MCP agent | User invokes an installed MCP server |
 | `doc-chat` | Chat-with-document + streaming chat | User chat about a specific doc |
 | `test-set-mgmt` | Test set CRUD + S3 polling | Test Studio UI + on-open scan |
 | `test-runner` | Kick off test runs + copy files | User clicks "Run test" |
@@ -482,20 +487,37 @@ business logic keeps working. `FunctionName` is auto-populated from
 `AWS_LAMBDA_FUNCTION_NAME` — callers pass only `component` (and
 `bedrock_model` for Bedrock metrics).
 
-**Phase 1 emitter coverage.** The helper is currently called from
-three in-repo emitters, all publishing `AthenaBytesScanned`: the
-analytics agent's Athena tool
+**Phase 1 emitter coverage** (`AthenaBytesScanned` only). Three
+in-repo call sites: the analytics agent's Athena tool
 (`lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py`),
 the test-results resolver
 (`nested/api-resolvers/src/lambda/test_results_resolver/index.py`),
 and the rollup Lambda's own self-cost accounting
-(`src/lambda/data_mart_rollup/index.py`). **`BedrockInputTokens` /
-`BedrockOutputTokens` are not yet emitted by any in-repo Lambda** —
-the rollup Lambda reads them if present, but until the agent-chat /
-monitor-agent / test-runner Lambdas start emitting, the corresponding
-columns in `control_plane_hourly` will be `0` and `est_bedrock_cost`
-will always be `$0` for control-plane rows. Wiring Bedrock emission
-is a Phase 2 task tracked separately.
+(`src/lambda/data_mart_rollup/index.py`).
+
+**Phase 2 emitter coverage** (`BedrockInputTokens` /
+`BedrockOutputTokens`). Wired via a reusable Strands
+`ControlPlaneCostHook`
+(`lib/idp_common_pkg/idp_common/agents/common/cost_metrics.py`) that
+registers on `AfterInvocationEvent`, reads the agent's cumulative
+`event_loop_metrics.accumulated_usage`, and emits the per-invocation
+delta with the concrete `bedrock_model` used at inference time.
+Registered on all six in-tree Strands agents through the
+`with_cost_hook(hooks, component, model_id)` one-liner in the same
+module — the analytics chat agent (`analytics-agent`), chat
+orchestrator (`chat-orchestrator`), error analyzer (`error-analyzer`),
+code-intelligence agent (`code-intelligence`), quick-start agent
+(`quick-start`), and external MCP agent (`external-mcp`). The
+marketplace idp-monitor's `monitor-agent` picks up the same hook via
+its own repo. The hook is asymmetric-regression-safe (one counter
+dropping doesn't re-emit the other from scratch), thread-safe (state
+update guarded by an internal lock so concurrent `stream_async` calls
+against a reused agent don't tear the delta), and zero-side-skipping
+(a 0-valued CloudWatch datum is never emitted). **Latent gap**: the
+hook doesn't yet read `cacheReadInputTokens` / `cacheWriteInputTokens`
+— no in-repo agent has prompt caching enabled today, so the counters
+stay accurate until the first one does; wiring cache tokens is a
+tracked follow-up.
 
 ---
 
@@ -581,15 +603,16 @@ dependency-sensitive; tracks are independent.
 
 ### Track C — producers (metrics with no emitter today)
 
-- **Bedrock token emission** from control-plane Lambdas.
-  `emit_control_plane_cost_metric` supports `BedrockInputTokens` /
-  `BedrockOutputTokens` today, but no in-repo Lambda calls it with
-  Bedrock args. Rows in `control_plane_hourly` show
-  `bedrock_tokens_in/out = 0` and `est_bedrock_cost = $0` for every
-  control-plane invocation. Wire sites: analytics chat agent's
-  Bedrock calls (`converse` responses carry `usage.input_tokens` /
-  `usage.output_tokens`), agent-chat processors, marketplace
-  monitor-agent.
+- ✅ **Bedrock token emission** from control-plane Lambdas — **SHIPPED**.
+  Implemented via `ControlPlaneCostHook` in
+  `lib/idp_common_pkg/idp_common/agents/common/cost_metrics.py`,
+  wired on all six in-tree Strands agents (`analytics-agent`,
+  `chat-orchestrator`, `error-analyzer`, `code-intelligence`,
+  `quick-start`, `external-mcp`) plus the marketplace idp-monitor's
+  `monitor-agent`. See §10.5 for the emission mechanics. Verified
+  live on `idp-dev-fix`: a chat session produced `bedrock_tokens_in
+  = 203,255` and `est_bedrock_cost = $0.2519` in the next `:05`
+  rollup — first time this column has been non-zero on that stack.
 - **`config_library/pricing.yaml` integration.** `BEDROCK_PRICING`
   is currently hardcoded in `data_mart_rollup/index.py` and drifts on
   every new Bedrock model — this is the class-of-bug that produced the

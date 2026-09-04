@@ -1438,7 +1438,7 @@ def _build_config_comparison(configs):
 
 
 def _execute_athena_query(query, database):
-    """Execute Athena query and return results"""
+    """Execute Athena query and return results."""
     try:
         # Get query result location from environment
         result_location = os.environ.get("ATHENA_OUTPUT_LOCATION")
