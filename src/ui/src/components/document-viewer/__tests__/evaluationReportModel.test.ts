@@ -138,3 +138,272 @@ describe('scoreBand and formatScore', () => {
     expect(formatScore(null)).toBe('—');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Parity shapes. Each function below mirrors one section of the markdown
+// report; the fixtures use the key names results.json actually carries (taken
+// from a live payload), so a renamed key fails here rather than rendering as
+// an empty table.
+// ---------------------------------------------------------------------------
+
+import {
+  attributeRows,
+  describeValue,
+  excludedSectionRows,
+  formatDuration,
+  metricRows,
+  rateMetric,
+  sectionFailure,
+  skippedFieldCount,
+  splitAnalysis,
+} from '../evaluationReportModel';
+
+describe('metricRows', () => {
+  it('keeps numbers, rates the ones the markdown rates, and skips internal state', () => {
+    const rows = metricRows({
+      precision: 0.95,
+      false_alarm_rate: 0.05,
+      accuracy: 0.6,
+      _stickler_counts: { tp: 1 },
+      evaluation_failed: false,
+      skipped_field_count: 2,
+      failure_type: 'x',
+      some_new_metric: 0.4,
+    });
+    expect(rows.map((r) => r.metric)).toEqual(['precision', 'false_alarm_rate', 'accuracy', 'some_new_metric']);
+    expect(rows[0].band).toBe('good');
+    // Lower is better for error rates: 0.05 is excellent, not poor.
+    expect(rows[1].band).toBe('good');
+    expect(rows[2].band).toBe('poor');
+    // Unknown metrics get a value and no rating, exactly as the markdown prints them.
+    expect(rows[3].band).toBeNull();
+  });
+
+  it('shows an explicit null as not scored rather than dropping it', () => {
+    const rows = metricRows({ weighted_overall_score: null });
+    expect(rows).toEqual([{ metric: 'weighted_overall_score', value: null, band: null }]);
+  });
+
+  it('rates error metrics on the inverted scale', () => {
+    expect(rateMetric('false_discovery_rate', 0.6)).toBe('bad');
+    expect(rateMetric('false_discovery_rate', 0.25)).toBe('fair');
+    expect(rateMetric('unknown_metric', 0.99)).toBeNull();
+  });
+});
+
+describe('splitAnalysis', () => {
+  const payload = {
+    doc_split_metrics: {
+      page_level_accuracy: 0.5,
+      split_accuracy_without_order: 0.0,
+      split_accuracy_with_order: 0.0,
+      total_pages: 2,
+      total_splits: 1,
+      correctly_classified_pages: 1,
+      correctly_split_without_order: 0,
+      correctly_split_with_order: 0,
+      section_details_without_order: [
+        {
+          section_id: '1',
+          ground_truth_class: 'W2',
+          ground_truth_pages: [0],
+          matched: false,
+          matched_section_id: null,
+          predicted_class: 'No Match',
+          predicted_pages: [],
+        },
+      ],
+      section_details_with_order: [
+        {
+          section_id: '1',
+          ground_truth_class: 'W2',
+          ground_truth_pages: [0],
+          matched: false,
+          order_matched: false,
+          matched_section_id: null,
+          predicted_class: 'No Match',
+          predicted_pages: [],
+        },
+      ],
+      predicted_sections: [
+        { section_id: '1', document_class: 'form', page_indices: [0] },
+        { section_id: '2', document_class: 'form', page_indices: [1] },
+      ],
+      errors: ['page 3 missing'],
+      final_score: 1.0,
+      clustering_score: 1.0,
+      v_measure: null,
+      rand_index: 1.0,
+      avg_ordering_score: 1.0,
+    },
+  };
+
+  it('is null for a document evaluated without section ground truth', () => {
+    expect(splitAnalysis({})).toBeNull();
+    expect(splitAnalysis(null)).toBeNull();
+  });
+
+  it('carries the three counts the markdown summary leads with', () => {
+    const split = splitAnalysis(payload)!;
+    expect(split.pageLevel).toEqual({ score: 0.5, correct: 1, total: 2 });
+    expect(split.withoutOrder).toEqual({ score: 0, correct: 0, total: 1 });
+    expect(split.withOrder).toEqual({ score: 0, correct: 0, total: 1 });
+  });
+
+  it('lists expected sections first, then predicted sections nothing matched', () => {
+    const split = splitAnalysis(payload)!;
+    expect(split.rows).toHaveLength(3);
+    expect(split.rows[0]).toMatchObject({
+      sectionId: '1',
+      sectionMatched: false,
+      orderMatched: false,
+      expectedClass: 'W2',
+      predictedClass: 'No Match',
+    });
+    // Unmatched predictions have no expected side; the markdown prints "N/A" there.
+    expect(split.rows[1]).toMatchObject({ sectionId: null, expectedClass: null, predictedClass: 'form', matchedSectionId: '1' });
+    expect(split.rows[2]).toMatchObject({ sectionId: null, predictedClass: 'form', matchedSectionId: '2' });
+  });
+
+  it('does not list a predicted section that an expected one matched', () => {
+    const matched = JSON.parse(JSON.stringify(payload));
+    matched.doc_split_metrics.section_details_with_order[0].matched_section_id = '1';
+    const split = splitAnalysis(matched)!;
+    expect(split.rows.map((r) => r.matchedSectionId)).toEqual(['1', '2']);
+  });
+
+  it('converts 0-based page indices to the 1-based numbers the UI shows', () => {
+    const split = splitAnalysis(payload)!;
+    expect(split.rows[0].expectedPages).toEqual([1]);
+    expect(split.rows[2].predictedPages).toEqual([2]);
+  });
+
+  it('keeps the graded score and the error list', () => {
+    const split = splitAnalysis(payload)!;
+    expect(split.graded).toMatchObject({ finalScore: 1, vMeasure: null });
+    expect(split.errors).toEqual(['page 3 missing']);
+  });
+
+  it('reports no graded score for an older payload that has none', () => {
+    const older = JSON.parse(JSON.stringify(payload));
+    delete older.doc_split_metrics.final_score;
+    expect(splitAnalysis(older)!.graded).toBeNull();
+  });
+});
+
+describe('excludedSectionRows', () => {
+  it('names the section, class, reason and pages', () => {
+    const rows = excludedSectionRows({
+      excluded_sections: [{ section_id: '3', classification: 'Cover', exclusion_reason: 'no extractable attributes', page_ids: [4, 5] }],
+    });
+    expect(rows).toEqual([{ sectionId: '3', classification: 'Cover', reason: 'no extractable attributes', pages: [5, 6] }]);
+  });
+
+  it('defaults the reason as the markdown does', () => {
+    expect(excludedSectionRows({ excluded_sections: [{ section_id: '1' }] })[0].reason).toBe('excluded');
+  });
+});
+
+describe('sectionFailure', () => {
+  it('is null for a scored section', () => {
+    expect(sectionFailure({ metrics: { f1_score: 1 } })).toBeNull();
+  });
+
+  it('gives the reason and the steps for a known failure type', () => {
+    const failure = sectionFailure({
+      document_class: 'Invoice',
+      metrics: { evaluation_failed: true, failure_type: 'missing_schema_configuration' },
+      attributes: [{ reason: 'No evaluation configuration for Invoice' }],
+    })!;
+    expect(failure.reason).toBe('No evaluation configuration for Invoice');
+    expect(failure.steps[0]).toContain("'Invoice'");
+    expect(failure.steps).toHaveLength(3);
+  });
+
+  it('refuses to guess remediation for an unknown or missing failure type', () => {
+    // The markdown does the same: advice for the wrong cause is worse than none.
+    expect(sectionFailure({ metrics: { evaluation_failed: true } })!.steps).toEqual([]);
+    expect(sectionFailure({ metrics: { evaluation_failed: true, failure_type: 'something_new' } })!.steps).toEqual([]);
+  });
+});
+
+describe('skippedFieldCount', () => {
+  it('reads the count and defaults to zero', () => {
+    expect(skippedFieldCount({ metrics: { skipped_field_count: 2 } })).toBe(2);
+    expect(skippedFieldCount({ metrics: {} })).toBe(0);
+    expect(skippedFieldCount({})).toBe(0);
+  });
+});
+
+describe('attributeRows', () => {
+  it('attaches nested comparisons only above the threshold the markdown uses', () => {
+    const rows = attributeRows([
+      { name: 'total', expected: 1, actual: 1, matched: true, field_comparison_details: [{ expected_key: 'total', match: true }] },
+      {
+        name: 'items',
+        expected: [{ a: 1 }],
+        actual: [{ a: 1 }],
+        matched: true,
+        score: 1,
+        field_comparison_details: [
+          {
+            expected_key: 'items[0].a',
+            actual_key: 'items[1].a',
+            expected_value: 1,
+            actual_value: 1,
+            match: 'true',
+            score: 1,
+            weight: 2,
+            evaluation_method: 'Exact',
+            reason: 'exact match',
+          },
+          {
+            expected_key: 'items[1].a',
+            actual_key: 'items[0].a',
+            expected_value: 2,
+            actual_value: 3,
+            match: false,
+            score: 0,
+            evaluation_method: 'Exact',
+            reason: 'differs',
+          },
+        ],
+      },
+    ]);
+    // One detail restates the attribute itself: no children.
+    expect(rows[0].children).toBeUndefined();
+    expect(rows[1].children).toHaveLength(2);
+    // A string "true" from Stickler counts as a match; a moved list index is reported.
+    // Paths are relative to the parent attribute: "items[0].a" under "items" reads "[0].a".
+    expect(rows[1].children![0]).toMatchObject({ name: '[0].a', matched: true, weight: 2, actualPath: '[1].a' });
+    expect(rows[1].children![1]).toMatchObject({ matched: false, score: 0, reason: 'differs' });
+  });
+
+  it('gives every row a stable, unique key even when names repeat', () => {
+    const rows = attributeRows([{ name: 'x' }, { name: 'x' }], 's1/');
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+    expect(rows[0].key.startsWith('s1/')).toBe(true);
+  });
+});
+
+describe('describeValue', () => {
+  it('summarises structures by size and leaves scalars alone', () => {
+    expect(describeValue([1, 2, 3])).toEqual({ kind: 'list', summary: '3 items' });
+    expect(describeValue([1])).toEqual({ kind: 'list', summary: '1 item' });
+    expect(describeValue({ a: 1 })).toEqual({ kind: 'object', summary: '1 field' });
+    expect(describeValue('Jane Doe')).toEqual({ kind: 'scalar', summary: 'Jane Doe' });
+    expect(describeValue(0)).toEqual({ kind: 'scalar', summary: '0' });
+  });
+
+  it('treats null, undefined and empty string as absent', () => {
+    for (const v of [null, undefined, '']) expect(describeValue(v).kind).toBe('empty');
+  });
+});
+
+describe('formatDuration', () => {
+  it('formats seconds and minutes, and null when unrecorded', () => {
+    expect(formatDuration(12.34)).toBe('12.3 s');
+    expect(formatDuration(125)).toBe('2 min 5 s');
+    expect(formatDuration(undefined)).toBeNull();
+  });
+});
