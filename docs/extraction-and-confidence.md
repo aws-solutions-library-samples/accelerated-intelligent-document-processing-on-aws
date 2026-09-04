@@ -824,6 +824,19 @@ single-document section pay for an extra nesting level and would move the
 detection problem one stage later. Nothing changes for a class that does not set
 the flag.
 
+Two known gaps, both filed:
+
+- **Discovery does not suggest it.** Discovery sees the pages and authors the
+  schema, so it is the best place to notice "this sample holds three
+  Pay-Statements" — but it does not, so today you have to already know the
+  feature exists. Tracked in GitHub #765 (suggest, with a one-click apply; never
+  set it silently, because the shape change invalidates baselines).
+- **Re-running Discovery on a class erases the flag** — along with every other
+  class-level `x-aws-idp-*` setting, because the merge replaces the class
+  wholesale. Tracked in GitHub #764. Until it is fixed, re-check the class's
+  settings after any Discovery run that targets a class you have configured by
+  hand.
+
 #### Designate or Synthesize?
 
 The two keys are mutually exclusive (config validation rejects both on one class)

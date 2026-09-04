@@ -161,7 +161,7 @@ toolSpec are byte-identical to earlier releases.
   and nothing handling them, while `analyze.score_reference` sits fully
   implemented. So a suite naming `realkie` or `ocr_bench` — including
   `core_docs` — runs nothing for it. Not fixed here (out of scope for this
-  feature); worth its own issue.
+  feature); filed as GitHub #766.
 - **A harness bug was found and fixed mid-study, and it mattered.**
   `analyze.py` collected scalar fields from the **top level** of
   `inference_result`, so a wrapped result — whose only top-level key is
