@@ -18,6 +18,7 @@ import {
   X_AWS_IDP_RULE_JSON,
   X_AWS_IDP_DOCUMENT_TYPE,
   X_AWS_IDP_INSTANCE_ARRAY,
+  X_AWS_IDP_MULTI_INSTANCE,
 } from '../../../constants/schemaConstants';
 
 // Helper to create a minimal selected attribute
@@ -393,7 +394,9 @@ describe('SchemaInspector Instance Array control', () => {
 
   it('pre-selects the designated property when the class already declares one', () => {
     renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: recordsArray }));
-    expect(screen.getByText('records')).toBeInTheDocument();
+    // getAllByText: the Multi-instance control also names the designated
+    // property, in its mutual-exclusion notice.
+    expect(screen.getAllByText('records').length).toBeGreaterThan(0);
   });
 
   it('shows the none option when no instance array is designated', () => {
@@ -414,12 +417,87 @@ describe('SchemaInspector Instance Array control', () => {
     renderClass(
       docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: { type: 'array', items: { $ref: '#/$defs/PatientRecord' } } }),
     );
-    expect(screen.getByText('records')).toBeInTheDocument();
+    expect(screen.getAllByText('records').length).toBeGreaterThan(0);
     expect(screen.queryByText(/is not a top-level array-of-objects property/)).not.toBeInTheDocument();
   });
 
   it('is not rendered for a policy/rule class', () => {
     render(<SchemaInspector selectedClass={docClass({}, { records: recordsArray })} onUpdate={vi.fn()} isRuleSchema={true} />);
     expect(screen.queryByText('Instance Array (Optional)')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Multi-instance Sections (Synthesize mode) class-level control — GitHub #715.
+ *
+ * The shape preview is the primary defence against the double-wrap footgun: a
+ * validation warning fires after the user has already saved, which is too late in
+ * the loop to teach the Designate-vs-Synthesize distinction.
+ */
+describe('SchemaInspector Multi-instance control', () => {
+  const scalarProps = {
+    CheckNumber: { type: 'string' },
+    NetPay: { type: 'string' },
+  };
+  const recordsArray = { type: 'array', items: { type: 'object', properties: {} } };
+
+  const docClass = (overrides: Record<string, unknown> = {}, properties: Record<string, Record<string, unknown>> = scalarProps) => ({
+    id: 'class-1',
+    name: 'Pay-Statement',
+    [X_AWS_IDP_DOCUMENT_TYPE]: true,
+    attributes: { properties, required: [] },
+    ...overrides,
+  });
+
+  const renderClass = (cls: ReturnType<typeof docClass>, onUpdateClass = vi.fn()) => {
+    render(<SchemaInspector selectedClass={cls} onUpdate={vi.fn()} onUpdateClass={onUpdateClass} />);
+    return onUpdateClass;
+  };
+
+  it('renders the toggle for a document class, off by default', () => {
+    renderClass(docClass());
+    expect(screen.getByText('Multi-instance Sections (Optional)')).toBeInTheDocument();
+    // Strictly opt-in: nothing about the resulting shape is shown until asked.
+    expect(screen.queryByText('Resulting shape')).not.toBeInTheDocument();
+  });
+
+  it('shows the resulting nesting when enabled', () => {
+    renderClass(docClass({ [X_AWS_IDP_MULTI_INSTANCE]: true }));
+    expect(screen.getByText('Resulting shape')).toBeInTheDocument();
+    expect(screen.getByText(/instances\[ \] → Pay-Statement → \{ CheckNumber, NetPay \}/)).toBeInTheDocument();
+  });
+
+  it('names the evaluation-baseline migration, the one thing that can break a deployment', () => {
+    renderClass(docClass({ [X_AWS_IDP_MULTI_INSTANCE]: true }));
+    expect(screen.getByText(/baselines for this class must be migrated/)).toBeInTheDocument();
+  });
+
+  it('warns about the double-wrap when the class is already nothing but a record array', () => {
+    renderClass(docClass({ [X_AWS_IDP_MULTI_INSTANCE]: true }, { records: recordsArray }));
+    expect(screen.getByText(/one level too many/)).toBeInTheDocument();
+    expect(screen.getByText(/instances\[i\].records\[j\]/)).toBeInTheDocument();
+  });
+
+  it('does NOT warn for a class with an internal array plus real scalar fields', () => {
+    // An invoice with line_items[] is a single-instance document with an internal
+    // list; multi-instance on it is correct and gives instances[i].line_items[j].
+    renderClass(docClass({ [X_AWS_IDP_MULTI_INSTANCE]: true }, { ...scalarProps, line_items: recordsArray }));
+    expect(screen.getByText('Resulting shape')).toBeInTheDocument();
+    expect(screen.queryByText(/one level too many/)).not.toBeInTheDocument();
+  });
+
+  it('is disabled and explains itself while Designate mode is set', () => {
+    renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: recordsArray }));
+    expect(screen.getByText(/mutually exclusive/)).toBeInTheDocument();
+  });
+
+  it('flags a collision with an existing "instances" property', () => {
+    renderClass(docClass({ [X_AWS_IDP_MULTI_INSTANCE]: true }, { ...scalarProps, instances: { type: 'string' } }));
+    expect(screen.getByText(/would shadow/)).toBeInTheDocument();
+  });
+
+  it('is not rendered for a policy/rule class', () => {
+    render(<SchemaInspector selectedClass={docClass()} onUpdate={vi.fn()} isRuleSchema={true} />);
+    expect(screen.queryByText('Multi-instance Sections (Optional)')).not.toBeInTheDocument();
   });
 });

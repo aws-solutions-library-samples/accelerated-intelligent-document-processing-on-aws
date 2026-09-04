@@ -48,6 +48,7 @@ import {
   X_AWS_IDP_EXCLUDE_FROM_PROCESSING,
   X_AWS_IDP_EXCLUSION_REASON,
   X_AWS_IDP_INSTANCE_ARRAY,
+  X_AWS_IDP_MULTI_INSTANCE,
   X_AWS_IDP_PAGE_TYPES,
   X_AWS_IDP_SOURCE_PAGE_TYPES,
   X_AWS_IDP_VALIDATION_ENGINE,
@@ -270,6 +271,95 @@ const arrayOfObjectPropertyNames = (cls: SchemaClass): string[] => {
 const NONE_OPTION_VALUE = '';
 
 /**
+ * Class-level editor for `x-aws-idp-multi-instance` ("Synthesize mode").
+ *
+ * Turning this on replaces the class's effective schema with an `instances[]`
+ * List-of-Class wrapper, so a section holding several documents of the class
+ * extracts every one of them. The two guards that matter at authoring time:
+ *
+ * 1. A **shape preview**. The double-wrap footgun (setting this on a class that
+ *    is already a list of records, giving `instances[i].records[j]`) is prevented
+ *    far better by showing the resulting nesting here than by a validation
+ *    message that fires after the user has saved.
+ * 2. **Mutual exclusion with Designate mode**, enforced in the UI as well as by
+ *    config-validate, so the contradiction is unreachable rather than merely
+ *    rejected.
+ */
+const MultiInstanceField = ({
+  selectedClass,
+  onUpdateClass,
+}: {
+  selectedClass: SchemaClass;
+  onUpdateClass: (updates: Record<string, unknown>) => void;
+}): React.JSX.Element => {
+  const enabled = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
+  const designated = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
+  const properties = selectedClass.attributes?.properties || {};
+  const arrayProps = arrayOfObjectPropertyNames(selectedClass);
+  // The narrow already-a-list-wrapper heuristic, mirroring the backend warning.
+  // Deliberately narrow: an internal array is NOT evidence of this — an invoice
+  // with line_items[] is a single-instance document, and multi-instance on it is
+  // correct.
+  const looksLikeAWrapper = arrayProps.length === 1 && Object.keys(properties).length === 1;
+  const collides = Object.prototype.hasOwnProperty.call(properties, 'instances');
+
+  return (
+    <SpaceBetween size="xs">
+      <FormField
+        label="Multi-instance Sections (Optional)"
+        description="Turn on when one section can contain several separate documents of this class. Extraction returns a list, one entry per document, instead of only the first."
+        errorText={
+          collides
+            ? 'This class already declares a top-level property named "instances", which the wrapper would shadow. Rename it first — the configuration will be rejected on save.'
+            : undefined
+        }
+      >
+        <Checkbox
+          checked={enabled}
+          disabled={Boolean(designated)}
+          onChange={({ detail }) =>
+            onUpdateClass({
+              [X_AWS_IDP_MULTI_INSTANCE]: detail.checked || undefined,
+            })
+          }
+        >
+          One section may contain several {selectedClass.name || 'document'} documents
+        </Checkbox>
+      </FormField>
+
+      {Boolean(designated) && (
+        <Alert type="info">
+          Unavailable while <strong>Instance Array</strong> is set to <strong>{designated}</strong>. The two are mutually exclusive: that
+          setting names a record array this class already has, this one creates one. Clear it to use multi-instance sections.
+        </Alert>
+      )}
+
+      {enabled && (
+        <Alert type={looksLikeAWrapper ? 'warning' : 'info'} header="Resulting shape">
+          <Box variant="code">
+            {`instances[ ] → ${selectedClass.name || 'Document'} → { ${Object.keys(properties).slice(0, 4).join(', ') || 'your fields'}${
+              Object.keys(properties).length > 4 ? ', …' : ''
+            } }`}
+          </Box>
+          {looksLikeAWrapper ? (
+            <Box variant="p">
+              This class&apos;s top level is nothing but the array <strong>{arrayProps[0]}</strong>, so it already looks like a packet of
+              records — you would get <strong>instances[i].{arrayProps[0]}[j]</strong>, one level too many. If{' '}
+              <strong>{arrayProps[0]}</strong> is the record array, use <strong>Instance Array</strong> instead.
+            </Box>
+          ) : (
+            <Box variant="p">
+              Each entry is one complete document with all of this class&apos;s fields. Evaluation baselines for this class must be migrated
+              to the same shape, or its accuracy will read as ~0.
+            </Box>
+          )}
+        </Alert>
+      )}
+    </SpaceBetween>
+  );
+};
+
+/**
  * Class-level editor for `x-aws-idp-instance-array` ("Designate mode").
  *
  * Before this control the key was round-tripped by the schema editor but had no
@@ -467,6 +557,8 @@ const SchemaInspector = ({
               </FormField>
 
               {!isRuleSchema && <InstanceArrayField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
+
+              {!isRuleSchema && <MultiInstanceField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
 
               {!isRuleSchema && (
                 <>
