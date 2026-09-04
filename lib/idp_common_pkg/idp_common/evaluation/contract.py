@@ -540,47 +540,26 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     # against unexpected shapes; this one should be too.
     raw = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
     path = raw if isinstance(raw, str) else str(raw)
-    root = _first_path_segment(path)
-
-    # Multi-instance (GitHub #715): a class flagged x-aws-idp-multi-instance has
-    # its schema wrapped in a single `instances` array, so EVERY leaf's path is
-    # `instances[i].Field` and the rule above would group the entire section
-    # under one giant attribute called "instances" — the per-attribute report
-    # would lose all of its granularity precisely for the documents that have the
-    # most records in them. Step past the synthesized root so a multi-instance
-    # class reports the same per-attribute breakdown a single-record class does.
+    # NOTE on multi-instance (GitHub #715): for a wrapped class every row's path is
+    # `instances[i].Field`, so every leaf groups under the single root `instances`
+    # and the per-attribute report is one giant attribute rather than one per
+    # field. That is a real granularity loss — but it must NOT be "fixed" here by
+    # stepping past the synthesized root.
     #
-    # Narrow on purpose: ONLY the wrapper's reserved key. Every other list
-    # attribute still groups under itself, which is the intended design (a list is
-    # one attribute).
+    # Measured live: doing that made `row_root_attribute` return `CheckNumber`,
+    # which matches no attribute at all, because the attribute list is built from
+    # the class SCHEMA — and a wrapped class has exactly one property, `instances`.
+    # All 24 of Stickler's field_comparisons rows were therefore dropped from
+    # `field_comparison_details`, emptying the report's per-field drilldown and the
+    # UI's mismatch highlighting (which joins on `expected_key`). The section-level
+    # metrics stayed correct, so the loss was invisible in the numbers — accuracy
+    # still read 1.000 with an empty drilldown.
     #
-    # Honest limitation: this has no access to the class's flag, so it keys on the
-    # literal name. A class with a top-level array genuinely NAMED `instances` and
-    # the flag OFF is therefore also stepped past — legal, because validation only
-    # rejects that collision when the flag is set. Threading the flag through here
-    # would mean passing a class schema into a helper the whole cross-Lambda
-    # contract module depends on; the trade was judged not worth it for a name
-    # collision this specific, but it is a real difference between the comment
-    # above and the code.
-    if root == _INSTANCES_ROOT:
-        remainder = path[len(root) :]
-        # `instances[3].Field` -> `Field`; `instances[3]` (a row-level verdict
-        # with no leaf) has nothing below it and stays on the wrapper root.
-        after_index = remainder.split("].", 1)
-        if len(after_index) == 2 and after_index[1]:
-            return _first_path_segment(after_index[1])
-        if remainder.startswith("."):
-            return _first_path_segment(remainder[1:])
-
-    return root
-
-
-# The synthesized multi-instance wrapper key. Duplicated as a literal rather than
-# imported from idp_common.schema.multi_instance to keep this module free of
-# further imports (it is the cross-Lambda contract module and is imported very
-# widely); the transform module's INSTANCES_KEY is the source of truth and a test
-# asserts the two agree.
-_INSTANCES_ROOT = "instances"
+    # Recovering per-field granularity for a wrapped class means changing how the
+    # ATTRIBUTE LIST is constructed (unwrapping one level when the class is
+    # flagged), not how rows are keyed. Until then, one drillable attribute
+    # carrying every row beats N attributes carrying none.
+    return _first_path_segment(path)
 
 
 def _first_path_segment(path: str) -> str:

@@ -309,23 +309,32 @@ def test_curve_values_and_confidences_use_matching_paths():
 # --------------------------------------------------------------------------
 
 
-def test_eval_rows_group_per_attribute_not_all_under_instances():
-    """Stickler groups `field_comparison_map` by the row's root attribute, so
-    every leaf of a wrapped class would land under ONE giant attribute called
-    `instances` — the per-attribute report would lose all granularity precisely
-    for the documents with the most records in them."""
+def test_eval_rows_of_a_wrapped_class_group_under_the_instances_attribute():
+    """They must group under `instances`, NOT under the item field name.
+
+    Measured live: stepping past the synthesized root made this return
+    `CheckNumber`, which matches no attribute at all — the attribute list is built
+    from the class SCHEMA and a wrapped class has exactly ONE property. All 24 of
+    Stickler's field_comparisons rows were dropped from
+    `field_comparison_details`, emptying the report's per-field drilldown and the
+    UI's mismatch highlighting (which joins on `expected_key`). Section metrics
+    stayed correct, so accuracy still read 1.000 with an empty drilldown — the loss
+    was invisible in the numbers.
+
+    The granularity loss (one attribute instead of N) is real and documented; the
+    fix for it is in how the ATTRIBUTE LIST is built, not in how rows are keyed.
+    """
     from idp_common.evaluation.contract import row_root_attribute
 
     assert row_root_attribute({"expected_key": "instances[0].CheckNumber"}) == (
-        "CheckNumber"
+        "instances"
     )
     assert row_root_attribute({"expected_key": "instances[2].Earnings[1].Amount"}) == (
-        "Earnings"
+        "instances"
     )
 
 
-def test_eval_row_grouping_is_unchanged_for_a_users_own_list_attribute():
-    """Narrow on purpose: a list is one attribute, which is the intended design."""
+def test_eval_row_grouping_is_unchanged_for_an_ordinary_list_attribute():
     from idp_common.evaluation.contract import row_root_attribute
 
     assert row_root_attribute({"expected_key": "Transactions[3].Amount"}) == (
@@ -333,14 +342,6 @@ def test_eval_row_grouping_is_unchanged_for_a_users_own_list_attribute():
     )
     assert row_root_attribute({"expected_key": "Address.city"}) == "Address"
     assert row_root_attribute({"expected_key": "CheckNumber"}) == "CheckNumber"
-
-
-def test_the_instances_root_literal_matches_the_transform():
-    """contract.py holds the key as a literal to stay import-light; if the two
-    ever diverge, per-attribute grouping silently reverts."""
-    from idp_common.evaluation.contract import _INSTANCES_ROOT
-
-    assert _INSTANCES_ROOT == INSTANCES_KEY
 
 
 def test_stickler_config_is_built_from_the_WRAPPED_schema():

@@ -871,6 +871,7 @@ but all three quietly stop doing anything for a flagged class:
 | BLANK vs MISSING field handling (`x-aws-idp-source-page-types`) | Nothing at the top level carries it any more, so the distinction is not applied at all for a flagged class. |
 | "a declared list came back empty" (`extraction_incomplete`) | The only top-level array is now `instances`, so an **inner** list of a record coming back empty no longer raises it — and that is the largest silent-data-loss shape this pipeline has. |
 | Confidence-prompt property descriptions | The prompt builder descends one level under an array, so a nested group or list *inside* a record loses its sub-field descriptions. |
+| Evaluation report granularity | The per-attribute breakdown becomes **one** attribute (`instances`) carrying every field's rows, instead of one per field. Every row is still there and still drillable — only the grouping is coarser. |
 
 Two more things to know:
 

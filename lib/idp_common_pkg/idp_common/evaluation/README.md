@@ -40,12 +40,20 @@ Three things handle it:
    before translating it. Built from the flat schema, the prediction's only key is
    `instances`, zero declared fields match, and the section **silently scores
    0.0**.
-2. `contract.py` `row_root_attribute` steps past the synthesized `instances` root,
-   so a multi-instance class keeps the per-attribute report breakdown a
-   single-record class gets instead of collapsing every leaf under one giant
-   attribute. ⚠️ It keys on the literal `instances`, not on the class's flag, so a
-   class with a top-level array *named* `instances` and the flag OFF is also
-   affected (legal — validation only rejects the collision when the flag is set).
+2. ⚠️ **Report granularity degrades, and the obvious fix is wrong.** For a wrapped
+   class every row's `expected_key` is `instances[i].Field`, so
+   `contract.py` `row_root_attribute` groups them all under the single attribute
+   `instances`: the per-attribute report is one giant attribute rather than one per
+   field. Stepping past the synthesized root here was tried and **reverted** — it
+   made the helper return `CheckNumber`, which matches no attribute at all, because
+   the attribute list is built from the class SCHEMA and a wrapped class has exactly
+   one property. All 24 of Stickler's `field_comparisons` rows were then dropped
+   from `field_comparison_details` (measured live), emptying the report's per-field
+   drilldown and the UI's mismatch highlighting, which joins on `expected_key`.
+   Section metrics stayed correct, so accuracy still read 1.000 with an empty
+   drilldown — invisible in the numbers. Recovering per-field granularity means
+   changing how the ATTRIBUTE LIST is constructed for a flagged class, not how rows
+   are keyed.
 3. `service.py` `_warn_on_multi_instance_shape_mismatch` logs a warning naming the
    migration command when the two shapes disagree, in **either** direction
    (rollback fails just as silently). Advisory only; it never changes a score.
