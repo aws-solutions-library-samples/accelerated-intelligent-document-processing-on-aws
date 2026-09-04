@@ -81,15 +81,47 @@ images, some holding several checks on one sheet). The class's baseline is a
 | count reported **exactly** right | **18 of 18** (counts of 2, 3, 4, 5, 6, 7 and 8) |
 
 It flagged every multi-check image, stayed silent on every single-check image, and
-got the number right every time. Without it, each of those 18 documents silently
-ships **1 to 7 checks fewer** than it contains — #565, on a real corpus.
+got the number right every time.
 
-> **A near-miss worth recording.** The first reading of this run was "18 false
-> positives on single-page images — the probe misfires badly on bank checks." That
-> was wrong, and it was one query away from being reported as the headline. What
-> corrected it was checking the ground truth: the baseline's `checks` array had
-> 2–8 entries on exactly those 18 documents. A plausible story about a failure is
-> not evidence of one.
+**But it did not avert any data loss here, and an earlier draft of this document
+claimed it did.** That claim — "without it each of those 18 documents silently ships
+1 to 7 checks fewer than it contains" — was **false**. Measured directly from both
+arms' `inference_result` afterwards:
+
+| | detection ON | detection OFF |
+|---|---|---|
+| checks missing vs ground truth, summed over the 18 flagged documents | **0** | **0** |
+
+Every check was extracted in both arms. The reason is in the class schema:
+`BANK_CHECK` has exactly **one** property, an array called `checks`, so the class
+*already* models several checks per sheet. Nothing was ever collapsing to one
+record on this corpus, so there was no loss for detection to prevent. The 0.938 /
+0.946 weighted accuracy should have been the tell — 18 of 40 documents shedding most
+of their content cannot coexist with a 0.94 score.
+
+So what are the 18 flags, if not averted loss? They are **correct and useful, but
+about configuration rather than about data**. Detection counts *documents*; it
+compares that against `Section.instance_count`, which is 1 because `BANK_CHECK`
+declares no instance axis. "The model says 6 documents, the section reports 1
+instance" is true as stated, and the right response is to set
+`x-aws-idp-instance-array: checks` on the class — free, no schema change, no
+baseline migration — after which the count is reported properly and the warning
+stops. Detection found a real misconfiguration in a shipped preset. It did not find
+lost records, because there were none.
+
+This matters for the recommendation, not just the bookkeeping: on a corpus like this
+one the honest use of detection is **diagnostic and temporary** — turn it on, act on
+what it names, turn it off. It is a permanent setting only where the classes really
+do collapse several records into one.
+
+> **Two near-misses on the same 18 documents, in opposite directions.** First
+> reading: "18 false positives — the probe misfires badly on bank checks." Wrong,
+> and one query from being the headline; the ground truth showed the baseline's
+> `checks` array had 2–8 entries on exactly those documents. Second reading, having
+> over-corrected: "18 real catches, each averting 1–7 lost checks." Also wrong, and
+> it survived into a merged PR, a closed issue and this document before anyone
+> counted the extracted rows. The same discipline fixes both: a plausible story
+> about the mechanism is not a measurement of it. The count above is a measurement.
 
 ### 2b. What does it cost?
 
@@ -137,10 +169,25 @@ cost is real but corpus-dependent.
 
 Not "gated on evidence we could not resolve". The evidence resolved:
 
-> **Turn it on when a section can hold several documents of the same class.** It
-> will find them, count them correctly, and cost you about 2 % more input tokens.
-> **Leave it off when it cannot** — there it buys nothing and costs about a point
-> of accuracy.
+> **Turn it on when a section can hold several documents of the same class *and the
+> class schema describes only one*.** That is the combination that loses records. It
+> will find them, count them correctly, and cost about 2 % more input tokens.
+> **Leave it off when either half is untrue** — on a single-record corpus it buys
+> nothing and costs about a point of accuracy, and on a corpus whose classes already
+> declare a record array (like `BANK_CHECK`) it reports a count discrepancy that is
+> real but is a *configuration* finding, not data loss.
+
+The second half of that condition is the correction §2a records: an earlier draft
+said only "when a section can hold several documents", which reads as a
+recommendation to leave it on for `ocr-benchmark` — where it would flag 18 documents
+a month, indefinitely, none of which is losing anything.
+
+**So there are two distinct uses, and only one of them is a setting:**
+
+| use | how long | what you do with it |
+|---|---|---|
+| **Diagnostic** — "do any of my classes silently collapse records?" | run once, then off | act on what it names: set `x-aws-idp-instance-array` on a class that already lists records, or `x-aws-idp-multi-instance` on one that does not |
+| **Standing guard** — a corpus that genuinely keeps producing merged same-class sections | leave on | accept ~2 % input tokens for a warning on every affected section |
 
 It is per configuration profile, so a multi-record corpus can have it while the
 rest of a deployment does not. With it off the extraction prompt and the forced
@@ -148,6 +195,17 @@ toolSpec are byte-identical to earlier releases.
 
 ## Honesty notes
 
+- **The headline claim of §2a was wrong in the first published version of this
+  document, and it took a fourth look to catch.** "Each of those 18 documents
+  silently ships 1 to 7 checks fewer than it contains" was asserted from the
+  *detection* numbers alone — probe count vs `instance_count` — without ever
+  counting the extracted rows. Counting them gives 0 missing in both arms. The
+  error is instructive: `instance_count` is 1 for a class with no declared
+  instance axis *whether or not anything was lost*, so "probe 6 vs instance 1"
+  cannot distinguish "5 records dropped" from "5 records present inside a declared
+  array". Nothing in the detection instrument can tell those apart — that is what
+  the extracted-row count is for, and it was one query away the whole time.
+  It survived into a merged PR and a closed issue before being checked.
 - **The synthetic grid nearly produced the wrong conclusion twice.** First it
   reported 0 false positives from a corpus that contained no multi-record
   documents — a number with no information in it that read like a clean bill of
