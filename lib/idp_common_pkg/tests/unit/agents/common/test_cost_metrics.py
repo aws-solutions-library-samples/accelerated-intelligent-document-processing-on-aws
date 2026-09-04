@@ -164,8 +164,12 @@ class TestControlPlaneCostHookDeltaEmission:
 
     def test_missing_metrics_does_not_raise(self):
         """Telemetry must never break the agent — if the metrics
-        object shape changes (Strands API drift) the hook should log
-        a warning and continue.
+        object shape changes (Strands API drift), the hook catches
+        the narrow set of expected shape errors (AttributeError,
+        KeyError, TypeError, ValueError) and returns without
+        emitting. It does NOT catch RuntimeError or arbitrary
+        exceptions — a genuine programming bug should surface via
+        the agent's normal error handling, not be silently swallowed.
         """
         hook = ControlPlaneCostHook(
             component="analytics-agent",
@@ -175,11 +179,12 @@ class TestControlPlaneCostHookDeltaEmission:
         # Build a purpose-built type so setting the property doesn't
         # mutate the shared MagicMock class (which would leak the
         # raising property into unrelated tests via other MagicMock
-        # instances).
+        # instances). AttributeError simulates Strands API drift
+        # (accumulated_usage renamed / removed).
         class _BrokenAgent:
             @property
             def event_loop_metrics(self):
-                raise RuntimeError("no metrics")
+                raise AttributeError("no accumulated_usage")
 
         broken_event = MagicMock()
         broken_event.agent = _BrokenAgent()

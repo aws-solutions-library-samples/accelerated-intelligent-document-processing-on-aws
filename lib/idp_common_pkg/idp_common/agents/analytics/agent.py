@@ -130,8 +130,8 @@ def create_analytics_agent(
       Live-tail the current day from `metering_hourly` / `metering_docs_hourly`.
 
     Split rules:
-    - Cost (`sum_value`, `sum_cost`) lives on `metering_hourly` / `metering_daily`.
-    - Volume (`n_docs`, `sum_pages`) lives on `metering_docs_hourly` / `metering_docs_daily`.
+    - Cost aggregates (`sum_cost` USD) AND per-unit quantities (`sum_value` — tokens/pages/seconds, check `unit`) live on `metering_hourly` / `metering_daily`.
+    - Volume aggregates (`n_docs`, `sum_pages`) live on `metering_docs_hourly` / `metering_docs_daily`.
     - **NEVER** `SELECT sum_pages FROM metering_hourly` — column doesn't exist there.
     - **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column doesn't exist there.
     - **NEVER** `GROUP BY service_api` on `metering_docs_*` — column doesn't exist.

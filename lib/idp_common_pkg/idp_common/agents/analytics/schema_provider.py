@@ -294,7 +294,12 @@ WITH sealed AS (
       date_format(current_date, '%Y-%m-%d'),
       date_format(current_date - interval '1' day, '%Y-%m-%d')
   )
-    AND "hour_ts" >= date_add('hour', -24, current_timestamp)
+    -- Floor the lower bound to the hour so a bucket like 03:00 (which
+    -- represents 03:00-04:00) isn't excluded just because
+    -- date_add('hour', -24, current_timestamp) landed at 03:30. Comparing
+    -- an hour-start against a non-hour-aligned time silently dropped up to
+    -- 59 minutes of data at the trailing edge.
+    AND "hour_ts" >= date_trunc('hour', date_add('hour', -24, current_timestamp))
     AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
 ),
 tail AS (
@@ -321,9 +326,15 @@ tail AS (
 )
 SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
 
--- Control-plane cost by component last week
+-- Control-plane cost by component last week.
+-- Sum each cost column separately (not `SUM(a + b + c)`): with the
+-- combined form, if any single column is NULL in a row the whole row's
+-- contribution becomes NULL and that row drops out of the aggregate.
+-- Three separate SUMs are NULL-safe by default.
 SELECT "component",
-       SUM("est_lambda_cost" + "est_athena_cost" + "est_bedrock_cost") AS total_cost
+       COALESCE(SUM("est_lambda_cost"), 0)
+         + COALESCE(SUM("est_athena_cost"), 0)
+         + COALESCE(SUM("est_bedrock_cost"), 0) AS total_cost
 FROM control_plane_hourly
 WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "component"

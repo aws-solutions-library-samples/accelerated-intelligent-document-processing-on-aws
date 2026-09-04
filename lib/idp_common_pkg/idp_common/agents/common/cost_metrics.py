@@ -60,9 +60,22 @@ class ControlPlaneCostHook(HookProvider):
             usage = event.agent.event_loop_metrics.accumulated_usage
             total_in = int(usage.get("inputTokens", 0) or 0)
             total_out = int(usage.get("outputTokens", 0) or 0)
-        except Exception as exc:
-            # Best-effort — never break the agent for telemetry.
-            logger.warning("ControlPlaneCostHook: failed to read usage: %s", exc)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            # Strands API drift (renamed field, changed shape) — log at
+            # ERROR so operators see it in log-based alarms. The hook
+            # itself must not break the agent for telemetry, so we return
+            # instead of raising. A genuine programming bug (e.g.
+            # RuntimeError from a downstream helper) is NOT caught here
+            # and propagates for the agent's own error handling.
+            logger.error(
+                "ControlPlaneCostHook: Strands API drift or missing usage "
+                "for component=%s (%s: %s) — no tokens emitted this "
+                "invocation. Investigate if control_plane_hourly starts "
+                "showing 0 est_bedrock_cost for this component.",
+                self.component,
+                type(exc).__name__,
+                exc,
+            )
             return
 
         # If either counter regressed below the last-seen baseline, the
