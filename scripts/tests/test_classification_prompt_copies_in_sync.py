@@ -22,6 +22,7 @@ a location nobody thought of is still caught.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -77,9 +78,44 @@ def _canonical_rules() -> str:
     return prompt[start : end + len(close)]
 
 
+_SUFFIXES = (".yaml", ".yml", ".json", ".ipynb", ".py", ".txt")
+
+
+def _tracked_paths():
+    """Repo-relative paths git tracks, or None if git cannot answer.
+
+    Asking git is what makes this function's name true. A plain ``rglob`` walk
+    also picks up GENERATED, gitignored files — `benchmarks/corpus/configs/` is
+    written by the benchmark harness and legitimately contains frozen historical
+    prompts (the pre-#653 control) and stale variants. Those made this guard fail
+    on every developer machine that had ever run the harness, while passing in CI
+    because a clean checkout has no such directory. A gate that only fires locally
+    is worse than no gate: it trains people to ignore `make test`.
+    """
+    try:
+        out = subprocess.run(  # nosec B603,B607 - fixed argv, no shell
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None  # not a git checkout (release tarball); fall back to walking
+    return {Path(p) for p in out.decode().split("\0") if p}
+
+
 def _source_files():
+    tracked = _tracked_paths()
+    if tracked is not None:
+        for rel in sorted(tracked):
+            if rel.suffix not in _SUFFIXES or any(part in PRUNE for part in rel.parts):
+                continue
+            path = REPO_ROOT / rel
+            if path.is_file():
+                yield rel, path
+        return
     for path in REPO_ROOT.rglob("*"):
-        if path.suffix not in (".yaml", ".yml", ".json", ".ipynb", ".py", ".txt"):
+        if path.suffix not in _SUFFIXES:
             continue
         rel = path.relative_to(REPO_ROOT)
         if any(part in PRUNE for part in rel.parts):
@@ -173,3 +209,24 @@ def test_the_guard_can_actually_see_the_configs_it_guards():
         "notebooks/examples/config/classification.yaml",
     ):
         assert expected in found, f"{expected} not scanned; found {sorted(found)}"
+
+
+def test_the_scan_covers_tracked_files_and_skips_generated_ones():
+    """The scope guard. Two failure modes, opposite directions.
+
+    Scanning too little makes every other test here vacuous. Scanning generated
+    files makes them fire on developer machines only: `benchmarks/corpus/configs/`
+    is gitignored harness output that legitimately contains the frozen pre-#653
+    control prompt and stale variants, and it made `make test` fail locally while
+    CI — a clean checkout with no such directory — passed.
+    """
+    scanned = {str(rel) for rel, _ in _source_files()}
+    # Not vacuous: the files this guard exists for must be in scope.
+    assert "config_library/unified/ocr-benchmark/config.yaml" in scanned
+    assert "scripts/sdlc/config/nuveen.yaml" in scanned
+    # And generated harness output must not be.
+    generated = sorted(p for p in scanned if p.startswith("benchmarks/corpus/configs/"))
+    assert not generated, (
+        "generated benchmark configs are in scope; they are gitignored harness "
+        f"output and contain deliberate pre-fix prompts: {generated[:3]}"
+    )

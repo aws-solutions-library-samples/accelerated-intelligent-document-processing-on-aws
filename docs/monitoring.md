@@ -233,6 +233,47 @@ report normal operation as a problem. Because it is an average, one slow documen
 in a busy 5-minute window will not trip it — this is a "the whole pipeline is
 slow" signal, not a per-document one.
 
+### `BDACallbackTimeoutSeconds` — why a hung BDA job needs its own bound
+
+This one is a parameter rather than an alarm, but it belongs here because without
+it **neither alarm above can see the failure it prevents.**
+
+In BDA mode (`use_bda: true`) the `BDA_InvokeDataAutomation` step uses the Step
+Functions `.waitForTaskToken` integration: it blocks until something outside the
+state machine returns the token. The return path is
+BDA job → EventBridge (`BDAEventRule`) → `BDACompletionFunction` → task token
+read from S3 → `SendTaskSuccess`. Any hop can break — a stuck BDA job, a lost
+token, a dropped EventBridge delivery, the completion handler erroring before it
+responds.
+
+Before release 0.6.7 that step had no `TimeoutSeconds`, so a broken callback left
+the execution waiting **indefinitely**, and that is the worst possible shape for
+monitoring:
+
+- it never fails, so it emits no `ExecutionsFailed` → `WorkflowErrorsAlarm` is blind;
+- it never completes, so it emits no `ExecutionTime` → `SlowExecutionsAlarm` is blind;
+- it holds a **workflow-concurrency slot** and its tracking row the whole time.
+
+A stack could therefore lose capacity with every alarm reading `OK`. The step is
+now bounded by `BDACallbackTimeoutSeconds` (default **7200**, i.e. 2 hours), and
+because the step catches `States.ALL` and routes to the fail state, tripping the
+bound produces a genuinely **FAILED** execution — which emits `ExecutionsFailed`,
+fires `WorkflowErrorsAlarm`, and lets the workflow tracker release the
+concurrency slot and mark the document `FAILED`. A stuck document becomes an
+ordinary, visible failure.
+
+**Tuning.** The asymmetry favours a generous value: too high only delays
+detection of a job that is already lost, whereas too low fails healthy work and
+wastes the BDA spend already incurred. Raise it if you process very large packets
+and see `States.Timeout` failures on documents that were progressing normally. A
+timeout is deliberately **not** retried — re-invoking would start a second BDA
+job, paying twice and risking double-processing, for a callback that may still be
+in flight.
+
+> **Pipeline mode is unaffected.** Those steps are direct Lambda invocations with
+> their own function timeouts plus `Retry`/`Catch`, so they cannot hang: a failure
+> propagates to `ExecutionsFailed` on its own.
+
 ## Setting Up Alerts
 
 Beyond the built-in alarms you can add your own for metrics specific to your

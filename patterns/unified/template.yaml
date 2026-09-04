@@ -59,6 +59,23 @@ Parameters:
     Type: Number
     Default: 30000
 
+  BDACallbackTimeoutSeconds:
+    Type: Number
+    Default: 7200
+    MinValue: 60
+    MaxValue: 86400
+    Description: >-
+      Maximum seconds the BDA step waits for its asynchronous completion
+      callback before failing the execution. Only affects BDA mode
+      (use_bda: true). The BDA step uses waitForTaskToken, so it blocks until an
+      external SendTaskSuccess/SendTaskFailure arrives; without a bound, any
+      break in that path (BDA job stuck, task token lost, a dropped EventBridge
+      hop, the completion handler failing before it responds) leaves the
+      execution waiting forever, emitting neither ExecutionsFailed nor
+      ExecutionTime -- so no alarm can see it while it holds a concurrency slot.
+      Raise this if you process very large packets and see spurious
+      States.Timeout failures; the cost of a high value is only slower detection
+      of a genuinely stuck job, while too low a value fails healthy work.
 
   PreviousIDPPattern:
     Type: String
@@ -6376,6 +6393,11 @@ Resources:
         InvokeBDALambdaArn: !GetAtt InvokeBDAFunction.Arn
         BDAProcessResultsLambdaArn: !GetAtt BDAProcessResultsFunction.Arn
         WorkingBucket: !Ref WorkingBucket
+        # Bounds the waitForTaskToken wait on BDA_InvokeDataAutomation. The
+        # placeholder is UNQUOTED in the ASL because TimeoutSeconds must be an
+        # integer, which is why that file is not parseable as JSON without
+        # resolving substitutions first.
+        BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
         # Pipeline branch functions
         OCRFunctionArn: !GetAtt OCRFunction.Arn
         ClassificationFunctionArn: !GetAtt ClassificationFunction.Arn

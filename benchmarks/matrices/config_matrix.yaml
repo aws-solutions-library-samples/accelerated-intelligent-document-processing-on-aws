@@ -451,6 +451,17 @@ suites:
     cells: [detect-off, detect-on]
     docs:  [longdesc_100]
     repeats: 10
+  # The Bedrock-LLM OCR backend on its own. It reads the page image directly rather
+  # than consuming Textract output, so it responds to image-quality changes
+  # differently from the Textract cells — #740's dpi 150 -> 300 is the current
+  # example. Exists as its own suite because it is also the cell most likely to be
+  # cut short by a long grid: it sorts last in corefast and lost 8 of its 9 runs when
+  # a v0.6.7 grid was interrupted.
+  llmocr:
+    cells:
+    - core-llm-simple-sep
+    docs: corefast
+    repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

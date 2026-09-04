@@ -903,16 +903,25 @@ The curve comes from three sources of increasing fidelity:
    *whole* confidence range, including the high-confidence documents review never
    opens. This is the only source that can fully validate the estimate.
 
-Curves are kept per **Configuration Profile**, because confidence means
-different things across models and prompts — a curve measured under one config is
-not reused after a change that shifts those semantics.
+Curves are stored per **Configuration Profile**, because confidence means
+different things across models and prompts.
 
-> **Revisions of a profile currently share one curve.** That is right for a prompt
-> tweak and wrong after a model swap, which changes what a confidence number means.
-> Each revision records a *confidence fingerprint* (a hash of the
-> confidence-relevant configuration) so a future release can branch curves
-> automatically; until then, reset the affected curve after changing the extraction
-> model or the assessment configuration.
+> **Known limitation: the estimate currently reads one curve per test set, not one
+> per configuration.** Observations *are* recorded per profile, but the estimate
+> reads the set's combined curve, so it blends observations from every
+> configuration the set has been labeled or scored under. Revisions of a profile
+> also share a curve, which is right for a prompt tweak and wrong after a model
+> swap. The practical consequence: **after changing a profile's extraction model or
+> assessment configuration, treat that set's review-effort estimate as unreliable
+> until fresh observations accumulate** — the number is measured, but partly under
+> configurations that no longer exist. `estimateConfidence` will not warn you about
+> this, because the curve it describes is genuinely populated.
+>
+> Every revision already records a *confidence fingerprint* (a hash of the
+> confidence-relevant configuration — extraction model and sampling parameters,
+> assessment settings), which is what a future release will key curves on. There is
+> no supported way to reset a curve in the meantime; the most reliable reset is a
+> new test set.
 
 ### Every estimate states how much to trust it
 

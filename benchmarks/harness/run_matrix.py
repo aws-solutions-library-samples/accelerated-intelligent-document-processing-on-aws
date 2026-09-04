@@ -43,6 +43,66 @@ def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)  # nosec B602 - operator-owned local harness
 
 
+def stack_fingerprint(stack):
+    """(status, description, last_updated) for ``stack`` — the run's code identity.
+
+    Cheap enough to call before every launch: one DescribeStacks call per ~minute.
+    """
+    import boto3
+
+    cfn = boto3.client(
+        "cloudformation", region_name=os.environ.get("AWS_REGION", "us-west-2")
+    )
+    st = cfn.describe_stacks(StackName=stack)["Stacks"][0]
+    return (
+        st["StackStatus"],
+        st.get("Description", ""),
+        str(st.get("LastUpdatedTime", "")),
+    )
+
+
+def assert_stack_quiesced(stack):
+    """Refuse to start a run against a stack that is mid-update.
+
+    A grid launched into an active CloudFormation update spans more than one build:
+    Lambdas are replaced under it and the results are not attributable to any single
+    version. This happened — the v0.6.7 corefast grid had 22 of 171 runs launched
+    during an update someone else started, which cost the whole run its standing as
+    a release gate (benchmarks/results/v0.6.7/corefast/FINDINGS.md).
+    """
+    status, desc, updated = stack_fingerprint(stack)
+    if "IN_PROGRESS" in status:
+        sys.exit(
+            f"stack '{stack}' is {status} — refusing to start.\n"
+            f"A run launched into an active update spans multiple builds and cannot "
+            f"be attributed to a version. Wait for UPDATE_COMPLETE and re-run."
+        )
+    print(f"  stack {stack}: {status} | {desc.strip()[-40:]} | updated {updated}")
+    return (status, desc, updated)
+
+
+def assert_stack_unchanged(stack, expected, launched):
+    """Abort mid-run if the stack moved underneath us.
+
+    Checked per launch rather than once, because the damage is proportional to how
+    long it goes unnoticed: the corefast grid ran for four hours across three builds
+    and nothing reported it until the results were scored.
+    """
+    try:
+        current = stack_fingerprint(stack)
+    except Exception as exc:  # a transient API error must not kill a paid run
+        print(f"  note: could not verify stack fingerprint ({exc}); continuing")
+        return
+    if current != expected:
+        sys.exit(
+            f"\nABORTING after {launched} launch(es): stack '{stack}' CHANGED mid-run.\n"
+            f"  was: {expected}\n  now: {current}\n"
+            f"Runs already launched span two builds, so this grid is no longer a "
+            f"controlled comparison. Discard it (the runmap is written) and re-run "
+            f"against a quiesced stack."
+        )
+
+
 def resolve_stack(stack):
     """Find testset bucket, output bucket, tracking table, config table."""
     s3c = lib.s3()
@@ -424,6 +484,10 @@ def main():
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
     verify_config_axes(cells)
+
+    # The stack must not move underneath the grid. Checked here and again
+    # before every launch — see assert_stack_unchanged.
+    stack_expected = assert_stack_quiesced(a.stack)
     for c in {cc["version"]: cc for cc in cells}.values():
         ok = upload_config(
             a.stack, c["version"], c["path"], res=res, native=a.native_upload
@@ -453,6 +517,7 @@ def main():
         while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
             inflight = [x for x in inflight if not poll_done(x)]
+        assert_stack_unchanged(a.stack, stack_expected, len(runmap))
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
         rec = {

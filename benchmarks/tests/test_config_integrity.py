@@ -280,3 +280,52 @@ def test_slot_check_polls_only_still_running_work(monkeypatch):
     assert worst <= 2, f"a single run was polled {worst} times; the list is not pruned"
     # The old code polled ~n^2/2 = 800 times for 40 launches.
     assert len(polls) < 100, f"{len(polls)} polls for 40 launches suggests O(n^2)"
+
+
+@pytest.mark.unit
+class TestStackChangeGuard:
+    """A grid must not span more than one build.
+
+    The v0.6.7 `corefast` run had 22 of 171 runs launched during a CloudFormation
+    update someone else started, and two updates landed across its four hours. The
+    numbers were only discovered to be uncontrolled at scoring time, which cost the
+    whole run its standing as a release gate. Nothing in the harness noticed.
+    """
+
+    def test_a_run_refuses_to_start_mid_update(self, rm, monkeypatch):
+        monkeypatch.setattr(
+            rm, "stack_fingerprint", lambda s: ("UPDATE_IN_PROGRESS", "d", "t")
+        )
+        with pytest.raises(SystemExit) as exc:
+            rm.assert_stack_quiesced("IDP1")
+        assert "IN_PROGRESS" in str(exc.value)
+
+    def test_a_quiesced_stack_starts_and_returns_its_fingerprint(self, rm, monkeypatch):
+        fp = ("UPDATE_COMPLETE", "... (v0.6.7.dev8)", "2026-09-03T19:35:26")
+        monkeypatch.setattr(rm, "stack_fingerprint", lambda s: fp)
+        assert rm.assert_stack_quiesced("IDP1") == fp
+
+    def test_a_change_mid_run_aborts(self, rm, monkeypatch):
+        before = ("UPDATE_COMPLETE", "(v0.6.7.dev8)", "19:35")
+        after = ("UPDATE_COMPLETE", "(v0.6.7.dev9)", "21:02")
+        monkeypatch.setattr(rm, "stack_fingerprint", lambda s: after)
+        with pytest.raises(SystemExit) as exc:
+            rm.assert_stack_unchanged("IDP1", before, 22)
+        msg = str(exc.value)
+        assert "CHANGED mid-run" in msg
+        assert "22 launch" in msg, "the message must say how much is affected"
+
+    def test_an_unchanged_stack_does_not_abort(self, rm, monkeypatch):
+        fp = ("UPDATE_COMPLETE", "(v0.6.7.dev8)", "19:35")
+        monkeypatch.setattr(rm, "stack_fingerprint", lambda s: fp)
+        rm.assert_stack_unchanged("IDP1", fp, 5)  # must not raise
+
+    def test_a_transient_api_error_does_not_kill_a_paid_run(self, rm, monkeypatch):
+        """The guard protects attribution; it must not become a new way to lose a
+        run that is already half-spent."""
+
+        def boom(_s):
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(rm, "stack_fingerprint", boom)
+        rm.assert_stack_unchanged("IDP1", ("a", "b", "c"), 5)  # must not raise
