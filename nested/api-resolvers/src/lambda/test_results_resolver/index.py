@@ -1437,17 +1437,25 @@ def _build_config_comparison(configs):
     return differences
 
 
-def _execute_athena_query(query, database, reuse_max_age_minutes: int = 60):
+def _execute_athena_query(query, database, reuse_max_age_minutes: int = 0):
     """Execute Athena query and return results.
 
-    ``reuse_max_age_minutes`` opts into Athena's per-query result cache
-    (``ResultReuseByAgeConfiguration``). Every query in this resolver is
-    scoped by ``document_id LIKE '<test_run_id>/%'`` — a test run's rows
-    are written before the run completes and never mutated afterwards, so
-    a completed run's result set is immutable. Repeat views of the same
-    Test Studio results page therefore hit cache instead of re-scanning
-    metering. Athena's `primary` workgroup does not enable reuse by
-    default (see docs/reporting-sql-layer.md §2). Pass ``0`` to disable.
+    ``reuse_max_age_minutes`` opts INTO Athena's per-query result cache
+    (``ResultReuseByAgeConfiguration``); default is 0 (off) — matching
+    Athena's `primary`-workgroup default. Callers must opt in explicitly
+    when they can prove the query is over immutable data.
+
+    ⚠ Not every "COMPLETE" test run is safe to cache. In particular,
+    ``PARTIAL_COMPLETE`` HITL-enabled runs continue to write evaluation
+    rows AFTER the initial status transition, so a query cached at
+    T serves stale numbers at T+30min. Cost queries can also see late
+    metering writes if HITL re-triggers extraction. Because none of the
+    three in-tree callers (`_get_cost_data_from_athena`,
+    `_get_evaluation_metrics_from_athena`, its confidence sub-query) can
+    prove HITL safety without a status check, they pass the default 0
+    for now. A future caller that carefully filters by
+    ``current_status = 'COMPLETE'`` (excluding PARTIAL_COMPLETE) may
+    enable reuse by passing a non-zero value.
     """
     try:
         # Get query result location from environment

@@ -14,7 +14,6 @@ import pytest
 
 from idp_common.agents.analytics.schema_provider import (
     get_database_overview,
-    get_metering_table_description,
     get_rollup_tables_description,
     get_table_info,
 )
@@ -38,19 +37,23 @@ class TestMeteringHourlyColumnsInPrompt:
         blocker regression pin. Round-28 update: sum_value is a
         quantity (not a cost) — see
         ``test_sum_value_labeled_as_quantity_not_cost`` for that pin."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         assert idx > -1, "metering_hourly section not found"
         section = prompt[idx : idx + 800]
         assert "sum_value" in section and "sum_cost" in section, (
             "metering_hourly bullet must name both sum_value and sum_cost "
             "as its aggregate columns."
         )
-        # The NEVER SELECT anti-pattern warning must be present
-        assert "NEVER SELECT" in section, (
-            "metering_hourly bullet must call out the n_docs/sum_pages "
-            "anti-pattern explicitly — a positive-only claim was the "
-            "round-27 blocker."
+        # The NEVER-SELECT-n_docs anti-pattern warning must be present
+        # anywhere in the description (Phase-2 refactor moved it to a
+        # shared cost-vs-docs split block ABOVE the per-table sections;
+        # phrasing is "**NEVER** `SELECT n_docs FROM metering_hourly`").
+        import re
+
+        assert re.search(r"NEVER.*SELECT.*n_docs.*metering_hourly", prompt), (
+            "prompt must call out the n_docs anti-pattern explicitly — "
+            "a positive-only claim was the round-27 blocker."
         )
 
     def test_metering_hourly_never_positively_lists_docs_columns(self):
@@ -59,8 +62,8 @@ class TestMeteringHourlyColumnsInPrompt:
         ``metering_hourly``. Guard against a future regression that
         drops the "Cost columns only" wording and re-lists them all
         together."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         section = prompt[idx : idx + 500]
         # A "Columns:" sub-phrase must not enumerate n_docs OR sum_pages
         # in the metering_hourly bullet.
@@ -83,9 +86,9 @@ class TestMeteringHourlyColumnsInPrompt:
         Omitting ``hour`` was one of the round-27 blocker fixes — a
         query with ``WHERE date = 'X'`` alone is a full-day scan
         instead of one hour partition."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
-        end = prompt.find("- **`metering_daily`**", idx)
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
+        end = prompt.find("### 2. `metering_daily`", idx)
         section = prompt[idx:end]
         # Match either "date + hour" or "date` + `hour" formatting
         assert "hour" in section, (
@@ -97,11 +100,11 @@ class TestMeteringHourlyColumnsInPrompt:
         """The doc-grain tables — ``metering_docs_hourly`` and
         ``metering_docs_daily`` — MUST still document ``n_docs`` and
         ``sum_pages`` (those are the columns that actually live there)."""
-        prompt = get_metering_table_description()
+        prompt = get_rollup_tables_description()
         # Find the metering_docs bullet
-        idx = prompt.find("**`metering_docs_hourly` / `metering_docs_daily`**")
+        idx = prompt.find("### 3. `metering_docs_hourly`")
         assert idx > -1, "metering_docs_* section not found in prompt"
-        end = prompt.find("Query patterns:", idx)
+        end = prompt.find("### 5. `control_plane_hourly`", idx)
         section = prompt[idx:end]
         assert "n_docs" in section, (
             "metering_docs_* section is missing the n_docs description"
@@ -116,13 +119,18 @@ class TestMeteringHourlyColumnsInPrompt:
         n_docs or sum_pages`` warning verbatim. This is what makes
         the LLM avoid the wrong-table pitfall, not just the absence
         of a positive claim."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
-        section = prompt[idx : idx + 800]
-        assert "NEVER SELECT" in section and "metering_docs_hourly" in section, (
-            "The metering_hourly bullet must include a NEVER SELECT "
-            "anti-pattern pointing at metering_docs_hourly as the "
-            "correct home for n_docs / sum_pages."
+        prompt = get_rollup_tables_description()
+        # Phase-2 refactor: the anti-pattern lives in a shared "Cost-vs-docs
+        # column split" block ABOVE the per-table sections rather than
+        # inside the metering_hourly bullet. Still one canonical source.
+        assert (
+            "NEVER" in prompt
+            and "SELECT" in prompt
+            and "metering_docs_hourly" in prompt
+        ), (
+            "prompt must include a NEVER SELECT anti-pattern pointing "
+            "at metering_docs_hourly as the correct home for "
+            "n_docs / sum_pages."
         )
 
     def test_sum_value_labeled_as_quantity_not_cost(self):
@@ -131,8 +139,8 @@ class TestMeteringHourlyColumnsInPrompt:
         Only `sum_cost` is USD. The round-27 fix mis-labeled the
         two together as "Cost columns only", which would have made
         the LLM sum tokens as dollars. Regression pin."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         section = prompt[idx : idx + 800]
         # The docstring MUST NOT describe sum_value as a cost.
         assert "Cost columns only: `sum_value`" not in section, (
@@ -152,10 +160,10 @@ class TestMeteringHourlyColumnsInPrompt:
         ``SELECT hour_ts FROM metering_daily`` → COLUMN_NOT_FOUND.
         Regression pin — the daily bullet MUST name the correct key
         column and MUST explicitly disclaim hour_ts."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_daily`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 2. `metering_daily`")
         assert idx > -1, "metering_daily bullet not found"
-        end = prompt.find("- **`metering_docs_hourly`", idx)
+        end = prompt.find("### 3. `metering_docs_hourly`", idx)
         section = prompt[idx:end]
         assert "`day`" in section, (
             "metering_daily bullet must explicitly name `day` as the key "

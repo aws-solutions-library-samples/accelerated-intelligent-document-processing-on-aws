@@ -38,12 +38,14 @@ class ControlPlaneCostHook(HookProvider):
     """
 
     def __init__(self, component: str, bedrock_model: str):
-        """Args:
-        component: Control-plane component label — must be one of the
-            fixed set in docs/reporting-sql-layer.md §10.2 (e.g.
-            ``analytics-agent``, ``monitor-agent``, ``monitor-dashboard``).
-        bedrock_model: Bedrock model ID actually invoked by this agent
-            (e.g. ``us.anthropic.claude-3-7-sonnet-20250219-v1:0``).
+        """Configure the per-invocation Bedrock cost emitter for one agent.
+
+        Args:
+            component: Control-plane component label — must be one of the
+                fixed set in docs/reporting-sql-layer.md §10.2 (e.g.
+                ``analytics-agent``, ``monitor-agent``, ``monitor-dashboard``).
+            bedrock_model: Bedrock model ID actually invoked by this agent
+                (e.g. ``us.anthropic.claude-3-7-sonnet-20250219-v1:0``).
         """
         self.component = component
         self.bedrock_model = bedrock_model

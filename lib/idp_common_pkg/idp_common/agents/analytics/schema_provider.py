@@ -121,59 +121,16 @@ ORDER BY total_cost DESC
 
 ### Prefer Rollup Tables for Wide Time Ranges
 
-For queries spanning **> 2 hours** of history, prefer the reporting rollup
-tables — they aggregate the raw `metering` table hourly/daily so a
-question like "cost this month" scans a few hundred rows instead of
-millions. See `docs/reporting-sql-layer.md`.
+For queries spanning **> 2 hours** of history, raw `metering` is the
+wrong grain — the six Phase-1 rollup tables aggregate this data hourly
+or daily so a "cost this month" question scans a few hundred rows
+instead of millions.
 
-- **`metering_hourly`** — pre-summed by hour, keyed on `hour_ts`
-  (TIMESTAMP), `config_version`, `service_api`, `unit`. Aggregate
-  columns: `sum_value` (a **quantity** — tokens / pages / seconds;
-  the denominator is `unit`) and `sum_cost` (USD). ⚠️ **`sum_value`
-  is NOT a cost — do not sum it as dollars.** Use `sum_cost` for
-  $ questions. **NEVER SELECT `n_docs` or `sum_pages` from this
-  table** — those live on `metering_docs_hourly` (the Phase-1
-  doc-vs-cost split — see `docs/reporting-sql-layer.md`).
-  Partitioned by `date` + `hour`.
-- **`metering_daily`** — daily grain of the same aggregates as
-  `metering_hourly`. Keyed on **`day` (DATE)** instead of
-  `hour_ts` (do NOT `SELECT hour_ts FROM metering_daily` — it
-  doesn't exist), plus `config_version`, `service_api`, `unit`.
-  Same `sum_value` (quantity) and `sum_cost` (USD) columns.
-  Partitioned by `date`.
-- **`metering_docs_hourly` / `metering_docs_daily`** — doc-grain
-  volume (`n_docs`, `sum_pages`) per `config_version`. Use these
-  for "how many docs / pages did config X process?" rollup
-  questions. Partitioned by `date` (+ `hour` on the hourly table).
-
-Query patterns:
-```sql
--- Cost this week by service (fast — scans ~7 daily rows per service)
-SELECT service_api, SUM(sum_cost) AS total_cost
-FROM metering_daily
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY service_api
-ORDER BY total_cost DESC
-
--- Doc-hours and page-hours by config version, last 30 days.
--- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
--- n_docs), so a doc appearing in 3 hours of a day is counted 3 times.
--- Label the output as doc_hours/page_hours accordingly; for strict
--- cross-day unique-doc counts, query raw metering with
--- COUNT(DISTINCT document_id) and accept the wider scan.
-SELECT config_version, SUM(n_docs) AS doc_hours, SUM(sum_pages) AS page_hours
-FROM metering_docs_daily
-WHERE date >= date_format(current_date - interval '30' day, '%Y-%m-%d')
-GROUP BY config_version
-ORDER BY doc_hours DESC
-
--- Hour-of-day cost pattern for the last 7 days
-SELECT hour(hour_ts) AS hod, SUM(sum_cost) AS cost
-FROM metering_hourly
-WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
-GROUP BY hour(hour_ts)
-ORDER BY hod
-```
+**Call `get_table_info(['metering_hourly'])`** (or `_daily`, `_docs_hourly`,
+`_docs_daily`, `control_plane_hourly`, `data_plane_lambda_hourly`) for
+the full column list, tier picker, cost-vs-docs split rules, and
+sample SQL. That single description is the canonical source — this
+metering bullet does NOT duplicate it, to prevent drift.
 
 **Fallback rule**: for the *current* hour (before the hourly rollup
 fires) OR when the question needs `document_id`-grain detail (per-doc
@@ -341,11 +298,24 @@ WITH sealed AS (
     AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
 ),
 tail AS (
+  -- Prune to the exact 2 `(date, hour)` partitions we need. `date IN (...)`
+  -- alone would enumerate 48 hour subdirs (2 dates × 24). Trino's
+  -- tuple-IN pushes both partition columns into the projection, so
+  -- Athena reads at most 2 partition dirs (~80 MB) instead of ~1.9 GB.
+  -- The row-level `timestamp` filter is still needed for correctness at
+  -- the seam (the previous hour partition contains rows before AND
+  -- after the seal boundary).
   SELECT COALESCE(SUM(CAST("estimated_cost" AS DOUBLE)), 0) AS cost
   FROM metering
-  WHERE "date" IN (
-      date_format(current_date, '%Y-%m-%d'),
-      date_format(current_date - interval '1' day, '%Y-%m-%d')
+  WHERE ("date", "hour") IN (
+      (
+          date_format(current_timestamp, '%Y-%m-%d'),
+          date_format(current_timestamp, '%H')
+      ),
+      (
+          date_format(date_add('hour', -1, current_timestamp), '%Y-%m-%d'),
+          date_format(date_add('hour', -1, current_timestamp), '%H')
+      )
   )
     AND "timestamp" >= date_add('hour', -1, date_trunc('hour', current_timestamp))
 )
