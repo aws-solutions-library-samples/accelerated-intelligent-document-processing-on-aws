@@ -28,7 +28,7 @@ import {
   CopyToClipboard,
   Alert,
 } from '@cloudscape-design/components';
-import { DEFS_FIELD, REF_FIELD } from '../../constants/schemaConstants';
+import { DEFS_FIELD, REF_FIELD, X_AWS_IDP_MULTI_INSTANCE } from '../../constants/schemaConstants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -719,7 +719,10 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           two server-side transforms are not reflected. Saying so is much cheaper —
           and much less likely to rot — than duplicating the Python transform in
           TypeScript and keeping the two in sync. */}
-      {selectedStep === 'extraction' && selectedClass?.['x-aws-idp-multi-instance'] ? (
+      {/* Both steps render the class schema, and BOTH wrap it server-side —
+          extraction via ExtractionService._get_class_schema and confidence via
+          AssessmentService._get_class_schema — so both previews diverge identically. */}
+      {['extraction', 'confidence'].includes(selectedStep) && selectedClass?.[X_AWS_IDP_MULTI_INSTANCE] ? (
         <Alert type="warning" header="This class is multi-instance — the real prompt differs">
           <span>
             <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
