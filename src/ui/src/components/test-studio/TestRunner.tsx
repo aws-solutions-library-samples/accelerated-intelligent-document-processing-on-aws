@@ -1,11 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { SelectProps, IconProps } from '@cloudscape-design/components';
 import { Container, Header, SpaceBetween, Button, FormField, Select, Alert, Textarea, Input } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { startTestRun, getTestSets } from '../../graphql/generated';
+import { startTestRun, getTestSets, getTestSetVersions } from '../../graphql/generated';
 import handlePrint from './PrintUtils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
@@ -51,6 +51,53 @@ const TestRunner = ({
   // null = the profile's current configuration. Pinning an explicit revision is
   // what makes two runs of the same profile comparable.
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  /**
+   * Which labels to score against. Null is the set's current labels, including any
+   * annotation in progress — the loop the review-effort panel invites. A number pins a
+   * published version, the counterpart of pinning a configuration revision above:
+   * both are what make two runs comparable once the thing they measure has moved.
+   */
+  const [testSetVersions, setTestSetVersions] = useState<{ version: number; label?: string | null }[]>([]);
+  const [selectedTestSetVersion, setSelectedTestSetVersion] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedTestSetVersion(null);
+    setTestSetVersions([]);
+    const id = selectedTestSet?.value;
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = (await client.graphql({ query: getTestSetVersions, variables: { testSetId: id } })) as {
+          data?: { getTestSetVersions?: ({ version?: number | null; label?: string | null } | null)[] | null };
+        };
+        if (cancelled) return;
+        const versions = (result.data?.getTestSetVersions ?? [])
+          .filter((v): v is { version: number; label?: string | null } => v?.version != null)
+          .sort((a, b) => b.version - a.version);
+        setTestSetVersions(versions);
+      } catch (err) {
+        // The picker degrades to "current labels" only; a run is still possible.
+        logger.debug('Could not load test set versions:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTestSet?.value]);
+
+  const CURRENT_LABELS = '__current__';
+  const testSetVersionOptions: SelectProps.Option[] = [
+    { value: CURRENT_LABELS, label: 'Current labels', description: 'Including any annotation in progress' },
+    ...testSetVersions.map((v) => ({
+      value: String(v.version),
+      label: `v${v.version}`,
+      description: v.label ?? undefined,
+    })),
+  ];
+  const selectedTestSetVersionOption =
+    testSetVersionOptions.find((o) => o.value === (selectedTestSetVersion === null ? CURRENT_LABELS : String(selectedTestSetVersion))) ??
+    testSetVersionOptions[0];
   const [numberOfFiles, setNumberOfFiles] = useState('');
   const [context, setContext] = useState('');
   const [error, setError] = useState('');
@@ -142,6 +189,7 @@ const TestRunner = ({
         ...(numberOfFiles.trim() && { numberOfFiles: parseInt(numberOfFiles.trim(), 10) }),
         ...(selectedVersion && { configVersion: selectedVersion.value }),
         ...(selectedRevision !== null && { configRevision: selectedRevision }),
+        ...(selectedTestSetVersion !== null && { testSetVersion: selectedTestSetVersion }),
       };
       console.log('TestRunner: Starting test run with input:', input);
 
@@ -260,6 +308,20 @@ const TestRunner = ({
             statusType={testSetsLoading ? 'loading' : 'finished'}
             loadingText="Loading test sets..."
             empty="No test sets available"
+          />
+        </FormField>
+
+        <FormField
+          label="Test set version"
+          description="Defaults to the set’s current labels, including any annotation in progress. Pin a published version to score exactly the labels it preserved — that is how two runs of the same set stay comparable once its ground truth has moved."
+        >
+          <Select
+            selectedOption={selectedTestSetVersionOption}
+            onChange={({ detail }) =>
+              setSelectedTestSetVersion(detail.selectedOption.value === CURRENT_LABELS ? null : Number(detail.selectedOption.value))
+            }
+            options={testSetVersionOptions}
+            disabled={loading || !selectedTestSet}
           />
         </FormField>
 

@@ -160,10 +160,26 @@ def handler(event, context):
             config_table, effective_config_version, effective_config_revision
         )
 
-        # Pin the ground-truth version scored against (symmetric to ConfigVersion),
-        # so comparisons can separate config drift from ground-truth drift. None for
-        # test sets that were never published.
-        test_set_version = test_set.get("activeReference")
+        # Which labels this run is scored against. Default: the set's CURRENT labels,
+        # including any annotation in progress. Defaulting to the last published
+        # version instead made the ordinary loop — correct twenty documents, run, see
+        # the improvement — silently score the labels from before the corrections,
+        # while the review-effort panel invited exactly that loop. Pinning is explicit,
+        # as it is for the configuration revision above, and is what keeps two runs
+        # comparable once the ground truth has moved. The copier stages a pinned
+        # version's snapshot and the live baselines otherwise.
+        test_set_version = input_data.get("testSetVersion")
+        test_set_draft_version = None
+        if test_set_version is not None:
+            test_set_version = int(test_set_version)
+            latest_version = int(test_set.get("latestVersion") or 0)
+            if test_set_version < 1 or test_set_version > latest_version:
+                raise ValueError(
+                    f"testSetVersion {test_set_version} does not exist for test set "
+                    f"'{test_set_id}' (latest is {latest_version})"
+                )
+        elif test_set.get("draftVersion") is not None:
+            test_set_draft_version = int(test_set["draftVersion"])
 
         # Store initial test run metadata
         _store_test_run_metadata(
@@ -179,6 +195,7 @@ def handler(event, context):
             test_set_version,
             purpose=purpose,
             config_revision=effective_config_revision,
+            test_set_draft_version=test_set_draft_version,
         )
 
         # Send file copying job to SQS queue
@@ -559,6 +576,7 @@ def _store_test_run_metadata(
     test_set_version=None,
     purpose="scoring",
     config_revision=None,
+    test_set_draft_version=None,
 ):
     """Store test run metadata in tracking table"""
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
@@ -600,6 +618,10 @@ def _store_test_run_metadata(
 
         if test_set_version is not None:
             item["TestSetVersion"] = test_set_version
+        # Recorded when the run scored current labels while a transition was open,
+        # so the result can name the version those labels were heading toward.
+        if test_set_draft_version is not None:
+            item["TestSetDraftVersion"] = int(test_set_draft_version)
 
         # Recorded alongside TestSetVersion: together they make a metric delta
         # between two runs attributable to the configuration or the ground truth

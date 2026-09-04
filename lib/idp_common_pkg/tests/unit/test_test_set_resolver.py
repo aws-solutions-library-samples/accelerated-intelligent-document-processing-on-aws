@@ -3202,6 +3202,83 @@ class TestTestSetResolver:
         versions = test_set_index.get_test_set_versions({"testSetId": "ts1"})
         assert [v["label"] for v in versions] == ["As uploaded"]
 
+    def test_opening_a_draft_does_not_move_the_active_reference(self, labeling_env):
+        """An Annotator may open a transition; deciding which version every future run
+        of the set scores against is publishTestSetVersion's, Admin/Author only. The
+        internal publish of v1 therefore leaves activeReference alone — runs default
+        to current labels and pin only when asked, so nothing depends on it here."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["publishedVersion"]) == 1
+        assert meta.get("activeReference") is None
+
+    def test_a_draft_still_closes_when_a_newer_publish_already_won(self, labeling_env):
+        """The REMOVE rode on the conditional pointer update and was lost with it,
+        leaving the annotate view reporting an open transition toward a version that
+        already existed."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.open_test_set_annotation_draft({"input": {"testSetId": "ts1"}})
+        # A concurrent publish advanced the pointer past what this one will reserve
+        # (latestVersion + 1 = 2), so the conditional pointer update loses.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET publishedVersion = :v",
+            ExpressionAttributeValues={":v": 9},
+        )
+
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "later"}}
+        )
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["publishedVersion"]) == 9, "the newer pointer must win"
+        assert "draftVersion" not in meta
+
+    def test_the_draft_number_follows_the_counter_publish_uses(self, labeling_env):
+        """publish reserves latestVersion + 1, and a failed version write leaves a gap
+        by design, so publishedVersion + 1 can name a version the next publish will
+        never create — and the badge and ?v= link would name it too."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "v1"}}
+        )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET latestVersion = :v",
+            ExpressionAttributeValues={":v": 3},
+        )
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["baseVersion"] == 1
+        assert result["draftVersion"] == 4
+
+    def test_an_oversize_set_is_refused_with_a_reason_and_no_pointer(
+        self, labeling_env, monkeypatch
+    ):
+        """The pointer is written after the copy, so a set too large for one request
+        used to fail with a generic error and fail identically on every retry."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert "draftVersion" not in meta
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
+
     def test_opening_a_draft_twice_is_idempotent(self, labeling_env):
         """The annotate view calls this on entry, so a second call must not open a
         second transition or re-copy thousands of objects."""

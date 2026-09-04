@@ -874,6 +874,8 @@ export const getTestRun = /* GraphQL */ `
       isDraftLabeling
       configVersion
       configRevision
+      testSetVersion
+      testSetDraftVersion
       config
     }
   }
@@ -893,6 +895,8 @@ export const getTestRuns = /* GraphQL */ `
       isDraftLabeling
       configVersion
       configRevision
+      testSetVersion
+      testSetDraftVersion
     }
   }
 ` as GeneratedQuery<GetTestRunsQueryVariables, GetTestRunsQuery>;
@@ -1790,6 +1794,8 @@ export const startTestRun = /* GraphQL */ `
       createdAt
       configVersion
       configRevision
+      testSetVersion
+      testSetDraftVersion
     }
   }
 ` as GeneratedMutation<StartTestRunMutationVariables, StartTestRunMutation>;

@@ -22,7 +22,6 @@ import {
   Alert,
   AppLayout,
   Badge,
-  Popover,
   Box,
   BreadcrumbGroup,
   Button,
@@ -36,6 +35,7 @@ import {
   Header,
   ProgressBar,
   Pagination,
+  Popover,
   SegmentedControl,
   SpaceBetween,
   Spinner,
@@ -578,7 +578,11 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    * continue in the current transition. But silently treating v2's link as v5's work
    * would let someone believe they were adding to a version that had already shipped.
    */
-  const staleLinkVersion = draft && requestedVersion && Number(requestedVersion) !== draft.draftVersion ? requestedVersion : null;
+  // Only an integer can name a version: `?v=abc` used to produce a warning about
+  // "version abc, which is closed".
+  const requestedVersionNumber = requestedVersion && Number.isInteger(Number(requestedVersion)) ? Number(requestedVersion) : null;
+  const staleLinkVersion =
+    draft && requestedVersionNumber !== null && requestedVersionNumber !== draft.draftVersion ? requestedVersionNumber : null;
 
   /**
    * Link to one field of the open document, for "what should this value be?".

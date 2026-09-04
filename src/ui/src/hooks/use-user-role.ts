@@ -52,23 +52,25 @@ let profileScopeCache: { key: string; promise: Promise<ProfileScope> } | null = 
  * Drop the cached scope. For tests, mirroring `resetSharedAuthSession` — module state
  * otherwise leaks between cases and the second one asserts against the first's answer.
  */
+const fetchProfileScopeUncached = async (): Promise<ProfileScope> => {
+  const client = generateClient();
+  const result = await client.graphql({ query: getMyProfile });
+  const profile = result.data.getMyProfile;
+  const versions = (profile?.allowedConfigVersions ?? []).filter((v): v is string => v !== null);
+  const sets = (profile?.allowedTestSets ?? []).filter((v): v is string => v !== null);
+  return {
+    allowedConfigVersions: versions.length > 0 ? versions : null,
+    allowedTestSets: sets.length > 0 ? sets : null,
+  };
+};
+
 export const resetSharedProfileScope = (): void => {
   profileScopeCache = null;
 };
 
 const fetchProfileScopeShared = (key: string): Promise<ProfileScope> => {
   if (profileScopeCache?.key !== key) {
-    const promise = (async (): Promise<ProfileScope> => {
-      const client = generateClient();
-      const result = await client.graphql({ query: getMyProfile });
-      const profile = result.data.getMyProfile;
-      const versions = (profile?.allowedConfigVersions ?? []).filter((v): v is string => v !== null);
-      const sets = (profile?.allowedTestSets ?? []).filter((v): v is string => v !== null);
-      return {
-        allowedConfigVersions: versions.length > 0 ? versions : null,
-        allowedTestSets: sets.length > 0 ? sets : null,
-      };
-    })().catch((err) => {
+    const promise = fetchProfileScopeUncached().catch((err) => {
       // Do not cache a failure: the next mount should be able to retry rather than
       // inherit a permanent "unrestricted" default from one transient error.
       if (profileScopeCache?.key === key) profileScopeCache = null;
@@ -152,8 +154,10 @@ const useUserRole = (): UserRoleReturn => {
             // Shared across every mounted consumer of this hook — see
             // fetchProfileScopeShared. Keyed on the token's subject so a different
             // signed-in user never reads the previous one's scope.
-            const subject = (session?.tokens?.idToken?.payload?.sub as string | undefined) ?? 'unknown';
-            const scope = await fetchProfileScopeShared(subject);
+            const subject = session?.tokens?.idToken?.payload?.sub as string | undefined;
+            // A token with no subject cannot be keyed safely, so it is not cached at
+            // all: a constant key would pool every such session into one bucket.
+            const scope = subject ? await fetchProfileScopeShared(subject) : await fetchProfileScopeUncached();
             if (scope.allowedConfigVersions) setAllowedConfigVersions(scope.allowedConfigVersions);
             if (scope.allowedTestSets) setAllowedTestSets(scope.allowedTestSets);
           } catch (profileErr) {

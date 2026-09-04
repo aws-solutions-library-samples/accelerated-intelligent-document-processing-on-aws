@@ -153,9 +153,18 @@ _S3_DATAPLANE_BOUNDS = (
 )
 
 # Every actual S3 API call this resolver makes.
+# Fan-out for the baseline snapshot, and the ceiling it can reach inside one request.
+_SNAPSHOT_CONCURRENCY = 16
+# ~16 concurrent server-side copies fit roughly this many objects inside the
+# dispatcher's 29-second budget with margin; see _snapshot_baselines.
+_SNAPSHOT_MAX_OBJECTS = 6000
+
 s3_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": "path"},
+    # Two 16-worker pools share this client; the default pool of 10 would log
+    # "Connection pool is full" and serialize the rest.
+    max_pool_connections=_SNAPSHOT_CONCURRENCY,
     **_S3_DATAPLANE_BOUNDS,
 )
 s3_client = boto3.client("s3", config=s3_config)
@@ -765,6 +774,14 @@ def publish_test_set_version(args, event=None):
             f"Test set '{test_set_id}' pointers already at a version newer than "
             f"{next_version}; leaving them unchanged"
         )
+        # The pointers stay, but the transition this publish closes must still
+        # close: the REMOVE rode on the conditional update and was lost with it,
+        # leaving the annotate view reporting an open draft toward a version that
+        # now exists.
+        tracking_table.update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression="REMOVE draftVersion",
+        )
 
     logger.info(
         f"Published test set '{test_set_id}' version {next_version} "
@@ -775,9 +792,6 @@ def publish_test_set_version(args, event=None):
         next_version if set_active else meta.get("activeReference")
     )
     return result
-
-
-_SNAPSHOT_CONCURRENCY = 16
 
 
 def _snapshot_baselines(test_set_bucket, test_set_id, version):
@@ -800,6 +814,18 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
             key = obj["Key"]
             if not key.endswith("/"):
                 keys.append(key)
+
+    if len(keys) > _SNAPSHOT_MAX_OBJECTS:
+        # Refused with a reason rather than left to time out. The pointer is written
+        # after the copy, so an oversize set would otherwise fail with a generic
+        # error and fail identically on every retry — permanently unable to start
+        # annotating, with nothing saying why.
+        raise Exception(
+            f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
+            f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
+            "Publishing a version of a set this large needs an asynchronous snapshot, "
+            "which is not available yet."
+        )
 
     def _copy(key):
         s3_client.copy_object(
@@ -893,7 +919,13 @@ def open_test_set_annotation_draft(args, event=None):
                     "testSetId": test_set_id,
                     "label": "As uploaded",
                     "notes": "Captured automatically before annotation began.",
-                    "setAsActiveReference": True,
+                    # Not the active reference: that would let an annotator's Start
+                    # annotating decide which version every future run of the set
+                    # scores against, a choice publishTestSetVersion reserves for
+                    # Admin/Author. Runs default to the set's current labels and pin
+                    # a version only when asked (see test_runner), so nothing needs
+                    # this pointer moved here.
+                    "setAsActiveReference": False,
                 }
             },
             event,
@@ -907,7 +939,10 @@ def open_test_set_annotation_draft(args, event=None):
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
 
-    draft_version = base_version + 1
+    # publish_test_set_version reserves ``latestVersion + 1``, and a failed version
+    # write leaves a gap by design, so ``publishedVersion + 1`` can name a number the
+    # next publish will never create. Follow the same counter it does.
+    draft_version = max(_as_int(meta.get("latestVersion")) or 0, base_version) + 1
     # Written after the snapshot: a failure part-way leaves no draft pointer, so the
     # next call retries the copy rather than annotating against a version whose content
     # was never captured.

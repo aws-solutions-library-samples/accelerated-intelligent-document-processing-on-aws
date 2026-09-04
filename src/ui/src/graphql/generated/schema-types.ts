@@ -2023,6 +2023,7 @@ export type TestRun = {
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];
   testRunId: Scalars['String']['output'];
+  testSetDraftVersion?: Maybe<Scalars['Int']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
   testSetName?: Maybe<Scalars['String']['output']>;
   testSetVersion?: Maybe<Scalars['Int']['output']>;
@@ -2043,6 +2044,7 @@ export type TestRunInput = {
   numberOfFiles?: InputMaybe<Scalars['Int']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
+  testSetVersion?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type TestRunStatus = {

@@ -767,20 +767,24 @@ active-reference pointer only ever moves forward.
 
 ### Run pinning
 
-When a test run starts, it records the test set's active reference alongside the
-configuration version it captured. This is symmetric to config pinning and
-makes results interpretable later: comparing two runs, you can tell whether a
-metric moved because the *configuration* changed or because the *ground truth*
-did. A run against a never-published test set records no version.
+A test run scores against the set's **current labels** by default — including any
+annotation in progress toward the next version. That is the loop the review-effort
+panel invites: correct twenty documents, run, see the improvement. A run started that
+way records `testSetDraftVersion` when a transition was open, so its result can say
+"current labels, draft toward v2" rather than nothing.
 
-> **Storage caveat (known limitation).** A published version snapshots the test
-> set's *metadata* — document count, source, label state, config version — not
-> the document and label **bytes**. All versions share the one `baseline/`
-> prefix, so editing ground truth in the working draft also changes what an
-> already-published version resolves to. True byte-level immutability requires
-> either an S3 object-version manifest per published version or copying content
-> on publish; the choice is coupled to the `DataRetentionInDays` retention
-> setting and is not yet implemented.
+To score exactly the labels a published version preserved, pick that version under
+**Test set version** on the run form. The run records it as `testSetVersion`, and the
+file copier stages that version's snapshot (`{testSetId}/versions/{n}/baseline/`)
+rather than the live baselines. This is the counterpart of pinning a configuration
+revision, and for the same reason: two runs are comparable only when both name what
+they measured against, so a metric delta can be attributed to the configuration or to
+the ground truth rather than left ambiguous.
+
+> **Storage.** Every version transition copies the set's whole baseline tree under
+> `versions/{n}/baseline/`, and nothing prunes old versions; deleting the test set
+> removes them all. For a 2000-document set that is a full copy of its labels per
+> version — cheap in absolute terms, but it grows with every publish.
 
 ## Draft labeling: unlabeled documents → ground truth
 

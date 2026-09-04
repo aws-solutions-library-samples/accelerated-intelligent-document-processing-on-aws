@@ -26,6 +26,8 @@ query GetTestRun($testRunId: String!) {
     isDraftLabeling
     configVersion
     configRevision
+    testSetVersion
+    testSetDraftVersion
     config
   }
 }

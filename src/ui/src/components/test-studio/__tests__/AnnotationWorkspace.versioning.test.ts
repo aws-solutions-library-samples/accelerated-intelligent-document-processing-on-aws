@@ -78,7 +78,9 @@ describe('AnnotationWorkspace version transition', () => {
     expect(SOURCE).toMatch(/staleLinkVersion/);
     expect(SOURCE).toMatch(/which is closed/);
     // Compared against the open draft, not merely "is a version present".
-    expect(SOURCE).toMatch(/Number\(requestedVersion\) !== draft\.draftVersion/);
+    expect(SOURCE).toMatch(/requestedVersionNumber !== draft\.draftVersion/);
+    // And only an integer counts as a version: `?v=abc` used to warn about "version abc".
+    expect(SOURCE).toMatch(/Number\.isInteger\(Number\(requestedVersion\)\)/);
   });
 
   it('keeps the transition visible while working, not only at the prompt', () => {

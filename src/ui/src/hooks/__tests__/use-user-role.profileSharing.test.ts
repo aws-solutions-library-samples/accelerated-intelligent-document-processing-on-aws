@@ -106,6 +106,20 @@ describe('useUserRole profile sharing', () => {
     expect(graphql).toHaveBeenCalledTimes(2);
   });
 
+  it('does not cache at all for a token with no subject', async () => {
+    // A constant fallback key would pool every subject-less session into one
+    // bucket, which is the cross-user leak the keying exists to prevent.
+    fetchSharedAuthSession.mockResolvedValue({ tokens: { idToken: { payload: { 'cognito:groups': ['Annotator'] } } } });
+    graphql.mockResolvedValueOnce(profile(['set-a'])).mockResolvedValueOnce(profile(['set-b']));
+
+    const first = renderHook(() => useUserRole());
+    await waitFor(() => expect(first.result.current.allowedTestSets).toEqual(['set-a']));
+    const second = renderHook(() => useUserRole());
+    await waitFor(() => expect(second.result.current.allowedTestSets).toEqual(['set-b']));
+
+    expect(graphql).toHaveBeenCalledTimes(2);
+  });
+
   it('still skips the call entirely for an Admin, who is never scoped', async () => {
     fetchSharedAuthSession.mockResolvedValue(sessionFor('admin-1', ['Admin']));
 

@@ -2984,6 +2984,13 @@
         "type": "Int"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetVersion",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",

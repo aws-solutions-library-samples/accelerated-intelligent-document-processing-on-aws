@@ -11,5 +11,7 @@ query GetTestRuns($timePeriodHours: Int, $startDateTime: AWSDateTime, $endDateTi
     isDraftLabeling
     configVersion
     configRevision
+    testSetVersion
+    testSetDraftVersion
   }
 }
