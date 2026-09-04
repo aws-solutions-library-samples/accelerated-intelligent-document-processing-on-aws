@@ -170,10 +170,11 @@ classes.
 
 ## Regenerating a class
 
-Two write paths regenerate an existing document class from a model's output —
-Discovery (`discovery/classes_discovery.py::_merge_and_save_class`) and BDA
-blueprint optimization (`bda/blueprint_optimizer.py::_apply_optimized_schema`).
-Both used to assign the generated dict over the existing class, which erased
+Three write paths regenerate an existing document class from a model's output —
+Discovery (`discovery/classes_discovery.py::_merge_and_save_class`), BDA
+blueprint optimization (`bda/blueprint_optimizer.py::_apply_optimized_schema`)
+and schema bootstrap (`synthesis/bootstrap.py::merge_class_into_version`).
+All three used to assign the generated dict over the existing class, which erased
 every class-level `x-aws-idp-*` key an author had set. The write reported
 success, the class looked right, and the loss only appeared in the *next*
 document processed — as a different extraction model, a missing escalation, a
@@ -188,6 +189,15 @@ carried = carry_forward_authored_settings(existing_class, new_class, synthesized
 
 - **The rule is "preserve anything the generator did not emit"**, not a list of
   keys to keep — a deny-list silently stops covering extension keys added later.
+  It has exactly two carve-outs, both for keys that describe the `properties` map
+  the generator just replaced rather than the class itself:
+  `_PROPERTY_COUPLED_KEYS` (`required`, `$defs`, `dependentRequired`,
+  `propertyNames`) are never carried — a stale `required` is validated against
+  every extracted object, so it reports a missing property on every document
+  forever — and `x-aws-idp-instance-array` is carried only while the property it
+  names survives, because `IDPConfig.validate_instance_array` **raises** otherwise
+  and the save path constructs `IDPConfig`, so a dangling pointer aborts the whole
+  write instead of losing one setting. Both drops are logged.
 - **`synthesized`** names keys the caller derived itself rather than receiving
   from the model, so they lose to an authored value. Discovery passes
   `{"description"}` when `_normalize_class_id()` filled a description in from a
@@ -198,7 +208,12 @@ carried = carry_forward_authored_settings(existing_class, new_class, synthesized
   `x-aws-idp-evaluation-method` / `-evaluation-threshold`) are replaced along with
   the property, because a regenerated attribute can legitimately change type and
   carrying a stale evaluation method onto it can be worse than dropping it.
-- A setting the generator *does* replace is logged as a `WARNING` naming the key.
+- **Carried values are deep-copied**, so a carried list/dict is not shared with
+  the existing class dict — `_apply_optimized_schema` hands its result back to a
+  caller that may still hold that dict.
+- A setting the generator *does* replace is logged as a `WARNING` naming the key,
+  including `description`. `$id` / `x-aws-idp-document-type` are excluded: those
+  are rewritten by the caller's id normalization, which logs its own rename.
 
 ## Configuration records
 

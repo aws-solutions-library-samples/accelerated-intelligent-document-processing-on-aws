@@ -944,27 +944,38 @@ Designer or in YAML is carried forward:
 | `x-aws-idp-extraction-system-prompt`, `-extraction-task-prompt` | ✅ |
 | `x-aws-idp-confidence-threshold`, `-confidence-escalation-model` | ✅ |
 | `x-aws-idp-document-name-regex`, `-document-page-content-regex` | ✅ |
-| `x-aws-idp-page-types`, `-source-page-types` | ✅ |
+| `x-aws-idp-page-types` (class-level) | ✅ |
 | `x-aws-idp-exclude-from-processing`, `-exclusion-reason` | ✅ |
 | `x-aws-idp-examples` (few-shot) | ✅ |
-| `x-aws-idp-multi-instance`, `-instance-array` | ✅ |
-| `description` you wrote yourself | ✅ |
+| `x-aws-idp-multi-instance` | ✅ |
+| `x-aws-idp-instance-array` | ✅ **only if** the named array property is still in the new schema (see below) |
 | `properties` (the fields and their descriptions) | ❌ — replaced by what discovery found |
+| `description` | ❌ — discovery is asked for one, so its text replaces yours (logged) |
+| `required`, `$defs` | ❌ — they describe the old properties, so they are dropped with them |
 | Per-**property** `x-aws-idp-evaluation-method` / `-evaluation-threshold` | ❌ — replaced with the property |
+| Per-**property** `x-aws-idp-source-page-types` | ❌ — replaced with the property |
 
 The rule is "preserve anything discovery did not produce", so a class-level
 setting added in a future release is covered without changing this list. If
 discovery does replace a setting, it is logged at write time (a `WARNING` naming
 the key) rather than only becoming visible in the next document processed.
 
-Two consequences worth knowing:
+Three consequences worth knowing:
 
-- **Per-attribute** evaluation settings are not preserved, because a
-  re-discovered attribute can legitimately come back with a different type and a
-  stale evaluation method on it can score worse than none. Re-apply those after a
-  re-discovery, or use **Replace existing schema** deliberately.
+- **Per-attribute** settings are not preserved — evaluation method/threshold, and
+  the `x-aws-idp-source-page-types` that drives BLANK-vs-MISSING page handling.
+  A re-discovered attribute can legitimately come back with a different type, and
+  a stale evaluation method on it can score worse than none. Re-apply these after
+  a re-discovery, or use **Replace existing schema** deliberately.
+- **`x-aws-idp-instance-array` is dropped if its property is gone.** It names a
+  top-level array property, and a configuration naming a property that does not
+  exist is rejected outright — keeping it would fail the whole save rather than
+  lose one setting. The drop is logged; re-declare it on the new schema if the
+  class still holds several records per section.
 - Normalizing a class id (`Task cards` → `Task-cards`) carries the old entry's
-  settings across the rename, so repairing an id does not reset the class.
+  settings across the rename, so repairing an id does not reset the class. If two
+  spellings normalize to the same id, the settings come from one of them (chosen
+  deterministically) and the other is named in a warning.
 
 Use **Replace existing schema** when you *want* a clean rebuild — it removes the
 profile's document classes first, so nothing is carried forward.

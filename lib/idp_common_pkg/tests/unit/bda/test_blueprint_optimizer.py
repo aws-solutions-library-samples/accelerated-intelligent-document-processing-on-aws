@@ -706,7 +706,7 @@ class TestApplyOptimizedSchema:
         # The optimized schema's own content replaces the old content. Settings
         # the transform does not produce are carried forward instead — see
         # TestApplyOptimizedSchemaPreservesAuthoredSettings (#764).
-        assert "old" not in invoice_classes[0].get("properties", {})
+        assert invoice_classes[0]["properties"] == {"new": {}}
 
 
 # ---------------------------------------------------------------------------

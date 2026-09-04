@@ -105,18 +105,18 @@ class TestCarryForwardAuthoredSettings:
 
     def test_replacing_an_authored_extension_key_is_logged(self, caplog):
         """The one loss that remains has to be visible at write time."""
-        existing = {"$id": "Invoice", "x-aws-idp-document-type": "Invoice-Old"}
-        new = {"$id": "Invoice", "x-aws-idp-document-type": "Invoice"}
+        existing = {"$id": "Invoice", "x-aws-idp-extraction-model": "authored-model"}
+        new = {"$id": "Invoice", "x-aws-idp-extraction-model": "generated-model"}
 
         with caplog.at_level(logging.WARNING):
             carry_forward_authored_settings(existing, new)
 
-        assert "x-aws-idp-document-type" in caplog.text
-        assert new["x-aws-idp-document-type"] == "Invoice"
+        assert "x-aws-idp-extraction-model" in caplog.text
+        assert new["x-aws-idp-extraction-model"] == "generated-model"
 
     def test_an_unchanged_extension_key_is_not_reported_as_replaced(self, caplog):
-        existing = {"$id": "Invoice", "x-aws-idp-document-type": "Invoice"}
-        new = {"$id": "Invoice", "x-aws-idp-document-type": "Invoice"}
+        existing = {"$id": "Invoice", "x-aws-idp-extraction-model": "same"}
+        new = {"$id": "Invoice", "x-aws-idp-extraction-model": "same"}
 
         with caplog.at_level(logging.WARNING):
             carry_forward_authored_settings(existing, new)
@@ -144,3 +144,161 @@ class TestCarryForwardAuthoredSettings:
         carry_forward_authored_settings(existing, new)
 
         assert new["properties"]["total"] == {"type": "number"}
+
+
+@pytest.mark.unit
+class TestKeysCoupledToProperties:
+    """The carve-outs from "preserve anything the generator did not emit".
+
+    Each of these keys describes the *content* of ``properties``, which the
+    generator just replaced. Carrying them turned a lost setting into a louder
+    failure somewhere else — an aborted config save, or a class that fails
+    extraction validation on every document. Both were reachable with shipped
+    presets, so these tests use their real shapes.
+    """
+
+    def test_instance_array_is_dropped_when_its_property_is_gone(self, caplog):
+        """`config_library/unified/ocr-benchmark` sets this on BANK_CHECK.
+
+        `IDPConfig.validate_instance_array` RAISES when the named property is
+        absent, and the discovery save path constructs `IDPConfig` — so carrying
+        it blindly aborts the whole save with a Pydantic error instead of losing
+        one setting.
+        """
+        existing = {
+            "$id": "BANK_CHECK",
+            "x-aws-idp-instance-array": "checks",
+            "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
+        }
+        new = {"$id": "BANK_CHECK", "properties": {"AccountNumber": {"type": "string"}}}
+
+        with caplog.at_level(logging.WARNING):
+            carried = carry_forward_authored_settings(existing, new)
+
+        assert "x-aws-idp-instance-array" not in new
+        assert "x-aws-idp-instance-array" not in carried
+        assert "instance-array" in caplog.text, "the drop must not be silent"
+
+    def test_instance_array_is_kept_when_its_property_survives(self):
+        existing = {
+            "$id": "BANK_CHECK",
+            "x-aws-idp-instance-array": "checks",
+            "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
+        }
+        new = {
+            "$id": "BANK_CHECK",
+            "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
+        }
+
+        carry_forward_authored_settings(existing, new)
+
+        assert new["x-aws-idp-instance-array"] == "checks"
+
+    def test_the_dropped_instance_array_leaves_a_class_that_validates(self):
+        """The point of the carve-out, asserted against the real validator."""
+        from idp_common.config.models import IDPConfig
+
+        existing = {
+            "$id": "BANK_CHECK",
+            "x-aws-idp-instance-array": "checks",
+            "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
+        }
+        new = {
+            "$id": "BANK_CHECK",
+            "type": "object",
+            "properties": {"AccountNumber": {"type": "string"}},
+        }
+
+        carry_forward_authored_settings(existing, new)
+
+        IDPConfig(**{"classes": [new]})  # must not raise
+
+    def test_required_is_not_carried(self):
+        """A stale `required` naming a property that no longer exists is validated
+        against every extracted object, so it reports a missing required property
+        on every document, forever. Shipped in lending-package-sample and
+        bank-statement-sample."""
+        existing = {
+            "$id": "Payslip",
+            "required": ["PayDate", "CurrentGrossPay"],
+            "properties": {"PayDate": {"type": "string"}},
+            "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+        }
+        new = {"$id": "Payslip", "properties": {"Total": {"type": "number"}}}
+
+        carried = carry_forward_authored_settings(existing, new)
+
+        assert "required" not in new
+        assert carried == ["x-aws-idp-extraction-model"]
+
+    def test_defs_are_not_carried(self):
+        """`$defs` holds the group/list-item definitions the OLD properties
+        referenced; the regenerated ones reference their own."""
+        existing = {
+            "$id": "Payslip",
+            "$defs": {"Deduction": {"type": "object"}},
+            "properties": {"Deductions": {"$ref": "#/$defs/Deduction"}},
+        }
+        new = {"$id": "Payslip", "properties": {"Total": {"type": "number"}}}
+
+        carry_forward_authored_settings(existing, new)
+
+        assert "$defs" not in new
+
+    def test_multi_instance_flag_is_still_carried(self):
+        """The boolean flag is a class-level setting, not a pointer into
+        properties — losing it is the #715 record loss re-opening."""
+        existing = {"$id": "Pay-Statement", "x-aws-idp-multi-instance": True}
+        new = {"$id": "Pay-Statement", "properties": {"a": {"type": "string"}}}
+
+        carry_forward_authored_settings(existing, new)
+
+        assert new["x-aws-idp-multi-instance"] is True
+
+
+@pytest.mark.unit
+class TestCarriedValuesAreCopies:
+    def test_a_carried_list_is_not_shared_with_the_existing_class(self):
+        """`_apply_optimized_schema` returns the regenerated schema to a caller
+        that may still hold the existing class dict, so aliasing a mutable value
+        would let one mutate the other."""
+        examples = [{"name": "ex1"}]
+        existing = {"$id": "Invoice", "x-aws-idp-examples": examples}
+        new = {"$id": "Invoice", "properties": {}}
+
+        carry_forward_authored_settings(existing, new)
+
+        assert new["x-aws-idp-examples"] == examples
+        assert new["x-aws-idp-examples"] is not examples
+        new["x-aws-idp-examples"][0]["name"] = "mutated"
+        assert examples[0]["name"] == "ex1"
+
+
+@pytest.mark.unit
+class TestReplacementWarning:
+    def test_a_replaced_description_is_warned_about(self, caplog):
+        """Discovery's prompt asks the model for a `description`, so an authored
+        one really is replaced on the ordinary path — and it is functional: the
+        classification prompt's class table is built from it."""
+        existing = {"$id": "Invoice", "description": "hand-written, load-bearing"}
+        new = {"$id": "Invoice", "description": "model-generated"}
+
+        with caplog.at_level(logging.WARNING):
+            carry_forward_authored_settings(existing, new)
+
+        assert "description" in caplog.text
+        assert new["description"] == "model-generated"
+
+    def test_normalizing_the_class_id_is_not_reported_as_a_replaced_setting(
+        self, caplog
+    ):
+        """The id is rewritten by the caller, not clobbered by the generator, and
+        `_normalize_class_id` already logs the rename. Warning here too would fire
+        on every id repair — a false alarm on the flow #764 advertises as fixed."""
+        existing = {"$id": "Task cards", "x-aws-idp-document-type": "Task cards"}
+        new = {"$id": "Task-cards", "x-aws-idp-document-type": "Task-cards"}
+
+        with caplog.at_level(logging.WARNING):
+            carry_forward_authored_settings(existing, new)
+
+        assert caplog.text == ""

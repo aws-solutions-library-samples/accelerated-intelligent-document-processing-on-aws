@@ -525,25 +525,39 @@ class ClassesDiscovery:
             # then compose the same BDA blueprint name prefix and fight over one
             # blueprint. Only an id that normalizes to *this* one is replaced;
             # unrelated classes keep their own ids untouched.
-            stale_ids = [
+            stale_ids = sorted(
                 cls_id
                 for cls_id in classes_by_id
                 if cls_id != new_class_id
                 and sanitize_class_name(cls_id) == new_class_id
-            ]
+            )
+            # Whose settings are carried across: the exact-id entry if there is
+            # one, else the first stale spelling. Sorted, so the choice does not
+            # depend on the order DynamoDB happened to return the classes in.
             existing_class = classes_by_id.get(new_class_id)
+            settings_source = existing_class or (
+                classes_by_id[stale_ids[0]] if stale_ids else None
+            )
             for stale_id in stale_ids:
                 logger.info(
                     "Replacing existing class %r with its normalized id %r.",
                     stale_id,
                     new_class_id,
                 )
-                # The un-normalized entry IS this class, so its authored
-                # settings must be carried forward too — otherwise the
-                # rename doubles as a silent reset.
-                if existing_class is None:
-                    existing_class = classes_by_id[stale_id]
+                if classes_by_id[stale_id] is not settings_source:
+                    # More than one spelling normalizes to this id (or an exact
+                    # entry already existed). Only one can supply the settings, so
+                    # name the ones being dropped rather than losing them quietly.
+                    logger.warning(
+                        "Class %r also normalizes to %r; its class-level settings "
+                        "are NOT carried forward (settings taken from %r). "
+                        "Re-apply anything it alone had set.",
+                        stale_id,
+                        new_class_id,
+                        settings_source.get("$id") if settings_source else None,
+                    )
                 del classes_by_id[stale_id]
+            existing_class = settings_source
 
             if existing_class is not None:
                 # Discovery owns `properties` and the keys it emits; every
@@ -573,7 +587,7 @@ class ClassesDiscovery:
         A class id that is already valid is left untouched.
 
         Returns the keys this method filled in itself. They are not discovery
-        output, so ``_carry_forward_authored_settings`` lets an existing
+        output, so ``carry_forward_authored_settings`` lets an existing
         authored value override them.
         """
         original = new_class.get("$id") or new_class.get("x-aws-idp-document-type")

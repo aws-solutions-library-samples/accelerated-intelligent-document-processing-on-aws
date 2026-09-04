@@ -1323,3 +1323,75 @@ class TestRediscoveryPreservesAuthoredSettings:
             self._saved_class(service, "Invoice")["x-aws-idp-extraction-model"]
             == "us.amazon.nova-pro-v1:0"
         )
+
+    def test_a_dangling_instance_array_does_not_break_the_save(self, service):
+        """A re-discovered class whose instance-array property is gone must still
+        save. Carrying the pointer would fail IDPConfig validation inside
+        save_raw_configuration, losing every class in the run instead of one
+        setting — and a shipped preset (ocr-benchmark/BANK_CHECK) sets it."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "BANK_CHECK",
+                    "x-aws-idp-document-type": "BANK_CHECK",
+                    "x-aws-idp-instance-array": "checks",
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                    "type": "object",
+                    "properties": {
+                        "checks": {"type": "array", "items": {"type": "object"}}
+                    },
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "BANK_CHECK",
+                "x-aws-idp-document-type": "BANK_CHECK",
+                "type": "object",
+                "properties": {"AccountNumber": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "BANK_CHECK")
+        assert "x-aws-idp-instance-array" not in saved
+        # The settings that are NOT coupled to properties still survive.
+        assert saved["x-aws-idp-extraction-model"] == "us.amazon.nova-pro-v1:0"
+        from idp_common.config.models import IDPConfig
+
+        IDPConfig(**{"classes": [saved]})  # the save path does this; must not raise
+
+    def test_two_stale_spellings_pick_a_deterministic_settings_source(self, service):
+        """Both normalize to the same id, so both are removed (pre-existing), but
+        only one can supply the settings. Sorted, so the choice does not depend on
+        DynamoDB's ordering, and the other is named in a warning rather than
+        dropped in silence."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task.cards",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-confidence-threshold": 0.42,
+                },
+                {
+                    "$id": "Task cards",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-confidence-threshold": 0.99,
+                },
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "Task-cards")
+        # sorted(["Task cards", "Task.cards"]) -> "Task cards" wins, every time.
+        assert saved["x-aws-idp-confidence-threshold"] == 0.99

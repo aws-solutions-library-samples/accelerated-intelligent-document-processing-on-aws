@@ -136,7 +136,11 @@ page-type routing, few-shot `x-aws-idp-examples` and
 
 - The rule is *preserve anything the generator did not emit*, deliberately not a
   list of keys to keep: a deny-list stops covering extension keys added after it
-  was written.
+  was written. Two carve-outs, both for keys that describe the `properties` map
+  the generator just replaced: `required` / `$defs` / `dependentRequired` /
+  `propertyNames` are never carried, and `x-aws-idp-instance-array` is carried
+  only while the property it names still exists (keeping a dangling one fails
+  `IDPConfig.validate_instance_array`, aborting the whole save).
 - Keys the caller synthesized rather than received from the model are passed in
   `synthesized` and lose to an authored value. `_normalize_class_id()` returns
   that set — it derives `description` from an id it had to rename, which must not
@@ -148,11 +152,19 @@ page-type routing, few-shot `x-aws-idp-examples` and
   property, because a re-derived attribute can change type and a stale evaluation
   method on it can be worse than none.
 - A setting discovery *does* replace is logged as a `WARNING` naming the key, so
-  the change is visible at write time rather than in the next inference.
+  the change is visible at write time rather than in the next inference. That
+  includes `description`, which discovery's prompt asks the model for and which
+  feeds the classification prompt's class table. The class id is excluded: it is
+  rewritten by `_normalize_class_id`, which logs its own rename.
 
-`bda/blueprint_optimizer.py::_apply_optimized_schema` uses the same helper, for
-the same reason: the BDA→IDP transform emits no `x-aws-idp-*` authoring keys, so
-saving its output straight over the existing class erased them.
+`bda/blueprint_optimizer.py::_apply_optimized_schema` and
+`synthesis/bootstrap.py::merge_class_into_version` use the same helper, for the
+same reason: neither the BDA→IDP transform nor the bootstrap schema author emits
+`x-aws-idp-*` authoring keys, so saving their output straight over an existing
+class erased them. **Not** covered: `bda_blueprint_service`'s `bda_to_idp` sync
+with `sync_mode: replace`, which replaces surviving classes from the same
+transform output by design — there the BDA project is the declared source of
+truth.
 
 The UI's **Save mode** selector controls whether the target version's schema is
 cleared *before* discovery runs:
