@@ -1358,6 +1358,18 @@ Resources:
                     default: true
                     order: 1
                     dependsOn: { field: "enabled", value: true }
+              multi_instance_detection:
+                type: object
+                sectionLabel: Multi-document Section Detection
+                description: "Detects a section that turned out to hold SEVERAL separate documents of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many documents the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every document, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                order: 4.08
+                dependsOn: { field: "extraction.mode", value: "simple" }
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Warn when a section appears to contain more documents of its class than were extracted. ON by default: this is the silent case - the section reports success with zero issues while holding one record out of three - and a guard that defaults off reproduces the problem it exists to fix. Turn OFF to keep the extraction prompt byte-identical to earlier releases."
+                    default: true
+                    order: 0
               coercion:
                 type: object
                 sectionLabel: Value Coercion
