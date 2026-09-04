@@ -50,7 +50,9 @@ def stack_fingerprint(stack):
     """
     import boto3
 
-    cfn = boto3.client("cloudformation", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+    cfn = boto3.client(
+        "cloudformation", region_name=os.environ.get("AWS_REGION", "us-west-2")
+    )
     st = cfn.describe_stacks(StackName=stack)["Stacks"][0]
     return (
         st["StackStatus"],
