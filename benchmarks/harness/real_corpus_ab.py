@@ -56,6 +56,7 @@ from math import comb
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cache_audit  # noqa: E402
+
 import lib  # noqa: E402
 
 STATE = "runs.json"
@@ -297,7 +298,7 @@ def cmd_analyse(a):
                   f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {st['t']:+.2f}  "
                   f"{'SEPARATES' if abs(st['t'] or 0) > 2 else 'not resolvable'}")
 
-        print(f"\n  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)")
+        print("\n  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)")
         print(f"    {'class':26} {'A':>12} {'B':>12} {'delta':>12} {'%':>8}")
         for u in UNITS:
             ma = statistics.fmean(x[1] for x in toks[u]) if toks[u] else 0
@@ -307,7 +308,7 @@ def cmd_analyse(a):
             print(f"    {u:26} {ma:>12,.0f} {mb:>12,.0f} {d:>+12,.0f} {pct:>8}")
 
         if a.counter:
-            print(f"\n  SECTION METADATA (did the arm actually engage?)")
+            print("\n  SECTION METADATA (did the arm actually engage?)")
             for p, v in counters.items():
                 print(f"    {p:34} A {v['A'][0]}/{v['A'][1]}   B {v['B'][0]}/{v['B'][1]}")
 

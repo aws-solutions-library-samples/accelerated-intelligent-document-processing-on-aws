@@ -102,7 +102,7 @@ task prompt up to `<<CACHEPOINT>>` with the actual schema substituted), with the
 For comparison, `realkie-fcc-verified` → `Invoice` is 1,687 tokens and caches, and
 `lending-package-sample` → `Bank-checks` estimates at ~944 and would not.
 
-**Six of the nine sit between 1,178 and 1,410 — within ~35% of the cliff.** Adding a
+**Five of the seven caching classes sit between 1,178 and 1,383 — within ~35% of the cliff.** Adding a
 few fields to a class, or shortening a task prompt, can move a class across it in
 either direction with no visible signal. This is not a corner case.
 
@@ -183,12 +183,44 @@ document text and page images, after the cachePoint and therefore never cached. 
 these percentages apply to a fraction of the bill, not to the bill. The end-to-end
 magnitude is measured separately (§6).
 
-## 6. End-to-end magnitude
+## 6. End-to-end magnitude — measured, and smaller than the mechanism suggests
 
-See [`config-guidance.md`](config-guidance.md) §7 for the paired real-corpus A/B that
-puts a dollar figure on the above. The mechanism is established here; the magnitude
-depends on the class mix, the document size and the arrival rate, so it is measured
-on a real labeled corpus rather than extrapolated from the arithmetic.
+The §2 and §5 predictions were registered **before** the run and then confirmed on 293
+real documents (stack `IDPBench` at the v0.6.7 tag, `ocr-benchmark`, Sonnet 4.6):
+
+| class | forcing off: cacheRead/doc | verdict | forcing on: cacheRead/doc | verdict |
+|---|---:|---|---:|---|
+| `GLOSSARY` (23 docs) | **0** | **never cached** | **1,839** | caching active |
+| `SHIFT_SCHEDULE` (18 docs) | **0** | **never cached** | **1,901** | caching active |
+| 7 other classes | 1,000–1,706 | caching | 1,839–2,670 | caching |
+
+Extraction-phase read share **28.4% → 48.1%**. So the cliff is real in production, not just
+in a probe: 41 of 293 documents (14%) were paying full price on their entire prompt prefix,
+on every request, with nothing reporting it.
+
+**But the dollar effect is small, and honesty requires saying so.** Decomposing the −2.3%
+cost delta that forcing produced on this corpus:
+
+| token class | Δ/doc | $/MTok | Δ$ | share |
+|---|---:|---:|---:|---:|
+| `outputTokens` | −34 | 16.50 | −0.000561 | **87%** |
+| `inputTokens` | −113 | 3.30 | −0.000373 | 58% |
+| `cacheReadInputTokens` | +1,221 | 0.33 | +0.000403 | −63% |
+| `cacheWriteInputTokens` | −27 | 4.12 | −0.000111 | 17% |
+
+The whole input-plus-cache shift nets **13%** of the saving; **87% is fewer output tokens**.
+The reason is arithmetic: moving a token from uncached input (3.30) to cache read (0.33)
+saves 2.97/MTok, but forcing also *adds* ~1,000 prefix tokens that are then read at 0.33 —
+and those two nearly cancel.
+
+**So: the cliff is worth fixing for its own sake, not for its bill.** A class that never
+caches is paying ~10× per prefix token what a caching class pays, which matters much more on
+a workload whose prefix is a large fraction of the request. On `ocr-benchmark` the prefix is
+~1,000–2,900 of ~7,800 input tokens; on a corpus of short documents with a big schema it
+could be most of the request, and there the same mechanism would dominate.
+
+Full A/B: [`config-guidance.md`](config-guidance.md) §7. Data:
+`benchmarks/results/v0.6.7/forcing-real-corpus/`.
 
 ## 7. Instrumentation note — why nobody noticed
 

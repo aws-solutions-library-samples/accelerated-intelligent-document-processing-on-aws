@@ -51,7 +51,6 @@ import argparse
 import collections
 import json
 import os
-import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -193,7 +192,7 @@ def report(label: str, rows: list[dict]) -> dict:
     # lives, and averaging across classes is exactly what would hide it.
     ext = [r for r in rows if r["phase"].lower().startswith("extract")]
     if ext:
-        print(f"\n--- extraction, per document class (the prefix-length cliff) ---")
+        print("\n--- extraction, per document class (the prefix-length cliff) ---")
         print(f"{'class':34} {'docs':>5} {'input/doc':>10} {'cRead/doc':>10} {'cWrite/doc':>11} {'read%':>7}  verdict")
         by_cls = collections.defaultdict(list)
         for r in ext:

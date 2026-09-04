@@ -144,6 +144,7 @@ export default defineConfig({
           items: [
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
+            { label: "Prompt Caching (measured)", slug: "benchmarking/prompt-caching" },
             {
               label: "Classification Confidence",
               slug: "benchmarking/classification-confidence",
