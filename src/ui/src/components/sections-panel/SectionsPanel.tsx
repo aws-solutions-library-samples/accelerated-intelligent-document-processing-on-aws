@@ -28,6 +28,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassNameText from '../common/ClassNameText';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
 import PageGroupingEditor from '../common/PageGroupingEditor';
@@ -123,15 +124,15 @@ const ClassCell = ({
   if (item.Excluded) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
-        <span style={{ color: '#5f6b7a' }}>{item.Class}</span>
+        <ClassNameText color="#5f6b7a">{item.Class}</ClassNameText>
         <Badge color="grey">Skipped: {item.ExclusionReason || 'excluded'}</Badge>
       </SpaceBetween>
     );
   }
-  if (!mismatch && !instances) return <span>{item.Class}</span>;
+  if (!mismatch && !instances) return <ClassNameText>{item.Class}</ClassNameText>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
-      <span>{item.Class}</span>
+      <ClassNameText>{item.Class}</ClassNameText>
       {instances}
       {mismatch}
     </SpaceBetween>

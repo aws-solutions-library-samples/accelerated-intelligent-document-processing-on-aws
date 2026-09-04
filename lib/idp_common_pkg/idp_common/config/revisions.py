@@ -55,6 +55,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
@@ -86,16 +87,57 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _canonical_numbers(node: Any) -> Any:
+    """
+    Coerce every number to ``float`` so a fingerprint survives a round-trip.
+
+    A configuration reaches these fingerprints by two routes that disagree about
+    the type of the same value: straight from a save (JSON, so ``float``/``int``)
+    or read back from DynamoDB, whose only numeric type is ``Decimal``. Because
+    ``json.dumps`` cannot serialize ``Decimal`` and falls back to ``default=str``,
+    ``temperature: 0.0`` hashed as the number ``0.0`` on one route and the
+    *string* ``"0.0"`` on the other — one configuration with two fingerprints,
+    which defeats the whole point of a fingerprint. Normalizing to ``float``
+    gives one rendering per value regardless of route, and also collapses the
+    ``int``/``float`` split (``0`` and ``0.0`` are the same setting).
+
+    A number and its string spelling now hash *differently*, where ``default=str``
+    previously rendered ``Decimal("0.1")`` and the string ``"0.1"`` identically.
+    That is a tightening rather than a loss: a quoted numeric in a config is a
+    different value from an unquoted one, and the routes that produce a ``Decimal``
+    never produce a string.
+
+    Two collapses are deliberate. ``0`` and ``0.0`` become one value, because they
+    are one setting. And values differing only past ~17 significant digits — or
+    beyond ``2**53`` — hash alike, since ``float`` cannot separate them; no
+    sampling parameter, token limit or class threshold lives anywhere near that
+    range, which is why the precision is not worth preserving here.
+    """
+    # bool is an int subclass, so this test must come first or True becomes 1.0
+    # and stops being distinguishable from the number.
+    if isinstance(node, bool):
+        return node
+    if isinstance(node, (int, float, Decimal)):
+        return float(node)
+    if isinstance(node, dict):
+        return {key: _canonical_numbers(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_canonical_numbers(value) for value in node]
+    return node
+
+
 def class_fingerprint(config_dict: Dict[str, Any]) -> str:
     """
     Stable hash of the document classes in a configuration.
 
     A revision that changes document classes invalidates a synced BDA project,
-    so each revision records this fingerprint; a consumer can compare the
-    published revision's fingerprint with the one that was last synced to decide
-    whether a BDA resync is required.
+    so each revision records this fingerprint against the day a consumer compares
+    the published revision's fingerprint with the one last synced to decide
+    whether a BDA resync is required. Nothing does that yet: the value is recorded
+    and surfaced (the SDK's ``ConfigRevisionInfo``, the revision list API) but no
+    code path compares two of them, so BDA resync is not currently driven by it.
     """
-    classes = config_dict.get("classes")
+    classes = _canonical_numbers(config_dict.get("classes"))
     canonical = json.dumps(classes, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
@@ -120,6 +162,11 @@ def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
     A revision that only edits, say, a classification prompt keeps the same
     fingerprint, so measurements taken under the previous revision remain
     comparable. A revision that swaps the extraction model does not.
+
+    Sampling parameters make numeric normalization load-bearing here rather than
+    merely tidy: ``temperature`` and ``top_p`` are exactly the values that arrive
+    as ``float`` from a save and ``Decimal`` from DynamoDB. See
+    :func:`_canonical_numbers`.
     """
     subset: Dict[str, Any] = {}
     for path in _CONFIDENCE_RELEVANT_PATHS:
@@ -129,7 +176,7 @@ def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
                 node = None
                 break
             node = node.get(key)
-        subset[".".join(path)] = node
+        subset[".".join(path)] = _canonical_numbers(node)
     canonical = json.dumps(subset, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 

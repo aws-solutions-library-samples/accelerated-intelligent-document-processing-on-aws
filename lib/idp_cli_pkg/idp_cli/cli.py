@@ -1780,8 +1780,8 @@ def process(
       # Process test set with limited files for quick testing
       idp-cli process --stack-name my-stack --test-set fcc-example-test --number-of-files 5 --monitor
 
-      # Process with specific configuration version
-      idp-cli process --stack-name my-stack --dir ./documents/ --config-version v2 --monitor
+      # Process with specific configuration profile
+      idp-cli process --stack-name my-stack --dir ./documents/ --config-profile v2 --monitor
 
       # Process manifest with baselines (automatically creates "idp-cli" test set for Test Studio integration)
       idp-cli process --stack-name my-stack --manifest docs_with_baselines.csv --monitor
@@ -2674,7 +2674,7 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
         table = Table(title=f"Versions for {document_id}")
         table.add_column("Run ID")
         table.add_column("Completed")
-        table.add_column("Config Version")
+        table.add_column("Config Profile")
         table.add_column("Pages", justify="right")
         table.add_column("Files", justify="right")
 
@@ -3849,7 +3849,7 @@ def stop_workflows(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (default: active version); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (default: active profile); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def load_test(
@@ -3882,8 +3882,8 @@ def load_test(
       # Use S3 source file
       idp-cli load-test --stack-name my-stack --source-file s3://my-bucket/test.pdf --rate 500
 
-      # Load test with a specific config version
-      idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --rate 100 --config-version v2
+      # Load test with a specific config profile
+      idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --rate 100 --config-profile v2
 
     Schedule file format (CSV):
       minute,count
@@ -4392,11 +4392,11 @@ def config_validate(
     "--config-version",
     "config_version",
     required=True,
-    help="Configuration profile to update (e.g., v1, v2). If version doesn't exist, it will be created. --config-version is the former name and still works.",
+    help="Configuration profile to update (e.g., v1, v2). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
-    help="Description for the configuration version (used when creating new versions)",
+    help="Description for the configuration profile (used when creating new profiles)",
 )
 @click.option(
     "--revision-notes",
@@ -4424,19 +4424,19 @@ def config_upload(
     stack's ConfigurationTable in DynamoDB. The config is merged with
     system defaults just like configurations saved through the Web UI.
 
-    Supports configuration versioning - can update existing versions or
-    create new versions with optional descriptions.
+    Supports configuration profiles - can update existing profiles or
+    create new profiles with optional descriptions.
 
     Examples:
 
-      # Upload config with validation (updates active version)
+      # Upload config with validation (updates the active profile)
       idp-cli config-upload --stack-name my-stack --config-file ./config.yaml
 
-      # Update existing version
-      idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-version Production
+      # Update an existing profile
+      idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile Production
 
-      # Create new version with description
-      idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-version NewVersion --version-description "Test configuration for new feature"
+      # Create a new profile with a description
+      idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile NewProfile --version-description "Test configuration for new feature"
 
       # Skip validation (use with caution)
       idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --no-validate
@@ -4450,10 +4450,10 @@ def config_upload(
 
         client = IDPClient(stack_name=stack_name, region=region)
 
-        # Warn for default version
+        # Warn for the default profile
         if config_version and config_version.lower() == "default":
             console.print(
-                "[yellow]⚠️  Warning: This will update the default [system default] config version[/yellow]"
+                "[yellow]⚠️  Warning: This will update the default [system default] config profile[/yellow]"
             )
 
         result = client.config.upload(
@@ -4522,7 +4522,7 @@ def config_upload(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads active version. --config-version is the former name and still works.",
+    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile. --config-version is the former name and still works.",
 )
 @click.option(
     "--config-revision",
@@ -4620,26 +4620,26 @@ def config_activate(
     region: str = None,
 ):
     """
-    Activate a configuration version in a deployed IDP stack
+    Activate a configuration profile in a deployed IDP stack
 
-    Sets the specified configuration version as the active version.
+    Sets the specified configuration profile as the active one.
     All new document processing will use this configuration.
 
     If the configuration has use_bda enabled, it will automatically sync
     to BDA before activation (matching UI behavior).
 
     Examples:
-      # Activate a specific version
-      idp-cli config-activate --stack-name my-stack --config-version v2
+      # Activate a specific profile
+      idp-cli config-activate --stack-name my-stack --config-profile v2
 
-      # Activate default version
-      idp-cli config-activate --stack-name my-stack --config-version default
+      # Activate the default profile
+      idp-cli config-activate --stack-name my-stack --config-profile default
     """
     try:
         from idp_sdk import IDPClient
 
         console.print(
-            f"[bold blue]Activating config version in stack: {stack_name}[/bold blue]"
+            f"[bold blue]Activating config profile in stack: {stack_name}[/bold blue]"
         )
         console.print(f"Version: {config_version}")
         console.print()
@@ -4649,7 +4649,7 @@ def config_activate(
 
         if not result.success:
             console.print(
-                f"[red]✗ Failed to activate configuration version '{config_version}': {result.error}[/red]"
+                f"[red]✗ Failed to activate configuration profile '{config_version}': {result.error}[/red]"
             )
             if result.error and "does not exist" in result.error:
                 console.print(
@@ -4670,7 +4670,7 @@ def config_activate(
                 )
 
         console.print(
-            f"[green]✓ Successfully activated configuration version: {config_version}[/green]"
+            f"[green]✓ Successfully activated configuration profile: {config_version}[/green]"
         )
         console.print("New documents will use this configuration immediately.")
 
@@ -4689,31 +4689,31 @@ def config_activate(
 @click.option("--region", help="AWS region (optional)")
 def config_list(stack_name: str, region: str = None):
     """
-    List all configuration versions in a deployed IDP stack
+    List all configuration profiles in a deployed IDP stack
 
-    Shows all available configuration versions with their status,
+    Shows all available configuration profiles with their status,
     creation dates, and descriptions.
 
     Examples:
-      # List all configuration versions
+      # List all configuration profiles
       idp-cli config-list --stack-name my-stack
     """
     try:
         from idp_sdk import IDPClient
 
         console.print(
-            f"[bold blue]Listing configuration versions in stack: {stack_name}[/bold blue]"
+            f"[bold blue]Listing configuration profiles in stack: {stack_name}[/bold blue]"
         )
 
         client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.list()
 
         if not result.versions:
-            console.print("[yellow]No configuration versions found[/yellow]")
+            console.print("[yellow]No configuration profiles found[/yellow]")
             return
 
         console.print(
-            f"\n[bold]Found {result.count} configuration version(s):[/bold]\n"
+            f"\n[bold]Found {result.count} configuration profile(s):[/bold]\n"
         )
 
         table = Table(show_header=True, header_style="bold blue")
@@ -4926,7 +4926,7 @@ def config_delete(
     region: str = None,
 ):
     """
-    Delete a configuration version from a deployed IDP stack
+    Delete a configuration profile from a deployed IDP stack
 
     Removes the specified configuration profile, and its revision history, from
     the stack. Cannot delete the 'default' profile or the currently active one.
@@ -4937,19 +4937,19 @@ def config_delete(
     owning stack would recreate them. You are warned before confirming.
 
     Examples:
-      # Delete a version with confirmation
-      idp-cli config-delete --stack-name my-stack --config-version old-version
+      # Delete a profile with confirmation
+      idp-cli config-delete --stack-name my-stack --config-profile old-profile
 
       # Delete without confirmation prompt
-      idp-cli config-delete --stack-name my-stack --config-version old-version --force
+      idp-cli config-delete --stack-name my-stack --config-profile old-profile --force
     """
     try:
         from idp_sdk import IDPClient
 
         console.print(
-            f"[bold blue]Deleting config version from stack: {stack_name}[/bold blue]"
+            f"[bold blue]Deleting config profile from stack: {stack_name}[/bold blue]"
         )
-        console.print(f"Version: {config_version}")
+        console.print(f"Profile: {config_version}")
 
         client = IDPClient(stack_name=stack_name, region=region)
 
@@ -4976,16 +4976,16 @@ def config_delete(
 
         if not result.success:
             console.print(
-                f"[red]✗ Failed to delete configuration version '{config_version}': {result.error}[/red]"
+                f"[red]✗ Failed to delete configuration profile '{config_version}': {result.error}[/red]"
             )
             sys.exit(1)
 
         console.print(
-            f"[green]✓ Successfully deleted configuration version: {config_version}[/green]"
+            f"[green]✓ Successfully deleted configuration profile: {config_version}[/green]"
         )
 
     except Exception as e:
-        logger.error(f"Error deleting config version: {e}", exc_info=True)
+        logger.error(f"Error deleting config profile: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
 
@@ -5012,7 +5012,7 @@ def config_delete(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to sync (default: active version); --config-version is the former name and still works",
+    help="Configuration profile to sync (default: active profile); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
@@ -5048,8 +5048,8 @@ def config_sync_bda(
       # Push IDP to BDA (merge mode)
       idp-cli config-sync-bda --stack-name my-stack --direction idp-to-bda --mode merge
 
-      # Sync specific config version
-      idp-cli config-sync-bda --stack-name my-stack --config-version v2
+      # Sync specific config profile
+      idp-cli config-sync-bda --stack-name my-stack --config-profile v2
     """
     try:
         from idp_sdk import IDPClient
@@ -5061,7 +5061,7 @@ def config_sync_bda(
         console.print(f"Direction: {direction}")
         console.print(f"Mode: {mode}")
         if config_version:
-            console.print(f"Config Version: {config_version}")
+            console.print(f"Config profile: {config_version}")
         console.print()
 
         client = IDPClient(stack_name=stack_name, region=region)
@@ -5117,7 +5117,7 @@ def config_sync_bda(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to save the discovered schema to (default: active version); --config-version is the former name and still works",
+    help="Configuration profile to save the discovered schema to (default: active profile); --config-version is the former name and still works",
 )
 @click.option("--region", help="AWS region (optional)")
 @click.option(
@@ -5222,7 +5222,7 @@ def discover(
       idp-cli discover -d ./lending_package.pdf --auto-detect --detect-only
 
       # Stack mode (saves to config)
-      idp-cli discover --stack-name my-stack -d ./invoice.pdf --config-version v2
+      idp-cli discover --stack-name my-stack -d ./invoice.pdf --config-profile v2
 
       # Override the discovery model (e.g. use Claude Opus instead of the default)
       idp-cli discover -d ./invoice.pdf -g ./invoice.json \\
@@ -5480,7 +5480,7 @@ def discover(
         if class_hint:
             console.print(f"Class hint: {class_hint}")
         if config_version:
-            console.print(f"Config Version: {config_version}")
+            console.print(f"Config profile: {config_version}")
         if model_id:
             console.print(f"Model ID override: {model_id}")
         console.print()
@@ -5711,7 +5711,7 @@ def multi_discover(
 
       # Save to stack configuration
       idp-cli discover-multidoc --dir ./samples/ --save-to-config \\
-          --stack-name IDP --config-version v2
+          --stack-name IDP --config-profile v2
     """
     import json
 
@@ -5816,7 +5816,7 @@ def multi_discover(
                 progress.update(
                     task,
                     description=(
-                        f"Saving to config version '{data.get('version', '?')}'..."
+                        f"Saving to config profile '{data.get('version', '?')}'..."
                     ),
                 )
             elif step == "pipeline_complete":
@@ -5887,7 +5887,7 @@ def multi_discover(
 
     if result.config_version:
         console.print(
-            f"[green]✓ Schemas saved to config version: {result.config_version}[/green]"
+            f"[green]✓ Schemas saved to config profile: {result.config_version}[/green]"
         )
 
     if output:
@@ -6611,7 +6611,7 @@ def bootstrap(
     """Bootstrap a config (and test set) from a prompt
 
     Authors a document-class schema from your description (reusing a catalog
-    match when one fits), creates a config version, and — when the document
+    match when one fits), creates a config profile, and — when the document
     generator is available — generates a labeled synthetic test set.
 
     Local mode (no --stack-name) authors and prints the schema without saving.
@@ -6688,7 +6688,7 @@ def bootstrap(
             console.print(f"[red]✗ Bootstrap failed: {result.error}[/red]")
             sys.exit(1)
 
-        console.print(f"[green]✓ Config version: {result.config_version}[/green]")
+        console.print(f"[green]✓ Config profile: {result.config_version}[/green]")
         console.print(f"  Resolution tier: {result.resolution_tier}")
         if result.catalog_match:
             console.print(f"  Catalog match: {result.catalog_match}")

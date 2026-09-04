@@ -551,6 +551,50 @@ If your corpus has a known day/month convention, `date_order: MDY` or `DMY`
 resolves the all-numeric ambiguous case. It **never** overrides a value that is
 already unambiguous (a `15` cannot be a month whatever you set).
 
+> ⚠️ **The refusal covers coercion, not the pipeline.** `ambiguous_date` only
+> engages when the model hands back the **raw string**. If the model normalizes
+> the date itself, it picks a day/month order silently — and there is **no
+> refusal, no ProcessingIssue, and no `metadata.coercion` entry at all**. The
+> guess is indistinguishable from a correct reading.
+>
+> Measured on a single-page invoice containing `Shipment Date: 03/04/1985`
+> extracted into a `format: date` field, ground truth `1985-04-03` (D/M/Y):
+>
+> | extraction model | coercion | value returned | refusal recorded? |
+> |---|---|---|---|
+> | `us.anthropic.claude-sonnet-4-6` | off | `1985-03-04` | — |
+> | `us.anthropic.claude-sonnet-4-6` | **on** | `1985-03-04` | **none** |
+> | `us.amazon.nova-lite-v1:0` | off | `1985-03-04` | — |
+> | `us.amazon.nova-lite-v1:0` | **on** | `1985-03-04` | **none** |
+>
+> Both models resolved the ambiguity to M/D/Y on their own and emitted ISO
+> directly, so coercion never saw a string and had nothing to refuse. Note that
+> `date_order` does not help here either — it also only applies to values
+> coercion actually processes.
+>
+> **What this means for you.** The property that holds is "*coercion* never
+> guesses a day/month order", not "the pipeline never does". For date-of-birth,
+> effective-date or any field where a transposed day and month is a correctness
+> problem rather than a formatting one, do not treat an unflagged date as
+> verified.
+>
+> **Two mitigations, both free.** Instruct the model in the class or field
+> description to return dates **verbatim**, which puts the value back on
+> coercion's path and makes the refusal authoritative; and/or set `date_order` to
+> your corpus convention so that path resolves rather than refuses. Note the
+> order matters — `date_order` alone does nothing here, because a
+> pre-normalized ISO value never reaches the code `date_order` governs. If your
+> corpus mixes D/M/Y and M/D/Y sources, neither mitigation is sufficient and
+> numeric dates need review.
+>
+> **This is a documented limitation, not planned work** — see
+> [#717](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/717)
+> for the measurement and the reasoning. Detecting it automatically was
+> prototyped and rejected: the check can only fire on evidence that the *document*
+> is ambiguous, which on a normal US or EU corpus is a large fraction of all
+> dates, so it produced warnings faster than anyone could act on them. It cannot
+> tell you which reading is right — only that one was chosen.
+
 > **How much does coercion actually change?** Measured on a live stack: modern
 > models (Claude Sonnet 4.6, Nova Lite) already return correctly-typed values for
 > scalar fields, so coercion often fires **zero** times and changes nothing. It

@@ -402,7 +402,22 @@ classes:
   $id: Estimated2024AnnualTaxableDistributions
   x-aws-idp-document-type: Estimated2024AnnualTaxableDistributions
   type: object
-  description: Estimated 2024 Annual Taxable Distributions for Nuveen Mutual Funds
+  # The BOUNDARY sentence is load-bearing, not decoration (#750). Every page of
+  # this document reprints the title, the logo and the full column-header block
+  # (which itself carries a date, "NAV as of 10/31/2024") and paginates with a
+  # BARE page number, never "Page N of M". That defeats the shipped
+  # <boundary-detection-rules>: their OPENING HEADER BLOCK test is satisfied by
+  # the running header and is evaluated BEFORE their CONTINUATION EVIDENCE test,
+  # while a lone "7" matches none of their PAGINATION patterns. Measured on the
+  # config's own classifier (us.amazon.nova-2-lite-v1:0, temperature 0): without
+  # this sentence the 16-page fund table splits into 2-5 sections in 10 out of 10
+  # runs; with it, 1 section in 10 out of 10. The rules' own PRECEDENCE clause is
+  # what makes a class description the supported place to say this.
+  description: 'Estimated 2024 Annual Taxable Distributions for Nuveen Mutual Funds.
+    BOUNDARY: this is ONE continuous multi-page document - a single fund table that
+    runs from the first page to the disclosures page. Every page reprints the title,
+    logo and table column headers and carries only a bare page number, so only the
+    page numbered 1 is "start"; every other page is "continue".'
   properties:
     FundInformation:
       type: array

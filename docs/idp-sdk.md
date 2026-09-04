@@ -1528,6 +1528,12 @@ test run scored against it, which exempts it from retention pruning. Two revisio
 with the same `class_fingerprint` extract the same fields, so their accuracy
 numbers are directly comparable.
 
+> **Comparing fingerprints across the v0.6.7 boundary.** The hash was made stable
+> against a DynamoDB round-trip in v0.6.7, so a revision cut before that upgrade can
+> carry a different `class_fingerprint` than the same classes hash to now. Read a
+> mismatch where one side predates the upgrade as *unknown*, not as *changed*; two
+> revisions cut on v0.6.7 or later compare exactly.
+
 ```python
 history = client.config.revisions(config_profile="lending")
 

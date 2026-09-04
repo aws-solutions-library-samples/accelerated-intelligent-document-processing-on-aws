@@ -447,6 +447,19 @@ Parameters:
     Description: Maximum acceptable execution time in milliseconds before alerting (default 300000 = 300 seconds)
     MinValue: 1000
 
+  BDACallbackTimeoutSeconds:
+    Type: Number
+    Default: 7200
+    Description: >-
+      Maximum seconds the BDA step waits for its asynchronous completion callback
+      before failing the execution (default 7200 = 2 hours). Only affects BDA
+      mode. Without a bound, a lost callback leaves the execution waiting
+      forever, emitting neither ExecutionsFailed nor ExecutionTime, so no alarm
+      can see it while it holds a concurrency slot. Raise it if very large
+      packets hit spurious States.Timeout failures.
+    MinValue: 60
+    MaxValue: 86400
+
   # Security Configuration
   PermissionsBoundaryArn:
     Type: String
@@ -1457,6 +1470,7 @@ Metadata:
           - DataRetentionInDays
           - ErrorThreshold
           - ExecutionTimeThresholdMs
+          - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
 
@@ -1508,6 +1522,8 @@ Metadata:
         default: "Bedrock Hub-Account Role Session Name"
       PermissionsBoundaryArn:
         default: "Permissions Boundary ARN"
+      BDACallbackTimeoutSeconds:
+        default: "BDA Callback Timeout (seconds)"
       MaxConcurrentWorkflows:
         default: "Maximum Concurrent Workflows"
       DataRetentionInDays:
@@ -2694,6 +2710,7 @@ Resources:
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         BedrockHubRoleArn: !Ref BedrockHubRoleArn

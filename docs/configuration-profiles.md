@@ -263,15 +263,17 @@ The revision appears in the test-run list, the results view, the comparison view
 and CSV/JSON exports. Pinning a revision in a run also marks it exempt from
 retention pruning, so the comparison stays readable later.
 
-> **Confidence curves are still keyed per profile, not per revision.** Test
-> Studio's review-effort estimate measures a confidence→accuracy curve per
-> configuration, because confidence means different things across models and
-> prompts. Those curves are keyed by *profile*, so revisions of one profile share
-> a curve — which is right for a prompt tweak and wrong after a model swap. Each
-> revision now records a **confidence fingerprint** (a hash of the
-> confidence-relevant configuration) so a future release can branch curves
-> automatically; until then, after changing the extraction model or assessment
-> configuration, reset the affected curve so a stale one is not reused.
+> **Confidence curves are not keyed per revision.** Test Studio's review-effort
+> estimate rests on a confidence→accuracy curve, because confidence means
+> different things across models and prompts. Revisions of one profile share a
+> curve — right for a prompt tweak, wrong after a model swap. So **after changing a
+> profile's extraction model or assessment configuration, treat the review-effort
+> estimate for test sets using that profile as unreliable until fresh observations
+> accumulate.** Each revision records a **confidence fingerprint** (a hash of the
+> confidence-relevant configuration) that a future release will key curves on. See
+> the fuller note in
+> [Test Studio](./test-studio.md#the-curve-is-measured-and-it-improves), which
+> also covers a separate limitation on the reading side.
 
 ### Retention
 

@@ -1,0 +1,10 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-llm-simple-sep,tiny_form.pdf,0,COMPLETED,True,1.0,1.0,5,1.0,,,1.0,,,,,,1.0,0,,,1.0,0.0,,,,,19.656538,0.0189
+core-llm-simple-sep,tiny_form.pdf,1,COMPLETED,True,1.0,1.0,5,1.0,,,1.0,,,,,,1.0,0,,,1.0,0.0,,,,,16.283025,0.014
+core-llm-simple-sep,tiny_form.pdf,2,COMPLETED,True,1.0,1.0,5,1.0,,,1.0,,,,,,1.0,0,,,1.0,0.0,,,,,16.634799,0.0141
+core-llm-simple-sep,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,,,,1.0,0,,,0.9912,0.0,,,,,127.681624,0.1143
+core-llm-simple-sep,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,,,,1.0,0,,,1.0,0.0,,,,,127.280835,0.1134
+core-llm-simple-sep,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,,,,1.0,0,,,0.9976,0.0,,,,,125.298093,0.1132
+core-llm-simple-sep,longdesc_100.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,,,,0.0,100,,,0.6676,32.6,,,,,99.679269,0.1448
+core-llm-simple-sep,longdesc_100.pdf,1,COMPLETED,True,3.0,1.0,100,0.0,,,1.0,,,,,,0.0,100,,,0.6679,32.6,,,,,276.794101,0.3723
+core-llm-simple-sep,longdesc_100.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,,,,0.0,100,,,0.6648,32.6,,,,,96.336693,0.1446
