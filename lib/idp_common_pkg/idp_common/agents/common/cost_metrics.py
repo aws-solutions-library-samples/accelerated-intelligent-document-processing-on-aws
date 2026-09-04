@@ -18,7 +18,8 @@ Phase-2 wiring — see docs/reporting-sql-layer.md §10.5.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import threading
+from typing import Any, Iterable, List, Optional
 
 from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterInvocationEvent
@@ -26,6 +27,20 @@ from strands.hooks.events import AfterInvocationEvent
 from idp_common.metrics import emit_control_plane_cost_metric
 
 logger = logging.getLogger(__name__)
+
+
+def with_cost_hook(
+    hooks: Optional[Iterable[Any]], component: str, bedrock_model: str
+) -> List[Any]:
+    """Return a new hook list with `ControlPlaneCostHook` appended.
+
+    Helper used by every in-tree Strands agent creator so the pattern
+    ``list(kwargs.get("hooks") or []) + [ControlPlaneCostHook(...)]``
+    lives in one place. Accepts ``None`` (returns just the cost hook)
+    or any iterable (returns iterable + cost hook). Never mutates the
+    caller's list.
+    """
+    return list(hooks or []) + [ControlPlaneCostHook(component, bedrock_model)]
 
 
 class ControlPlaneCostHook(HookProvider):
@@ -51,6 +66,14 @@ class ControlPlaneCostHook(HookProvider):
         self.bedrock_model = bedrock_model
         self._last_input_tokens: int = 0
         self._last_output_tokens: int = 0
+        # Guards the delta-vs-snapshot state so concurrent invocations of
+        # the same reused agent (parallel ``stream_async`` from the same
+        # warm container) can't interleave a read-modify-write and
+        # misattribute token counts. Held only around the arithmetic +
+        # attribute update — NOT around the CloudWatch emit call, which
+        # would otherwise serialise every hook's PutMetricData across
+        # threads.
+        self._state_lock = threading.Lock()
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
@@ -58,8 +81,13 @@ class ControlPlaneCostHook(HookProvider):
     def _on_after_invocation(self, event: AfterInvocationEvent) -> None:
         try:
             usage = event.agent.event_loop_metrics.accumulated_usage
-            total_in = int(usage.get("inputTokens", 0) or 0)
-            total_out = int(usage.get("outputTokens", 0) or 0)
+            # Do NOT ``or 0`` the get() result — falsy non-None shapes
+            # (empty string, empty dict, False) should surface as
+            # TypeError via the narrow except below rather than silently
+            # rounding down to 0. Missing keys use the explicit 0
+            # default; genuine 0 counts flow through as integers.
+            total_in = int(usage.get("inputTokens", 0))
+            total_out = int(usage.get("outputTokens", 0))
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             # Strands API drift (renamed field, changed shape) — log at
             # ERROR so operators see it in log-based alarms. The hook
@@ -83,17 +111,20 @@ class ControlPlaneCostHook(HookProvider):
         # counter INDEPENDENTLY — treating the whole hook as reset when
         # only one counter drops would re-emit the still-growing counter
         # in full (e.g. input 100→150 while output 50→30 shouldn't emit
-        # 150 input tokens, only the true 50-token delta).
-        if total_in >= self._last_input_tokens:
-            delta_in = total_in - self._last_input_tokens
-        else:
-            delta_in = total_in  # reset — new baseline starts at 0
-        if total_out >= self._last_output_tokens:
-            delta_out = total_out - self._last_output_tokens
-        else:
-            delta_out = total_out
-        self._last_input_tokens = total_in
-        self._last_output_tokens = total_out
+        # 150 input tokens, only the true 50-token delta). Compute the
+        # delta and update the snapshot atomically under the lock so
+        # concurrent invocations can't interleave read-modify-write.
+        with self._state_lock:
+            if total_in >= self._last_input_tokens:
+                delta_in = total_in - self._last_input_tokens
+            else:
+                delta_in = total_in  # reset — new baseline starts at 0
+            if total_out >= self._last_output_tokens:
+                delta_out = total_out - self._last_output_tokens
+            else:
+                delta_out = total_out
+            self._last_input_tokens = total_in
+            self._last_output_tokens = total_out
 
         if delta_in == 0 and delta_out == 0:
             return

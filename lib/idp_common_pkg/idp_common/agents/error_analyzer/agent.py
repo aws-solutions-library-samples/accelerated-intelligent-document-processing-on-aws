@@ -13,7 +13,7 @@ import strands
 
 from idp_common.config import get_config
 
-from ..common.cost_metrics import ControlPlaneCostHook
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_error_analyzer_model_id
 from .tools import (
@@ -77,15 +77,9 @@ def create_error_analyzer_agent(
         model_id=model_id, boto_session=session
     )
 
-    # Preserve caller-supplied hooks; APPEND the control-plane cost hook so
-    # AgentFactory-provided memory / monitoring providers aren't overwritten.
-    hooks = list(kwargs.get("hooks") or [])
-    hooks.append(
-        ControlPlaneCostHook(component="error-analyzer", bedrock_model=model_id)
-    )
     return strands.Agent(
         tools=tools,
         system_prompt=config.agents.error_analyzer.system_prompt,
         model=bedrock_model,
-        hooks=hooks,
+        hooks=with_cost_hook(kwargs.get("hooks"), "error-analyzer", model_id),
     )

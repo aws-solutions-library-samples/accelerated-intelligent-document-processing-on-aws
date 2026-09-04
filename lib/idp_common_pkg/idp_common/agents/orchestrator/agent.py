@@ -16,7 +16,7 @@ import boto3
 import strands
 from strands import tool
 
-from ..common.cost_metrics import ControlPlaneCostHook
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_chat_companion_model_id
 
@@ -73,8 +73,8 @@ def create_orchestrator_agent(
                     # conversation history the orchestrator loads next turn.
                     # This filter is intentionally BROAD (drops any hook the
                     # caller passed) rather than narrow (only drop memory hooks)
-                    # because (a) the ControlPlaneCostHook subagents want lives
-                    # in their own creator functions, not caller kwargs, and (b)
+                    # because (a) the ControlPlaneCostHook that subagents want
+                    # lives in their own creator functions, not caller kwargs, and (b)
                     # inspecting hook types to decide would couple the
                     # orchestrator to specific hook classes. If a future caller
                     # legitimately wants a hook on both orchestrator AND
@@ -346,19 +346,14 @@ Example:
         boto_session=session,
     )
 
-    # Get hooks from kwargs if provided; append the control-plane cost hook
-    # so the orchestrator's own routing/decision Bedrock calls land in
+    # Append control-plane cost hook to caller-supplied hooks so the
+    # orchestrator's own routing/decision Bedrock calls land in
     # control_plane_hourly under component="chat-orchestrator".
-    hooks = list(kwargs.get("hooks") or [])
-    hooks.append(
-        ControlPlaneCostHook(component="chat-orchestrator", bedrock_model=model_id)
-    )
-
     orchestrator = strands.Agent(
         system_prompt=system_prompt,
         model=model,
         tools=tools,
-        hooks=hooks,  # Pass hooks during agent creation
+        hooks=with_cost_hook(kwargs.get("hooks"), "chat-orchestrator", model_id),
         callback_handler=None,
     )
 

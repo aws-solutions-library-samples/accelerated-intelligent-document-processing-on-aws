@@ -13,7 +13,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from strands import Agent
 from strands.tools.mcp import MCPClient
 
-from ..common.cost_metrics import ControlPlaneCostHook
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 
 logger = logging.getLogger(__name__)
@@ -170,19 +170,14 @@ Always be specific and reference the actual repository content in your responses
 Remember: NEVER use read_wiki_contents! NEVER send sensitive data to external services!
 """
 
-            # Preserve caller-supplied hooks; APPEND the control-plane cost hook.
-            hooks = list(kwargs.get("hooks") or [])
-            hooks.append(
-                ControlPlaneCostHook(
-                    component="code-intelligence", bedrock_model=model_id
-                )
-            )
             # Create Strands agent with MCP tools
             strands_agent = Agent(
                 tools=tools,
                 system_prompt=system_prompt,
                 model=bedrock_model,
-                hooks=hooks,
+                hooks=with_cost_hook(
+                    kwargs.get("hooks"), "code-intelligence", model_id
+                ),
             )
 
         logger.info("Code Intelligence Agent created successfully")

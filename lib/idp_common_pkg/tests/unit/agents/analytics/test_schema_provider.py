@@ -194,6 +194,51 @@ def stub_config():
 
 
 @pytest.mark.unit
+class TestGetTableInfoGroupDedup:
+    """Regression: ``get_table_info(['metering_hourly',
+    'metering_docs_hourly'])`` used to emit the full 6-table rollup
+    description twice because both names hit the same rollup branch.
+    Same for the evaluation and rule-validation groups. Fix: track
+    which group has already been emitted per invocation."""
+
+    def test_multi_rollup_emits_description_once(self):
+        result = get_table_info(["metering_hourly", "metering_docs_hourly"])
+        # The rollup description contains the "## Reporting Rollup Tables"
+        # H2 header — must appear exactly once regardless of how many
+        # rollup names were requested.
+        assert result.count("## Reporting Rollup Tables") == 1, (
+            "rollup description must not be duplicated per requested "
+            f"rollup name (found {result.count('## Reporting Rollup Tables')})"
+        )
+        # Sanity: still contains the description at all.
+        assert "## Reporting Rollup Tables" in result
+
+    def test_multi_evaluation_emits_description_once(self):
+        result = get_table_info(["document_evaluations", "attribute_evaluations"])
+        # The evaluation description contains "## Evaluation Tables".
+        assert result.count("## Evaluation Tables") == 1, (
+            "evaluation description must not be duplicated per requested "
+            "evaluation table name"
+        )
+
+    def test_document_sections_still_emitted_per_table(self):
+        """Sanity: document_sections_* tables are each a different table
+        (document_sections_w2 vs document_sections_invoice), NOT a
+        conceptual group. They should NOT be deduped. Without a real
+        config each falls through to the "**Error**" branch — but the
+        important property is that TWO branches run, not one collapsed
+        into one. Count section separators as proof of separate handling."""
+        result = get_table_info(["document_sections_w2", "document_sections_invoice"])
+        # Each document_sections_* name should produce its own "---"
+        # separator; if the router mistakenly deduped them, only one
+        # separator would appear.
+        assert result.count("\n---\n") >= 2, (
+            f"document_sections_* tables must be handled independently "
+            f"(found {result.count(chr(10) + '---' + chr(10))} separators)"
+        )
+
+
+@pytest.mark.unit
 class TestDatabaseOverviewMirrorsDetail:
     """Round-29 review: the DETAIL section (get_metering_table_description)
     has all the disclaimers, but the OVERVIEW blurb (get_database_overview)

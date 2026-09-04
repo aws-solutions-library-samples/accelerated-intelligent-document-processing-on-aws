@@ -14,7 +14,7 @@ import boto3
 import strands
 
 from ..common.config import load_result_format_description
-from ..common.cost_metrics import ControlPlaneCostHook
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .analytics_logger import analytics_logger
 from .config import load_python_plot_generation_examples
@@ -386,17 +386,12 @@ def create_analytics_agent(
 
     # Preserve caller-supplied hooks (e.g. DynamoDBMemoryHookProvider from
     # AgentFactory.create_conversational_agent) and APPEND the control-plane
-    # cost hook — hardcoding a fresh list would silently drop the memory
-    # provider and break chat history persistence.
-    hooks = list(kwargs.get("hooks") or [])
-    hooks.append(
-        ControlPlaneCostHook(component="analytics-agent", bedrock_model=model_id)
-    )
+    # cost hook — see with_cost_hook helper.
     strands_agent = strands.Agent(
         tools=tools,
         system_prompt=system_prompt,
         model=bedrock_model,
-        hooks=hooks,
+        hooks=with_cost_hook(kwargs.get("hooks"), "analytics-agent", model_id),
     )
 
     logger.info("Analytics agent created successfully")

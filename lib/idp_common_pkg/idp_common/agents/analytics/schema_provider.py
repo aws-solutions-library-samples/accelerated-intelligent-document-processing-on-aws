@@ -225,14 +225,14 @@ number of (service, unit) rows a doc touched.
   `SUM(est_lambda_cost)` over both tables.
 - **Partitioned by**: `date`, `hour`.
 
-### Athena result reuse
+### Note on result reuse (operator context)
 
-Sealed rollup partitions never change. Consumers can safely opt into
-Athena's result cache per query — it is OFF by default on the `primary`
-workgroup. Set `ResultReuseConfiguration.ResultReuseByAgeConfiguration`
-(e.g. `MaxAgeInMinutes=60`) on each `StartQueryExecution`. Never set it
-on queries against raw `metering` for the *current* hour — the partition
-is still being written.
+Sealed rollup partitions never change, so queries against them are
+safe candidates for Athena's per-query result cache — but that's a
+boto3 `StartQueryExecution` parameter set by whichever consumer runs
+the query, not something you (the SQL-writing agent) control. Assume
+your SQL runs against fresh data; ignore this note. See
+`docs/reporting-sql-layer.md` §2 for the operator/consumer side.
 
 ### Sample queries
 
@@ -257,13 +257,20 @@ ORDER BY doc_hours DESC
 
 -- Hour-of-day cost pattern (24h). Partition-pruned to yesterday+today
 -- so Athena only lists the 2 date partitions this window can touch.
+-- The freshness cut-off (`hour_ts < date_trunc('hour', current_timestamp)
+-- - interval '1' hour`) excludes the two hours that may still be
+-- unsealed: hour N-1 (rollup writes at N+1:05, so 0-5 min after each
+-- clock hour it isn't yet in the table) and the current partial hour N.
+-- Copying the template WITHOUT this cut-off silently returns partial
+-- data during the HH:00-HH:04 window.
 SELECT hour("hour_ts") AS hod, SUM("sum_cost") AS cost
 FROM metering_hourly
 WHERE "date" IN (
     date_format(current_date, '%Y-%m-%d'),
     date_format(current_date - interval '1' day, '%Y-%m-%d')
 )
-  AND "hour_ts" >= date_add('hour', -24, current_timestamp)
+  AND "hour_ts" >= date_trunc('hour', date_add('hour', -24, current_timestamp))
+  AND "hour_ts" <  date_add('hour', -1, date_trunc('hour', current_timestamp))
 GROUP BY hour("hour_ts")
 ORDER BY hod
 
@@ -1005,6 +1012,13 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
 
     detailed_info = f"# Detailed Schema Information for {len(table_names)} Table(s)\n\n"
 
+    # Track which conceptual "group" descriptions have already been
+    # emitted so `get_table_info(['metering_hourly', 'metering_docs_hourly'])`
+    # doesn't emit the full 6-table rollup description twice. Same for
+    # the evaluation and rule-validation groups — each is a single
+    # helper that already covers all tables in its group.
+    emitted_groups: set[str] = set()
+
     for table_name in table_names:
         table_name = table_name.lower().strip()
 
@@ -1024,25 +1038,27 @@ def get_table_info(table_names: list[str], config: Optional[IDPConfig] = None) -
             # picker, cost-vs-docs split rule, and sample joins are all
             # cross-cutting — so we return the full 6-table description
             # whenever any rollup is requested. Same pattern as the
-            # evaluation / rule-validation helpers below. An earlier
-            # attempt to slice per-table added ~200 lines of discovery /
-            # composition / fallback machinery to save ~$0.0002 per
-            # cache-hit call and produced 4 rounds of review churn;
-            # reverted.
-            detailed_info += get_rollup_tables_description()
-            detailed_info += "\n---\n\n"
+            # evaluation / rule-validation helpers below.
+            if "rollup" not in emitted_groups:
+                detailed_info += get_rollup_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("rollup")
 
         elif table_name.startswith("document_evaluations") or table_name in [
             "document_evaluations",
             "section_evaluations",
             "attribute_evaluations",
         ]:
-            detailed_info += get_evaluation_tables_description()
-            detailed_info += "\n---\n\n"
+            if "evaluation" not in emitted_groups:
+                detailed_info += get_evaluation_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("evaluation")
 
         elif table_name in ["rule_validation_summary", "rule_validation_details"]:
-            detailed_info += get_rule_validation_tables_description()
-            detailed_info += "\n---\n\n"
+            if "rule_validation" not in emitted_groups:
+                detailed_info += get_rule_validation_tables_description()
+                detailed_info += "\n---\n\n"
+                emitted_groups.add("rule_validation")
 
         elif table_name.startswith("document_sections_"):
             # Extract the class name from table name

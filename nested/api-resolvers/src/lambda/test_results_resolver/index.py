@@ -1443,14 +1443,12 @@ def _execute_athena_query(query, database):
         # Get query result location from environment
         result_location = os.environ.get("ATHENA_OUTPUT_LOCATION")
 
-        start_kwargs = {
-            "QueryString": query,
-            "QueryExecutionContext": {"Database": database},
-            "ResultConfiguration": {"OutputLocation": result_location},
-        }
-
         # Start query execution
-        response = athena.start_query_execution(**start_kwargs)
+        response = athena.start_query_execution(
+            QueryString=query,
+            QueryExecutionContext={"Database": database},
+            ResultConfiguration={"OutputLocation": result_location},
+        )
 
         query_execution_id = response["QueryExecutionId"]
 

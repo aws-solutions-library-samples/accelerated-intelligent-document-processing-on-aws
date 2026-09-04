@@ -162,6 +162,60 @@ class TestControlPlaneCostHookDeltaEmission:
 
         assert mock_emit.call_count == 1
 
+    def test_concurrent_invocations_no_torn_delta(self):
+        """Regression: two threads invoking the same reused agent
+        concurrently (e.g. parallel ``stream_async`` from a warm
+        container) must not misattribute tokens by interleaving a
+        read-modify-write on ``_last_input_tokens`` /
+        ``_last_output_tokens``. The state update is guarded by
+        ``self._state_lock``; the sum of emitted deltas across N
+        concurrent invocations should equal the total observed
+        accumulated_usage from all ticks.
+        """
+        import threading
+
+        hook = ControlPlaneCostHook(
+            component="analytics-agent",
+            bedrock_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        )
+
+        # 10 ticks presenting monotonically-increasing accumulated_usage
+        # numbers. Interleaved firing from multiple threads must still
+        # produce deltas that sum to the final total (1000 in / 100 out).
+        events = [_make_after_invocation_event(i * 100, i * 10) for i in range(1, 11)]
+        emitted_in: list[int] = []
+        emitted_out: list[int] = []
+        emit_lock = threading.Lock()
+
+        def _capture(**kwargs):
+            with emit_lock:
+                emitted_in.append(kwargs.get("bedrock_tokens_in") or 0)
+                emitted_out.append(kwargs.get("bedrock_tokens_out") or 0)
+
+        with patch(
+            "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric",
+            side_effect=_capture,
+        ):
+            threads = [
+                threading.Thread(target=hook._on_after_invocation, args=(ev,))
+                for ev in events
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # The final observed totals were 1000 / 100. Regardless of the
+        # order threads happened to run, the emitted deltas must sum to
+        # exactly these totals — any torn read-modify-write would show
+        # up as an under- or over-count on one side.
+        assert sum(emitted_in) == 1000, (
+            f"input deltas {emitted_in} sum to {sum(emitted_in)}, expected 1000"
+        )
+        assert sum(emitted_out) == 100, (
+            f"output deltas {emitted_out} sum to {sum(emitted_out)}, expected 100"
+        )
+
     def test_missing_metrics_does_not_raise(self):
         """Telemetry must never break the agent — if the metrics
         object shape changes (Strands API drift), the hook catches
