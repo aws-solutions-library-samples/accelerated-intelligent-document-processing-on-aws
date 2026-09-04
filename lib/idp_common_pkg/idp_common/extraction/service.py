@@ -1947,7 +1947,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         from idp_common.extraction.instance_probe import augment_schema_with_probe
 
-        wire, added = augment_schema_with_probe(class_schema, class_label)
+        wire, added = augment_schema_with_probe(
+            class_schema,
+            class_label,
+            self.config.extraction.multi_instance_detection.question,
+        )
         return (wire if isinstance(wire, dict) else class_schema), added
 
     def _read_instance_probe(self, extracted_fields: Any) -> int | None:

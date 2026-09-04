@@ -45,36 +45,61 @@ logger = logging.getLogger(__name__)
 # question rather than noise.
 INSTANCE_PROBE_FIELD = "IDPDocumentInstanceCount"
 
+#: The question put to the model, and the fallback when
+#: ``extraction.multi_instance_detection.question`` is empty — which it is for any
+#: ``IDPConfig`` built without merging system defaults (unit tests, notebooks).
+#: The shipped text lives in ``config/system_defaults/base-extraction.yaml`` so it
+#: is visible and editable in ``Config#default`` like every other prompt;
+#: ``test_instance_probe.py`` asserts the two are byte-identical so they cannot
+#: drift.
+#:
+#: The wording is load-bearing, and two clauses in particular:
+#:
+#: * *"Do not count pages, sections or repeated headers"* — without it a document
+#:   with an identical banner on each of four pages reads as four documents.
+#: * *"DIAGNOSTIC METADATA, not extracted document data"* — the field must not be
+#:   mistaken for something to extract from the page.
+#:
+#: ``{DOCUMENT_CLASS}`` is substituted with the section's class label.
+DEFAULT_INSTANCE_QUESTION = (
+    "DIAGNOSTIC METADATA, not extracted document data. How many separate, "
+    "complete '{DOCUMENT_CLASS}' documents are present in the supplied pages? "
+    "Answer 1 for the normal case of one document. Answer more than 1 only when "
+    "the pages clearly contain several distinct documents of this same type — for "
+    "example statements covering different periods, or records for different "
+    "people — including when a document starts part-way down a page. Do not count "
+    "pages, sections or repeated headers: count complete documents. Extract all "
+    "other fields exactly as you otherwise would."
+)
 
-def _probe_property_schema(class_label: str) -> dict[str, Any]:
+
+def _probe_property_schema(
+    class_label: str, question: str | None = None
+) -> dict[str, Any]:
     """The JSON-Schema fragment describing the auxiliary count property.
 
     Phrased as a question about the PAGE RANGE, not about the document's
     content, and explicitly labelled as diagnostic metadata — the point is to
     add a question, not to change how the model extracts the fields it is
     already being asked for.
+
+    ``question`` overrides the shipped wording (from
+    ``extraction.multi_instance_detection.question``). Empty or None falls back to
+    :data:`DEFAULT_INSTANCE_QUESTION`.
     """
     label = class_label or "document"
+    text = (question or "").strip() or DEFAULT_INSTANCE_QUESTION
     return {
         "type": "integer",
         "minimum": 1,
-        "description": (
-            f"DIAGNOSTIC METADATA, not extracted document data. How many "
-            f"separate, complete '{label}' documents are present in the supplied "
-            f"pages? Answer 1 for the normal case of one document. Answer more "
-            f"than 1 only when the pages clearly contain several distinct "
-            f"documents of this same type — for example statements covering "
-            f"different periods, or records for different people — including "
-            f"when a document starts part-way down a page. Do not count pages, "
-            f"sections or repeated headers: count complete documents. Extract "
-            f"all other fields exactly as you otherwise would."
-        ),
+        "description": text.replace("{DOCUMENT_CLASS}", label),
     }
 
 
 def augment_schema_with_probe(
     class_schema: dict[str, Any] | None,
     class_label: str,
+    question: str | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Return ``(wire_schema, probe_added)``.
 
@@ -111,7 +136,7 @@ def augment_schema_with_probe(
     wire = dict(class_schema)
     wire["properties"] = {
         **properties,
-        INSTANCE_PROBE_FIELD: _probe_property_schema(class_label),
+        INSTANCE_PROBE_FIELD: _probe_property_schema(class_label, question),
     }
     return wire, True
 

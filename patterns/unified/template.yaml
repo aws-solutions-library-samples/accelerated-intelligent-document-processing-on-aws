@@ -1370,6 +1370,11 @@ Resources:
                     description: "Warn when a section appears to contain more documents of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. TURN THIS ON if one section can hold several documents of the same class: measured on 40 real bank-check images with ground truth, it found all 18 multi-check images, raised zero false alarms on the 22 single-check ones, and got the count exactly right every time, for about 2% more input tokens. It is OFF by default only because on a corpus with no multi-record documents to find it is pure cost - one real forms corpus lost about 1.3 accuracy points. It never changes the extracted data."
                     default: false
                     order: 0
+                  question:
+                    type: string
+                    description: "The question put to the model, as the description of the auxiliary count property. {DOCUMENT_CLASS} is replaced with the section's class name. Leave blank to use the shipped wording. Two clauses are load-bearing and should survive any edit: 'do not count pages, sections or repeated headers' (without it, a document carrying an identical banner on each of four pages reads as four documents), and 'DIAGNOSTIC METADATA, not extracted document data' (so the model does not treat the field as something to extract from the page)."
+                    order: 1
+                    dependsOn: { field: "enabled", value: true }
               coercion:
                 type: object
                 sectionLabel: Value Coercion

@@ -720,6 +720,15 @@ documents per pair, only the toggle differing) — see
 Hence off by default and a strong recommendation to turn it on per configuration
 profile for any corpus whose sections can hold several documents of one class.
 
+The question itself is `extraction.multi_instance_detection.question`, sent as the
+auxiliary property's description and supporting `{DOCUMENT_CLASS}`. The shipped text
+lives in `config/system_defaults/base-extraction.yaml` (so it is editable in
+`Config#default` like every other prompt) *and* as `DEFAULT_INSTANCE_QUESTION` in
+`instance_probe.py` (so an `IDPConfig` built without merging system defaults still
+has it). A test asserts the two are byte-identical, and another pins the two
+load-bearing clauses, because dropping either quietly degrades detection rather
+than failing.
+
 Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
 extraction validates through a generated Pydantic model and shards by field, so an
 auxiliary property would be dropped on some paths and duplicated on others.

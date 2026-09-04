@@ -526,6 +526,19 @@ class MultiInstanceDetectionConfig(BaseModel):
             "Advanced (agentic) extraction is not covered."
         ),
     )
+    question: str = Field(
+        default="",
+        description=(
+            "The question put to the model, as the description of the auxiliary "
+            "count property. Supports {DOCUMENT_CLASS}. Populated from system "
+            "defaults; leave blank to use the shipped wording. Two clauses are "
+            "load-bearing and should survive any edit: 'do not count pages, "
+            "sections or repeated headers' (without it, a document with an "
+            "identical banner on each of four pages reads as four documents), and "
+            "'DIAGNOSTIC METADATA, not extracted document data' (so the field is "
+            "not mistaken for something to extract)."
+        ),
+    )
 
 
 class CoercionConfig(BaseModel):

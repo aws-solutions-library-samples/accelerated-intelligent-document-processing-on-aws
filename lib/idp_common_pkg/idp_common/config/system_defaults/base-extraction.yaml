@@ -74,6 +74,22 @@ extraction:
     # Detection NEVER changes the extracted data or a class's schema flags.
     # Simple extraction only (prompt and forced-tool paths).
     enabled: false
+    # The question put to the model, as the description of the auxiliary count
+    # property. {DOCUMENT_CLASS} is substituted with the section's class.
+    # Two clauses are load-bearing and should survive any edit:
+    #   * "do not count pages, sections or repeated headers" — without it a
+    #     document with an identical banner on each of four pages reads as four.
+    #   * "DIAGNOSTIC METADATA, not extracted document data" — so the field is
+    #     not mistaken for something to extract from the page.
+    question: >-
+      DIAGNOSTIC METADATA, not extracted document data. How many separate,
+      complete '{DOCUMENT_CLASS}' documents are present in the supplied pages?
+      Answer 1 for the normal case of one document. Answer more than 1 only when
+      the pages clearly contain several distinct documents of this same type — for
+      example statements covering different periods, or records for different
+      people — including when a document starts part-way down a page. Do not count
+      pages, sections or repeated headers: count complete documents. Extract all
+      other fields exactly as you otherwise would.
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.
   coercion:

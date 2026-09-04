@@ -8,6 +8,7 @@ import {
   Header,
   Input,
   Multiselect,
+  RadioGroup,
   Select,
   SpaceBetween,
   Spinner,
@@ -268,155 +269,153 @@ const arrayOfObjectPropertyNames = (cls: SchemaClass): string[] => {
     .map(([name]) => name);
 };
 
-const NONE_OPTION_VALUE = '';
+const MODE_ONE = 'one';
+const MODE_DESIGNATE = 'designate';
+const MODE_SYNTHESIZE = 'synthesize';
 
 /**
- * Class-level editor for `x-aws-idp-multi-instance` ("Synthesize mode").
+ * How many documents of this class can one section hold? — ONE control, three
+ * outcomes.
  *
- * Turning this on replaces the class's effective schema with an `instances[]`
- * List-of-Class wrapper, so a section holding several documents of the class
- * extracts every one of them. The two guards that matter at authoring time:
+ * This replaced two separate optional controls (an "Instance Array" select and a
+ * "Multi-instance Sections" checkbox) that each disabled the other. That was
+ * *safe* — the contradiction config-validate rejects was unreachable — but it
+ * failed the user on the part that is actually hard. Two near-synonymous feature
+ * names, one mysteriously greyed out, and the real question — *is my class one
+ * record, or already a packet of records?* — never asked. Switching between them
+ * meant knowing to clear the select before the checkbox re-enabled.
  *
- * 1. A **shape preview**. The double-wrap footgun (setting this on a class that
- *    is already a list of records, giving `instances[i].records[j]`) is prevented
- *    far better by showing the resulting nesting here than by a validation
- *    message that fires after the user has saved.
- * 2. **Mutual exclusion with Designate mode**, enforced in the UI as well as by
- *    config-validate, so the contradiction is unreachable rather than merely
- *    rejected.
+ * As a radio group the exclusivity is structural rather than enforced, the
+ * question is in the user's terms, the property picker appears only in the branch
+ * that needs it, and the shape preview and the baseline-migration warning sit
+ * against the option that carries them.
  */
-const MultiInstanceField = ({
+const MultiInstanceModeField = ({
   selectedClass,
   onUpdateClass,
 }: {
   selectedClass: SchemaClass;
   onUpdateClass: (updates: Record<string, unknown>) => void;
 }): React.JSX.Element => {
-  const enabled = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
-  const designated = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
   const properties = selectedClass.attributes?.properties || {};
+  const propertyNames = Object.keys(properties);
   const arrayProps = arrayOfObjectPropertyNames(selectedClass);
-  // The narrow already-a-list-wrapper heuristic, mirroring the backend warning.
-  // Deliberately narrow: an internal array is NOT evidence of this — an invoice
-  // with line_items[] is a single-instance document, and multi-instance on it is
-  // correct.
-  const looksLikeAWrapper = arrayProps.length === 1 && Object.keys(properties).length === 1;
+
+  const designated = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
+  const synthesize = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
+  const mode = synthesize ? MODE_SYNTHESIZE : designated ? MODE_DESIGNATE : MODE_ONE;
+
+  // A value set outside the UI (YAML/CLI), or left behind after the property's
+  // type changed, is kept and flagged — never silently dropped. This key has had
+  // one silent-erase bug already.
+  const staleDesignation = Boolean(designated) && !arrayProps.includes(designated);
   const collides = Object.prototype.hasOwnProperty.call(properties, 'instances');
+  // Narrow on purpose: an internal array is NOT evidence of being a list wrapper.
+  // An invoice with line_items[] is a single-instance document and Synthesize on
+  // it correctly gives instances[i].line_items[j].
+  const looksLikeAWrapper = arrayProps.length === 1 && propertyNames.length === 1;
 
-  return (
-    <SpaceBetween size="xs">
-      <FormField
-        label="Multi-instance Sections (Optional)"
-        description="Turn on when one section can contain several separate documents of this class. Extraction returns a list, one entry per document, instead of only the first."
-        errorText={
-          collides
-            ? 'This class already declares a top-level property named "instances", which the wrapper would shadow. Rename it first — the configuration will be rejected on save.'
-            : undefined
-        }
-      >
-        <Checkbox
-          checked={enabled}
-          disabled={Boolean(designated)}
-          onChange={({ detail }) =>
-            onUpdateClass({
-              [X_AWS_IDP_MULTI_INSTANCE]: detail.checked || undefined,
-            })
-          }
-        >
-          One section may contain several {selectedClass.name || 'document'} documents
-        </Checkbox>
-      </FormField>
+  const selectMode = (next: string): void => {
+    if (next === mode) return;
+    if (next === MODE_ONE) {
+      onUpdateClass({ [X_AWS_IDP_MULTI_INSTANCE]: undefined, [X_AWS_IDP_INSTANCE_ARRAY]: undefined });
+    } else if (next === MODE_DESIGNATE) {
+      // Preselect the only candidate — with one array there is no choice to make.
+      onUpdateClass({
+        [X_AWS_IDP_MULTI_INSTANCE]: undefined,
+        [X_AWS_IDP_INSTANCE_ARRAY]: designated || (arrayProps.length === 1 ? arrayProps[0] : undefined),
+      });
+    } else {
+      onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: undefined, [X_AWS_IDP_MULTI_INSTANCE]: true });
+    }
+  };
 
-      {Boolean(designated) && (
-        <Alert type="info">
-          Unavailable while <strong>Instance Array</strong> is set to <strong>{designated}</strong>. The two are mutually exclusive: that
-          setting names a record array this class already has, this one creates one. Clear it to use multi-instance sections.
-        </Alert>
-      )}
-
-      {enabled && (
-        <Alert type={looksLikeAWrapper ? 'warning' : 'info'} header="Resulting shape">
-          <Box variant="code">
-            {`instances[ ] → ${selectedClass.name || 'Document'} → { ${Object.keys(properties).slice(0, 4).join(', ') || 'your fields'}${
-              Object.keys(properties).length > 4 ? ', …' : ''
-            } }`}
-          </Box>
-          {looksLikeAWrapper ? (
-            <Box variant="p">
-              This class&apos;s top level is nothing but the array <strong>{arrayProps[0]}</strong>, so it already looks like a packet of
-              records — you would get <strong>instances[i].{arrayProps[0]}[j]</strong>, one level too many. If{' '}
-              <strong>{arrayProps[0]}</strong> is the record array, use <strong>Instance Array</strong> instead.
-            </Box>
-          ) : (
-            <Box variant="p">
-              Each entry is one complete document with all of this class&apos;s fields. Evaluation baselines for this class must be migrated
-              to the same shape, or its accuracy will read as ~0.
-            </Box>
-          )}
-        </Alert>
-      )}
-    </SpaceBetween>
-  );
-};
-
-/**
- * Class-level editor for `x-aws-idp-instance-array` ("Designate mode").
- *
- * Before this control the key was round-tripped by the schema editor but had no
- * UI at all, so the only way to reach it was pasting JSON or editing the YAML —
- * see GitHub #694 / #715. It is a SELECT rather than a text input because the
- * value must name one of the class's own array-of-object properties; a typo in a
- * free-text box would be accepted here and then hard-fail config load.
- */
-const InstanceArrayField = ({
-  selectedClass,
-  onUpdateClass,
-}: {
-  selectedClass: SchemaClass;
-  onUpdateClass: (updates: Record<string, unknown>) => void;
-}): React.JSX.Element => {
-  const candidates = arrayOfObjectPropertyNames(selectedClass);
-  const current = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
-  // Mutual exclusion, BOTH ways. Disabling only the multi-instance checkbox left
-  // the contradiction reachable from this side — a user could designate an array
-  // while multi-instance was on and save a config `validate_instance_array` then
-  // hard-rejects at load. "Unreachable" has to mean unreachable.
-  const multiInstanceOn = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
-  // A value set outside the UI (YAML/CLI) that no longer matches an
-  // array-of-object property is kept and flagged rather than dropped — silently
-  // erasing a user's configuration on open is the failure mode this whole key
-  // has already had once.
-  const isStale = Boolean(current) && !candidates.includes(current);
-
-  const options = [
-    { label: '(None — one document per section)', value: NONE_OPTION_VALUE },
-    ...candidates.map((name) => ({ label: name, value: name })),
-    ...(isStale ? [{ label: `${current} (not an array of objects)`, value: current }] : []),
+  const designateOptions = [
+    ...arrayProps.map((name) => ({ label: name, value: name })),
+    ...(staleDesignation ? [{ label: `${designated} (not an array of objects)`, value: designated }] : []),
   ];
 
   return (
     <FormField
-      label="Instance Array (Optional)"
-      description={
-        multiInstanceOn
-          ? 'Unavailable while Multi-instance Sections is on. The two are mutually exclusive: this names a record array the class already has, that one creates one.'
-          : candidates.length === 0 && !isStale
-            ? 'Only for a class whose schema is already a PACKET of records — it names the top-level array-of-objects property holding one record per document. This class has no array-of-objects property, so there is nothing to designate.'
-            : 'For a class whose schema is already a PACKET of records: names the top-level array-of-objects property that holds one record per document. The section then reports that array’s length as its instance count (shown as a badge in the Sections panel) instead of always 1. Purely a signal — it does not change the extraction shape or any downstream output.'
-      }
-      errorText={
-        isStale
-          ? `"${current}" is not a top-level array-of-objects property of this class; the configuration will be rejected on save.`
-          : undefined
-      }
+      label="Documents per section"
+      description="How many separate documents of this class can end up in one section? Sections are split by document TYPE, so several records of the SAME type can land together — and then a single-record schema returns only the first."
     >
-      <Select
-        selectedOption={options.find((o) => o.value === current) || options[0]}
-        onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: detail.selectedOption.value || undefined })}
-        options={options}
-        disabled={multiInstanceOn || (candidates.length === 0 && !isStale)}
-        placeholder="(None — one document per section)"
-      />
+      <SpaceBetween size="xs">
+        <RadioGroup
+          value={mode}
+          onChange={({ detail }) => selectMode(detail.value)}
+          items={[
+            {
+              value: MODE_ONE,
+              label: 'One document',
+              description: 'The normal case. Nothing changes.',
+            },
+            {
+              value: MODE_DESIGNATE,
+              label: 'Several — this class already lists them',
+              description:
+                arrayProps.length === 0
+                  ? 'Unavailable: this class has no array-of-objects property to designate.'
+                  : 'Your schema already has an array of records. Name it and the section reports how many it found. No change to extraction output.',
+              disabled: arrayProps.length === 0 && !staleDesignation,
+            },
+            {
+              value: MODE_SYNTHESIZE,
+              label: 'Several — wrap my single-record class',
+              description:
+                'Your schema describes one record; extraction returns a list of them. Changes the output shape — evaluation baselines must be migrated.',
+            },
+          ]}
+        />
+
+        {mode === MODE_DESIGNATE && (
+          <FormField
+            label="Record array"
+            description="The top-level array-of-objects property holding one record per document."
+            errorText={
+              staleDesignation
+                ? `"${designated}" is not a top-level array-of-objects property of this class; the configuration will be rejected on save.`
+                : undefined
+            }
+          >
+            <Select
+              selectedOption={designateOptions.find((o) => o.value === designated) || null}
+              onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: detail.selectedOption.value || undefined })}
+              options={designateOptions}
+              placeholder="Select the record array"
+            />
+          </FormField>
+        )}
+
+        {mode === MODE_SYNTHESIZE && (
+          <Alert type={collides || looksLikeAWrapper ? 'warning' : 'info'} header="Resulting shape">
+            <SpaceBetween size="xxs">
+              <Box variant="code">
+                {`instances[ ] → ${selectedClass.name || 'Document'} → { ${propertyNames.slice(0, 4).join(', ') || 'your fields'}${
+                  propertyNames.length > 4 ? ', …' : ''
+                } }`}
+              </Box>
+              {collides ? (
+                <Box variant="p">
+                  This class already declares a top-level <strong>instances</strong> property, which the wrapper would shadow. Rename it
+                  first — the configuration will be rejected on save.
+                </Box>
+              ) : looksLikeAWrapper ? (
+                <Box variant="p">
+                  This class&apos;s top level is nothing but the array <strong>{arrayProps[0]}</strong>, so it already looks like a packet
+                  of records — you would get <strong>instances[i].{arrayProps[0]}[j]</strong>, one level too many. Choose{' '}
+                  <strong>this class already lists them</strong> instead.
+                </Box>
+              ) : (
+                <Box variant="p">
+                  Each entry is one complete document with all of this class&apos;s fields. Evaluation baselines for this class must be
+                  migrated to the same shape, or its accuracy will read as ~0.
+                </Box>
+              )}
+            </SpaceBetween>
+          </Alert>
+        )}
+      </SpaceBetween>
     </FormField>
   );
 };
@@ -563,9 +562,7 @@ const SchemaInspector = ({
                 />
               </FormField>
 
-              {!isRuleSchema && <InstanceArrayField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
-
-              {!isRuleSchema && <MultiInstanceField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
+              {!isRuleSchema && <MultiInstanceModeField selectedClass={selectedClass} onUpdateClass={onUpdateClass} />}
 
               {!isRuleSchema && (
                 <>

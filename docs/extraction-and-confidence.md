@@ -737,7 +737,15 @@ panel says the records are *missing*, not that they were extracted.
 extraction:
   multi_instance_detection:
     enabled: true    # OFF by default — turn it on for multi-record corpora
+    question: ""     # blank = the shipped wording; supports {DOCUMENT_CLASS}
 ```
+
+The question is editable, like every other prompt in the system — it is sent as the
+description of the auxiliary property. **Two clauses are load-bearing** and should
+survive any edit: *"do not count pages, sections or repeated headers"* (without it,
+a document carrying an identical banner on each of four pages reads as four
+documents) and *"DIAGNOSTIC METADATA, not extracted document data"* (so the model
+does not treat the field as something to extract from the page).
 
 - **Detection only.** It never changes the extracted data, never fails a section,
   and never turns on a schema flag for you. Fixing the loss is
@@ -796,9 +804,20 @@ Extraction then requests, and `inference_result` then holds:
 ```
 
 You keep authoring the class as **one record** — the wrapper is synthesized, so
-you do not degrade a single-record schema by hand. In the web UI it is a checkbox
-under **Configuration → Document Schema →** the class, with a preview of the
-resulting nesting.
+you do not degrade a single-record schema by hand.
+
+In the web UI both modes are one control, under **Configuration → Document
+Schema →** the class:
+
+> **Documents per section**
+> - ( ) One document — *the normal case; nothing changes*
+> - ( ) Several — this class already lists them → **Record array:** `records ▾`
+> - ( ) Several — wrap my single-record class → `instances[ ] → <Class> → { … }`
+
+The two modes are alternatives, so they are one question with three answers rather
+than two separate toggles. The record-array picker appears only in the middle
+branch, and the shape preview and the baseline-migration warning appear only in the
+last one.
 
 **Opt-in per class, never automatic.** Auto-detecting the shape would make every
 single-document section pay for an extra nesting level and would move the
@@ -901,7 +920,8 @@ Two more things to know:
   `{"instances": […]}` shape — and a flat answer is salvaged as exactly **one**
   instance, so the loss looks like success. Re-author them wrapped. Configuration
   validation warns when a flagged class carries examples.
-- **The Prompt Preview shows the un-wrapped schema**, and says so. The preview is
+- **The Prompt Preview shows the un-transformed schema**, and says so — for both
+  the wrapper and the detection probe. The preview is
   built in the browser from the class schema as stored, so for a flagged class the
   prompt it renders is not the one the pipeline sends; it now carries a warning to
   that effect rather than quietly misleading you. (It also omits the detection

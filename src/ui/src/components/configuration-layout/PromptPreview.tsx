@@ -602,6 +602,18 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
   }, [classes, selectedClassId]);
 
+  // The two server-side schema transforms this browser-side preview cannot show.
+  // `probe` applies to EVERY class when detection is on, not just a flagged one —
+  // which is why it is derived from the config rather than from the class.
+  const schemaDivergence = useMemo(() => {
+    const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+    const detection = (extraction.multi_instance_detection as Record<string, unknown>) || {};
+    return {
+      wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
+      probe: detection.enabled === true || detection.enabled === 'true',
+    };
+  }, [formValues, selectedClass]);
+
   // Build config-derived substitutions based on the selected step
   const buildSubstitutions = useCallback((): Record<string, string> => {
     const subs: Record<string, string> = {};
@@ -719,16 +731,31 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           two server-side transforms are not reflected. Saying so is much cheaper —
           and much less likely to rot — than duplicating the Python transform in
           TypeScript and keeping the two in sync. */}
-      {/* Both steps render the class schema, and BOTH wrap it server-side —
-          extraction via ExtractionService._get_class_schema and confidence via
-          AssessmentService._get_class_schema — so both previews diverge identically. */}
-      {['extraction', 'confidence'].includes(selectedStep) && selectedClass?.[X_AWS_IDP_MULTI_INSTANCE] ? (
-        <Alert type="warning" header="This class is multi-instance — the real prompt differs">
-          <span>
-            <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
-            <code>instances[]</code> array (one entry per document found in the section). This preview shows the class as you authored it,
-            not the wrapped form. The section&apos;s stored metadata is the authoritative record of what was sent.
-          </span>
+      {/* Two server-side transforms are NOT reflected here, because the preview is
+          built in the browser from the class schema as stored. Saying so is much
+          cheaper — and much less likely to rot — than duplicating the Python
+          transforms in TypeScript and keeping them in sync.
+          Both steps render the class schema and BOTH wrap it server-side
+          (ExtractionService._get_class_schema / AssessmentService._get_class_schema),
+          so both previews diverge identically. */}
+      {['extraction', 'confidence'].includes(selectedStep) && (schemaDivergence.wrapped || schemaDivergence.probe) ? (
+        <Alert type="warning" header="The real prompt differs from this preview">
+          <SpaceBetween size="xxs">
+            {schemaDivergence.wrapped && (
+              <span>
+                <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
+                <code>instances[]</code> array — one entry per document found in the section.
+              </span>
+            )}
+            {schemaDivergence.probe && (
+              <span>
+                <strong>Multi-document Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
+                added to the schema sent for every class, asking the model how many documents the pages contain. It is stripped from the
+                result and never appears in your extracted data.
+              </span>
+            )}
+            <span>The section&apos;s stored metadata is the authoritative record of what was sent.</span>
+          </SpaceBetween>
         </Alert>
       ) : null}
 

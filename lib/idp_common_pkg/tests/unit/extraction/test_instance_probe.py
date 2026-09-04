@@ -144,3 +144,95 @@ def test_non_dict_result_is_tolerated():
     assert pop_probe_value(None) is None
     assert pop_probe_value(["a"]) is None
     assert pop_probe_value("text") is None
+
+
+# --------------------------------------------------------------------------
+# The question is configurable, and its default cannot drift.
+# --------------------------------------------------------------------------
+
+
+def test_the_shipped_default_matches_the_system_defaults_yaml_byte_for_byte():
+    """The text lives in base-extraction.yaml so it is editable in Config#default,
+    and in a Python constant so an IDPConfig built WITHOUT merging system defaults
+    (unit tests, notebooks) still has it. Two copies means they can drift; this is
+    what stops them."""
+    import pathlib
+
+    import yaml
+
+    from idp_common.extraction.instance_probe import DEFAULT_INSTANCE_QUESTION
+
+    yml = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "idp_common"
+        / "config"
+        / "system_defaults"
+        / "base-extraction.yaml"
+    )
+    shipped = yaml.safe_load(yml.read_text())["extraction"]["multi_instance_detection"][
+        "question"
+    ]
+    assert shipped == DEFAULT_INSTANCE_QUESTION
+
+
+def test_the_default_keeps_both_load_bearing_clauses():
+    """Named explicitly so an edit that drops either one fails here rather than
+    quietly degrading detection: without the page clause a document with an
+    identical banner on four pages reads as four documents."""
+    from idp_common.extraction.instance_probe import DEFAULT_INSTANCE_QUESTION
+
+    assert (
+        "Do not count pages, sections or repeated headers" in DEFAULT_INSTANCE_QUESTION
+    )
+    assert "DIAGNOSTIC METADATA" in DEFAULT_INSTANCE_QUESTION
+
+
+def test_a_configured_question_replaces_the_default():
+    wire, added = augment_schema_with_probe(
+        _schema(), "Pay-Statement", "How many {DOCUMENT_CLASS} docs are here?"
+    )
+    assert added is True
+    assert (
+        wire["properties"][INSTANCE_PROBE_FIELD]["description"]
+        == "How many Pay-Statement docs are here?"
+    )
+
+
+@pytest.mark.parametrize("blank", [None, "", "   ", "\n"])
+def test_a_blank_question_falls_back_to_the_shipped_wording(blank):
+    """`IDPConfig()` defaults it to "" (the established prompt pattern — the text
+    lives in system defaults), so blank must mean "use the shipped wording", not
+    "send an empty description"."""
+    from idp_common.extraction.instance_probe import DEFAULT_INSTANCE_QUESTION
+
+    wire, _ = augment_schema_with_probe(_schema(), "Pay-Statement", blank)
+    expected = DEFAULT_INSTANCE_QUESTION.replace("{DOCUMENT_CLASS}", "Pay-Statement")
+    assert wire["properties"][INSTANCE_PROBE_FIELD]["description"] == expected
+
+
+def test_a_question_without_the_placeholder_is_used_verbatim():
+    wire, _ = augment_schema_with_probe(_schema(), "Pay-Statement", "How many?")
+    assert wire["properties"][INSTANCE_PROBE_FIELD]["description"] == "How many?"
+
+
+def test_the_service_passes_the_configured_question_through():
+    from idp_common.config.models import IDPConfig
+    from idp_common.extraction.service import ExtractionService
+
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {
+                    "enabled": True,
+                    "question": "Count the {DOCUMENT_CLASS}s.",
+                },
+            }
+        }
+    )
+    svc = ExtractionService(config=cfg)
+    wire, added = svc._build_wire_schema(_schema(), "Invoice")
+    assert added is True
+    assert (
+        wire["properties"][INSTANCE_PROBE_FIELD]["description"] == "Count the Invoices."
+    )
