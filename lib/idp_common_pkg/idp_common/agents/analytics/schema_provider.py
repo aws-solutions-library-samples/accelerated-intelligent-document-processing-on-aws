@@ -315,16 +315,18 @@ ORDER BY hod
 --  1. The `date` partition filter is REQUIRED on every arm, or Athena
 --     enumerates every partition dir instead of pruning.
 --  2. Sealed hour N is written at N+1:05 UTC — the just-completed clock
---     hour is NOT yet in metering_hourly. The sealed CTE therefore stops
---     TWO hours ago (`- interval '1' hour` after date_trunc), and the
---     raw-metering tail picks up BOTH the current partial hour AND that
---     previous unsealed hour.
---  3. The tail must not use `date IN (today, yesterday) AND hour IN (H, H-1)`
---     — that's a cross-product matching FOUR (date, hour) partitions,
---     including yesterday-at-the-same-hour (25-26h ago), inflating the
---     answer. Use a `timestamp` window instead: it partition-prunes on
---     `date` while precisely bounding the 2-hour window and handling day
---     rollover correctly (at 00:30 UTC the previous 2 hours span yesterday).
+--     hour is NOT yet in metering_hourly during HH:00-HH:04. The sealed
+--     CTE therefore stops one full hour before `date_trunc(hour, now)`,
+--     and the raw-metering tail picks up BOTH the current partial hour
+--     AND the previous (potentially-still-unsealed) hour.
+--  3. Sealed upper bound and tail lower bound MUST use the same
+--     expression (`date_add('hour', -1, date_trunc('hour', current_timestamp))`)
+--     so the seam is exact — no overlap, no gap. Using
+--     `date_add('hour', -2, current_timestamp)` for the tail creates
+--     a 0-60 minute overlap with sealed (double-counts up to an hour
+--     of cost). Using `date_trunc('hour', current_timestamp)` for the
+--     tail creates a 0-60 minute gap during the HH:00-HH:04 window
+--     when hour H-1 isn't yet in metering_hourly.
 --  4. SUM over an empty scan returns NULL, and NULL + anything = NULL —
 --     COALESCE both arms to 0 or the whole query returns NULL when
 --     either half has no rows.
@@ -345,7 +347,7 @@ tail AS (
       date_format(current_date, '%Y-%m-%d'),
       date_format(current_date - interval '1' day, '%Y-%m-%d')
   )
-    AND "timestamp" >= date_add('hour', -2, current_timestamp)
+    AND "timestamp" >= date_add('hour', -1, date_trunc('hour', current_timestamp))
 )
 SELECT (SELECT cost FROM sealed) + (SELECT cost FROM tail) AS cost_24h
 

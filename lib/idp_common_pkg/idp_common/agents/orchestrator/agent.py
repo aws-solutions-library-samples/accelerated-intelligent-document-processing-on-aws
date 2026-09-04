@@ -64,7 +64,22 @@ def create_orchestrator_agent(
                     # This prevents connection pool conflicts between concurrent sub-agents
                     sub_session = boto3.Session()
 
-                    sub_kwargs = {k: v for k, v in kwargs.items() if k != "session_id"}
+                    # Strip `hooks` and `session_id`: those are the ORCHESTRATOR's
+                    # session-scoped state (its DynamoDBMemoryHookProvider persists
+                    # top-level user↔assistant turns to DDB under this session_id).
+                    # Propagating them into subagents would make every subagent
+                    # Bedrock invocation write its internal tool chatter to the
+                    # SAME session row — contaminating the conversation history
+                    # the orchestrator loads on the next turn. Subagents get the
+                    # analytics/error-analyzer/etc. hooks their own creators
+                    # install (ControlPlaneCostHook), and their tool turns show
+                    # up in the orchestrator's message list as tool_result
+                    # content blocks — that's the intended memory path.
+                    sub_kwargs = {
+                        k: v
+                        for k, v in kwargs.items()
+                        if k not in ("session_id", "hooks")
+                    }
                     specialized_agent = agent_factory.create_agent(
                         agent_id=aid,
                         config=config,
