@@ -666,6 +666,193 @@ A declared count above 1 is *correct*, not a problem, so it raises **no** warnin
 time (the property must exist and be an array of objects), because a typo would
 otherwise fail silently by simply never producing a count.
 
+### Suspected (`extraction.multi_instance_detection`, #753)
+
+The common branch, and the one that used to be completely silent: the model
+returns a **single object** for a several-document section, so records 2..N are
+absent from the response and there is nothing to recover. `instance_count` landed
+on `1` by construction, `ProcessingIssueCount` on `0`, and the document on
+`COMPLETED`.
+
+Detection asks the model, **in the same inference**, how many separate documents
+of the class the pages contain. `extraction/instance_probe.py` adds one auxiliary
+integer property (`IDPDocumentInstanceCount`) to a **copy** of the class schema —
+`self._wire_class_schema`, used for the prompt text and, when forced tool use is
+on, for the `toolSpec`. `self._class_schema` is untouched, so the off-schema
+filter, the JSON-Schema validator, the generated Pydantic model and every
+downstream stage still see exactly the declared fields.
+
+`_read_instance_probe` pops the value **before** the off-schema filter, and pops
+it unconditionally — even when detection was not requested for the section — so an
+echoed field can never reach `inference_result`, be scored by assessment, become a
+reporting column, or turn up in an evaluation diff. It tolerates `3`, `"3"`,
+`3.0`, and the 1S-TopK candidate shape `{"G1": 3, "P1": 0.9}`.
+
+`_resolve_instance_reporting` compares the answer with the number of records the
+result actually holds. When the answer is larger:
+`instance_source = "suspected"`, `instance_count` becomes the model's answer,
+`metadata.instance_extracted_count` records what was really extracted (so the
+audit trail cannot be misread as "3 records were extracted"), and
+`_build_extraction_issues` raises `extraction_multi_instance_suspected`
+(**warning**) naming both numbers. A `MultiInstanceSectionsSuspected` metric goes
+to CloudWatch.
+
+Not limited to unflagged classes: a class in Designate or Synthesize mode whose
+array came back with fewer records than the model reports is under-extracting,
+which is the same data loss.
+
+Config: `extraction.multi_instance_detection.enabled`, default **false**.
+
+Measured on two real labeled corpora via Test Studio, 80 paired runs (identical
+documents per pair, only the toggle differing) — see
+`docs/benchmarking/feature-multi-instance.md`:
+
+* **It works.** On 40 bank-check images from the OmniAI OCR benchmark, scored
+  against their committed baselines: 18 true positives, **0 false positives**, 0
+  false negatives, 22 correct silences. Precision and recall **1.000**, and the
+  reported count was **exactly** right on all 18 (2 to 8 checks per image).
+* **Tokens are negligible:** input +1.8%, output −0.5%.
+* **On a corpus with nothing to find it is pure cost.** RealKIE-FCC-Verified:
+  0.7678 → 0.7552 weighted score, worse on 14 of 40 documents and better on 1,
+  sign test **p = 0.001**. The loss is diffuse (four attributes, one or two
+  documents each), not a single failure mode.
+
+Hence off by default and a strong recommendation to turn it on per configuration
+profile for any corpus whose sections can hold several documents of one class.
+
+The question itself is `extraction.multi_instance_detection.question`, sent as the
+auxiliary property's description and supporting `{DOCUMENT_CLASS}`. The shipped text
+lives in `config/system_defaults/base-extraction.yaml` (so it is editable in
+`Config#default` like every other prompt) *and* as `DEFAULT_INSTANCE_QUESTION` in
+`instance_probe.py` (so an `IDPConfig` built without merging system defaults still
+has it). A test asserts the two are byte-identical, and another pins the two
+load-bearing clauses, because dropping either quietly degrades detection rather
+than failing.
+
+Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
+extraction validates through a generated Pydantic model and shards by field, so an
+auxiliary property would be dropped on some paths and duplicated on others.
+
+## Synthesize mode (`x-aws-idp-multi-instance`, #715)
+
+Detection makes the loss visible; this fixes it. A class flagged
+`x-aws-idp-multi-instance: true` has its **effective** schema replaced by
+
+```json
+{"type": "object", "title": "<Class> Instances",
+ "properties": {"instances": {"type": "array", "minItems": 1,
+                              "items": { …the original class schema… }}},
+ "required": ["instances"]}
+```
+
+so the author keeps writing the class as ONE record and the pipeline asks for a
+list of them.
+
+### It is a schema TRANSFORM, not an output envelope
+
+This is the decision that makes the feature affordable. Because the wrapper is
+declared *in* the class schema, `inference_result` stays a valid instance of its
+own declared schema, and the prompt, the generated Pydantic model, the JSON-Schema
+validator, `_filter_extracted_to_schema`, assessment's `attr_type == "list"`
+branch, `resolve_array_item_thresholds` and Stickler's Hungarian row matching all
+work **unchanged** — none of them special-case anything, they all just read "the
+class schema".
+
+Treating the wrapper as an out-of-band key instead breaks every one of them:
+`_filter_extracted_to_schema` deletes `instances` and emits `{}`; assessment
+collapses the whole section to one `{"confidence": 0.5}` leaf;
+`_schema_field_mismatch_reason` blacklists the section so the escalation ladder
+skips it permanently; evaluation builds a Stickler model with zero declared fields
+and silently scores 0.0.
+
+### The helper
+
+`idp_common/schema/multi_instance.py` — pure (no boto3, no Strands, no service
+imports), idempotent, never mutates its input:
+
+```python
+is_multi_instance(class_schema) -> bool     # tolerates "true" from a round-trip
+is_wrapped(class_schema) -> bool
+wrap_class_schema(class_schema) -> dict     # no-op (same object) when unflagged
+unwrap_instances(inference_result) -> list[dict] | None
+wrap_instances(records) -> dict
+```
+
+Assessment, evaluation, reporting and the analytics agent read the class schema
+**from config**, not from the extraction output, so each derives the wrapper
+itself. Applied at the single point each stage loads a schema:
+`ExtractionService._get_class_schema`, `AssessmentService._get_class_schema`,
+`SticklerConfigMapper.build_all_stickler_configs`. **Do not** persist the wrapped
+schema as the source of truth — config is, and the helper is the one derivation.
+
+### Two things that are easy to get wrong
+
+1. **The wrapper also emits `x-aws-idp-instance-array: instances`.** The wrapper
+   alone extracts every record but leaves `Section.instance_count` at 1, so the UI
+   badge, the `extraction_multi_instance_detected` warning and the
+   `MultiInstanceSections` / `MultiInstanceRecordsRecovered` metrics all still
+   report a single instance. Everything the visibility work shipped goes dark on
+   exactly the schemas this creates unless both are emitted.
+2. **The inner `items` gets a DISTINCT title** (`"<Class> Record"`).
+   `_find_model_in_module` selects the generated Pydantic model by title/label
+   priority, so items keeping the class title select the **inner** model and
+   silently validate ONE instance instead of the list. Backed by a structural
+   guard in `pydantic_generator._ensure_model_covers_schema`: the selected model
+   must declare the schema's top-level properties; a better-covering model is
+   preferred with a warning, and only a total absence is fatal.
+
+`$defs` are hoisted to the wrapper, because `{"$ref": "#/$defs/X"}` resolves from
+the document root — moving them down with the properties would dangle every ref.
+Class-level metadata (identity, classification hints, per-class model/prompt
+overrides, exclusion flags, few-shot examples) stays on the wrapper; only
+shape-describing keywords move into `items`. The class-level
+`x-aws-idp-evaluation-match-threshold` becomes the `instances` array's row-match
+threshold, which is what makes record alignment order-insensitive.
+
+### Rescuing a response that ignored the wrapper
+
+`_adapt_to_instances_wrapper` re-expresses two shapes a model can still return,
+both of which would otherwise be deleted entirely by the off-schema filter (whose
+only allowed top-level key is now `instances`) and emitted as `{}`:
+
+- a **bare top-level array** of records → adopted as the instance list;
+- a **single flat record** (the pre-flag shape) → adopted as one instance, but
+  only when its keys actually overlap the record's properties, so an
+  `error`/`raw_output` sentinel stays a parse failure.
+
+Forgiving on purpose: the alternative to accepting a recoverable shape is throwing
+the section's data away.
+
+### Config-validate rules
+
+Enforced by the `classes` field validator in `config/models.py`:
+
+- **reject** both `multi-instance` and `instance-array` on one class — they answer
+  opposite questions, so setting both is a contradiction, not a stronger request;
+- **reject** `multi-instance: true` on a class that already declares a top-level
+  `instances` property (the wrapper would shadow it; rejected rather than renamed,
+  because a silent rename changes the extraction contract under the user);
+- **warn only** when the class's top level is nothing but one array-of-object.
+  Having an internal array is **not** evidence of already being a list wrapper —
+  an invoice with `line_items[]` is a single-instance document and
+  `multi-instance: true` on it correctly gives `instances[i].line_items[j]`.
+
+An already-wrapped schema legitimately carries both keys, so `is_wrapped` short-
+circuits these rules; the transform is applied at runtime and never persisted, but
+rejecting a schema this code produced itself would be a nasty trap.
+
+### Evaluation baselines must be migrated
+
+`evaluation/baseline_migration.py` (pure) plus
+`scripts/migrate_multi_instance_baselines.py` (the S3 walker: dry-run by default,
+idempotent, `--direction unwrap` for rollback, `--backup-suffix`). A wrapped
+prediction against a flat baseline scores every field as missing-on-one-side, so
+the class reads ~0 accuracy with no error — the one way this feature can break a
+working deployment.
+
+Rollback refuses to flatten a baseline holding more than one record, because that
+would discard ground truth the user authored.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:

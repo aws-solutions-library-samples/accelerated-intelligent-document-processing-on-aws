@@ -45,6 +45,22 @@ const SECTIONS = [
   { Id: 'sec-multi', Class: 'BankStatement', PageIds: [12, 13], InstanceCount: 3 },
   { Id: 'sec-zero', Class: 'Invoice', PageIds: [14], InstanceCount: 0 },
   { Id: 'sec-absent', Class: 'Payslip', PageIds: [15] },
+  // #753: the count came from the model's own answer, and the extra documents
+  // were NOT extracted — the wording for the "recovered" case would be untrue.
+  {
+    Id: 'sec-suspected',
+    Class: 'PayStatement',
+    PageIds: [16, 17],
+    InstanceCount: 5,
+    ProcessingIssues: [
+      {
+        stage: 'extraction',
+        severity: 'warning',
+        code: 'extraction_multi_instance_suspected',
+        message: 'These pages appear to contain 5 separate PayStatement documents, but extraction returned 1.',
+      },
+    ],
+  },
 ];
 const DOC = { objectKey: 'doc', objectStatus: 'COMPLETED' };
 
@@ -136,5 +152,28 @@ describe('SectionsPanel multi-instance annotation', () => {
       expect(cell.textContent).not.toContain('0');
       expect(cell.querySelector('[role="img"]')).toBeNull();
     }
+  });
+});
+
+describe('SectionsPanel suspected multi-instance annotation (#753)', () => {
+  it('does not claim the extra documents were extracted', () => {
+    renderPanel();
+
+    const cell = classCell('sec-suspected');
+    expect(cell.textContent).toContain('PayStatement');
+    expect(cell.textContent).toContain('5');
+
+    fireEvent.click(screen.getByText('5'));
+    expect(screen.getByText(/Documents may be missing from this section/)).toBeInTheDocument();
+    expect(screen.getByText(/only the first was extracted/)).toBeInTheDocument();
+    // The "recovered" wording asserts every instance was kept, which is false here.
+    expect(screen.queryByText(/Each one was extracted as its own instance/)).not.toBeInTheDocument();
+  });
+
+  it('still uses the factual wording when the count is a real recovered count', () => {
+    renderPanel();
+    fireEvent.click(screen.getByText('3'));
+    expect(screen.getByText(/Multiple documents in one section/)).toBeInTheDocument();
+    expect(screen.queryByText(/only the first was extracted/)).not.toBeInTheDocument();
   });
 });

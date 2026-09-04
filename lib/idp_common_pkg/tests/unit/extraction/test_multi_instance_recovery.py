@@ -27,8 +27,18 @@ from idp_common.extraction.service import ExtractionService
 from idp_common.models import Document, Page, Section
 
 
-def _svc(*, agentic: bool = False) -> ExtractionService:
-    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": agentic}}})
+def _svc(*, agentic: bool = False, detection: bool = True) -> ExtractionService:
+    # Detection is OFF by default as shipped (gated on the benchmark A/B), so the
+    # tests that exercise it enable it explicitly rather than relying on the
+    # default — which is what a test should pin anyway.
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": agentic},
+                "multi_instance_detection": {"enabled": detection},
+            }
+        }
+    )
     svc = ExtractionService(config=cfg)
     svc._class_schema = {
         "type": "object",
@@ -268,7 +278,14 @@ def test_page_default_document_boundary_is_none():
 
 
 def _packet_svc(instance_array="records") -> ExtractionService:
-    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": False}}})
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {"enabled": True},
+            }
+        }
+    )
     svc = ExtractionService(config=cfg)
     svc._class_schema = {
         "type": "object",
@@ -400,3 +417,433 @@ def test_recovered_source_is_the_only_one_that_warns():
             [i for i in issues if i.code == "extraction_multi_instance_detected"]
         )
         assert got is expect_warning, f"source={source} -> warning={got}"
+
+
+# --------------------------------------------------------------------------
+# #753 — the SILENT case: the model returned ONE object for a section that
+# holds several documents. Nothing anywhere reported it: SUCCESS, COMPLETED,
+# ProcessingIssueCount 0, instance_count 1. Detection asks the model, in the
+# same inference, how many documents the pages hold.
+# --------------------------------------------------------------------------
+
+
+def test_suspected_multi_instance_warns_naming_both_counts():
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "Anderson", "patient_dob": "1970-01-01"},
+        metadata={
+            "instance_count": 3,
+            "instance_source": "suspected",
+            "instance_probe": 3,
+            "instance_extracted_count": 1,
+        },
+        section_id="1",
+    )
+    issue = next(i for i in issues if i.code == "extraction_multi_instance_suspected")
+    assert issue.severity == "warning"
+    assert issue.stage == "extraction"
+    assert issue.section_id == "1"
+    # Both numbers, so the message cannot be misread as "3 records extracted".
+    assert "3 separate" in issue.message
+    assert "returned 1" in issue.message
+    assert "2 document(s) are NOT in the result" in issue.message
+    assert issue.details["instance_count"] == 3
+    assert issue.details["extracted_instance_count"] == 1
+    assert issue.details["detection"] == "model_self_report"
+
+
+def test_suspected_does_not_also_raise_the_recovered_warning():
+    """Two warnings for one situation would be noise, and the 'detected' wording
+    ("all N were extracted") is FALSE for the suspected case."""
+    svc = _svc()
+    codes = [
+        i.code
+        for i in svc._build_extraction_issues(
+            extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+            metadata={
+                "instance_count": 2,
+                "instance_source": "suspected",
+                "instance_extracted_count": 1,
+            },
+            section_id="1",
+        )
+    ]
+    assert codes == ["extraction_multi_instance_suspected"]
+
+
+def test_probe_of_one_is_the_normal_case_and_raises_nothing():
+    """A genuine single-document section must stay silent — a warning that fires
+    on ordinary documents is worse than none (#753 acceptance criteria)."""
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+        metadata={
+            "instance_count": 1,
+            "instance_source": "single",
+            "instance_probe": 1,
+        },
+        section_id="1",
+    )
+    assert issues == []
+
+
+def test_suspected_needs_a_count_above_one():
+    svc = _svc()
+    issues = svc._build_extraction_issues(
+        extracted_fields={"patient_name": "A", "patient_dob": "1970-01-01"},
+        metadata={"instance_count": 1, "instance_source": "suspected"},
+        section_id="1",
+    )
+    assert not [i for i in issues if i.code == "extraction_multi_instance_suspected"]
+
+
+# --------------------------------------------------------------------------
+# Probe plumbing through _save_results: the wire schema carries the probe, the
+# class schema never does, and the count/labelling stays honest.
+# --------------------------------------------------------------------------
+
+
+def test_wire_schema_carries_the_probe_but_the_class_schema_does_not():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    wire, added = svc._build_wire_schema(svc._class_schema, "patient_demographics")
+    assert added is True
+    assert INSTANCE_PROBE_FIELD in wire["properties"]
+    assert INSTANCE_PROBE_FIELD not in svc._class_schema["properties"]
+
+
+def test_probe_is_not_requested_when_detection_is_disabled():
+    svc = _svc(detection=False)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_detection_is_OFF_by_default():
+    """Gated on the benchmark A/B: completeness and cost were unchanged, but scalar
+    accuracy was consistently a little worse with it on. Pinning the DEFAULT here
+    so it cannot drift back on without someone re-measuring."""
+    assert IDPConfig().extraction.multi_instance_detection.enabled is False
+    svc = ExtractionService(config=IDPConfig())
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_probe_is_not_requested_in_agentic_mode():
+    """Advanced extraction validates through a generated Pydantic model and shards
+    by field, so an auxiliary property would be dropped on some paths and
+    duplicated on others. Documented gap, not an oversight."""
+    svc = _svc(agentic=True)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_read_instance_probe_strips_the_field():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    fields = {"patient_name": "A", INSTANCE_PROBE_FIELD: 3}
+    assert svc._read_instance_probe(fields) == 3
+    assert fields == {"patient_name": "A"}
+
+
+# --------------------------------------------------------------------------
+# _resolve_instance_reporting — the whole multi-instance reporting contract,
+# testable without S3.
+# --------------------------------------------------------------------------
+
+
+def _result(**kw):
+    from idp_common.extraction.service import ExtractionResult
+
+    defaults = dict(
+        extracted_fields={"patient_name": "A"},
+        metering={},
+        parsing_succeeded=True,
+        total_duration=1.0,
+        instance_count=1,
+    )
+    defaults.update(kw)
+    return ExtractionResult(**defaults)
+
+
+def test_reporting_ordinary_single_object():
+    count, meta = _svc()._resolve_instance_reporting(_result())
+    assert count == 1
+    assert meta == {"instance_count": 1, "instance_source": "single"}
+
+
+def test_reporting_recovered_array():
+    recovered = [{"patient_name": "A"}, {"patient_name": "B"}]
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(instance_count=2, recovered_instances=recovered)
+    )
+    assert count == 2
+    assert meta["instance_source"] == "recovered"
+
+
+def test_reporting_declared_axis_wins_over_the_response_shape():
+    count, meta = _packet_svc()._resolve_instance_reporting(
+        _result(extracted_fields={"records": [{}, {}, {}]})
+    )
+    assert count == 3
+    assert meta["instance_source"] == "declared"
+
+
+def test_reporting_suspected_records_both_counts():
+    count, meta = _svc()._resolve_instance_reporting(_result(instance_probe=3))
+    assert count == 3
+    assert meta["instance_source"] == "suspected"
+    assert meta["instance_extracted_count"] == 1
+    assert meta["instance_probe"] == 3
+
+
+def test_reporting_probe_agreeing_with_the_result_is_not_suspected():
+    count, meta = _svc()._resolve_instance_reporting(_result(instance_probe=1))
+    assert count == 1
+    assert meta["instance_source"] == "single"
+    # Still recorded for audit — "the model was asked and said 1" is useful.
+    assert meta["instance_probe"] == 1
+    assert "instance_extracted_count" not in meta
+
+
+def test_reporting_probe_below_the_recovered_count_does_not_lower_it():
+    """The records are physically present; the model's guess does not outvote
+    them."""
+    recovered = [{"a": 1}, {"a": 2}, {"a": 3}]
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(instance_count=3, recovered_instances=recovered, instance_probe=2)
+    )
+    assert count == 3
+    assert meta["instance_source"] == "recovered"
+
+
+def test_reporting_a_declared_packet_that_under_extracted_is_still_flagged():
+    """Designate/Synthesize mode is not a free pass: 1 record extracted where the
+    model says there are 3 is the same data loss."""
+    count, meta = _packet_svc()._resolve_instance_reporting(
+        _result(extracted_fields={"records": [{}]}, instance_probe=3)
+    )
+    assert count == 3
+    assert meta["instance_source"] == "suspected"
+    assert meta["instance_extracted_count"] == 1
+
+
+def test_reporting_undetermined_stays_zero_and_emits_nothing():
+    count, meta = _svc()._resolve_instance_reporting(
+        _result(
+            instance_count=0, parsing_succeeded=False, extracted_fields={"error": "x"}
+        )
+    )
+    assert count == 0
+    assert meta == {}
+
+
+# --------------------------------------------------------------------------
+# Synthesize mode: rescuing a response that ignored the wrapper (#715).
+#
+# The requested shape is {"instances": [...]}. A bare array or a single flat
+# record would otherwise be deleted entirely by the off-schema filter — whose
+# only allowed top-level key is now `instances` — emitting {}. Total data loss
+# from a response that contained the data.
+# --------------------------------------------------------------------------
+
+
+def _wrapped_svc() -> ExtractionService:
+    from idp_common.schema.multi_instance import wrap_class_schema
+
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {"enabled": True},
+            }
+        }
+    )
+    svc = ExtractionService(config=cfg)
+    svc._class_schema = wrap_class_schema(
+        {
+            "$id": "Pay-Statement",
+            "type": "object",
+            "x-aws-idp-multi-instance": True,
+            "properties": {
+                "CheckNumber": {"type": "string"},
+                "NetPay": {"type": "string"},
+            },
+        }
+    )
+    svc._class_label = "Pay-Statement"
+    return svc
+
+
+def test_a_bare_array_becomes_the_instance_list():
+    svc = _wrapped_svc()
+    records = [{"CheckNumber": "1"}, {"CheckNumber": "2"}, {"CheckNumber": "3"}]
+    fields, recovered = svc._adapt_to_instances_wrapper(records[0], records)
+    assert fields == {"instances": records}
+    # No longer "recovered" — they are the result now.
+    assert recovered is None
+
+
+def test_a_single_flat_record_becomes_one_instance():
+    svc = _wrapped_svc()
+    fields, recovered = svc._adapt_to_instances_wrapper({"CheckNumber": "1"}, None)
+    assert fields == {"instances": [{"CheckNumber": "1"}]}
+    assert recovered is None
+
+
+def test_a_correctly_wrapped_response_is_untouched():
+    svc = _wrapped_svc()
+    payload = {"instances": [{"CheckNumber": "1"}]}
+    fields, recovered = svc._adapt_to_instances_wrapper(payload, None)
+    assert fields is payload
+    assert recovered is None
+
+
+def test_an_unflagged_class_is_never_adapted():
+    svc = _svc()
+    records = [{"patient_name": "A"}, {"patient_name": "B"}]
+    fields, recovered = svc._adapt_to_instances_wrapper(records[0], records)
+    assert fields == records[0]
+    assert recovered == records
+
+
+def test_a_parse_failure_sentinel_is_not_adopted_as_a_record():
+    """`{"error": ...}` / `{"raw_output": ...}` must stay a parse failure, not
+    become a bogus instance."""
+    svc = _wrapped_svc()
+    for sentinel in ({"error": "boom"}, {"raw_output": "prose"}):
+        fields, _ = svc._adapt_to_instances_wrapper(sentinel, None)
+        assert fields is sentinel
+
+
+def test_an_empty_response_is_not_turned_into_an_instance():
+    svc = _wrapped_svc()
+    fields, _ = svc._adapt_to_instances_wrapper({}, None)
+    assert fields == {}
+
+
+# --------------------------------------------------------------------------
+# The probe must not survive inside ANY instance.
+#
+# Found in review: the strip loop ran BEFORE _adapt_to_instances_wrapper and
+# only over `recovered_instances`. For a flagged class answering with a bare
+# array the adapt moves the records into extracted_fields["instances"] and
+# returns recovered_instances=None, so the loop never ran — and
+# _filter_extracted_to_schema only filters TOP-LEVEL keys, so the probe survived
+# inside inference_result["instances"][1..N]. Element 0 looked clean because it
+# is ALIASED to extracted_fields, which is exactly why testing the adapt in
+# isolation passed.
+# --------------------------------------------------------------------------
+
+
+def test_probe_is_stripped_from_every_instance_of_a_wrapped_result():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    records = [
+        {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "3", INSTANCE_PROBE_FIELD: 3},
+    ]
+    fields = {"instances": records}
+    svc._strip_probe_from_instances(fields, None)
+    assert all(INSTANCE_PROBE_FIELD not in r for r in fields["instances"])
+    assert [r["CheckNumber"] for r in fields["instances"]] == ["1", "2", "3"]
+
+
+def test_probe_is_stripped_from_recovered_instances_of_an_unflagged_class():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    recovered = [
+        {"patient_name": "A", INSTANCE_PROBE_FIELD: 2},
+        {"patient_name": "B", INSTANCE_PROBE_FIELD: 2},
+    ]
+    svc._strip_probe_from_instances(recovered[0], recovered)
+    assert all(INSTANCE_PROBE_FIELD not in r for r in recovered)
+
+
+def test_the_adapt_then_strip_ORDER_leaves_no_probe_anywhere():
+    """The end-to-end ordering, which is the thing that was actually wrong.
+
+    A bare array from a flagged class: adapt moves it under `instances` and drops
+    `recovered_instances`, so the sweep must happen AFTER the adapt and must look
+    at the wrapper.
+    """
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    records = [
+        {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "3", INSTANCE_PROBE_FIELD: 3},
+    ]
+    # What the parse path produces for a bare array: fields aliases element 0.
+    extracted, recovered = svc._normalize_list_result(records, context="t")[0], records
+    assert svc._read_instance_probe(extracted) == 3  # the top-level pop
+    extracted, recovered = svc._adapt_to_instances_wrapper(extracted, recovered)
+    svc._strip_probe_from_instances(extracted, recovered)
+
+    assert extracted["instances"] and len(extracted["instances"]) == 3
+    for record in extracted["instances"]:
+        assert INSTANCE_PROBE_FIELD not in record, (
+            "the probe survived inside an instance — it would be scored by "
+            "assessment, written to a reporting column and diffed against a "
+            "baseline that has no such key"
+        )
+
+
+def test_strip_tolerates_missing_and_malformed_containers():
+    svc = _wrapped_svc()
+    svc._strip_probe_from_instances({}, None)
+    svc._strip_probe_from_instances({"instances": "not-a-list"}, None)
+    svc._strip_probe_from_instances(None, None)
+    svc._strip_probe_from_instances({"instances": [None, "x", {"a": 1}]}, None)
+
+
+def test_a_count_that_arrives_ONLY_inside_records_is_still_used():
+    """The value is not thrown away just because it turned up in the wrong place.
+
+    A model that answers with the count inside each record and never at the top
+    level would otherwise leave instance_probe unset and fire no warning at all.
+    """
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    fields = {
+        "instances": [
+            {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+            {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        ]
+    }
+    assert svc._read_instance_probe(fields) is None  # nothing at the top level
+    assert svc._strip_probe_from_instances(fields, None) == 3
+    assert all(INSTANCE_PROBE_FIELD not in r for r in fields["instances"])
+
+
+def test_the_largest_nested_count_wins():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    fields = {
+        "instances": [
+            {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 2},
+            {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        ]
+    }
+    assert svc._strip_probe_from_instances(fields, None) == 3
+
+
+def test_no_nested_count_returns_none():
+    svc = _wrapped_svc()
+    assert (
+        svc._strip_probe_from_instances({"instances": [{"CheckNumber": "1"}]}, None)
+        is None
+    )

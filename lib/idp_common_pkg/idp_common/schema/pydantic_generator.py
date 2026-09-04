@@ -230,13 +230,83 @@ def _find_model_in_module(
     for name, obj in all_models:
         if name in matching_names:
             logger.debug(f"Selected model '{name}' based on name matching")
-            return obj, all_models
+            return _ensure_model_covers_schema(obj, all_models, schema_dict), all_models
 
     # No exact match - use first available
     logger.debug(
         f"No name match found, using first available model: '{all_models[0][0]}'"
     )
-    return all_models[0][1], all_models
+    return (
+        _ensure_model_covers_schema(all_models[0][1], all_models, schema_dict),
+        all_models,
+    )
+
+
+def _declared_field_names(model: Type[BaseModel]) -> set:
+    """Field names AND aliases of a generated model.
+
+    Both matter: datamodel-code-generator sanitizes a JSON-Schema property name
+    that is not a Python identifier (``"Date of Birth"`` -> ``Date_of_Birth``)
+    and records the original as the field's alias.
+    """
+    names = set()
+    for field_name, field in model.model_fields.items():
+        names.add(field_name)
+        if field.alias:
+            names.add(field.alias)
+    return names
+
+
+def _ensure_model_covers_schema(
+    selected: Type[BaseModel],
+    all_models: List[Tuple[str, Type[BaseModel]]],
+    schema_dict: Dict[str, Any],
+) -> Type[BaseModel]:
+    """Guard against selecting a NESTED model instead of the root one.
+
+    Selection is by title/label priority, which is fine until a schema contains a
+    nested object that happens to match the same name. The case that provoked
+    this is the multi-instance wrapper (GitHub #715): a schema whose single
+    ``instances`` property has ``items`` describing the class would, if those
+    items kept the class title, select the INNER model — so the response was
+    silently validated as ONE record where a LIST had been requested. Every
+    record but the first would be dropped by validation with no error anywhere.
+
+    The check is structural rather than name-based, so it also catches the same
+    mis-selection arising any other way: the chosen model must declare every
+    top-level property the schema declares. When it does not, a model that DOES
+    is preferred (with a warning) and only a total absence of one is fatal —
+    raising on a schema that previously worked would be a worse outcome than the
+    bug this prevents.
+    """
+    properties = schema_dict.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return selected
+
+    expected = set(properties.keys())
+    if expected.issubset(_declared_field_names(selected)):
+        return selected
+
+    for name, candidate in all_models:
+        if expected.issubset(_declared_field_names(candidate)):
+            logger.warning(
+                "Generated model '%s' does not declare the schema's top-level "
+                "properties %s — it is a nested model, not the root. Using '%s' "
+                "instead, which does. (A wrapper schema whose inner items keep "
+                "the class title hits this: the inner model validates ONE record "
+                "where a LIST was requested.)",
+                selected.__name__,
+                sorted(expected - _declared_field_names(selected)),
+                name,
+            )
+            return candidate
+
+    raise PydanticModelGenerationError(
+        f"No generated Pydantic model declares the schema's top-level properties "
+        f"{sorted(expected)}; the closest was '{selected.__name__}' with fields "
+        f"{sorted(_declared_field_names(selected))}. Validating against it would "
+        f"silently drop data."
+    )
 
 
 def _iter_nested_model_classes(annotation: Any):

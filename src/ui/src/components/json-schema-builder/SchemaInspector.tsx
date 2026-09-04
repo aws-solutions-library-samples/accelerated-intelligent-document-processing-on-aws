@@ -8,6 +8,7 @@ import {
   Header,
   Input,
   Multiselect,
+  RadioGroup,
   Select,
   SpaceBetween,
   Spinner,
@@ -47,6 +48,8 @@ import {
   EXTRACTION_MODEL_OVERRIDE_OPTIONS,
   X_AWS_IDP_EXCLUDE_FROM_PROCESSING,
   X_AWS_IDP_EXCLUSION_REASON,
+  X_AWS_IDP_INSTANCE_ARRAY,
+  X_AWS_IDP_MULTI_INSTANCE,
   X_AWS_IDP_PAGE_TYPES,
   X_AWS_IDP_SOURCE_PAGE_TYPES,
   X_AWS_IDP_VALIDATION_ENGINE,
@@ -54,6 +57,7 @@ import {
   X_AWS_IDP_RULE_JSON,
   VALIDATION_ENGINE_OPTIONS,
 } from '../../constants/schemaConstants';
+import { designationProblem } from '../../utils/idpSchemaExtensions';
 
 interface SchemaAttribute {
   type?: string;
@@ -243,6 +247,217 @@ const RuleJsonSection: React.FC<{
   );
 };
 
+/**
+ * Names of the class's own top-level properties that are an ARRAY OF OBJECTS.
+ *
+ * These are the only legal values for `x-aws-idp-instance-array` (Designate
+ * mode): the backend config validator
+ * (`IDPConfig.validate_instance_array` in `config/models.py`) hard-rejects a
+ * name that is not a top-level array-of-object, so offering a free-text box
+ * here would let a user save a config the pipeline then refuses to load.
+ * A `$ref`'d `items` counts — that is the idiom this editor itself emits for a
+ * reusable record type, and the validator resolves it.
+ */
+const arrayOfObjectPropertyNames = (cls: SchemaClass): string[] => {
+  const properties = cls.attributes?.properties || {};
+  return Object.entries(properties)
+    .filter(([, spec]) => {
+      if (!spec || spec.type !== 'array') return false;
+      const items = spec.items;
+      if (!items) return false;
+      return Boolean(items.$ref) || items.type === 'object' || Boolean(items.properties);
+    })
+    .map(([name]) => name);
+};
+
+const MODE_ONE = 'one';
+const MODE_DESIGNATE = 'designate';
+const MODE_SYNTHESIZE = 'synthesize';
+
+/**
+ * How many documents of this class can one section hold? — ONE control, three
+ * outcomes.
+ *
+ * This replaced two separate optional controls (an "Instance Array" select and a
+ * "Multi-instance Sections" checkbox) that each disabled the other. That was
+ * *safe* — the contradiction config-validate rejects was unreachable — but it
+ * failed the user on the part that is actually hard. Two near-synonymous feature
+ * names, one mysteriously greyed out, and the real question — *is my class one
+ * record, or already a packet of records?* — never asked. Switching between them
+ * meant knowing to clear the select before the checkbox re-enabled.
+ *
+ * As a radio group the exclusivity is structural rather than enforced, the
+ * question is in the user's terms, the property picker appears only in the branch
+ * that needs it, and the shape preview and the baseline-migration warning sit
+ * against the option that carries them.
+ */
+const MultiInstanceModeField = ({
+  selectedClass,
+  onUpdateClass,
+}: {
+  selectedClass: SchemaClass;
+  onUpdateClass: (updates: Record<string, unknown>) => void;
+}): React.JSX.Element => {
+  const properties = selectedClass.attributes?.properties || {};
+  const propertyNames = Object.keys(properties);
+  const arrayProps = arrayOfObjectPropertyNames(selectedClass);
+
+  const designated = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
+  const synthesize = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
+  const storedMode = synthesize ? MODE_SYNTHESIZE : designated ? MODE_DESIGNATE : MODE_ONE;
+
+  // "Designate, but no property chosen yet" is a real state and the schema cannot
+  // express it — `x-aws-idp-instance-array` is either a name or absent, and absent
+  // reads as "One document". Deriving the mode purely from the schema therefore made
+  // Designate UNREACHABLE for the class that needs it most: with two or more
+  // candidate arrays there is nothing to preselect, so the key stayed undefined, the
+  // derived mode snapped straight back to "One document", and the picker never
+  // rendered. Clicking the option did nothing at all, and the only way to configure
+  // such a class was hand-editing YAML — the thing this control exists to avoid.
+  //
+  // So the radio holds its own state, seeded from the schema. `pendingMode` is
+  // cleared whenever the schema catches up, so an external edit still wins.
+  const [pendingMode, setPendingMode] = useState<string | null>(null);
+  const mode = pendingMode ?? storedMode;
+  useEffect(() => {
+    if (pendingMode && pendingMode === storedMode) setPendingMode(null);
+  }, [pendingMode, storedMode]);
+
+  // A value set outside the UI (YAML/CLI), or left behind after the property's
+  // type changed, is kept and flagged — never silently dropped. This key has had
+  // one silent-erase bug already.
+  //
+  // The verdict comes from `designationProblem`, the SAME predicate the save gate
+  // uses, so the two cannot disagree. It matters which way they disagreed before:
+  // this used to be `!arrayProps.includes(designated)`, and `arrayProps` is
+  // deliberately conservative (it only offers items that are plainly objects), so a
+  // designation the backend accepts — `items` with a `oneOf`, or a `$ref`'d array
+  // property — was labelled "will be rejected on save" while Save worked fine.
+  const designationError = designated ? designationProblem(selectedClass, designated) : null;
+  const staleDesignation = Boolean(designationError);
+  const collides = Object.prototype.hasOwnProperty.call(properties, 'instances');
+  // Narrow on purpose: an internal array is NOT evidence of being a list wrapper.
+  // An invoice with line_items[] is a single-instance document and Synthesize on
+  // it correctly gives instances[i].line_items[j].
+  const looksLikeAWrapper = arrayProps.length === 1 && propertyNames.length === 1;
+
+  const selectMode = (next: string): void => {
+    if (next === mode) return;
+    // Every branch writes BOTH keys, so the mutual exclusion config-validate
+    // enforces is structurally unreachable rather than merely checked.
+    setPendingMode(next);
+    if (next === MODE_ONE) {
+      onUpdateClass({ [X_AWS_IDP_MULTI_INSTANCE]: undefined, [X_AWS_IDP_INSTANCE_ARRAY]: undefined });
+    } else if (next === MODE_DESIGNATE) {
+      // Preselect the only candidate — with one array there is no choice to make.
+      // With several, the key stays undefined and the picker asks; `pendingMode`
+      // is what keeps the mode selected while it does.
+      onUpdateClass({
+        [X_AWS_IDP_MULTI_INSTANCE]: undefined,
+        [X_AWS_IDP_INSTANCE_ARRAY]: designated || (arrayProps.length === 1 ? arrayProps[0] : undefined),
+      });
+    } else {
+      onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: undefined, [X_AWS_IDP_MULTI_INSTANCE]: true });
+    }
+  };
+
+  const designateOptions = [
+    ...arrayProps.map((name) => ({ label: name, value: name })),
+    // Keep a designation the picker would not have offered (set outside the UI, or
+    // a shape the conservative filter skips) as a selectable option, so switching
+    // away from it is a deliberate act rather than a silent reset on first render.
+    ...(designated && !arrayProps.includes(designated)
+      ? [{ label: designationError ? `${designated} (not an array of objects)` : designated, value: designated }]
+      : []),
+  ];
+
+  return (
+    <FormField
+      label="Documents per section"
+      description="How many separate documents of this class can end up in one section? Sections are split by document TYPE, so several records of the SAME type can land together — and then a single-record schema returns only the first."
+    >
+      <SpaceBetween size="xs">
+        <RadioGroup
+          value={mode}
+          onChange={({ detail }) => selectMode(detail.value)}
+          items={[
+            {
+              value: MODE_ONE,
+              label: 'One document',
+              description: 'The normal case. Nothing changes.',
+            },
+            {
+              value: MODE_DESIGNATE,
+              label: 'Several — this class already lists them',
+              description:
+                arrayProps.length === 0
+                  ? 'Unavailable: this class has no array-of-objects property to designate.'
+                  : 'Your schema already has an array of records. Name it and the section reports how many it found. No change to extraction output.',
+              disabled: arrayProps.length === 0 && !staleDesignation,
+            },
+            {
+              value: MODE_SYNTHESIZE,
+              label: 'Several — wrap my single-record class',
+              description:
+                'Your schema describes one record; extraction returns a list of them. Changes the output shape — evaluation baselines must be migrated.',
+            },
+          ]}
+        />
+
+        {/* "Designate, nothing chosen yet" has no schema representation, so an unset
+            key saves as One document. The picker says so rather than discarding the
+            intent silently — it cannot be a save-blocking error. */}
+        {mode === MODE_DESIGNATE && (
+          <FormField
+            label="Record array"
+            description="The top-level array-of-objects property holding one record per document."
+            errorText={
+              designationError ??
+              (designated ? undefined : 'Select which array holds one record per document — until then this class saves as “One document”.')
+            }
+          >
+            <Select
+              selectedOption={designateOptions.find((o) => o.value === designated) || null}
+              onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: detail.selectedOption.value || undefined })}
+              options={designateOptions}
+              placeholder="Select the record array"
+            />
+          </FormField>
+        )}
+
+        {mode === MODE_SYNTHESIZE && (
+          <Alert type={collides || looksLikeAWrapper ? 'warning' : 'info'} header="Resulting shape">
+            <SpaceBetween size="xxs">
+              <Box variant="code">
+                {`instances[ ] → ${selectedClass.name || 'Document'} → { ${propertyNames.slice(0, 4).join(', ') || 'your fields'}${
+                  propertyNames.length > 4 ? ', …' : ''
+                } }`}
+              </Box>
+              {collides ? (
+                <Box variant="p">
+                  This class already declares a top-level <strong>instances</strong> property, which the wrapper would shadow. Rename it
+                  first — the configuration will be rejected on save.
+                </Box>
+              ) : looksLikeAWrapper ? (
+                <Box variant="p">
+                  This class&apos;s top level is nothing but the array <strong>{arrayProps[0]}</strong>, so it already looks like a packet
+                  of records — you would get <strong>instances[i].{arrayProps[0]}[j]</strong>, one level too many. Choose{' '}
+                  <strong>this class already lists them</strong> instead.
+                </Box>
+              ) : (
+                <Box variant="p">
+                  Each entry is one complete document with all of this class&apos;s fields. Evaluation baselines for this class must be
+                  migrated to the same shape, or its accuracy will read as ~0.
+                </Box>
+              )}
+            </SpaceBetween>
+          </Alert>
+        )}
+      </SpaceBetween>
+    </FormField>
+  );
+};
+
 const SchemaInspector = ({
   selectedClass = null,
   selectedAttribute = null,
@@ -384,6 +599,14 @@ const SchemaInspector = ({
                   placeholder={isRuleSchema ? 'e.g., (?i)(medicare\\s+number)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
                 />
               </FormField>
+
+              {/* Keyed on the class so the pending-mode state below cannot leak across a
+                  class switch: without it, selecting Designate on class A (2 candidate
+                  arrays, so nothing is written yet) and then selecting class B would
+                  show B in Designate mode with a picker it never asked for. */}
+              {!isRuleSchema && (
+                <MultiInstanceModeField key={selectedClass.id} selectedClass={selectedClass} onUpdateClass={onUpdateClass} />
+              )}
 
               {!isRuleSchema && (
                 <>
