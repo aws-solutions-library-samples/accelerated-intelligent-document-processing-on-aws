@@ -149,6 +149,10 @@ export default defineConfig({
               slug: "benchmarking/classification-confidence",
             },
             {
+              label: "Multi-instance Sections",
+              slug: "benchmarking/feature-multi-instance",
+            },
+            {
               label: "Release Audit Trail",
               // README.md is the index; per-release vX.Y.Z.md entries auto-list.
               items: [{ autogenerate: { directory: "benchmarking/releases" } }],

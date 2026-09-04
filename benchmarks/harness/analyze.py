@@ -19,6 +19,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib  # noqa: E402
 
 
+def scalar_bearing_records(ir):
+    """The dicts a truth file's flat ``fields`` should be compared against.
+
+    Normally just the ``inference_result`` itself. For a class flagged
+    ``x-aws-idp-multi-instance`` (GitHub #715) the result is
+    ``{"instances": [ …record… ]}``, and every user property lives one level down —
+    so reading only top-level keys finds NOTHING and scores every scalar field
+    wrong. Measured: the `mi-wrapped` cell reported ``scalar_accuracy = 0.0`` on all
+    six runs while ``rows_extracted`` showed the data was complete (40/40 and
+    100/100). That was this scorer, not the pipeline.
+
+    The generator's ``fields`` records the FIRST document's identity block, and the
+    caller uses first-wins merging, so yielding instances in order compares against
+    the right record.
+    """
+    if not isinstance(ir, dict):
+        return []
+    instances = ir.get("instances")
+    if isinstance(instances, list):
+        records = [r for r in instances if isinstance(r, dict)]
+        if records:
+            return records
+    return [ir]
+
+
 def _wall(row):
     st, ct = row.get("WorkflowStartTime"), row.get("CompletionTime")
     if not st or not ct:
@@ -95,15 +120,17 @@ def score_cells(sections, rows_typed, list_key):
         ir = sec.get("inference_result") or {}
         if not isinstance(ir, dict):
             continue
-        for key, val in ir.items():
-            if list_key and key.lower() != str(list_key).lower():
-                continue
-            if not isinstance(val, list):
-                continue
-            for row in val:
-                seq = _seq_of(row)
-                if seq is not None:
-                    by_seq.setdefault(seq, row)
+        # Multi-instance: the record lists live inside each instance.
+        for record in scalar_bearing_records(ir):
+            for key, val in record.items():
+                if list_key and key.lower() != str(list_key).lower():
+                    continue
+                if not isinstance(val, list):
+                    continue
+                for row in val:
+                    seq = _seq_of(row)
+                    if seq is not None:
+                        by_seq.setdefault(seq, row)
     hits = total = 0
     for seq_tag, cells in rows_typed.items():
         seq = int(str(seq_tag)[3:]) if str(seq_tag).startswith("SEQ") else int(seq_tag)
@@ -205,8 +232,10 @@ def score_synthetic(bucket, doc_prefix, truth):
         seqs += [int(m) for m in lib.SEQ.findall(blob)]
         lib.walk_confidence(sec.get("explainability_info"), confs)
         # capture scalar fields (top-level, case-insensitive)
-        if isinstance(ir, dict):
-            for k, v in ir.items():
+        # Unwrap a multi-instance result so its records' fields are visible; a
+        # single-record result yields itself, so nothing changes for it.
+        for record in scalar_bearing_records(ir):
+            for k, v in record.items():
                 got_fields.setdefault(k.lower(), v)
     truth_ids = set(int(s[3:]) for s in truth.get("seq_ids", []))
     extracted = set(seqs)
