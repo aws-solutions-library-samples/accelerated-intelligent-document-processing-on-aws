@@ -239,7 +239,15 @@ export const renderLabelAccuracy = (
   return <Box color="text-status-inactive">Not assessed yet</Box>;
 };
 
-export const renderQualityTier = (tier?: string | null, reason?: string | null, accuracy?: number | null): React.JSX.Element => {
+export const renderQualityTier = (
+  tier?: string | null,
+  reason?: string | null,
+  accuracy?: number | null,
+  /* Callers that know the estimate is unmeasured pass 0, so the tier's number does
+     not contradict a headline rounded for the same reason. Defaults to the existing
+     precision, leaving every current caller unchanged. */
+  decimals = 1,
+): React.JSX.Element => {
   if (!tier) return <Box color="text-status-inactive">-</Box>;
   const label = tier.charAt(0).toUpperCase() + tier.slice(1);
   const detail = (
@@ -255,7 +263,7 @@ export const renderQualityTier = (tier?: string | null, reason?: string | null, 
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
         {/* Unrated means no accuracy claim is defensible, so don't print one. */}
         {accuracy !== null && accuracy !== undefined && tier !== 'unrated' ? (
-          <Box variant="span">{(accuracy * 100).toFixed(1)}% est.</Box>
+          <Box variant="span">{(accuracy * 100).toFixed(decimals)}% est.</Box>
         ) : (
           <Box variant="span" color="text-body-secondary">
             Not rated

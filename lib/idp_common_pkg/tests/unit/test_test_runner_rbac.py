@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 import importlib.util
+import json
 import os
 from unittest.mock import patch
 
@@ -273,8 +274,14 @@ class TestTestRunnerRBAC:
             "FILE_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
         },
     )
-    def test_pins_test_set_active_reference_into_run(self):
-        """The test set's activeReference is passed through as test_set_version."""
+    def test_scores_current_labels_by_default_not_the_active_reference(self):
+        """A run started mid-annotation must see the corrections.
+
+        Pinning to activeReference by default made the ordinary loop — correct
+        documents, run, look for the improvement — silently score the labels from
+        before the corrections, once a snapshot existed for that version. Current
+        labels are the default; the open draft is recorded so the result can say so.
+        """
         with (
             patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
             patch.object(test_runner_index, "_capture_config") as mock_capture_config,
@@ -284,13 +291,15 @@ class TestTestRunnerRBAC:
             patch.object(
                 test_runner_index, "_store_test_run_metadata"
             ) as mock_store_metadata,
-            patch.object(test_runner_index.sqs, "send_message"),
+            patch.object(test_runner_index.sqs, "send_message") as mock_send,
             patch("datetime.datetime") as mock_datetime,
         ):
             mock_get_test_set.return_value = {
                 "name": "Test-Set",
                 "fileCount": 3,
                 "activeReference": 2,
+                "latestVersion": 2,
+                "draftVersion": 3,
             }
             mock_capture_config.return_value = {"Config": {}}
             mock_datetime.utcnow.return_value.strftime.return_value = "20260611-120000"
@@ -301,9 +310,90 @@ class TestTestRunnerRBAC:
             }
             test_runner_index.handler(event, {})
 
-            # test_set_version is the last positional arg to _store_test_run_metadata
-            args, _ = mock_store_metadata.call_args
-            assert args[-1] == 2
+            args, kwargs = mock_store_metadata.call_args
+            assert args[-1] is None, "no version may be pinned unless asked for"
+            assert kwargs["test_set_draft_version"] == 3
+            body = json.loads(mock_send.call_args.kwargs["MessageBody"])
+            # The copier reads live baselines when no version is in the message.
+            assert "testSetVersion" not in body
+
+    @patch.dict(
+        os.environ,
+        {
+            "TRACKING_TABLE": "test-table",
+            "CONFIG_TABLE": "test-config-table",
+            "FILE_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+        },
+    )
+    def test_pins_a_requested_version_into_the_run_and_the_copy_job(self):
+        with (
+            patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
+            patch.object(test_runner_index, "_capture_config") as mock_capture_config,
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(
+                test_runner_index, "_store_test_run_metadata"
+            ) as mock_store_metadata,
+            patch.object(test_runner_index.sqs, "send_message") as mock_send,
+            patch("datetime.datetime") as mock_datetime,
+        ):
+            mock_get_test_set.return_value = {
+                "name": "Test-Set",
+                "fileCount": 3,
+                "activeReference": 2,
+                "latestVersion": 2,
+                "draftVersion": 3,
+            }
+            mock_capture_config.return_value = {"Config": {}}
+            mock_datetime.utcnow.return_value.strftime.return_value = "20260611-120000"
+
+            event = {
+                "arguments": {"input": {"testSetId": "ts1", "testSetVersion": 1}},
+                "identity": _ADMIN_IDENTITY,
+            }
+            test_runner_index.handler(event, {})
+
+            args, kwargs = mock_store_metadata.call_args
+            assert args[-1] == 1
+            # Pinned means pinned: the draft is not what was scored.
+            assert kwargs["test_set_draft_version"] is None
+            body = json.loads(mock_send.call_args.kwargs["MessageBody"])
+            assert body["testSetVersion"] == 1
+
+    @patch.dict(
+        os.environ,
+        {
+            "TRACKING_TABLE": "test-table",
+            "CONFIG_TABLE": "test-config-table",
+            "FILE_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
+        },
+    )
+    def test_refuses_a_version_the_set_does_not_have(self):
+        # Otherwise the copier finds no snapshot and falls back to live baselines,
+        # and the run would claim to have scored a version that does not exist.
+        with (
+            patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
+            patch.object(test_runner_index, "_capture_config"),
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(test_runner_index, "_store_test_run_metadata") as store,
+            patch.object(test_runner_index.sqs, "send_message") as mock_send,
+        ):
+            mock_get_test_set.return_value = {
+                "name": "Test-Set",
+                "fileCount": 3,
+                "latestVersion": 2,
+            }
+            event = {
+                "arguments": {"input": {"testSetId": "ts1", "testSetVersion": 5}},
+                "identity": _ADMIN_IDENTITY,
+            }
+            with pytest.raises(Exception, match="does not exist"):
+                test_runner_index.handler(event, {})
+            store.assert_not_called()
+            mock_send.assert_not_called()
 
     @patch.dict(
         os.environ,

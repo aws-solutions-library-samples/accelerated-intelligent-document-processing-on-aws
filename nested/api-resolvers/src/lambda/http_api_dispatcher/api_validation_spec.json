@@ -1213,6 +1213,17 @@
     "listUsers": {
       "args": []
     },
+    "openTestSetAnnotationDraft": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "OpenTestSetAnnotationDraftInput"
+        }
+      ]
+    },
     "pauseCircuitBreaker": {
       "args": [
         {
@@ -2626,6 +2637,15 @@
         "type": "Boolean"
       }
     ],
+    "OpenTestSetAnnotationDraftInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      }
+    ],
     "PageInput": [
       {
         "elem_non_null": false,
@@ -2964,6 +2984,13 @@
         "type": "Int"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetVersion",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
@@ -3038,6 +3065,13 @@
         "name": "fileSize",
         "non_null": true,
         "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "name",
+        "non_null": false,
+        "type": "String"
       },
       {
         "elem_non_null": false,

@@ -153,9 +153,18 @@ _S3_DATAPLANE_BOUNDS = (
 )
 
 # Every actual S3 API call this resolver makes.
+# Fan-out for the baseline snapshot, and the ceiling it can reach inside one request.
+_SNAPSHOT_CONCURRENCY = 16
+# ~16 concurrent server-side copies fit roughly this many objects inside the
+# dispatcher's 29-second budget with margin; see _snapshot_baselines.
+_SNAPSHOT_MAX_OBJECTS = 6000
+
 s3_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": "path"},
+    # Two 16-worker pools share this client; the default pool of 10 would log
+    # "Connection pool is full" and serialize the rest.
+    max_pool_connections=_SNAPSHOT_CONCURRENCY,
     **_S3_DATAPLANE_BOUNDS,
 )
 s3_client = boto3.client("s3", config=s3_config)
@@ -201,6 +210,11 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # class is — and it is the correction most often needed in practice. Per-set scope
     # asserted in the dispatch below.
     "updateTestSetDocumentSections",
+    # Opening the version transition annotating commits to. An annotator is the role that
+    # begins an annotation session, so refusing this would make the queue unusable for
+    # them — and it is the operation that preserves the labels being edited away from.
+    # Per-set scope asserted in the dispatch below.
+    "openTestSetAnnotationDraft",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -267,6 +281,12 @@ def handler(event, context):
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
         return generate_draft_labels(event["arguments"], event)
+    elif field_name == "openTestSetAnnotationDraft":
+        # Annotator-reachable: group membership alone would let one annotator open a
+        # version transition on a set they were never assigned.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return open_test_set_annotation_draft(event["arguments"], event)
     elif field_name == "updateTestSetDocumentSections":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
@@ -302,13 +322,26 @@ def add_test_set_from_upload(args):
     zip_filename = input_data["fileName"]
     description = input_data.get("description", "")  # Optional field
     document_class_type = input_data.get("documentClassType")  # Optional field
+    requested_name = (input_data.get("name") or "").strip()
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
         raise Exception("File must be a zip file")
 
-    # Extract test set name from filename (remove .zip extension)
-    test_set_name = zip_filename.replace(".zip", "").replace(".ZIP", "")
+    # The caller's name wins. This used to be derived from the filename
+    # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
+    # Archive.zip got a set called "Archive" — and the wizard's own success toast
+    # reported the name it had never sent. Only the suffix is stripped: `.replace`
+    # removed *every* occurrence, so "my.zip.backup.zip" lost both.
+    derived_name = zip_filename[: -len(".zip")]
+    test_set_name = requested_name or derived_name
+    if not requested_name:
+        # Logged rather than silent: a caller reaching this has no name of its own, and
+        # this is the path that produced the wrong name for two releases.
+        logger.info(
+            f"No name supplied for zip upload '{zip_filename}'; "
+            f"falling back to the filename '{derived_name}'"
+        )
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
@@ -721,6 +754,10 @@ def publish_test_set_version(args, event=None):
     pointer_values = {":v": next_version}
     if set_active:
         pointer_expr += ", activeReference = :v"
+    # And the open transition has landed, so it stops being open. Leaving draftVersion
+    # set would have the annotate view reporting a transition toward a version that
+    # already exists, and would stop the next annotation session snapshotting.
+    pointer_expr += " REMOVE draftVersion"
     try:
         tracking_table.update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
@@ -737,6 +774,14 @@ def publish_test_set_version(args, event=None):
             f"Test set '{test_set_id}' pointers already at a version newer than "
             f"{next_version}; leaving them unchanged"
         )
+        # The pointers stay, but the transition this publish closes must still
+        # close: the REMOVE rode on the conditional update and was lost with it,
+        # leaving the annotate view reporting an open draft toward a version that
+        # now exists.
+        tracking_table.update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression="REMOVE draftVersion",
+        )
 
     logger.info(
         f"Published test set '{test_set_id}' version {next_version} "
@@ -747,6 +792,177 @@ def publish_test_set_version(args, event=None):
         next_version if set_active else meta.get("activeReference")
     )
     return result
+
+
+def _snapshot_baselines(test_set_bucket, test_set_id, version):
+    """Copy the live baselines to ``{id}/versions/{version}/baseline/``.
+
+    Server-side copies, paginated: a 2000-document set has thousands of baseline
+    objects, which is exactly why this runs once when a draft opens rather than on every
+    save. Returns the number of objects copied.
+
+    Idempotent by overwrite: re-copying the same keys is harmless, so a retry after a
+    partial failure converges instead of needing cleanup.
+    """
+    source_prefix = f"{test_set_id}/baseline/"
+    dest_prefix = f"{test_set_id}/versions/{int(version)}/baseline/"
+
+    keys = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=source_prefix):
+        for obj in page.get("Contents", []) or []:
+            key = obj["Key"]
+            if not key.endswith("/"):
+                keys.append(key)
+
+    if len(keys) > _SNAPSHOT_MAX_OBJECTS:
+        # Refused with a reason rather than left to time out. The pointer is written
+        # after the copy, so an oversize set would otherwise fail with a generic
+        # error and fail identically on every retry — permanently unable to start
+        # annotating, with nothing saying why.
+        raise Exception(
+            f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
+            f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
+            "Publishing a version of a set this large needs an asynchronous snapshot, "
+            "which is not available yet."
+        )
+
+    def _copy(key):
+        s3_client.copy_object(
+            Bucket=test_set_bucket,
+            CopySource={"Bucket": test_set_bucket, "Key": key},
+            Key=f"{dest_prefix}{key[len(source_prefix) :]}",
+        )
+
+    # Bounded fan-out. Each copy is server-side, so the cost is a round trip, and
+    # this runs inside a synchronous request the dispatcher abandons after 29s: a
+    # sequential pass over a few thousand objects did not fit, and left the draft
+    # unrecorded while the resolver kept copying to its own timeout. Sixteen at a
+    # time fits the set sizes seen so far; beyond that this belongs in an
+    # asynchronous job the UI polls. `list()` re-raises the first failure, so a
+    # partial snapshot is reported as an error rather than as a version.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=_SNAPSHOT_CONCURRENCY
+    ) as pool:
+        list(pool.map(_copy, keys))
+    copied = len(keys)
+
+    logger.info(
+        f"Snapshotted {copied} baseline object(s) for test set '{test_set_id}' "
+        f"as version {version}"
+    )
+    return copied
+
+
+def open_test_set_annotation_draft(args, event=None):
+    """Open the version transition that annotating a test set commits you to.
+
+    Starting annotation on a set, even one that already has ground truth, commits to a
+    new version of it, and the queue link should name that transition.
+
+    The problem underneath is worse than the queue link. A version was
+    a **DynamoDB row only** — ``publish_test_set_version`` records a number, a label and
+    a file count, and copies nothing. Annotation writes straight to ``{id}/baseline/``.
+    So a run stamped ``TestSetVersion = 3`` could not be reproduced against the labels it
+    actually scored: the number was immutable, its content was not.
+
+    This makes the transition explicit and preserves what it moves away from:
+
+      * ``baseVersion`` is the state being left. A set that has never been published gets
+        its arriving labels published as a version first — the "even if we still have
+        ground truth" case, and the common one for an uploaded set.
+      * that state is snapshotted to ``{id}/versions/{baseVersion}/baseline/``, so the
+        number now refers to bytes.
+      * ``draftVersion`` is ``baseVersion + 1``, recorded on the metadata row. The queue
+        link carries it, so a link says which transition it belongs to.
+
+    Idempotent: opening a draft that is already open returns it and copies nothing, which
+    matters because the annotate view calls this on entry.
+
+    Why an explicit call rather than copy-on-write: the editor saves a baseline through a
+    **presigned POST straight from the browser**, so no Lambda observes the write. There
+    is no server-side moment to hang a lazy snapshot on — and making the commitment
+    visible is what was being asked for anyway.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    existing_draft = _as_int(meta.get("draftVersion"))
+    if existing_draft:
+        # Already open. Returning it unchanged keeps the annotate view's on-entry call
+        # cheap and stops a second reviewer opening a second transition.
+        base = existing_draft - 1
+        logger.info(
+            f"Test set '{test_set_id}' already has draft version {existing_draft}; "
+            "returning it"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": base,
+            "draftVersion": existing_draft,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
+
+    base_version = _as_int(meta.get("publishedVersion"))
+    if not base_version:
+        # Never published. Publishing the arriving state first is what stops the labels
+        # a set was uploaded with from being the thing that gets overwritten with no
+        # record of what they were.
+        published = publish_test_set_version(
+            {
+                "input": {
+                    "testSetId": test_set_id,
+                    "label": "As uploaded",
+                    "notes": "Captured automatically before annotation began.",
+                    # Not the active reference: that would let an annotator's Start
+                    # annotating decide which version every future run of the set
+                    # scores against, a choice publishTestSetVersion reserves for
+                    # Admin/Author. Runs default to the set's current labels and pin
+                    # a version only when asked (see test_runner), so nothing needs
+                    # this pointer moved here.
+                    "setAsActiveReference": False,
+                }
+            },
+            event,
+        )
+        base_version = int(published["version"])
+        logger.info(
+            f"Test set '{test_set_id}' had no published version; captured its current "
+            f"labels as version {base_version} before opening a draft"
+        )
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
+
+    # publish_test_set_version reserves ``latestVersion + 1``, and a failed version
+    # write leaves a gap by design, so ``publishedVersion + 1`` can name a number the
+    # next publish will never create. Follow the same counter it does.
+    draft_version = max(_as_int(meta.get("latestVersion")) or 0, base_version) + 1
+    # Written after the snapshot: a failure part-way leaves no draft pointer, so the
+    # next call retries the copy rather than annotating against a version whose content
+    # was never captured.
+    db_client.update_item(
+        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+        update_expression="SET draftVersion = :d",
+        expression_attribute_values={":d": draft_version},
+    )
+
+    logger.info(
+        f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
+        f"(base {base_version}, {copied} baseline object(s) snapshotted)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "baseVersion": base_version,
+        "draftVersion": draft_version,
+        "snapshotObjectCount": copied,
+        "alreadyOpen": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1761,11 +1977,19 @@ def get_annotation_queue(args, event=None):
     # test_uploaded_ground_truth_is_not_counted_as_review_work forbids.
     queue = [e for e in entries if include_completed or not e["reviewed"]]
 
+    # The open transition, so the workspace does not have to call the mutation to discover
+    # one — that call snapshots, and probing with it would open a transition just by
+    # visiting the page. Bound once: `_as_int` is Optional, so calling it twice leaves the
+    # type checker unable to see that the subtraction is guarded.
+    draft_version = _as_int(meta.get("draftVersion")) or None
+
     result = {
         "testSetId": test_set_id,
         "totalDocs": total,
         "inspectedDocs": inspected,
         "reviewedDocs": reviewed_count,
+        "draftVersion": draft_version,
+        "baseVersion": draft_version - 1 if draft_version else None,
         # Documents beyond the inspected page are unreviewed, so they count here.
         "remainingDocs": max(0, total - reviewed_count),
         "claimedByOthers": sum(

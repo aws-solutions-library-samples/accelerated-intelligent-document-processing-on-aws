@@ -15,8 +15,10 @@
  * and it is what makes this screen usable without a pointer.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -186,6 +188,22 @@ describe('PageGroupingEditor', () => {
     for (const id of [1, 2, 3, 4]) {
       expect(screen.getByRole('button', { name: new RegExp(`^Move page ${id}\\b`) })).toBeInTheDocument();
     }
+  });
+
+  it('renders that menu outside the scrolling column it sits in', () => {
+    // Measured on the annotate surface, where the section column is a 320px
+    // `overflow: auto` box: the menu ran to 628px against a container ending at 596px,
+    // so its last item was clipped away, and it inherited the column's 118px width,
+    // wrapping all three labels onto two lines each. The keyboard route above was
+    // therefore reachable but unreadable, and "Move later" was not reachable at all.
+    //
+    // Asserted on the prop rather than on measured geometry: jsdom has no layout, so a
+    // dimension-based test here would pass whatever the markup did. Cloudscape's
+    // expandToViewport is what portals the menu out of the clipping ancestor — the same
+    // remedy the drag preview needed when it moved to a body-level overlay.
+    const source = readFileSync(join(__dirname, '..', 'PageGroupingEditor.tsx'), 'utf-8');
+    const menu = source.slice(source.indexOf('<ButtonDropdown'), source.indexOf('<ButtonDropdown') + 900);
+    expect(menu).toMatch(/expandToViewport/);
   });
 
   it('locks the class control when the caller cannot change classes', async () => {
@@ -574,5 +592,79 @@ describe('PageGroupingEditor page ordering', () => {
     // Between 1 and 4, not appended after them — and so no 'Custom page order' badge.
     expect(saved.find((s) => s.sectionId === '1')?.pageIds).toEqual([1, 2, 4]);
     expect(screen.queryByText('Custom page order')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Seeing a page at readable size.
+ *
+ * The thumbnail is too small to see the detail needed to judge a page.
+ * Deciding which section a page belongs to means reading the page, and the card shows it
+ * at 112px.
+ *
+ * Cheap because nothing is fetched — pages already render at 1200px wide
+ * (`use-test-doc-pages`) and the document view presigns the pipeline's full-size image,
+ * so the preview displays what is already in memory.
+ */
+describe('PageGroupingEditor page preview', () => {
+  const openPreviewFor = async (pageId: number) => {
+    await userEvent.click(screen.getByRole('button', { name: new RegExp(`^Move page ${pageId}\\b`) }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'View full page' }));
+  };
+
+  it('opens that page at full size from the menu', async () => {
+    renderEditor();
+    await openPreviewFor(3);
+
+    // A dialog, so it traps focus and is dismissible by keyboard — the preview is
+    // offered as a menu item rather than a click target on the card so it does not
+    // compete with the drag gesture.
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Page 3');
+    // The same source the card uses, at unconstrained width.
+    const image = within(dialog).getByAltText('Page 3');
+    expect(image).toHaveAttribute('src', 'blob:page-3');
+  });
+
+  it('previews the page whose menu was used, not the first one', async () => {
+    renderEditor();
+    await openPreviewFor(4);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByAltText('Page 4')).toBeInTheDocument();
+    expect(within(dialog).queryByAltText('Page 1')).not.toBeInTheDocument();
+  });
+
+  it('closes again, leaving the board untouched', async () => {
+    const { onSave } = renderEditor();
+    await openPreviewFor(2);
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /Close/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Looking at a page is not an edit.
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeDisabled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('is reachable while the board is expanded', async () => {
+    // The preview renders as a SIBLING of the expanded board's modal, not nested inside
+    // it: Cloudscape stacks sibling modals by z-index but makes no promise about
+    // nesting one in another.
+    renderEditor();
+    await userEvent.click(screen.getByRole('button', { name: /^Expand$/i }));
+    await openPreviewFor(1);
+
+    const dialogs = await screen.findAllByRole('dialog');
+    expect(dialogs.length).toBeGreaterThan(1);
+    expect(dialogs.some((d) => d.textContent?.includes('Page 1'))).toBe(true);
+  });
+
+  it('says so when a page has not finished rendering, rather than showing a broken image', async () => {
+    renderEditor({ pages: [{ id: 1 }, { id: 2, imageUri: 'blob:page-2' }], sections: [{ sectionId: '1', pageIds: [1, 2] }] });
+    await openPreviewFor(1);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(/has not finished rendering/i);
+    expect(within(dialog).queryByAltText('Page 1')).not.toBeInTheDocument();
   });
 });

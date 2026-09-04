@@ -445,6 +445,24 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
+  # Internally publishes version 1 of a never-published set (via
+  # publish_test_set_version, bypassing that mutation's Admin/Author gate) so there
+  # is a state to snapshot. Deliberate: an Annotator is the role that starts a
+  # session. It does NOT set the set's active reference — that remains a
+  # publishTestSetVersion decision — so the crossing creates a version and nothing
+  # a future run depends on by default.
+  openTestSetAnnotationDraft:
+    # Annotator opens the version transition that annotating their own set commits to.
+    # An annotator is the role that starts a session, so refusing this would make the
+    # queue unusable for them. The resolver additionally enforces allowedTestSets per
+    # set. Note this is the one annotation operation with a side effect on the *set*
+    # rather than on a document: it snapshots the baselines being annotated away from,
+    # which is what makes the version number refer to bytes.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set" } }
+
   updateTestSetDocumentSections:
     # Annotator corrects a wrong packet split in their own set — the same kind of
     # annotation work as reextractTestSetDocument, and the correction most

@@ -767,20 +767,24 @@ active-reference pointer only ever moves forward.
 
 ### Run pinning
 
-When a test run starts, it records the test set's active reference alongside the
-configuration version it captured. This is symmetric to config pinning and
-makes results interpretable later: comparing two runs, you can tell whether a
-metric moved because the *configuration* changed or because the *ground truth*
-did. A run against a never-published test set records no version.
+A test run scores against the set's **current labels** by default — including any
+annotation in progress toward the next version. That is the loop the review-effort
+panel invites: correct twenty documents, run, see the improvement. A run started that
+way records `testSetDraftVersion` when a transition was open, so its result can say
+"current labels, draft toward v2" rather than nothing.
 
-> **Storage caveat (known limitation).** A published version snapshots the test
-> set's *metadata* — document count, source, label state, config version — not
-> the document and label **bytes**. All versions share the one `baseline/`
-> prefix, so editing ground truth in the working draft also changes what an
-> already-published version resolves to. True byte-level immutability requires
-> either an S3 object-version manifest per published version or copying content
-> on publish; the choice is coupled to the `DataRetentionInDays` retention
-> setting and is not yet implemented.
+To score exactly the labels a published version preserved, pick that version under
+**Test set version** on the run form. The run records it as `testSetVersion`, and the
+file copier stages that version's snapshot (`{testSetId}/versions/{n}/baseline/`)
+rather than the live baselines. This is the counterpart of pinning a configuration
+revision, and for the same reason: two runs are comparable only when both name what
+they measured against, so a metric delta can be attributed to the configuration or to
+the ground truth rather than left ambiguous.
+
+> **Storage.** Every version transition copies the set's whole baseline tree under
+> `versions/{n}/baseline/`, and nothing prunes old versions; deleting the test set
+> removes them all. For a 2000-document set that is a full copy of its labels per
+> version — cheap in absolute terms, but it grows with every publish.
 
 ## Draft labeling: unlabeled documents → ground truth
 
@@ -1133,7 +1137,9 @@ document's structure, not one section's values. (**Pages in this section**, in t
 list below, stays as a read-only record of which pages the open section covers.)
 
 Drag a page from one section to another, or use its **Move to section**
-menu, which is the keyboard and screen-reader route to the same operation. Select several
+menu, which is the keyboard and screen-reader route to the same operation. A page's menu
+also offers **View full page**, since a thumbnail is often too small to tell one document
+type from another and the grouping decision depends on reading the page. Select several
 pages first — shift-click extends over document order — and they move together, which
 is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
 one.
@@ -1192,12 +1198,53 @@ The same board is available on a processed document, from **Document Sections** 
 the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
+### A section with no field values
+
+A section can legitimately have nothing extracted, and the editor says which of three
+things happened rather than showing an empty form:
+
+- **No document class.** With no class there is no schema, so extraction had nothing to
+  extract against. This is the actionable one: set the class first — re-extracting before
+  that produces nothing. A section in this state is marked **(no class)** in its tab. It
+  often means the packet split is wrong and the pages belong with a neighbouring section,
+  which **Edit page grouping** can merge.
+- **Extraction ran and produced nothing**, on a section that does have a class.
+- **A section added by re-grouping**, which starts with no values because nothing has
+  extracted those pages as a group yet.
+
+Section tabs name each section's class, so the one that is missing a class is visible
+without opening each tab in turn.
+
+### Annotating creates a new version of the set
+
+Correcting ground truth changes what every previously-scored run was measured against, so
+starting an annotation session is an explicit step: **Start annotating** opens a *version
+transition*, shown in the header as e.g. `v1 → v2`.
+
+Agreeing to it is what preserves the labels you are moving away from. The set's current
+baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
+bytes it meant when a run scored against it. A set that arrived with its own ground truth
+and was never published gets that state captured first as `v1` — without
+it, the labels a set was uploaded with are exactly the ones overwritten with no record of
+what they were.
+
+Until the transition is open the editor is read-only. You can read every document and its
+labels; you cannot change them. That ordering is the point: editing first and versioning
+afterwards would record what the labels *became*, not what they were.
+
+**Copy queue link** includes the transition (`?v=2`). A link from a transition that has
+since been published still works — the set is still annotatable — but the workspace says
+the link is out of date and names the current transition, so nobody spends an afternoon
+believing they are adding to a version that already shipped.
+
+Publishing a version closes the transition. The next session opens the next one.
+
 ### Asking someone about one field
 
 Some values cannot be settled by whoever is reviewing — the reviewer may not know
-what a particular reference number means on this customer's paperwork. Clicking a
+what a particular reference number means on the documents at hand. Clicking a
 field reveals **Copy link to field**, which produces a URL that opens the same
-document with that field selected and scrolled into view. Paste it into Slack or
+document with that field selected and scrolled into view. Paste it into a chat message or
 a ticket to ask for a second opinion.
 
 The link is just navigation: the recipient's access is still checked on arrival,

@@ -147,7 +147,8 @@ split needs.
 
 Pages within a section can also be **reordered**: drop a page onto another to place it
 immediately before that one, or use **Order within this section → Move earlier / Move
-later**. Dropping onto the column's empty space instead places the page in document order,
+later**. **View full page** in the same menu opens the page at full size, for when the
+thumbnail is too small to decide. Dropping onto the column's empty space instead places the page in document order,
 so an ordinary move does not create a custom order by accident. It is the same board as
 the annotate view, so the gesture is identical — see
 [Page order within a section](./test-studio.md#page-order-within-a-section), which also

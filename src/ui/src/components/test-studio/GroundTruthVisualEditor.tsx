@@ -63,6 +63,13 @@ import type { GroupedSection } from '../common/section-grouping';
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
 
+/**
+ * Must match `LABEL_SOURCE_HUMAN` in `test_set_resolver/index.py`: the server derives
+ * `reviewed` from an exact comparison against it, so a typo here would silently stop
+ * annotation progress from counting rather than fail.
+ */
+const LABEL_SOURCE_REVIEWED_HUMAN = 'reviewed-human';
+
 const REEXTRACT_POLL_MS = 3000;
 // A re-extract is a full extraction + assessment pass, so the budget is generous;
 // timing out early would report failure on a run that is about to succeed.
@@ -95,10 +102,12 @@ interface GroundTruthVisualEditorProps {
   /**
    * Optional replacement for how a save is persisted.
    *
-   * The default writes the baseline object straight to S3 via a presigned POST,
-   * which bypasses the HITL review API: no lock claim, no `reviewed-human` tag, no
-   * confidence-curve observation. Callers that need those supply this to route
-   * saves through `completeSectionReview` instead.
+   * The default writes the baseline object straight to S3 via a presigned POST, which
+   * bypasses the HITL review API: no lock claim and no confidence-curve observation.
+   * It does still tag the label `reviewed-human` — the editor writes that itself, since
+   * on this path nothing server-side will, and the annotation progress metric keys on
+   * it. Callers that want the lock and the calibration signal supply this to route
+   * saves through `completeSectionReview` instead, which tags it server-side.
    */
   onSave?: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   /** Label for the save button. */
@@ -144,10 +153,21 @@ interface GroundTruthVisualEditorProps {
   buildFieldLink?: ((fieldPath: string) => string) | null;
 }
 
-const getSectionLabel = (sectionId: string, data: Record<string, unknown> | null): string => {
-  const docClass = (data?.document_class as Record<string, unknown> | undefined)?.type;
-  return docClass ? `Section ${sectionId} (${String(docClass)})` : `Section ${sectionId}`;
-};
+/**
+ * A section tab's label, naming the class — or naming its absence.
+ *
+ * An unclassified section used to read as a bare `Section 1` beside a classified
+ * `Section 2 (Invoice)`, so the missing class was expressed only as *absent*
+ * parenthetical text. That reads as "this tab just shows the number", not "this section
+ * has no class" — and it is the reason the section has no extracted fields, so it is
+ * worth saying out loud.
+ *
+ * Every tab is labelled from the queue payload, not only the open one: the payload
+ * carries `documentClass` per section, so there is no reason to make a reviewer click
+ * each tab to find out which section is the problem.
+ */
+const sectionTabLabel = (sectionId: string, documentClass: string | null | undefined): string =>
+  documentClass ? `Section ${sectionId} (${documentClass})` : `Section ${sectionId} (no class)`;
 
 const GroundTruthVisualEditor = ({
   bucket,
@@ -307,6 +327,19 @@ const GroundTruthVisualEditor = ({
     (localData?.inference_result as Record<string, unknown> | undefined) ??
     (localData?.inferenceResult as Record<string, unknown> | undefined) ??
     null;
+  /**
+   * Whether there is anything to render, as opposed to an object being present.
+   *
+   * `{}` is truthy, so an empty result took the render path and produced a "Document
+   * Data" heading with no children and no explanation — visually identical to the
+   * renderer having failed. Reported from a live stack, where a draft-labeling run had
+   * extracted no fields for one section of a two-section document.
+   *
+   * Two things reach this state: extraction that returned nothing, and a section added
+   * by re-grouping, which `updateTestSetDocumentSections` deliberately writes with an
+   * empty `inference_result` because nothing has run over those pages as a group.
+   */
+  const hasFieldValues = Boolean(inferenceResult && Object.keys(inferenceResult).length > 0);
 
   // Packet-splitting baselines carry the section's document-absolute page
   // indices (0-based). Use them to restrict the image pane to this section's
@@ -551,6 +584,17 @@ const GroundTruthVisualEditor = ({
         source: 'test-set-ground-truth-editor',
       });
       dataToSave._editHistory = editHistory;
+      // And the label source, for the same reason: on this path there is no review API
+      // to tag it. Without this a reviewer could correct every document in an
+      // authored-ground-truth set and the queue would still report "0 of 73 reviewed",
+      // because the server derives `reviewed` from labelSource == 'reviewed-human' —
+      // while the toast said the document had been marked reviewed.
+      //
+      // Only on this branch. The onSave branch routes through completeSectionReview,
+      // which tags it server-side with token-derived identity; doing both would
+      // double-record. And this is a claim about *this* reviewer having checked the
+      // document, not about who authored the label originally.
+      dataToSave.labelSource = LABEL_SOURCE_REVIEWED_HUMAN;
       const editedContent = JSON.stringify(dataToSave, null, 2);
 
       const fileName = fullPath.split('/').pop() ?? fullPath;
@@ -729,7 +773,11 @@ const GroundTruthVisualEditor = ({
               onChange={({ detail }) => handleSectionChange(detail.selectedId)}
               options={sections.map((s) => ({
                 id: s.sectionId,
-                text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
+                /* The open section's class comes from its loaded baseline, which may carry
+                   an unsaved edit; the others come from the payload. Falling back to the
+                   payload while the baseline is still loading keeps a tab from flashing
+                   "(no class)" at a section that has one. */
+                text: sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass),
               }))}
             />
           ) : (
@@ -787,7 +835,17 @@ const GroundTruthVisualEditor = ({
                   label: 'Visual Editor',
                   content: (
                     <SpaceBetween size="s">
-                      {documentClassType !== undefined && (
+                      {/* Rendered whenever a baseline is loaded, including when it carries
+                          no class. The gate was `documentClassType !== undefined`, which
+                          showed the control only if a class was ALREADY set — backwards for
+                          the one case that needs it. Observed on a live stack: a section the
+                          labelling run left unclassified had no class control at all, so the
+                          empty-result alert's advice to "Change class & re-extract" pointed
+                          at something not on screen, and the JSON editor is scoped to
+                          `inference_result` so it could not set one either. The only route
+                          left was the page-grouping board's per-section dropdown, which
+                          nothing pointed at. */}
+                      {localData && (
                         <FormField
                           label="Class label"
                           description={
@@ -881,7 +939,7 @@ const GroundTruthVisualEditor = ({
                           <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
                         </FormField>
                       )}
-                      {inferenceResult ? (
+                      {hasFieldValues ? (
                         <>
                           <FormField label="Fields to show">
                             <Select
@@ -902,8 +960,8 @@ const GroundTruthVisualEditor = ({
                               label="Ask someone about this field"
                               description={
                                 <>
-                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Paste it in Slack when
-                                  you need a second opinion on a value.
+                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Share it when you need a
+                                  second opinion on a value.
                                 </>
                               }
                             >
@@ -934,7 +992,38 @@ const GroundTruthVisualEditor = ({
                           />
                         </>
                       ) : (
-                        <Alert type="warning">This baseline has no inference_result — use the JSON editor tab.</Alert>
+                        <Alert type="info" header="No field values for this section">
+                          {/* Three causes, each with a different remedy, which is why they are
+                              distinguished rather than covered by one sentence. An empty
+                              object used to fall through to the renderer and produce a bare
+                              "Document Data" heading with no explanation at all —
+                              indistinguishable from a rendering failure.
+
+                              The unclassified case was found on a live stack and is the most
+                              actionable: with no class there is no schema, so extraction has
+                              nothing to extract against and re-running it changes nothing
+                              until a class is set. Saying "re-extract" there would send a
+                              reviewer round a loop that cannot succeed. */}
+                          {!documentClassType
+                            ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set the class above first; re-extracting before that will not produce anything.'
+                            : inferenceResult
+                              ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
+                              : 'This section has no inference_result at all.'}{' '}
+                          {sections.length > 1
+                            ? 'Other sections of this document may still have values — check the section tabs above. '
+                            : ''}
+                          {documentClassType ? (
+                            <>
+                              Use <b>Change class &amp; re-extract</b> to have the model populate it, or the <b>JSON Editor</b> tab to enter
+                              values by hand.
+                            </>
+                          ) : (
+                            <>
+                              If the pages belong with another section instead, <b>Edit page grouping</b> can merge them rather than
+                              classifying this one separately.
+                            </>
+                          )}
+                        </Alert>
                       )}
                     </SpaceBetween>
                   ),

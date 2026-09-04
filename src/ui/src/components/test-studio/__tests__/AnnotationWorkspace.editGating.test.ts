@@ -56,11 +56,22 @@ const groupsFor = (operation: string): string[] => {
 
 describe('AnnotationWorkspace edit gating', () => {
   it('picks the read-only decision from the document own save path', () => {
-    expect(SOURCE).toMatch(/isReadOnly=\{selected\.reviewObjectKey \? !canSaveViaReview : !canSaveDirectToBaseline\}/);
+    // The per-path role decision, which is what this test exists to protect. It now sits
+    // behind `!draft ||` — annotation is also read-only until the version transition is
+    // open — but that is an orthogonal condition about the session, not about the role,
+    // and the role half must stay per-save-path.
+    expect(SOURCE).toMatch(/selected\.reviewObjectKey \? !canSaveViaReview : !canSaveDirectToBaseline/);
     // The regression: a queue-state condition presented as a permission problem.
     expect(SOURCE).not.toMatch(/isReadOnly=\{!canAnnotate \|\| !selected\.reviewObjectKey\}/);
     // And the over-correction: canAnnotate includes roles neither path accepts.
     expect(SOURCE).not.toMatch(/isReadOnly=\{!canAnnotate\}/);
+  });
+
+  it('does not let editing begin before the version transition is open', () => {
+    // Otherwise the commitment goes back to being implicit: someone edits, and the
+    // version that records what the labels *were* is opened after they changed. Looking
+    // is still allowed — this gates editing, not reading.
+    expect(SOURCE).toMatch(/isReadOnly=\{!draft \|\|/);
   });
 
   it('routes through the review API only when there is a review to complete', () => {
@@ -81,7 +92,7 @@ describe('AnnotationWorkspace edit gating', () => {
   });
 
   it('only promises class editing to someone who can actually save it', () => {
-    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*' You can still correct it below, including its class/);
+    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*draft\s*\?\s*' You can still correct it below, including its class/);
     expect(SOURCE).toMatch(/which an Admin or Author has to do/);
   });
 

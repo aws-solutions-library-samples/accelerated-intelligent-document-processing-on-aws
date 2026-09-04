@@ -741,6 +741,7 @@ def get_test_results(test_run_id):
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
+            "testSetDraftVersion": _as_int(metadata.get("TestSetDraftVersion")),
             "config": _get_test_run_config(test_run_id),
         }
     else:
@@ -786,6 +787,7 @@ def get_test_results(test_run_id):
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
+            "testSetDraftVersion": _as_int(metadata.get("TestSetDraftVersion")),
         }
 
 
@@ -896,6 +898,7 @@ def _build_test_run_list(items):
                 "configVersion": item.get("ConfigVersion"),
                 "configRevision": _as_int(item.get("ConfigRevision")),
                 "testSetVersion": item.get("TestSetVersion"),
+                "testSetDraftVersion": _as_int(item.get("TestSetDraftVersion")),
             }
         )
 

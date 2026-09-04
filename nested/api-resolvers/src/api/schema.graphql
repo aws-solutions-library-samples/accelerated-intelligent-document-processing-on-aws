@@ -786,7 +786,12 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   # test-set version above: a metric delta between two runs is attributable to
   # the configuration only when both are known.
   configRevision: Int
+  # Pinned version scored against, or null when the run scored the set's current
+  # labels. In that case testSetDraftVersion names the version those labels were
+  # being annotated toward, if a transition was open — so a result can say
+  # "current labels, draft toward v2" rather than nothing.
   testSetVersion: Int
+  testSetDraftVersion: Int
   config: AWSJSON
   # True for a run that PRODUCES ground truth rather than being scored against it.
   # Such a run has no baseline by construction, so evaluation never runs and there
@@ -917,6 +922,29 @@ type TestSetVersion @aws_cognito_user_pools @aws_iam {
   activeReference: Int
   createdAt: AWSDateTime
   createdBy: String
+}
+
+"""
+The version transition an annotation session commits to.
+
+`baseVersion` is the state being left, snapshotted to
+`{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+to whatever the labels happen to be later. `draftVersion` is what the session is working
+toward, and what the queue link carries so a link identifies its transition.
+"""
+type TestSetAnnotationDraft @aws_cognito_user_pools @aws_iam {
+  testSetId: String!
+  baseVersion: Int!
+  draftVersion: Int!
+  # Baseline objects copied into the base version. 0 when the draft was already open.
+  snapshotObjectCount: Int
+  # True when this call found an existing draft rather than opening one, so a caller can
+  # tell "nothing happened" from "a snapshot just ran".
+  alreadyOpen: Boolean
+}
+
+input OpenTestSetAnnotationDraftInput {
+  testSetId: String!
 }
 
 input PublishTestSetVersionInput {
@@ -1091,6 +1119,14 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   labelJobStatus: String
   labelJobLabeled: Int
   labelJobTotal: Int
+  # The open version transition, if annotation has begun on this set. Returned here so
+  # the workspace can tell "already in a transition" from "has not started one" on entry,
+  # WITHOUT calling openTestSetAnnotationDraft to find out — that mutation snapshots, so
+  # using it as a probe would open a transition merely by visiting the page, which is the
+  # silent commitment this whole mechanism exists to remove.
+  draftVersion: Int
+  # The version the open transition is moving away from, whose labels are snapshotted.
+  baseVersion: Int
 }
 
 input ReextractTestSetDocumentInput {
@@ -1158,6 +1194,12 @@ type SendTestRunToReviewResult @aws_cognito_user_pools @aws_iam {
 input TestSetUploadInput {
   fileName: String!
   fileSize: Int!
+  # What to call the test set. Optional rather than required only because this
+  # mutation has shipped since 0.6.1 and a required field would break a direct
+  # HTTP-API caller; the resolver falls back to the zip's filename and logs that it
+  # did. Absent it, the name the user typed in the wizard was silently discarded and
+  # the set took the archive's name.
+  name: String
   description: String
   documentClassType: DocumentClassType
 }
@@ -1202,6 +1244,13 @@ input TestRunInput {
   # configuration. Pinning is what makes two runs of the same profile
   # comparable: it records WHICH configuration produced each result.
   configRevision: Int
+  # Version of the test set's ground truth to score against. Omit for the set's
+  # current labels, INCLUDING any annotation in progress toward the next version —
+  # correcting documents and running to see the improvement is the expected loop.
+  # Pin a published version to score exactly the labels it preserved; like
+  # configRevision, that is what keeps two runs comparable once the ground truth
+  # has moved.
+  testSetVersion: Int
   # Optional explicit document list. Unlike numberOfFiles (the first N files of
   # the set) this names exactly which documents to process, which is what
   # labeling or re-labeling a subset needs.
@@ -1505,6 +1554,19 @@ type Mutation {
   # never discarded — the fields may no longer match their pages afterwards, which is
   # what the UI warns about while offering an opt-in re-extract.
   updateTestSetDocumentSections(input: UpdateTestSetDocumentSectionsInput!): TestSetDocumentSections
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  # Open the version transition that annotating a test set commits to, preserving the
+  # state being left. Idempotent: an already-open draft is returned unchanged.
+  #
+  # Annotating used to edit ground truth in place with nothing recording what it had
+  # been — and a version was a DynamoDB row that copied no objects, so a run stamped
+  # with a version number could not be reproduced against the labels it scored.
+  #
+  # Admin/Author/Annotator, matching the rest of the annotation queue: an annotator is
+  # the role that starts a session. Additionally scope-checked against allowedTestSets in
+  # the resolver, since group membership alone would let one annotator open a transition
+  # on a set they were never assigned.
+  openTestSetAnnotationDraft(input: OpenTestSetAnnotationDraftInput!): TestSetAnnotationDraft
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   sendTestRunToReview(testRunId: String!): SendTestRunToReviewResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])

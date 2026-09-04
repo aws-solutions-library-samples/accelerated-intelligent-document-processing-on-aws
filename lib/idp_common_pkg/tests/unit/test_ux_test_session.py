@@ -159,11 +159,11 @@ class TestStaleSweep:
             "Users": [
                 # Real operators, in every shape that might fool a prefix-only match.
                 {
-                    "Username": "jeremykf@amazon.com",
+                    "Username": "operator@example.com",
                     "UserCreateDate": "2020-01-01T00:00:00Z",
                 },
                 {
-                    "Username": "ux-test-lead@amazon.com",
+                    "Username": "ux-test-lead@example.com",
                     "UserCreateDate": "2020-01-01T00:00:00Z",
                 },
                 {
@@ -351,7 +351,7 @@ class TestFlowsFile:
             assert flow["priority"] in {"p0", "p1", "p2"}
 
     def test_at_least_one_p0_flow_covers_classification(self):
-        """The flow the customer found broken. If it ever drops out of the
+        """The flow that shipped broken for several versions. If it ever drops out of the
         starter set, that is a regression in what we bother to check."""
         flows = self._flows()
         p0_text = " ".join(

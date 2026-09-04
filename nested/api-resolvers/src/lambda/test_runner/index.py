@@ -160,10 +160,26 @@ def handler(event, context):
             config_table, effective_config_version, effective_config_revision
         )
 
-        # Pin the ground-truth version scored against (symmetric to ConfigVersion),
-        # so comparisons can separate config drift from ground-truth drift. None for
-        # test sets that were never published.
-        test_set_version = test_set.get("activeReference")
+        # Which labels this run is scored against. Default: the set's CURRENT labels,
+        # including any annotation in progress. Defaulting to the last published
+        # version instead made the ordinary loop — correct twenty documents, run, see
+        # the improvement — silently score the labels from before the corrections,
+        # while the review-effort panel invited exactly that loop. Pinning is explicit,
+        # as it is for the configuration revision above, and is what keeps two runs
+        # comparable once the ground truth has moved. The copier stages a pinned
+        # version's snapshot and the live baselines otherwise.
+        test_set_version = input_data.get("testSetVersion")
+        test_set_draft_version = None
+        if test_set_version is not None:
+            test_set_version = int(test_set_version)
+            latest_version = int(test_set.get("latestVersion") or 0)
+            if test_set_version < 1 or test_set_version > latest_version:
+                raise ValueError(
+                    f"testSetVersion {test_set_version} does not exist for test set "
+                    f"'{test_set_id}' (latest is {latest_version})"
+                )
+        elif test_set.get("draftVersion") is not None:
+            test_set_draft_version = int(test_set["draftVersion"])
 
         # Store initial test run metadata
         _store_test_run_metadata(
@@ -179,6 +195,7 @@ def handler(event, context):
             test_set_version,
             purpose=purpose,
             config_revision=effective_config_revision,
+            test_set_draft_version=test_set_draft_version,
         )
 
         # Send file copying job to SQS queue
@@ -225,6 +242,12 @@ def handler(event, context):
         # the exact revision the run says it scored.
         if effective_config_revision is not None:
             message_body["configRevision"] = int(effective_config_revision)
+        # The version this run scores against, so the copier stages that version's
+        # baseline snapshot rather than the set's current labels. Same reasoning as
+        # configVersion above: the run records what it scored against, so it has to read
+        # what it recorded.
+        if test_set_version is not None:
+            message_body["testSetVersion"] = int(test_set_version)
 
         # The copier must not stage baselines for a draft-labeling run: the baseline
         # is what the run is creating, so scoring against it would compare the
@@ -399,10 +422,7 @@ def _resolve_active_config_key(table):
         "FilterExpression": (
             "begins_with(Configuration, :config_prefix) AND IsActive = :active"
         ),
-        "ExpressionAttributeValues": {
-            ":config_prefix": "Config#",
-            ":active": True
-        },
+        "ExpressionAttributeValues": {":config_prefix": "Config#", ":active": True},
         "ProjectionExpression": "Configuration",
     }
     # Bounded: an unbounded paging loop spins forever if the table ever returns a
@@ -410,12 +430,12 @@ def _resolve_active_config_key(table):
     # table, which is far harder to diagnose than a wrong answer.
     for _ in range(_MAX_CONFIG_SCAN_PAGES):
         response = table.scan(**scan_kwargs)
-        for item in response.get('Items', []):
-            return item['Configuration']
-        last_key = response.get('LastEvaluatedKey')
-        if not last_key or last_key == scan_kwargs.get('ExclusiveStartKey'):
+        for item in response.get("Items", []):
+            return item["Configuration"]
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key or last_key == scan_kwargs.get("ExclusiveStartKey"):
             return None
-        scan_kwargs['ExclusiveStartKey'] = last_key
+        scan_kwargs["ExclusiveStartKey"] = last_key
     logger.warning(
         "No active config version found within %d scan pages; giving up",
         _MAX_CONFIG_SCAN_PAGES,
@@ -447,10 +467,13 @@ def _published_revision(config_table, config_version):
     """
     try:
         table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
-        item = table.get_item(
-            Key={"Configuration": f"Config#{config_version}"},
-            ProjectionExpression="PublishedRevision",
-        ).get("Item") or {}
+        item = (
+            table.get_item(
+                Key={"Configuration": f"Config#{config_version}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item")
+            or {}
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Could not resolve the published revision: {e}")
         return None
@@ -528,9 +551,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
             if not key:
                 logger.warning("No active config version found after a full scan")
                 return config
-        response = table.get_item(Key={'Configuration': key})
-        if 'Item' in response:
-            config['Config'] = _decompress_config_item(response['Item'])
+        response = table.get_item(Key={"Configuration": key})
+        if "Item" in response:
+            config["Config"] = _decompress_config_item(response["Item"])
         else:
             logger.warning(f"Config {key} not found")
 
@@ -553,6 +576,7 @@ def _store_test_run_metadata(
     test_set_version=None,
     purpose="scoring",
     config_revision=None,
+    test_set_draft_version=None,
 ):
     """Store test run metadata in tracking table"""
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
@@ -594,6 +618,10 @@ def _store_test_run_metadata(
 
         if test_set_version is not None:
             item["TestSetVersion"] = test_set_version
+        # Recorded when the run scored current labels while a transition was open,
+        # so the result can name the version those labels were heading toward.
+        if test_set_draft_version is not None:
+            item["TestSetDraftVersion"] = int(test_set_draft_version)
 
         # Recorded alongside TestSetVersion: together they make a metric delta
         # between two runs attributable to the configuration or the ground truth

@@ -68,8 +68,10 @@ export type AgentJobConnection = {
 };
 
 export type AnnotationQueue = {
+  baseVersion?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
   documents: Array<AnnotationQueueItem>;
+  draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
@@ -805,6 +807,7 @@ export type Mutation = {
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
   labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
+  openTestSetAnnotationDraft?: Maybe<TestSetAnnotationDraft>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   processChanges: ProcessChangesResponse;
@@ -1061,6 +1064,11 @@ export type MutationLabelConfigProfileRevisionArgs = {
   notes?: InputMaybe<Scalars['String']['input']>;
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
+};
+
+
+export type MutationOpenTestSetAnnotationDraftArgs = {
+  input: OpenTestSetAnnotationDraftInput;
 };
 
 
@@ -1372,6 +1380,10 @@ export type MutationUploadSampleDocumentArgs = {
   prefix?: InputMaybe<Scalars['String']['input']>;
   sampleId: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type OpenTestSetAnnotationDraftInput = {
+  testSetId: Scalars['String']['input'];
 };
 
 export type Page = {
@@ -2011,6 +2023,7 @@ export type TestRun = {
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];
   testRunId: Scalars['String']['output'];
+  testSetDraftVersion?: Maybe<Scalars['Int']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
   testSetName?: Maybe<Scalars['String']['output']>;
   testSetVersion?: Maybe<Scalars['Int']['output']>;
@@ -2031,6 +2044,7 @@ export type TestRunInput = {
   numberOfFiles?: InputMaybe<Scalars['Int']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
+  testSetVersion?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type TestRunStatus = {
@@ -2062,6 +2076,22 @@ export type TestSet = {
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+/**
+ * The version transition an annotation session commits to.
+ *
+ * `baseVersion` is the state being left, snapshotted to
+ * `{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+ * to whatever the labels happen to be later. `draftVersion` is what the session is working
+ * toward, and what the queue link carries so a link identifies its transition.
+ */
+export type TestSetAnnotationDraft = {
+  alreadyOpen?: Maybe<Scalars['Boolean']['output']>;
+  baseVersion: Scalars['Int']['output'];
+  draftVersion: Scalars['Int']['output'];
+  snapshotObjectCount?: Maybe<Scalars['Int']['output']>;
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetDocument = {
@@ -2120,6 +2150,7 @@ export type TestSetUploadInput = {
   documentClassType?: InputMaybe<DocumentClassType>;
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
+  name?: InputMaybe<Scalars['String']['input']>;
 };
 
 export type TestSetUploadResponse = {

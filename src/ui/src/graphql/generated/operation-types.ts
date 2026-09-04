@@ -68,8 +68,10 @@ export type AgentJobConnection = {
 };
 
 export type AnnotationQueue = {
+  baseVersion?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
   documents: Array<AnnotationQueueItem>;
+  draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
@@ -805,6 +807,7 @@ export type Mutation = {
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
   labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
+  openTestSetAnnotationDraft?: Maybe<TestSetAnnotationDraft>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   processChanges: ProcessChangesResponse;
@@ -1061,6 +1064,11 @@ export type MutationLabelConfigProfileRevisionArgs = {
   notes?: InputMaybe<Scalars['String']['input']>;
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
+};
+
+
+export type MutationOpenTestSetAnnotationDraftArgs = {
+  input: OpenTestSetAnnotationDraftInput;
 };
 
 
@@ -1372,6 +1380,10 @@ export type MutationUploadSampleDocumentArgs = {
   prefix?: InputMaybe<Scalars['String']['input']>;
   sampleId: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type OpenTestSetAnnotationDraftInput = {
+  testSetId: Scalars['String']['input'];
 };
 
 export type Page = {
@@ -2011,6 +2023,7 @@ export type TestRun = {
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];
   testRunId: Scalars['String']['output'];
+  testSetDraftVersion?: Maybe<Scalars['Int']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
   testSetName?: Maybe<Scalars['String']['output']>;
   testSetVersion?: Maybe<Scalars['Int']['output']>;
@@ -2031,6 +2044,7 @@ export type TestRunInput = {
   numberOfFiles?: InputMaybe<Scalars['Int']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
+  testSetVersion?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type TestRunStatus = {
@@ -2062,6 +2076,22 @@ export type TestSet = {
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+/**
+ * The version transition an annotation session commits to.
+ *
+ * `baseVersion` is the state being left, snapshotted to
+ * `{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+ * to whatever the labels happen to be later. `draftVersion` is what the session is working
+ * toward, and what the queue link carries so a link identifies its transition.
+ */
+export type TestSetAnnotationDraft = {
+  alreadyOpen?: Maybe<Scalars['Boolean']['output']>;
+  baseVersion: Scalars['Int']['output'];
+  draftVersion: Scalars['Int']['output'];
+  snapshotObjectCount?: Maybe<Scalars['Int']['output']>;
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetDocument = {
@@ -2120,6 +2150,7 @@ export type TestSetUploadInput = {
   documentClassType?: InputMaybe<DocumentClassType>;
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
+  name?: InputMaybe<Scalars['String']['input']>;
 };
 
 export type TestSetUploadResponse = {
@@ -2473,6 +2504,13 @@ export type LabelConfigProfileRevisionMutationVariables = Exact<{
 
 export type LabelConfigProfileRevisionMutation = { labelConfigProfileRevision?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
+export type OpenTestSetAnnotationDraftMutationVariables = Exact<{
+  input: OpenTestSetAnnotationDraftInput;
+}>;
+
+
+export type OpenTestSetAnnotationDraftMutation = { openTestSetAnnotationDraft?: { testSetId: string, baseVersion: number, draftVersion: number, snapshotObjectCount?: number | null, alreadyOpen?: boolean | null } | null };
+
 export type PauseCircuitBreakerMutationVariables = Exact<{
   reason: Scalars['String']['input'];
 }>;
@@ -2624,7 +2662,7 @@ export type StartTestRunMutationVariables = Exact<{
 }>;
 
 
-export type StartTestRunMutation = { startTestRun?: { testRunId: string, testSetName?: string | null, status: string, filesCount: number, createdAt?: string | null, configVersion?: string | null, configRevision?: number | null } | null };
+export type StartTestRunMutation = { startTestRun?: { testRunId: string, testSetName?: string | null, status: string, filesCount: number, createdAt?: string | null, configVersion?: string | null, configRevision?: number | null, testSetVersion?: number | null, testSetDraftVersion?: number | null } | null };
 
 export type SyncBdaIdpMutationVariables = Exact<{
   direction?: InputMaybe<Scalars['String']['input']>;
@@ -2792,7 +2830,7 @@ export type GetAnnotationQueueQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, claimedBy?: string | null, claimedByMe: boolean, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
 
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];
@@ -2929,7 +2967,7 @@ export type GetTestRunQueryVariables = Exact<{
 }>;
 
 
-export type GetTestRunQuery = { getTestRun?: { testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, completedFiles?: number | null, failedFiles?: number | null, overallAccuracy?: number | null, weightedOverallScores?: string | null, excludedDocumentCount?: number | null, averageConfidence?: number | null, confidenceMetrics?: string | null, accuracyBreakdown?: string | null, confusionMatrix?: string | null, fieldMetrics?: string | null, splitClassificationMetrics?: string | null, gradedPacketMetrics?: string | null, classificationErrors?: string | null, totalCost?: number | null, costBreakdown?: string | null, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, configVersion?: string | null, configRevision?: number | null, config?: string | null } | null };
+export type GetTestRunQuery = { getTestRun?: { testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, completedFiles?: number | null, failedFiles?: number | null, overallAccuracy?: number | null, weightedOverallScores?: string | null, excludedDocumentCount?: number | null, averageConfidence?: number | null, confidenceMetrics?: string | null, accuracyBreakdown?: string | null, confusionMatrix?: string | null, fieldMetrics?: string | null, splitClassificationMetrics?: string | null, gradedPacketMetrics?: string | null, classificationErrors?: string | null, totalCost?: number | null, costBreakdown?: string | null, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, configVersion?: string | null, configRevision?: number | null, testSetVersion?: number | null, testSetDraftVersion?: number | null, config?: string | null } | null };
 
 export type GetTestRunStatusQueryVariables = Exact<{
   testRunId: Scalars['String']['input'];
@@ -2945,7 +2983,7 @@ export type GetTestRunsQueryVariables = Exact<{
 }>;
 
 
-export type GetTestRunsQuery = { getTestRuns?: Array<{ testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, configVersion?: string | null, configRevision?: number | null } | null> | null };
+export type GetTestRunsQuery = { getTestRuns?: Array<{ testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, configVersion?: string | null, configRevision?: number | null, testSetVersion?: number | null, testSetDraftVersion?: number | null } | null> | null };
 
 export type GetTestSetDocumentsQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];
