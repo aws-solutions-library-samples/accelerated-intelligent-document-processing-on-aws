@@ -190,17 +190,19 @@ the same entry point the Test Studio UI uses. `numberOfFiles` takes the first N
 deterministically, so both arms see identical documents.
 
 ```bash
-# one profile per arm, derived from the corpus's own shipped config
-idp-cli config-upload --stack-name <STACK> --config-file <cfg-with-toggle>.yaml \
+# one config profile per arm, derived from each corpus's own shipped config and
+# differing ONLY in extraction.multi_instance_detection.enabled
+idp-cli config-upload --stack-name <STACK> --config-file mid-off-ocr.yaml \
     --config-profile mid-off-ocr --version-description "detection off"
-# launch: testSetId + configVersion + configRevision + numberOfFiles
-aws lambda invoke --function-name <STACK>-...-TestRunnerFunction-... \
-    --payload '{"arguments":{"input":{"testSetId":"ocr-benchmark",
-       "configVersion":"mid-off-ocr","configRevision":1,"numberOfFiles":40}}}' out.json
-# then compare per document
-idp-cli test-result --stack-name <STACK> --test-run-id <id>
-idp-cli test-compare --stack-name <STACK> --test-run-ids <off-id> <on-id>
+
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> launch --n 40 \
+    --pair ocr-benchmark:mid-off-ocr:mid-on-ocr \
+    --pair realkie-fcc-verified:mid-off-rk:mid-on-rk
+
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> analyse
 ```
+
+`idp-cli test-result` / `test-compare` give the same runs' reports interactively.
 
 Accuracy per document is `overall_metrics.weighted_overall_score` from each
 document's own `evaluation/results.json`; the detection verdict is the presence of
