@@ -122,6 +122,38 @@ them by `$id` (falling back to `x-aws-idp-document-type`), and inserts each newl
 discovered class — overwriting only a class with the same identifier. It never
 deletes classes the user curated.
 
+### Re-discovering an existing class preserves its authored settings
+
+Overwriting a class with the same identifier is a **merge**, not an assignment.
+`_merge_and_save_class()` calls
+`idp_common.config.class_settings.carry_forward_authored_settings()`, which copies
+onto the discovered class every class-level key the discovery response did not
+itself contain — the discovery LLM only ever emits `$id`,
+`x-aws-idp-document-type` and `properties`, so this is what keeps class-level
+model pins, prompt overrides, confidence thresholds, classification regexes,
+page-type routing, few-shot `x-aws-idp-examples` and
+`x-aws-idp-multi-instance` / `-instance-array` alive across a re-run.
+
+- The rule is *preserve anything the generator did not emit*, deliberately not a
+  list of keys to keep: a deny-list stops covering extension keys added after it
+  was written.
+- Keys the caller synthesized rather than received from the model are passed in
+  `synthesized` and lose to an authored value. `_normalize_class_id()` returns
+  that set — it derives `description` from an id it had to rename, which must not
+  overwrite a description the author wrote.
+- The stale-id path carries settings across a rename before deleting the old
+  entry, so normalizing `Task cards` → `Task-cards` does not double as a reset.
+- Scope is class-level. Keys inside `properties` (per-attribute
+  `x-aws-idp-evaluation-method` / `-evaluation-threshold`) are replaced with the
+  property, because a re-derived attribute can change type and a stale evaluation
+  method on it can be worse than none.
+- A setting discovery *does* replace is logged as a `WARNING` naming the key, so
+  the change is visible at write time rather than in the next inference.
+
+`bda/blueprint_optimizer.py::_apply_optimized_schema` uses the same helper, for
+the same reason: the BDA→IDP transform emits no `x-aws-idp-*` authoring keys, so
+saving its output straight over the existing class erased them.
+
 The UI's **Save mode** selector controls whether the target version's schema is
 cleared *before* discovery runs:
 

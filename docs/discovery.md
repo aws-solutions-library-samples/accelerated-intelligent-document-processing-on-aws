@@ -767,8 +767,12 @@ discovery:
    settings and existing document classes from a chosen source profile)
 4. Choose a **Save mode**:
    - **Add to existing schema** (default) — keeps the profile's existing document
-     classes and adds/updates the discovered ones (a discovered class with the
-     same name overwrites the existing one)
+     classes and adds/updates the discovered ones. A discovered class with the
+     same name has its **properties** replaced by what discovery found, while
+     the class-level settings you configured on it (extraction model, prompts,
+     confidence thresholds, classification regexes, multi-instance, few-shot
+     examples) are **preserved** — see
+     [Re-discovering a class you have configured](#re-discovering-a-class-you-have-configured)
    - **Replace existing schema** — removes all existing document classes in the
      selected profile first, then saves only the newly discovered ones. For
      multi-section discovery, the schema is cleared once before the batch runs,
@@ -925,6 +929,45 @@ Notes:
   that derive resource names from the class id.
 - The Web UI's Schema Builder enforces the same character set when you author or
   edit a class by hand.
+
+### Re-discovering a class you have configured
+
+Running Discovery again on a document class that already exists in the target
+configuration profile **updates the class's properties and keeps its class-level
+settings**. Discovery owns what it produces — the property list, and the class id
+when there was none. Everything else you configured on that class in the Schema
+Designer or in YAML is carried forward:
+
+| Setting | Kept across re-discovery |
+|---|---|
+| `x-aws-idp-extraction-model`, `-extraction-escalation-model` | ✅ |
+| `x-aws-idp-extraction-system-prompt`, `-extraction-task-prompt` | ✅ |
+| `x-aws-idp-confidence-threshold`, `-confidence-escalation-model` | ✅ |
+| `x-aws-idp-document-name-regex`, `-document-page-content-regex` | ✅ |
+| `x-aws-idp-page-types`, `-source-page-types` | ✅ |
+| `x-aws-idp-exclude-from-processing`, `-exclusion-reason` | ✅ |
+| `x-aws-idp-examples` (few-shot) | ✅ |
+| `x-aws-idp-multi-instance`, `-instance-array` | ✅ |
+| `description` you wrote yourself | ✅ |
+| `properties` (the fields and their descriptions) | ❌ — replaced by what discovery found |
+| Per-**property** `x-aws-idp-evaluation-method` / `-evaluation-threshold` | ❌ — replaced with the property |
+
+The rule is "preserve anything discovery did not produce", so a class-level
+setting added in a future release is covered without changing this list. If
+discovery does replace a setting, it is logged at write time (a `WARNING` naming
+the key) rather than only becoming visible in the next document processed.
+
+Two consequences worth knowing:
+
+- **Per-attribute** evaluation settings are not preserved, because a
+  re-discovered attribute can legitimately come back with a different type and a
+  stale evaluation method on it can score worse than none. Re-apply those after a
+  re-discovery, or use **Replace existing schema** deliberately.
+- Normalizing a class id (`Task cards` → `Task-cards`) carries the old entry's
+  settings across the rename, so repairing an id does not reset the class.
+
+Use **Replace existing schema** when you *want* a clean rebuild — it removes the
+profile's document classes first, so nothing is carried forward.
 
 ## BDA Integration
 

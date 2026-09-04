@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Set, Tuple, cast
 
 import jsonschema
 from jsonschema import Draft202012Validator
@@ -14,6 +14,7 @@ from idp_common import bedrock, image
 from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.class_names import is_valid_class_name, sanitize_class_name
+from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
 from idp_common.utils.s3util import S3Util
@@ -478,7 +479,8 @@ class ClassesDiscovery:
 
         Steps:
         1. Read existing classes from the target version
-        2. Add/update the new discovered class (deduplicate by $id)
+        2. Add/update the new discovered class (deduplicate by $id), carrying
+           forward any class-level setting discovery did not itself produce
         3. Save back to the target version
 
         Args:
@@ -491,7 +493,7 @@ class ClassesDiscovery:
         # must match [a-zA-Z0-9-_]+), where an invalid character fails the call
         # rather than degrading. Prompt instructions are guidance; this is the
         # guarantee.
-        self._normalize_class_id(new_class)
+        synthesized = self._normalize_class_id(new_class)
 
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
@@ -529,13 +531,25 @@ class ClassesDiscovery:
                 if cls_id != new_class_id
                 and sanitize_class_name(cls_id) == new_class_id
             ]
+            existing_class = classes_by_id.get(new_class_id)
             for stale_id in stale_ids:
                 logger.info(
                     "Replacing existing class %r with its normalized id %r.",
                     stale_id,
                     new_class_id,
                 )
+                # The un-normalized entry IS this class, so its authored
+                # settings must be carried forward too — otherwise the
+                # rename doubles as a silent reset.
+                if existing_class is None:
+                    existing_class = classes_by_id[stale_id]
                 del classes_by_id[stale_id]
+
+            if existing_class is not None:
+                # Discovery owns `properties` and the keys it emits; every
+                # other class-level setting on the existing class was authored
+                # by a human and used to be erased here without a trace.
+                carry_forward_authored_settings(existing_class, new_class, synthesized)
 
             classes_by_id[new_class_id] = new_class
 
@@ -550,17 +564,21 @@ class ClassesDiscovery:
         )
 
     @staticmethod
-    def _normalize_class_id(new_class: Dict[str, Any]) -> None:
+    def _normalize_class_id(new_class: Dict[str, Any]) -> Set[str]:
         """Rewrite a discovered class's id in place to a portable form.
 
         Both ``$id`` and ``x-aws-idp-document-type`` are normalized so they
         stay equal to each other; the original text is kept in ``description``
         (when the class has none) so the human-readable name is not lost.
         A class id that is already valid is left untouched.
+
+        Returns the keys this method filled in itself. They are not discovery
+        output, so ``_carry_forward_authored_settings`` lets an existing
+        authored value override them.
         """
         original = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
         if not original or is_valid_class_name(original):
-            return
+            return set()
 
         sanitized = sanitize_class_name(original)
         if not sanitized:
@@ -573,7 +591,7 @@ class ClassesDiscovery:
                 "(e.g. BDA sync).",
                 original,
             )
-            return
+            return set()
 
         logger.info(
             "Renaming discovered class %r to %r so it is usable by downstream "
@@ -587,6 +605,8 @@ class ClassesDiscovery:
             new_class["x-aws-idp-document-type"] = sanitized
         if not new_class.get("description"):
             new_class["description"] = original
+            return {"description"}
+        return set()
 
     @staticmethod
     def _extract_json(text: str) -> str:
