@@ -426,6 +426,160 @@ components/
     └── index.js
 ```
 
+## Lifecycle flows: online vs offline paths
+
+Test Studio has two subsystems: **test-set management** (creating, updating,
+and validating the folder of documents you run against) and **test-run
+management** (starting a run, tracking it, and aggregating its metrics).
+Each has an **online** path (the user is in the UI and the UI drives every
+transition through GraphQL) and an **offline** path (something happens
+outside the UI — a direct S3 edit, or a CLI command — and the workflow has
+to catch up later).
+
+The two paths are not equivalent. What advances *without* a user watching
+is worth knowing.
+
+### 1. Test-set management
+
+**1a. Online — created and managed from the UI**
+
+```mermaid
+flowchart LR
+    User([User in Test Studio]) --> UI[UI TestSets page]
+    UI -->|"Create test set → Upload zip"| Zip["S3 ObjectCreated<br/>(.zip filter)"]
+    UI -->|"Add documents → From bucket"| SQS[SQS TestSetFileCopyQueue]
+    UI -->|"3s fast poll<br/>60s discovery poll<br/>Refresh button"| Resolver{{"getTestSets<br/>resolver"}}
+
+    Zip --> ZipLambda[TestSetZipExtractor]
+    SQS --> Copier[TestSetFileCopier]
+    ZipLambda -->|"write files + <br/>put_item"| Both[(TestSetBucket +<br/>TrackingTable)]
+    Copier -->|"copy files + <br/>update_item"| Both
+    Resolver -->|"reconcile row"| Both
+```
+
+Every write into DDB happens through a Lambda that the UI triggered directly
+(zip upload, add-documents), or through the `getTestSets` resolver the UI
+polls. There is no gap: the row is authoritative and current the moment the
+UI shows it, because the UI's own actions caused the writes.
+
+**1b. Offline — someone edited S3 directly**
+
+```mermaid
+flowchart LR
+    Actor([User or CLI]) -->|"aws s3 cp<br/>into <prefix>/input/<br/>or <prefix>/baseline/"| Bucket[(TestSetBucket)]
+    Bucket -. no S3 event<br/>no schedule .-> Nothing((nothing fires))
+    Bucket -. row is stale<br/>until next getTestSets .-> DDB[(TrackingTable)]
+
+    NextCall{{Next getTestSets call<br/>UI poll / Refresh / CLI auto-detect}} --> Resolver[Reconcile<br/>_reconcile_test_set_tracking_entry]
+    Resolver -->|"if signature changed:<br/>update fileCount / status /<br/>error / updatedAt"| DDB
+    Resolver -->|"if new folder:<br/>put_item"| DDB
+    Resolver -->|"if S3 prefix gone:<br/>delete_item"| DDB
+```
+
+Nothing fires when the S3 object appears — the bucket's only event notification
+is `.zip` → `TestSetZipExtractor`, and a raw `input/` or `baseline/` write
+matches nothing. The DDB row **is stale** until the next `getTestSets` call,
+whoever makes it: a UI page load, the fast/discovery polls, the Refresh
+button, or `idp-cli run-inference` (which invokes the resolver before every
+run for auto-detect).
+
+That resolver call is what runs the reconcile — new folder gets registered,
+existing folder gets `fileCount`/`status`/`error` refreshed, and a folder
+that has been deleted from S3 gets its row removed. A `contentSignature`
+short-circuit means unchanged folders cost no DDB write.
+
+**Latency caveat.** Each Lambda container memoizes a per-prefix TTL (30 s
+by default) so the UI's 3 s fast poll doesn't repeat two paginated
+`list_objects_v2` calls per registered set every tick. **The TTL is
+server-side and Refresh does not bypass it** — after a direct-S3 add, the
+UI can show a stale `fileCount` for up to 30 s. In practice the discovery
+poll and any second-tab reload land inside the window, so the delay is
+usually invisible; if you're staring at the row after a manual S3 write
+and want the new count immediately, wait one TTL and try again.
+
+### 2. Test-run management
+
+**2a. Online — started from Test Studio**
+
+```mermaid
+flowchart LR
+    User([User in Test Studio]) -->|"Start Test Run"| Runner[TestRunnerFunction]
+    Runner -->|"put_item testrun#<br/>Status=QUEUED"| RunDDB[(TrackingTable)]
+    Runner --> WF[Document processing workflow]
+    WF -->|"docs finish"| RunDDB
+
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll --> AggQ[SQS aggregation queue]
+    AggQ --> Agg[Metrics aggregation Lambda]
+    Agg -->|"write testRunResult"| RunDDB
+    RunDDB -->|"next poll ⇒<br/>badge clears"| UI[UI]
+```
+
+The tab that started the run stays on Test Studio, so the 5-second
+`getTestRunStatus` poll runs against the row. When the workflow finishes and
+every document has terminated, that poll — **not** the workflow — transitions
+`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
+transitions happen in real time while the user watches.
+
+**2b. Offline — started from the CLI (`idp-cli run-inference`)**
+
+```mermaid
+flowchart LR
+    CLI([idp-cli run-inference]) -->|"direct Lambda invoke"| Runner[TestRunnerFunction]
+    Runner -->|"put_item testrun#<br/>Status=QUEUED"| RunDDB[(TrackingTable)]
+    Runner --> WF[Document processing workflow]
+    WF -->|"docs finish"| RunDDB
+    CLI -. exits .-> Nothing((no poller))
+
+    WF -. no event / no rule .-> Gap[/"Status stays QUEUED<br/>testRunResult never written"/]
+
+    Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
+    UI -->|"per-row getTestRunStatus poll"| RunDDB
+    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    AggQ --> Agg[Aggregation]
+    Agg -->|"write testRunResult"| RunDDB
+    RunDDB -.->|"badge clears"| UI
+```
+
+The CLI creates the run and walks away. The workflow processes every
+document, but **nothing writes to the aggregate `testrun#` row** — Test
+Studio has no event listener, no scheduled Lambda, and no completion hook
+that transitions the run. `Status` stays at `QUEUED` and `testRunResult`
+never appears, so the row's UI display sits at `EVALUATING` until a person
+opens Test Studio.
+
+When that finally happens, the Executions page mounts, the per-row
+`getTestRunStatus` poll fires against every non-terminal row, and each one
+does the deferred transition + aggregation enqueue in turn. That is why a
+hands-off CLI loop that produces test runs while no one is watching shows a
+wall of `EVALUATING` badges the next time an operator logs in — they clear
+over the next few minutes as aggregation catches up. It is a design choice
+(the alternative was to fan out multi-minute Lambda invocations on every
+Executions page load), not a defect.
+
+If truly no-UI-needed catch-up is required, a Test-Studio-side completion
+listener could enqueue into the aggregation queue directly. That is not
+shipped today.
+
+### Where a run's documents appear
+
+A run copies its inputs into the input bucket under a `{test_run_id}/` prefix, so
+each one becomes a first-class document with its own status, confidence alerts and
+cost — that is the point, since it makes a test run's numbers comparable to real
+traffic. It also means the tracking table fills with documents nobody uploaded, so
+the copier tags them (`submission-source` / `test-set-id` S3 object metadata) and
+they are recorded under `ItemType = test-document` instead of `document` — a
+separate `TypeDateIndex` partition, not a filter.
+
+The consequence for day-to-day use: **test-run documents do not appear in the
+Document List's default Production view.** Switch the **Production / Test Studio**
+control beside the search box to see them, with a **Test Run** column linking back
+to the run's results (see [web-ui.md](web-ui.md#production-vs-test-studio-documents)).
+Their mutating actions are held there deliberately — reprocessing or deleting a
+document a run was scored against invalidates that run's metrics and the confidence
+calibration derived from them, so rerun or delete from **Test Executions** instead.
+
 ## Test Sets
 
 ### Creating Test Sets
@@ -590,6 +744,12 @@ follows.
 
 ### Publishing a version
 
+> **Terminology.** A test set *version* is a published snapshot of the set's
+> documents and labels. A Configuration Profile *revision* is a snapshot of a
+> configuration, and the **Edit history** tab is a log of label edits — three
+> different things. See the
+> [terminology table](configuration-profiles.md#terminology-which-word-means-what).
+
 Select a COMPLETED test set and click **Publish version**. This freezes the
 current document and label state into a numbered version (`v1`, `v2`, …) and, by
 default, marks it the **active reference** — the version that test runs record
@@ -607,22 +767,35 @@ active-reference pointer only ever moves forward.
 
 ### Run pinning
 
-When a test run starts, it records the test set's active reference alongside the
-configuration version it captured. This is symmetric to config pinning and
-makes results interpretable later: comparing two runs, you can tell whether a
-metric moved because the *configuration* changed or because the *ground truth*
-did. A run against a never-published test set records no version.
+A test run scores against the set's **current labels** by default — including any
+annotation in progress toward the next version. That is the loop the review-effort
+panel invites: correct twenty documents, run, see the improvement. A run started that
+way records `testSetDraftVersion` when a transition was open, so its result can say
+"current labels, draft toward v2" rather than nothing.
 
-> **Storage caveat (known limitation).** A published version snapshots the test
-> set's *metadata* — document count, source, label state, config version — not
-> the document and label **bytes**. All versions share the one `baseline/`
-> prefix, so editing ground truth in the working draft also changes what an
-> already-published version resolves to. True byte-level immutability requires
-> either an S3 object-version manifest per published version or copying content
-> on publish; the choice is coupled to the `DataRetentionInDays` retention
-> setting and is not yet implemented.
+To score exactly the labels a published version preserved, pick that version under
+**Test set version** on the run form. The run records it as `testSetVersion`, and the
+file copier stages that version's snapshot (`{testSetId}/versions/{n}/baseline/`)
+rather than the live baselines. This is the counterpart of pinning a configuration
+revision, and for the same reason: two runs are comparable only when both name what
+they measured against, so a metric delta can be attributed to the configuration or to
+the ground truth rather than left ambiguous.
+
+> **Storage.** Every version transition copies the set's whole baseline tree under
+> `versions/{n}/baseline/`, and nothing prunes old versions; deleting the test set
+> removes them all. For a 2000-document set that is a full copy of its labels per
+> version — cheap in absolute terms, but it grows with every publish.
 
 ## Draft labeling: unlabeled documents → ground truth
+
+
+The **Generate draft labels** dialog pages through the set independently of the
+document list behind it, and a selection is kept as you page. Leaving *Extract
+labels for every document that needs them* checked covers the whole set — the
+server decides the scope, so no count from a single page is involved. Paging
+offers one page at a time rather than jumping to an arbitrary page, because the
+underlying listing is token-based and page N's position is only known once N-1
+has been read.
 
 Creating a test set normally requires ground truth up front, which is the
 expensive part. Draft labeling inverts that: upload documents **only**, run the
@@ -645,7 +818,8 @@ labels are produced the same way as the ones a real evaluation reports, rather
 than by a parallel code path that could drift.
 
 By default the job labels every document in the set using the deployment's
-active configuration; you can specify a different configuration version.
+active configuration; you can specify a different Configuration Profile, and a
+specific revision of it.
 
 ### Label provenance
 
@@ -681,6 +855,21 @@ applies to the current page (document listing is paginated server-side).
 Reviewing a draft label is the same **Edit Ground Truth** flow described above;
 saving flips the label to *Reviewed (human)*. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
+
+**A field you edit stops carrying the model's confidence.** The score describes
+the value the model produced, so once you have replaced that value it says nothing
+about what is on screen. An edited field shows *"Edited — the model's confidence no
+longer applies"* in place of the percentage, and its provenance label changes from
+*Predicted:* to *Your value:*. Suppression is per field: correcting one field does
+not hide the confidence of the others.
+
+**Leaving the editor with unsaved edits prompts first.** This covers in-app
+navigation as well as closing the tab — clicking a nav link with corrections
+pending used to discard them silently.
+
+Each field also carries a **Show &lt;field&gt; on the page** button, which highlights
+where the value was read from. That was previously available only by clicking the
+field, with no visible affordance and no keyboard equivalent.
 
 ## How much review is enough?
 
@@ -718,9 +907,25 @@ The curve comes from three sources of increasing fidelity:
    *whole* confidence range, including the high-confidence documents review never
    opens. This is the only source that can fully validate the estimate.
 
-Curves are kept per **configuration version**, because confidence means
-different things across models and prompts — a curve measured under one config is
-not reused after a change that shifts those semantics.
+Curves are stored per **Configuration Profile**, because confidence means
+different things across models and prompts.
+
+> **Known limitation: the estimate currently reads one curve per test set, not one
+> per configuration.** Observations *are* recorded per profile, but the estimate
+> reads the set's combined curve, so it blends observations from every
+> configuration the set has been labeled or scored under. Revisions of a profile
+> also share a curve, which is right for a prompt tweak and wrong after a model
+> swap. The practical consequence: **after changing a profile's extraction model or
+> assessment configuration, treat that set's review-effort estimate as unreliable
+> until fresh observations accumulate** — the number is measured, but partly under
+> configurations that no longer exist. `estimateConfidence` will not warn you about
+> this, because the curve it describes is genuinely populated.
+>
+> Every revision already records a *confidence fingerprint* (a hash of the
+> confidence-relevant configuration — extraction model and sampling parameters,
+> assessment settings), which is what a future release will key curves on. There is
+> no supported way to reset a curve in the meantime; the most reliable reset is a
+> new test set.
 
 ### Every estimate states how much to trust it
 
@@ -858,12 +1063,46 @@ whatever class the pipeline decided each document was. When that decision is
 wrong, correcting it is two steps rather than one: the class *and* the fields
 underneath it, which were extracted against the wrong schema.
 
+Each document in the queue shows the class it was assigned. That is there so a
+reviewer can notice a wrong one while working the list — it is the only column
+that can reveal it. A document extracted against the wrong schema is often
+*confidently* wrong, so its confidence and alert count look entirely normal, and
+worst-first ordering therefore puts it last.
+
+The class is **shown, not scored.** Nothing in the queue can tell whether a class
+is wrong: the draft under review is itself the candidate ground truth, so there is
+nothing to compare it against, and classification carries no meaningful
+confidence. It is deliberately excluded from the queue ordering and from the
+review-effort estimator, whose alert counts and confidence curve are defined in
+terms of *field* confidence — folding a different kind of signal into that number
+would double-count and corrupt the calibration the estimate depends on.
+
+To find misclassifications *measured against a baseline*, use the
+[Classification errors](#finding-classification-errors) panel on a test run.
+
+
 In the editor, **Class label** is a dropdown of the classes defined by the config
 version that produced these labels — not the deployment's currently active
-configuration, which may have moved on since. Choosing a different class offers
+configuration, which may have moved on since. A badge above the fields always
+names which config the list came from, and says so explicitly when it is a
+fallback ("… (active config)", "built-in default"), because a list of classes
+from the wrong config looks exactly like a list of classes from the right one.
+
+The order is: the config stamped on the baseline; failing that the test set's own
+declared version; failing that the deployment's **active** config. Hand-uploaded
+and synthetic ground truth carries no stamp — nothing produced it through the
+pipeline — so those sets fall to the active config rather than to the built-in
+preset. Choosing a different class offers
 **Change class & re-extract**, which re-runs that one document and waits for the
 new labels before returning, so you are never left looking at fields from the
 previous class.
+
+The corrected class is sent into the re-run itself, not merely written onto the
+existing labels: the document is re-processed with classification **skipped** and
+your chosen class applied to every page, so extraction genuinely runs against that
+class's schema. (Writing it onto the labels alone does not work — the run
+classifies from the source document and would re-derive the class you just
+corrected.)
 
 Two consequences worth knowing:
 
@@ -878,11 +1117,155 @@ Two consequences worth knowing:
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
 
-### Revision history
+To find *which* documents need this, use the
+[Classification errors](#finding-classification-errors) panel on a test run
+rather than hunting through the queue — a misclassified document often raises few
+confidence alerts and so sorts low in worst-first order.
+
+### Correcting a wrong packet split
+
+A packet is split into sections before anything is extracted, and the split can be
+wrong: pages grouped into the wrong section, a section that should be two, two that
+should be one. That grouping **is** ground truth — `split_document.page_indices` is
+what the doc-split metrics score classification against — so a wrong split makes the
+classification ground truth wrong, not merely untidy.
+
+**Edit page grouping**, beside the section selector at the top of the document, opens a
+board with every section side by side and each page as a thumbnail. It sits with the
+section pills rather than down among the extracted fields because it changes the
+document's structure, not one section's values. (**Pages in this section**, in the field
+list below, stays as a read-only record of which pages the open section covers.)
+
+Drag a page from one section to another, or use its **Move to section**
+menu, which is the keyboard and screen-reader route to the same operation. A page's menu
+also offers **View full page**, since a thumbnail is often too small to tell one document
+type from another and the grouping decision depends on reading the page. Select several
+pages first — shift-click extends over document order — and they move together, which
+is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
+one.
+
+#### Page order within a section
+
+A section's pages are **ordered**, and the order is ground truth in its own right, not a
+display detail. Two metrics read it: **Document Split Accuracy (With Page Order)**
+compares the page lists exactly, and the graded packet score is half a page-ordering
+score. So a packet whose pages were assembled out of reading order needs that recorded,
+or the pipeline is scored against the wrong answer.
+
+Drop a page **onto another page** to place it immediately before that one — within a
+section or coming from another. Dropping onto the column's empty space instead puts the
+page where document order says it belongs, which is what an ordinary move wants, so
+correcting a split does not silently invent a custom order. Without a pointer, use
+**Order within this section → Move earlier / Move later**.
+
+A section whose pages are not in document order is marked **Custom page order**, so it
+reads as deliberate rather than as a glitch, and that column gets a button to put it back
+into document order. Only the section you ask for is re-sorted.
+
+Saving preserves the order exactly as shown — including when you only came to change a
+section's class.
+
+**Your field values are kept.** This is the whole point of the feature. Saving a new
+grouping writes the page grouping and the class and nothing else: extracted values,
+their **Reviewed (human)** provenance and the edit history all survive. Those values
+were extracted from a different set of pages, so they may no longer match — the
+warning afterwards names the sections that moved so you know which to check, and
+**Change class & re-extract** is there if you would rather the model redo one. It is
+never done for you, because re-extraction is exactly the annotation loss this exists
+to avoid.
+
+A few rules the board enforces, all for the same reason — a packet split is a
+**partition**, and ground truth that breaks that is worse than none:
+
+- Every page must belong to exactly one section. A page in none would assert, as
+  ground truth, that the page is not part of the document.
+- A section with no pages blocks the save rather than disappearing. Deleting a section
+  discards its field values, so it stays a deliberate act: drag the pages out, then
+  delete it.
+- A page the split had dropped entirely **can** be added. That is precisely the defect
+  a reviewer is here to fix, so it is allowed in.
+
+Sections are renumbered so their ids follow page order. Several consumers take a
+section's group index from its position in a list, and nothing otherwise guarantees
+that list is in page order, so making ids agree with it removes the ambiguity.
+
+Non-contiguous sections are supported, because the pipeline can produce them.
+
+Annotators can do this within their assigned sets, scope-checked per test set like
+every other annotation operation.
+
+The same board is available on a processed document, from **Document Sections** in
+the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+for the one difference that matters there.
+
+### A section with no field values
+
+A section can legitimately have nothing extracted, and the editor says which of three
+things happened rather than showing an empty form:
+
+- **No document class.** With no class there is no schema, so extraction had nothing to
+  extract against. This is the actionable one: set the class first — re-extracting before
+  that produces nothing. A section in this state is marked **(no class)** in its tab. It
+  often means the packet split is wrong and the pages belong with a neighbouring section,
+  which **Edit page grouping** can merge.
+- **Extraction ran and produced nothing**, on a section that does have a class.
+- **A section added by re-grouping**, which starts with no values because nothing has
+  extracted those pages as a group yet.
+
+Section tabs name each section's class, so the one that is missing a class is visible
+without opening each tab in turn.
+
+### Annotating creates a new version of the set
+
+Correcting ground truth changes what every previously-scored run was measured against, so
+starting an annotation session is an explicit step: **Start annotating** opens a *version
+transition*, shown in the header as e.g. `v1 → v2`.
+
+Agreeing to it is what preserves the labels you are moving away from. The set's current
+baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
+bytes it meant when a run scored against it. A set that arrived with its own ground truth
+and was never published gets that state captured first as `v1` — without
+it, the labels a set was uploaded with are exactly the ones overwritten with no record of
+what they were.
+
+Until the transition is open the editor is read-only. You can read every document and its
+labels; you cannot change them. That ordering is the point: editing first and versioning
+afterwards would record what the labels *became*, not what they were.
+
+**Copy queue link** includes the transition (`?v=2`). A link from a transition that has
+since been published still works — the set is still annotatable — but the workspace says
+the link is out of date and names the current transition, so nobody spends an afternoon
+believing they are adding to a version that already shipped.
+
+Publishing a version closes the transition. The next session opens the next one.
+
+### Asking someone about one field
+
+Some values cannot be settled by whoever is reviewing — the reviewer may not know
+what a particular reference number means on the documents at hand. Clicking a
+field reveals **Copy link to field**, which produces a URL that opens the same
+document with that field selected and scrolled into view. Paste it into a chat message or
+a ticket to ask for a second opinion.
+
+The link is just navigation: the recipient's access is still checked on arrival,
+so sharing one with someone who has no access to that test set grants them
+nothing. Annotators see only their assigned sets either way.
+
+This is deliberately a link rather than a formal escalation queue. Routing a
+question to a designated subject-matter expert assumes an organisation structured
+that way, and adds a workflow to maintain; a URL works for any team that already
+has a chat tool, and the reviewer keeps ownership of the document.
+
+### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Revision History** tab — the same tab, and the same view, as the
+and use the **Edit history** tab — the same tab, and the same view, as the
 document detail editor in the main app.
+
+> Not to be confused with a Configuration Profile **revision**, which is an
+> immutable numbered snapshot of a *configuration*. This is a log of edits to
+> *labels*. See the terminology table in
+> [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
 
 Confirming labels with no edits is recorded too: the sign-off is itself the
 auditable event. The history lives inside the label, so it travels with a published
@@ -922,13 +1305,16 @@ be able to discard the team's annotation work.
 7. View results in integrated listing
 
 ### Configuration Versioning
-The Test Studio supports running tests with specific configuration versions:
-- **Version Selection**: Choose from available configuration versions (e.g., `default`, `Production`, `v1`)
-- **Version Tracking**: Test results display which configuration version was used
-- **Version Comparison**: Compare test runs across different configuration versions
+The Test Studio supports running tests with specific Configuration Profiles and
+revisions:
+- **Profile selection**: Choose from available Configuration Profiles (e.g., `default`, `Production`, `lending`)
+- **Revision selection**: Pin an exact revision of that profile, or leave it on **Current**. The picker appears only when the profile has revision history.
+- **Tracking**: Each run records both the profile and the pinned revision, shown in the run list, results, comparison view, and exports
+- **Comparison**: Compare two runs of the *same* profile at different revisions — this is how you tell "the prompt change helped" from "the ground truth moved", because each run also pins the test-set version it scored against
+- **Retention**: A revision pinned by a run is exempt from revision pruning, so a comparison stays readable later
 - **Context Generation**: Test context automatically includes the selected version information
 
-For full details on configuration versioning, see [configuration-versions.md](configuration-versions.md).
+For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Test States
 - **QUEUED**: File copying jobs queued in SQS
@@ -991,6 +1377,8 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
     - Split Accuracy With Order (average across documents)  
     - Total Pages, Total Splits (sums across documents)
     - Correctly Classified Pages, Correctly Split counts (sums across documents)
+  - **Classification errors**: which documents were misclassified and as what (see
+    [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
 - Side-by-side test comparison with all metrics including configuration versions
 - Export capabilities (JSON/CSV downloads include all metrics)
@@ -1000,8 +1388,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The Visual
-Editor's **Show Evaluation** toggle compares the section's class alongside its
-fields. Check the class before reading the extraction scores: a misclassified
+Editor ("View Data") shows the section's class comparison as soon as it opens,
+without needing the **Show Evaluation** toggle, which adds the per-field
+comparison. Check the class before reading the extraction scores: a misclassified
 page was extracted against the wrong schema, so its low score is a symptom
 rather than the cause. See
 [Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
@@ -1084,6 +1473,44 @@ always includes the `gradedPacketMetrics` key — `{}` when a run legitimately
 has no graded metrics, e.g. single-section documents — a run is re-queued at
 most once and never loops.
 
+### Finding classification errors
+
+Split accuracy tells you *how often* classification was right. The
+**Classification errors** panel tells you *which documents* were wrong and what
+they were confused for, so the number is actionable without opening each
+document's evaluation report.
+
+This matters more than the percentage suggests. Extraction runs against the
+schema of the class a document was assigned, so a wrong class makes every field
+for that document unreliable — including fields that look perfectly plausible,
+because the model filled in the wrong schema competently. Worse, a misclassified
+document can be *confidently* wrong, which means it raises few confidence alerts
+and therefore ranks **low priority** in the annotation queue's worst-first order.
+Without this panel it is the failure most likely to go unnoticed.
+
+Three kinds are distinguished, because they call for different fixes:
+
+| Issue | Meaning | What to do |
+|---|---|---|
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **No matching section** | The ground truth expects a section that no predicted section matched. | A *splitting* problem, not a labelling one — look at classification granularity rather than the class list. |
+| **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
+
+Each row links into the annotation queue for that document, which is where the
+class is corrected — see
+[Correcting a misclassified document](#correcting-a-misclassified-document).
+
+**Two limits worth knowing:**
+
+- The list is **capped** (200 entries), because a run's whole result set is stored
+  as a single record. Wrong-class errors sort first so a run full of page-order
+  differences cannot crowd them out, and the panel states the true total when it
+  truncates — "Showing the first 200 of 340".
+- Runs evaluated **before this shipped** show no panel until they re-aggregate,
+  which happens automatically the first time you open their results. Runs
+  aggregated through the Athena fallback path have the percentages but not the
+  per-section detail.
+
 ### Field-Level Metrics
 
 Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
@@ -1130,6 +1557,32 @@ would suggest 76%; the interval is asymmetric near the ends, which is exactly wh
 tooltip shows the bounds.)
 Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
 about how much evidence there is, not a defect in the field.
+
+**A set can move *into* "Not rated" as you review it, and that is the estimator
+working.** With no measurements the tier is inferred from a cross-set prior, which
+can read as high as Gold. Reviewing documents produces the evidence needed to test
+whether confidence actually *ranks* correctness on this set — and if it does not,
+the estimator withdraws the number rather than keep quoting an inferred one. So
+"91.7% Bronze, 0 measurements" becoming "Not rated, 136 measurements" is a gain in
+honesty, not a loss in quality; the badge is deliberately not coloured as an error,
+and it states the reason inline. Nothing about your labels got worse.
+
+**A low figure on a set of hand-authored ground truth is a statement about the
+confidence data, not about the labels.** A tier is always returned — `quality_tier`
+yields at least Bronze even at `prior` estimate confidence, where no observation from
+this set contributed anything — so a set of uploaded ground truth can read "76.1%
+est. Bronze" purely from the cross-set prior. Those labels are the reference other
+runs are scored against; the number beside them describes how little evidence the
+estimator has, which is exactly what Bronze means.
+
+Where no estimate is returned at all, the column distinguishes the two reasons rather
+than showing a bare dash: `Ground truth` for a set whose labels are authored, and
+`Not assessed yet` for one whose drafts simply have no curve yet. While the
+per-set estimate requests are still in flight it reads `Estimating`, because a pending
+request is not a verdict.
+
+The `Est. label accuracy` column header opens a legend covering all four tiers and
+their thresholds, so a `Bronze` badge can be read without already knowing the scale.
 
 The interval is a [Wilson score
 interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),

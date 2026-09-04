@@ -6,6 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from ci_paths import partition_by_ci_visibility  # noqa: E402
+
 
 def run_command(cmd, cwd=None):
     """Run shell command and return result."""
@@ -64,6 +67,18 @@ def main():
             and issue.get("status") != "Open"
         ]
 
+        # Also drop anything whose file is gitignored. Those findings only exist
+        # in a locally-built tree (.aws-sam/*.yaml, vendored layer/python/, ...),
+        # never in CI's checkout, so persisting them buys nothing — and actively
+        # hurts: SRT keys suppressions on (path, resourceType, resourceName,
+        # check_id), so an artifact-path entry cannot cover the real source
+        # template, and a "resolved" one re-detects as "reopened" (which DOES
+        # gate) on the next local scan. This is how 17 stale .aws-sam entries
+        # accumulated in the baseline. See ci_paths.py.
+        filtered_issues, local_only_issues = partition_by_ci_visibility(
+            filtered_issues, project_root
+        )
+
         # Save filtered version
         with open(issues_target, "w", encoding="utf-8") as f:
             json.dump(filtered_issues, f, indent=2)
@@ -74,6 +89,11 @@ def main():
         print(
             f"   Filtered from {len(all_issues)} total issues to {len(filtered_issues)} (removed all Open and Low/Medium priority)"
         )
+        if local_only_issues:
+            print(
+                f"   Excluded {len(local_only_issues)} finding(s) in gitignored files "
+                "(build artifacts / vendored code CI never checks out)"
+            )
     else:
         print("⚠️  Warning: issues.json not found in .srt/ directory")
 

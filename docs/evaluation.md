@@ -960,14 +960,21 @@ classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.
 
-**Visual Editor ("View Data") under Show Evaluation.** Toggling **Show
-Evaluation** now compares the section's `document_class` as well as its fields,
-above the field list: the class this run assigned, the class ground truth
-expects, and a match/mismatch verdict. Both values are shown whether or not they
-agree, since you asked to see the comparison. It reads the same
-`evaluation/results.json` the field-level comparison already loads, and falls
-back to the baseline file's own `document_class.type` for a document with no
-page-level comparison.
+**Visual Editor ("View Data").** The class comparison appears above the field
+list on any document that has an evaluation baseline — the class this run
+assigned, the class ground truth expects, and a match/mismatch verdict. Both
+values are shown whether or not they agree.
+
+It is **not** behind the **Show Evaluation** toggle. That toggle defaults to off
+and only appears once the evaluation status resolves, so gating the class verdict
+with it made the headline signal invisible in the place people go looking for it.
+The baseline is loaded whenever one exists, so the single line costs nothing;
+the toggle still controls the noisier per-field scores and reasons.
+
+It reads the same `evaluation/results.json` the field-level comparison loads, and
+falls back to the baseline file's own `document_class.type` for a document with
+no page-level comparison. On a document with no baseline nothing is shown, since
+there is no expected class to compare against.
 
 Why this matters when reading scores: a misclassified page was extracted against
 the **wrong schema**, so its low extraction score is a symptom, not the cause.
@@ -1225,14 +1232,19 @@ The evaluation framework includes comprehensive monitoring through CloudWatch me
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics:**
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate**: Rate of false positives among negatives (FP / (FP + TN))
-- **False Discovery Rate**: Rate of false positives among positive predictions (FP / (FP + TP))
+**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+
+- **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
+- **F1 Score**: Harmonic mean of precision and recall — `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: Overall correctness — `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: Rate of hallucinated fields among true-negatives — `FA / (FA + TN)` (Stickler's `fa` = false alarm, distinct from `fd` = false discovery)
+- **False Discovery Rate (FDR)**: Rate of wrong-value fields among positive predictions — `FD / (FD + TP)`
 - **Weighted Overall Score**: Field-importance-weighted aggregate score
+
+The distinction between `fa` (predicted a value where none was expected) and `fd` (predicted a wrong value where one was expected) matters because they represent different failure modes and warrant different remediations — FAR isolates hallucinations, FDR isolates wrong extractions.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this counting semantics and may show inflated or deflated section metrics on list-heavy configs; re-run those evaluations after upgrading for accurate comparison. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625).
 
 **Document Split Classification Metrics:**
 - **Page Level Accuracy**: Classification accuracy for individual pages

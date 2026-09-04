@@ -70,6 +70,51 @@ X_AWS_IDP_PAGE_TYPES = "x-aws-idp-page-types"
 # field is empty).
 X_AWS_IDP_SOURCE_PAGE_TYPES = "x-aws-idp-source-page-types"
 
+# On a class whose schema is already modelled as a PACKET of records — i.e. its
+# top level declares an array of objects, one per record — names that array as
+# the "instance axis". The extraction service then reports
+# `Section.instance_count = len(inference_result[<that property>])`, so a section
+# holding several documents is visible at a glance in the UI.
+#
+# This is the zero-cost half of multi-instance support: it changes NOTHING about
+# the extraction shape, the prompt, or any downstream consumer — it only tells
+# the pipeline which existing array counts as "one document per element". It
+# exists so configs that already solved multi-record packets by hand (the
+# workaround validated in GitHub #565) get the instance count and the UI badge
+# without restructuring their schema or migrating their evaluation baselines.
+#
+# Must name an existing top-level property whose type is an array of objects.
+X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
+
+# On a class modelled as ONE record (the normal case): replace its EFFECTIVE
+# schema with a List-of-Class wrapper
+#
+#     {"instances": {"type": "array", "items": <the original class schema>}}
+#
+# so a section holding several documents of this class extracts every one of them
+# instead of silently returning only the first (GitHub #715 / #565).
+#
+# This is "Synthesize mode", the counterpart to Designate mode above. It is a
+# schema TRANSFORM, not an output envelope: because the wrapper is declared in
+# the class schema, inference_result stays a valid instance of its own declared
+# schema and every consumer that just reads "the class schema" — the prompt, the
+# generated Pydantic model, the JSON-Schema validator, the off-schema filter,
+# assessment's list branch, Stickler's Hungarian row matching — keeps working.
+# The transform itself lives in idp_common.schema.multi_instance and is applied
+# by every stage that loads a class schema.
+#
+# Opt-in per class, NEVER auto-detected: auto-detection would move #565's
+# detection problem one stage later and make every single-document section pay
+# for a wrapper level. Detection is #753 and only ever warns.
+#
+# Mutually exclusive with X_AWS_IDP_INSTANCE_ARRAY (that key is for a class
+# whose schema is ALREADY a packet of records; this one creates the packet).
+#
+# ⚠ Changes the shape of inference_result, so evaluation baselines for the class
+# must be migrated to the wrapped shape — see docs/extraction-and-confidence.md
+# and scripts/migrate_multi_instance_baselines.py.
+X_AWS_IDP_MULTI_INSTANCE = "x-aws-idp-multi-instance"
+
 # ============================================================================
 # AWS IDP Policy/Rule Type Extensions
 # ============================================================================

@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useParams } from 'react-router-dom';
 
 import TestStudioLayout from '../components/test-studio/TestStudioLayout';
 import TestSetDetail from '../components/test-studio/TestSetDetail';
@@ -9,6 +9,21 @@ import TestSetDocumentDetail from '../components/test-studio/TestSetDocumentDeta
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
 import AnnotationQueueLanding from '../components/test-studio/AnnotationQueueLanding';
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
+
+/**
+ * Keyed on the set id so moving between sets remounts the workspace instead of
+ * reusing it. Its per-set state would otherwise carry over — above all the opened
+ * version transition: starting one on set A and navigating in-app to set B showed
+ * B with A's `v1 → v2` badge, a `?v=2` link and an unlocked editor, while B had no
+ * draft and no snapshot. That is the silent commitment the transition exists to
+ * prevent, reachable through the ordinary path of an annotator working two sets.
+ * A remount also drops A's queue, so B's load failure cannot leave A's documents
+ * on screen under B's heading.
+ */
+const AnnotationWorkspaceForSet = (): React.JSX.Element => {
+  const { testSetId } = useParams<{ testSetId: string }>();
+  return <AnnotationWorkspace key={testSetId} />;
+};
 
 const TestStudioRoutes = (): React.JSX.Element => {
   return (
@@ -31,7 +46,7 @@ const TestStudioRoutes = (): React.JSX.Element => {
         element={
           <div>
             <GenAIIDPTopNavigation />
-            <AnnotationWorkspace />
+            <AnnotationWorkspaceForSet />
           </div>
         }
       />

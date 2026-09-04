@@ -45,23 +45,29 @@ print(f"Requeued: {reprocess_result.documents_queued} documents")
 
 ## Configuration Management
 
-The SDK supports configuration versioning and management:
+The SDK manages **Configuration Profiles** — named configurations, each with its
+own revision history.
+
+> `config_profile=` is the current keyword. `config_version=` is the former name
+> and is still accepted on every method that took it, so existing code keeps
+> working; passing both with different values raises `ValueError`. See
+> [configuration-profiles.md](../../docs/configuration-profiles.md).
 
 ```python
 from idp_sdk import IDPClient
 
 client = IDPClient(stack_name="my-idp-stack")
 
-# Upload configuration to specific version
+# Upload configuration to a specific profile
 client.config.upload(
     config_file="config.yaml",
-    config_version="production-v2",
+    config_profile="production-v2",
     description="Updated model settings for new document types"
 )
 
-# Download specific configuration version
+# Download a specific configuration profile
 client.config.download(
-    config_version="production-v2",
+    config_profile="production-v2",
     output="downloaded-config.yaml"
 )
 
@@ -70,10 +76,10 @@ validation = client.config.validate(config_file="config.yaml")
 if validation.valid:
     print("Configuration is valid")
 
-# Process documents using specific version
+# Process documents using a specific profile
 result = client.batch.process(
     directory="./documents/",
-    config_version="production-v2"
+    config_profile="production-v2"
 )
 ```
 
@@ -184,17 +190,17 @@ reprocess = client.batch.reprocess(
 ### Configuration Versioning
 
 ```python
-# Create and upload new config version
+# Create and upload a new configuration profile
 client.config.upload(
     config_file="config.yaml",
-    config_version="v2.0",
+    config_profile="v2.0",
     description="Updated extraction rules"
 )
 
-# Process with specific version
+# Process with a specific profile
 result = client.batch.process(
     directory="./docs/",
-    config_version="v2.0"
+    config_profile="v2.0"
 )
 ```
 

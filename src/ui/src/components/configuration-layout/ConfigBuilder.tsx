@@ -64,10 +64,15 @@ function getFieldLabel(key: string, property: { title?: unknown }): string {
 }
 
 // Whether a model ID exposes a reasoning-effort control. Mirrors the backend
-// gate (idp_common/bedrock/client.py::is_claude_effort_model + the OpenAI
-// Responses path): OpenAI GPT-5.x, and Claude Sonnet 5 / Sonnet 4.6 / Opus
-// 4.5-4.8 / Fable 5 (NOT Sonnet 4.5 or Haiku 4.5). Handles us./eu./global.
-// prefixes, the :1m suffix, and dated/versioned foundation IDs via substring.
+// gate (idp_common/bedrock/client.py::is_claude_effort_model + is_grok_model +
+// the OpenAI Responses path): OpenAI GPT-5.x, xAI Grok, and Claude Sonnet 5 /
+// Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (NOT Sonnet 4.5 or Haiku 4.5). Handles
+// us./eu./global. prefixes, the :1m suffix, and dated/versioned foundation IDs
+// via substring.
+//
+// The effort picklist is a superset across families and each backend drops the
+// values its model rejects: Claude has no 'minimal', GPT-5.x has no
+// 'xhigh'/'max', and Grok accepts none/low/medium/high/xhigh but NOT 'max'.
 const _CLAUDE_EFFORT_TOKENS = [
   'claude-sonnet-5',
   'claude-sonnet-4-6',
@@ -83,7 +88,7 @@ function modelSupportsReasoningEffort(modelId: unknown): boolean {
     return false;
   }
   const id = modelId.toLowerCase();
-  if (id.includes('openai.gpt-5')) {
+  if (id.includes('openai.gpt-5') || id.includes('xai.grok')) {
     return true;
   }
   return _CLAUDE_EFFORT_TOKENS.some((t) => id.includes(t));
@@ -1648,6 +1653,17 @@ const ConfigBuilder = ({
       );
     } else if (
       property.format !== 'single-line' &&
+      // A DECLARED scalar type beats the path-name heuristic below. That heuristic
+      // exists to give free-text fields a roomy editor, but it matched on the path,
+      // so a boolean whose name merely ENDS in "prompt" was rendered as a textarea:
+      // `extraction.forced_tool.fallback_to_prompt` and
+      // `extraction.agentic.restate_schema_in_system_prompt` both shipped as free
+      // text where every other true/false setting is a toggle. Typing anything into
+      // one stored a STRING, and the backend config model only accepts the
+      // spellings pydantic reads as a bool: `off` happened to work, while `disabled`
+      // — or an empty box, or `yes ` with a trailing space — is a ValidationError on
+      // the config rather than a setting.
+      !['boolean', 'number', 'integer'].includes(String(property.type)) &&
       (property.format === 'textarea' ||
         property.format === 'text-area' || // back-compat alias for 'textarea'
         path.toLowerCase().includes('prompt') ||
@@ -1882,14 +1898,14 @@ const ConfigBuilder = ({
                 <SpaceBetween size="l">
                   {/* Version Description Field */}
                   <FormField
-                    label="Version Description"
-                    description="Optional description for this configuration version (max 200 characters)"
+                    label="Profile Description"
+                    description="Optional description for this configuration profile (max 200 characters)"
                     errorText={versionDescription && versionDescription.length > 200 ? 'Description cannot exceed 200 characters' : ''}
                   >
                     <Input
                       value={versionDescription}
                       onChange={({ detail }) => onDescriptionChange?.(detail.value)}
-                      placeholder="Enter a description for this configuration version..."
+                      placeholder="Enter a description for this configuration profile..."
                       invalid={!!versionDescription && versionDescription.length > 200}
                     />
                   </FormField>

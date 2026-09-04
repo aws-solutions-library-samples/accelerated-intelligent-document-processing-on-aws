@@ -19,6 +19,59 @@ All code that touches `stickler.*` lives under `idp_common/evaluation/stickler_b
 - `results.py` — Stickler `compare_with` dict → IDP `SectionEvaluationResult` (no re-scoring; encodes R3).
 - `doc_split.py` — thin adapters over `stickler.doc_split` for `load_sections_for_doc_split` and `compute_graded_packet_metrics` (R14).
 
+Outside that boundary:
+
+- `baseline_migration.py` — pure helpers for migrating stored evaluation
+  baselines to/from the multi-instance shape (GitHub #715). The operational S3
+  walker is `scripts/migrate_multi_instance_baselines.py` (dry-run by default,
+  idempotent, `--direction unwrap` to roll back).
+
+## Multi-instance classes (#715) — baselines must match the prediction's shape
+
+A class flagged `x-aws-idp-multi-instance` extracts
+`{"instances": [ …record… ]}`. Evaluation compares against a stored baseline **of
+the same shape**, so a wrapped prediction against a flat baseline scores every
+field as missing-on-one-side: the class reads ~0 accuracy and nothing explains
+why. This is the single biggest risk the feature introduces.
+
+Three things handle it:
+
+1. `stickler_backend/mapper.py` `build_all_stickler_configs` wraps each class
+   before translating it. Built from the flat schema, the prediction's only key is
+   `instances`, zero declared fields match, and the section **silently scores
+   0.0**.
+2. ⚠️ **Report granularity degrades, and the obvious fix is wrong.** For a wrapped
+   class every row's `expected_key` is `instances[i].Field`, so
+   `contract.py` `row_root_attribute` groups them all under the single attribute
+   `instances`: the per-attribute report is one giant attribute rather than one per
+   field. Stepping past the synthesized root here was tried and **reverted** — it
+   made the helper return `CheckNumber`, which matches no attribute at all, because
+   the attribute list is built from the class SCHEMA and a wrapped class has exactly
+   one property. All 24 of Stickler's `field_comparisons` rows were then dropped
+   from `field_comparison_details` (measured live), emptying the report's per-field
+   drilldown and the UI's mismatch highlighting, which joins on `expected_key`.
+   Section metrics stayed correct, so accuracy still read 1.000 with an empty
+   drilldown — invisible in the numbers. Recovering per-field granularity means
+   changing how the ATTRIBUTE LIST is constructed for a flagged class, not how rows
+   are keyed.
+3. `service.py` `_warn_on_multi_instance_shape_mismatch` logs a warning naming the
+   migration command when the two shapes disagree, in **either** direction
+   (rollback fails just as silently). Advisory only; it never changes a score.
+
+## Confidence-curve keys (`curve_store.py`)
+
+⚠️ **Key-shape change.** `_flatten_confidences` / `_flatten_values` used to key the
+list index off list *length* (`prefix if len(node) == 1 else prefix[i]`), so any
+single-element list lost its index: a one-row table keyed `Transactions.date`
+while a two-row table keyed `Transactions[0].date`. They now key off *depth* — only
+the outer `explainability_info` wrapper is un-indexed — so a list is always
+`Field[i].Sub`.
+
+Consequence to be honest about: a list whose length *varied* never joined and now
+does. But a list that was **always** single-element joined fine before, and its
+stored history is now orphaned — there is no migration and no read-side fallback,
+so those curve points will not join with new ones.
+
 Everything else — `service.py` (orchestration), `models.py` (dataclasses),
 `stickler_mapper.py` / `llm_comparator.py` (thin re-export shims for
 backward compatibility) — is backend-agnostic. A future Stickler upgrade is
@@ -401,18 +454,35 @@ The evaluation produces:
 
 ## Metrics
 
-The evaluation calculates the following metrics:
+The evaluation calculates the following metrics. As of v0.6.7, counts come
+directly from
+Stickler's row-level `field_comparisons` — one count per drilldown row the
+UI displays — with item-level rejected/missing/extra rows weighted by their
+leaf count so a truncated 5-item list and a partially-wrong 5-item list
+contribute the same leaf-normalized units.
 
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate (FAR)**: Rate of false positives among negatives (FP / (FP + TN))
-  - Measures how often the system extracts information that wasn't present in the document
-- **False Discovery Rate (FDR)**: Rate of false positives among positive predictions (FP / (FP + TP))
-  - Measures what proportion of the extracted information is incorrect
+- **Precision**: `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: `TP / (TP + FN)`
+- **F1 Score**: `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: `FA / (FA + TN)`
+  - Rate of *hallucinated* fields (predicted values where none was expected)
+    among true-negatives. Stickler splits `FP` into `fa` (false alarm) and
+    `fd` (false discovery); FAR measures the hallucination side.
+- **False Discovery Rate (FDR)**: `FD / (FD + TP)`
+  - Rate of *wrong-value* fields among positive predictions. The other side
+    of the `fa`/`fd` split — measures incorrect extractions.
 
-These metrics are calculated at both the attribute level (per field), section level (per document class), and document level (overall performance).
+The `fa`/`fd` distinction matters because they represent different failure
+modes and warrant different remediations — FAR isolates hallucinations, FDR
+isolates wrong extractions. These metrics are calculated at attribute
+level (per field), section level (per document class), and document level.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this
+counting semantics and may show inflated (leaves-inside-kept-items masked)
+or deflated (item-level rows counted as one unit each) section metrics on
+list-heavy configs. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625);
+re-run those evaluations after upgrading for accurate comparison.
 
 ### Failure and exclusion flags in section metrics
 
@@ -807,17 +877,27 @@ page_level = {
             "page_index": 0,
             "ground_truth_class": "Invoice",
             "predicted_class": "Invoice",
-            "correct": True
+            "correct": True,
+            "predicted_confidence": 0.91
         },
         {
             "page_index": 5,
             "ground_truth_class": "W2",
             "predicted_class": "Receipt",
-            "correct": False
+            "correct": False,
+            "predicted_confidence": 0.48
         }
     ]
 }
 ```
+
+`predicted_confidence` is the classifier's own confidence in the class it
+predicted (`None` when the page was not scored — the default; see
+[classification confidence](../classification/README.md#classification-confidence-confidence-classification_reason)).
+Paired with `correct` on the same row it is the **calibration** measurement: if
+confident-and-wrong pages score as high as confident-and-right ones, the
+confidence carries no information and must not drive escalation. The benchmark
+harness computes exactly that separation from these rows.
 
 #### 2. Split Accuracy (Without Order)
 

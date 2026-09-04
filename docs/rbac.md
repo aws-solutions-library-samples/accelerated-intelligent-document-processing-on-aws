@@ -6,7 +6,12 @@ title: "Role-Based Access Control (RBAC)"
 
 ## Overview
 
-The GenAI IDP Accelerator implements a comprehensive Role-Based Access Control system with **server-side enforcement** at the AppSync API layer, supplemented by UI-level navigation and action controls for a clean user experience. It also supports **config-version scoping** to restrict non-admin users to specific configuration versions (use cases).
+The GenAI IDP Accelerator implements a comprehensive Role-Based Access Control system with **server-side enforcement** at the API layer, supplemented by UI-level navigation and action controls for a clean user experience. It also supports **configuration-profile scoping** to restrict non-admin users to specific [Configuration Profiles](configuration-profiles.md) (use cases).
+
+> **Terminology.** What this document used to call a "config version" is now a
+> **Configuration Profile**; a **revision** is an immutable snapshot of one
+> profile's configuration. The stored field is still named
+> `allowedConfigVersions` for compatibility, and it scopes **profiles**.
 
 
 https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
@@ -89,13 +94,19 @@ HITL REVIEW
   Process changes (edit mode)     ✅      ❌       ✅        ❌
 
 CONFIGURATION
-  View config versions            ✅      ✅†      ❌        ✅†
-  View/Edit configuration         ✅      ✅       ❌        ❌
-  Save as Version (new)           ✅      ❌       ❌        ❌
+  View config profiles            ✅      ✅†      ❌        ✅†
+  View/Edit configuration         ✅      ✅†      ❌        ❌
+  Save as Profile (new profile)   ✅      ❌       ❌        ❌
   Save as Default                 ✅      ❌       ❌        ❌
-  Delete config version           ✅      ❌       ❌        ❌
-  Set active version              ✅      ✅       ❌        ❌
-  Sync BDA                        ✅      ✅       ❌        ❌
+  Delete config profile           ✅      ❌       ❌        ❌
+  Set active profile              ✅      ✅†      ❌        ❌
+  Sync BDA                        ✅      ✅†      ❌        ❌
+
+CONFIGURATION PROFILE REVISIONS
+  View/compare revisions          ✅      ✅†      ❌        ✅†
+  Restore a revision              ✅      ✅†      ❌        ❌
+  Label a revision                ✅      ✅†      ❌        ❌
+  Delete a revision               ✅      ❌       ❌        ❌
 
 DISCOVERY
   List/run discovery jobs         ✅      ✅       ❌        ❌
@@ -132,31 +143,70 @@ MODEL LIMITS
   Edit model limits               ✅      ❌       ❌        ❌
 
 ✅* = Reviewer sees only HITL-pending docs + their own completed reviews (server-side filtered)
-✅† = Scoped by allowedConfigVersions if set (see Config-Version Scoping below)
+✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
 ```
 
-## Config-Version Scoping (Use Case Isolation)
+## Configuration-Profile Scoping (Use Case Isolation)
 
 ### Overview
 
-Non-admin users can optionally be assigned **allowedConfigVersions** — a list of configuration version names that restricts their view and access to only those use cases. This enables multi-tenant or multi-use-case deployments where different teams see only their relevant documents and configurations.
+Non-admin users can optionally be assigned **allowedConfigVersions** — a list of Configuration Profile names that restricts their view and access to only those use cases. This enables multi-tenant or multi-use-case deployments where different teams see only their relevant documents and configurations.
 
 ### How It Works
 
 - **Admin users**: Always unrestricted — `allowedConfigVersions` is ignored even if set
 - **All other roles** (Author, Reviewer, Viewer): If `allowedConfigVersions` is set and non-empty, the user can only:
-  - See documents processed with those config versions (server-side filtering)
-  - See and select those config versions in all version dropdowns
-  - View/edit configuration for those versions only
-- **No scope set** (empty/null): User sees all versions and documents (unrestricted)
+  - See documents processed with those profiles (server-side filtering)
+  - See and select those profiles in all profile dropdowns
+  - View/edit configuration — and read, compare, restore, and label revisions — for those profiles only
+- **No scope set** (empty/null): User sees all profiles and documents (unrestricted)
+
+### Scope Is Enforced at the Profile, Never at the Revision
+
+A revision is *content inside* a profile, not an access-control object of its own.
+Every revision operation resolves its profile first and applies the same scope check
+used by `updateConfiguration`, so there is exactly one rule to get right.
+
+This is also why an Author scoped to a profile may **restore** and **label** its
+revisions but still may not create a new profile: moving content inside a profile
+they already own is ordinary authoring, while minting a profile creates a new
+access-control object and stays Admin-only. Before revisions existed, keeping a
+previous configuration *required* creating a new profile (`saveAsVersion`), which is
+why a scoped Author could not iterate without an admin.
+
+### Matching Rules
+
+Scope entries are matched against the profile name with two deliberate rules:
+
+- **An empty or unset scope means unrestricted.** Scoping is opt-in per user.
+- **A set scope fails closed.** A profile or document with no name to match against
+  is denied, not admitted. In particular, a scoped user does **not** see documents
+  that carry no `ConfigVersion` (documents processed before config-version stamping,
+  or whose stamp failed) — an unnamed object cannot be proven in scope.
+
+Entries may be exact names (`lending`) or **glob patterns** (`lending-*`,
+`uc?-prod`). Patterns exist for deployments that predate revision history and encode
+iterations in the name (`usecaseA_v1`, `usecaseA_v2`, …), where scoping a user to a
+use case would otherwise mean re-granting on every iteration. Only an Admin can set
+a scope entry and only an Admin can create a profile, so a pattern cannot be used to
+widen one's own access. New deployments should prefer one profile per use case with
+revisions for its history, and exact-name scope entries.
+
+The matcher lives in `idp_common/config_scope.py`. The two document-list resolvers
+carry no `idp_common` layer (they are on the hottest UI query and are kept
+dependency-free), so they vendor that file verbatim; a unit test fails if the copies
+drift, because a scope matcher that differs between call sites is a
+privilege-escalation bug.
 
 ### Scope Enforcement Points
 
 | Layer | Enforcement |
 |-------|-------------|
-| **Document List** (server-side) | `listDocuments` Lambda resolver filters by `ConfigVersion` field using `allowedConfigVersions` from UsersTable |
-| **Config Versions List** (server-side) | `getConfigVersions` Lambda resolver filters returned versions |
-| **Config Version Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope versions |
+| **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
+| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents |
+| **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
+| **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
+| **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
 | **Default Version Selection** (UI) | All version pickers auto-select the first available scoped version |
 
@@ -224,6 +274,8 @@ Every GraphQL **mutation** and many **queries** have `@aws_cognito_user_pools(co
 | Mutation | Allowed Roles |
 |----------|---------------|
 | `deleteConfigVersion` | Admin |
+| `deleteConfigProfileRevision` | Admin |
+| `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
 | `createUser`, `updateUser`, `deleteUser` | Admin |
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
@@ -249,6 +301,7 @@ Every GraphQL **mutation** and many **queries** have `@aws_cognito_user_pools(co
 | `getDocument`, `listDocuments`, `listDocumentsByDateRange`, etc. | All authenticated (server-side filtering in resolvers) |
 | `getFileContents`, `getStepFunctionExecution` | All authenticated |
 | `getConfigVersions`, `getConfigVersion`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
+| `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
 | `listChatSessions`, `getChatMessages`, `getAgentChatMessages` | All authenticated (session-scoped) |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
@@ -283,8 +336,9 @@ filtering based on the caller's identity:
 - **Reviewer-only**: See only HITL-pending documents + their own completed reviews, plus config-version scope
 
 **Configuration Filtering:**
-- `getConfigVersions`: Returns only versions in user's scope (or all if unrestricted)
-- `getConfigVersion`: Rejects request if version is not in user's scope
+- `getConfigVersions`: Returns only profiles in user's scope (or all if unrestricted)
+- `getConfigVersion`: Rejects request if the profile is not in user's scope
+- `listConfigProfileRevisions` / `getConfigProfileRevision` / `restoreConfigProfileRevision` / `labelConfigProfileRevision` / `deleteConfigProfileRevision`: Reject the request if the *profile* is not in user's scope
 
 **User Management Filtering:**
 - `listUsers`: Admin sees all users; non-admin sees only their own profile
@@ -297,7 +351,7 @@ The UI adapts based on the user's role and scope:
 - Action buttons (delete, reprocess, upload, save, import) are hidden for roles that can't perform those actions
 - Version dropdowns are automatically filtered to show only scoped versions
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
-- **Admin-only buttons**: "Save as Version", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
+- **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
 - **Pricing page**: Shows "View Pricing" (read-only) for non-admin; "Pricing Configuration" (editable) for admin
 - **Model Limits page**: Shows "View Model Limits" (read-only) for non-admin; "Model Limits Configuration" (editable) for admin
 
@@ -319,7 +373,7 @@ Admins can create users with any of the four roles via the User Management page.
 | `email` | User's email address (used as Cognito username) |
 | `persona` | Role: Admin, Author, Reviewer, Viewer, or Annotator |
 | `status` | User status (active) |
-| `allowedConfigVersions` | Optional list of config version names for scoping |
+| `allowedConfigVersions` | Optional list of Configuration Profile names (or glob patterns) for scoping |
 | `allowedTestSets` | Optional list of test set ids an Annotator may read and annotate. A separate scope axis from `allowedConfigVersions`, not a replacement — a user may carry both. |
 | `createdAt` | Creation timestamp |
 
@@ -333,15 +387,16 @@ Admins can create users with any of the four roles via the User Management page.
 └────────────┬────────────────────┘
              │ GraphQL
 ┌────────────▼────────────────────┐
-│  AppSync API                    │  Layer 1: @aws_cognito_user_pools(cognito_groups) directives (DENY if wrong group)
+│  REST API + schema directives   │  Layer 1: @aws_cognito_user_pools(cognito_groups) directives (DENY if wrong group)
 │  Schema Directives              │
 └────────────┬────────────────────┘
              │
 ┌────────────▼────────────────────┐
 │  Lambda Resolvers               │  Layer 2: Server-side group checks (defense-in-depth) + filtering
 │  • listDocuments: ConfigVersion │  ← Filters by allowedConfigVersions from UsersTable
-│  • getConfigVersions: scope     │  ← Filters version list
+│  • getConfigVersions: scope     │  ← Filters profile list
 │  • getConfigVersion: scope      │  ← Rejects out-of-scope access
+│  • *ConfigProfileRevision*      │  ← Scope checked at the profile
 │  • listUsers: self-only         │  ← Non-admin sees only own profile
 └────────────┬────────────────────┘
              │
@@ -368,5 +423,6 @@ To add a new role:
 - **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
 - **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
+- **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
 - **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
 - These limitations are tracked for Phase 3 implementation.

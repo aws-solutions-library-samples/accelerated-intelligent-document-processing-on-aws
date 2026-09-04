@@ -34,6 +34,27 @@ synthetic:
   - {id: noisy_400,       gen: bank_statement, rows: 400,  cols: 3, lists: 1, ocr_noise: 0.15, tag: shape=noisy}
   # a non-list doc type for breadth (flat key/value form)
   - {id: kv_form,         gen: kv_form,        fields: 25,  tag: doc_type=keyvalue}
+  # value_noise: cells rendered the way real statements render them (currency
+  # symbols, accounting negatives, both thousands conventions, named months) with
+  # the TYPED value as truth. This is the only doc in the corpus where per-row
+  # value handling is measurable — every other doc renders values essentially as
+  # the model returns them, which is why an enforcement A/B on them showed 81
+  # value repairs and an accuracy delta of exactly zero. Scored by cell_accuracy.
+  - {id: valuenoise_100,  gen: bank_statement, rows: 100,  cols: 3, lists: 1, value_noise: true, tag: shape=valuenoise}
+  - {id: valuenoise_400,  gen: bank_statement, rows: 400,  cols: 3, lists: 1, value_noise: true, tag: shape=valuenoise}
+  # Boundary detection, OVER-MERGE direction (#653). Two complete back-to-back
+  # statements, each with its own identity block, so the correct answer is
+  # unambiguously 2 sections. This is the case a naive over-split fix REGRESSES:
+  # a prompt biased toward "continue" collapses both into one section, and #653
+  # measured the unfixed prompt at 1/10 here. Testing only the over-split
+  # direction (`small_narrow` under llm_determined) would hide that.
+  - {id: twodocs_2x20,    gen: bank_statement, rows: 20,   cols: 3, lists: 1, documents: 2, tag: shape=twodocs}
+  # Boundary detection with PAGINATION — the signal the #653 rules check FIRST.
+  # `small_narrow` deliberately has none, which makes it the hard case; real
+  # statements paginate, so this is the COMMON case and the pair isolates whether
+  # a residual over-split is "the rules do not work" or "this document withholds
+  # their primary evidence".
+  - {id: paginated_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, paginate: true, tag: shape=paginated}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
 reference:

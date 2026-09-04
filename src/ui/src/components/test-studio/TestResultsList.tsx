@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useEffect } from 'react';
-import { Table, Button, SpaceBetween, ButtonDropdown, Pagination, Box, TextFilter, Flashbar } from '@cloudscape-design/components';
+import { Table, Button, SpaceBetween, ButtonDropdown, Pagination, Box, TextFilter, Flashbar, Badge } from '@cloudscape-design/components';
 import type { IconProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
@@ -43,6 +43,12 @@ interface TestRunItem {
   completedAt: string | null;
   context: string;
   configVersion?: string | null;
+  /** Revision of that profile the run scored against, when one was pinned. */
+  configRevision?: number | null;
+  /** Test-set version pinned for scoring; null when the run scored current labels. */
+  testSetVersion?: number | null;
+  /** With current labels: the version an open annotation transition was heading toward. */
+  testSetDraftVersion?: number | null;
 }
 
 interface ActiveTestRun {
@@ -173,7 +179,19 @@ const TestResultsList = ({
   };
 
   const getTestRunIdCell = (item: TestRunItem) => <TestRunIdCell item={item} onSelect={handleTestRunSelect} />;
-  const getTestSetNameCell = (item: TestRunItem) => <TextCell text={item.testSetName} />;
+  // Which labels the run scored against, beside the set: a pinned version, or
+  // current labels while a transition was open. Without it two runs of one set
+  // can differ for a reason nothing on this table shows.
+  const getTestSetNameCell = (item: TestRunItem) => (
+    <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+      <TextCell text={item.testSetName} />
+      {item.testSetVersion != null ? (
+        <Badge color="grey">v{item.testSetVersion}</Badge>
+      ) : item.testSetDraftVersion != null ? (
+        <Badge color="blue">current &rarr; v{item.testSetDraftVersion}</Badge>
+      ) : null}
+    </SpaceBetween>
+  );
   const getContextCell = (item: TestRunItem) => <TextCell text={item.context || 'N/A'} />;
 
   const getStatusCell = (item: TestRunItem) => {
@@ -249,12 +267,12 @@ const TestResultsList = ({
 
   const downloadToExcel = () => {
     // Convert test runs data to CSV format
-    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Version', 'Status', 'Files Count', 'Created At', 'Completed At'];
+    const headers = ['Test Run ID', 'Test Set', 'Context', 'Config Profile', 'Status', 'Files Count', 'Created At', 'Completed At'];
     const csvData = testRuns.map((run) => [
       run.testRunId,
       run.testSetName || '',
       run.context || '',
-      formatConfigVersionText(run.configVersion, versions),
+      formatConfigVersionText(run.configVersion, versions, run.configRevision),
       run.status,
       run.filesCount || 0,
       run.createdAt || '',
@@ -449,8 +467,8 @@ const TestResultsList = ({
           },
           {
             id: 'configVersion',
-            header: 'Config Version',
-            cell: (item) => formatConfigVersionLink(item.configVersion, versions),
+            header: 'Config Profile',
+            cell: (item) => formatConfigVersionLink(item.configVersion, versions, undefined, item.configRevision),
             sortingField: 'configVersion',
             width: 150,
           },

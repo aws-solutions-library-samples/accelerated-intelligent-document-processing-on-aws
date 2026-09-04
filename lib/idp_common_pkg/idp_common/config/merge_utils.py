@@ -446,9 +446,9 @@ def merge_config_with_defaults(
     """
     # Migrate the user config to the current format BEFORE merging (see docstring).
     if migrate:
-        from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
+        from idp_common.config.migrations import migrate_config
 
-        user_config = migrate_v05_to_v06(deepcopy(user_config))
+        user_config = migrate_config(deepcopy(user_config))
 
     # Load system defaults
     defaults = load_system_defaults(pattern)
@@ -718,11 +718,29 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
     or application-inference-profile deployments are ARN-only everywhere. ARNs
-    are reduced to the model ID they name before the catalog lookup. An ARN that
-    still does not match (an opaque application-inference-profile UUID, say)
-    yields a warning rather than an error: its underlying model cannot be
-    determined without a Bedrock API call, so it is unverifiable, not wrong.
-    A bare model ID that does not match remains an error — that is a typo.
+    are reduced to the model ID they name before the catalog lookup.
+
+    Three outcomes for a value that doesn't match the catalog:
+
+    - **Bare model ID → error.** That's a typo; nothing else it could be.
+    - **ARN whose resolved resource has model-ID *shape*** (contains a ``.``
+      and isn't a UUID) **→ error.** It looks like a model ID and still doesn't
+      match, so the likely cause is a typo in the ARN's resource-id, partition
+      or account. It is also, by construction, a model with no
+      ``config_library/pricing.yaml`` entry — so cost reporting would be broken
+      for it regardless. To use a model newer than this release, add it to
+      ``config_library/pricing.yaml`` (see ``.claude/skills/add-model.md``,
+      which requires that entry anyway).
+    - **ARN whose resolved resource is opaque** (an application-inference-profile
+      UUID, a provisioned-model name — no ``.``, or UUID-shaped) **→ warning.**
+      Its underlying model can't be determined without a Bedrock API call, so
+      it's unverifiable, not wrong.
+
+    Note this whole function is a no-op when ``config_library/pricing.yaml``
+    isn't on disk: ``_load_valid_bedrock_models`` returns an empty set and we
+    return early. So the strict paths above only fire from a repository
+    checkout — the CLI/SDK run from source, and CI — not from a
+    pip-installed ``idp_common`` in a Lambda.
     """
     valid_models = _load_valid_bedrock_models()
     if not valid_models:
@@ -745,14 +763,40 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if not model_id:
             continue
 
-        if resolve_model_id_from_arn(model_id) in valid_models:
+        resolved = resolve_model_id_from_arn(model_id)
+        if resolved in valid_models:
             continue
 
         if model_id.startswith("arn:"):
+            # Distinguish an unverifiable opaque resource (a legitimate
+            # application-inference-profile UUID / provisioned-throughput ARN
+            # whose underlying model can only be known via a Bedrock API call)
+            # from a probably-typo'd ARN whose resource DOES look like a
+            # model ID but doesn't match anything in valid_models. Round-7
+            # review fix; round-9 cleanup: dropped dead
+            # ``resolved.startswith("application-inference-profile/")`` and
+            # ``"provisioned-model/"`` guards — ``resolve_model_id_from_arn``
+            # strips those type prefixes, so ``resolved`` never carries
+            # them. UUIDs (which lack dots) fall through to the warning
+            # path naturally via the ``"." in resolved`` check.
+            _looks_like_model_id_shape = "." in resolved and not _looks_like_uuid(
+                resolved
+            )
+            if _looks_like_model_id_shape:
+                # The ARN resolved to a string that looks like a model ID
+                # (has family.name shape) but doesn't match — treat as a typo.
+                result["valid"] = False
+                result["errors"].append(
+                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"model ID ({resolved!r}) is not a known Bedrock model. This is "
+                    f"most likely a typo in the ARN's resource-id, partition, or "
+                    f"account. Full ARN: {model_id}"
+                )
+                continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN that does not resolve to a "
-                f"known model ID: {model_id}. Cost reporting needs a matching entry in "
-                f"the pricing configuration (config_library/pricing.yaml)."
+                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"model can't be determined offline: {model_id}. Cost reporting "
+                f"needs a matching entry in config_library/pricing.yaml."
             )
             continue
 
@@ -762,6 +806,20 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """Heuristic — reject values that look like a UUID (opaque application
+    inference profile IDs) from being treated as typo'd model IDs."""
+    import re
+
+    return bool(
+        re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            value,
+            re.I,
+        )
+    )
 
 
 def _validate_agentic_openai(
@@ -815,15 +873,15 @@ def _validate_agentic_openai(
 def _validate_discovery_openai(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
-    """Error when an OpenAI GPT-5.x model is configured for discovery.
+    """Error when a model that can't take ``document`` blocks is set for discovery.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks, which
-    the OpenAI Responses API (bedrock-mantle) does not support (text + image
-    only). Routing GPT-5.x here would silently drop the document, so reject it
-    at config time. (These models are also not offered in the discovery
+    Discovery ingests whole PDFs via Converse ``document`` content blocks. OpenAI
+    GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects them outright)
+    both accept text + image only, so routing either here would silently drop the
+    document. Reject at config time. (Neither is offered in the discovery
     picklists.)
     """
-    from idp_common.bedrock.openai_responses import is_openai_responses_model
+    from idp_common.bedrock.client import document_blocks_unsupported_reason
 
     discovery = merged_config.get("discovery", {})
     if not isinstance(discovery, dict):
@@ -832,8 +890,16 @@ def _validate_discovery_openai(
     # Sub-sections that carry a per-section model: model_id for the class/auto
     # discovery sections, model for rules discovery.
     checks = [
-        ("discovery.without_ground_truth.model_id", discovery.get("without_ground_truth", {}), "model_id"),
-        ("discovery.with_ground_truth.model_id", discovery.get("with_ground_truth", {}), "model_id"),
+        (
+            "discovery.without_ground_truth.model_id",
+            discovery.get("without_ground_truth", {}),
+            "model_id",
+        ),
+        (
+            "discovery.with_ground_truth.model_id",
+            discovery.get("with_ground_truth", {}),
+            "model_id",
+        ),
         ("discovery.auto_split.model_id", discovery.get("auto_split", {}), "model_id"),
         ("discovery.rules.model", discovery.get("rules", {}), "model"),
     ]
@@ -841,13 +907,13 @@ def _validate_discovery_openai(
         if not isinstance(section, dict):
             continue
         model_id = section.get(field)
-        if model_id and is_openai_responses_model(model_id):
+        reason = document_blocks_unsupported_reason(model_id) if model_id else None
+        if reason:
             result["valid"] = False
             result["errors"].append(
-                f"{label} is an OpenAI Responses model ('{model_id}'), which is NOT "
-                "supported for discovery — discovery sends whole-PDF document blocks "
-                "that the bedrock-mantle Responses API cannot accept. Choose an "
-                "Anthropic or Nova model."
+                f"{label} is set to '{model_id}', which is NOT supported for "
+                f"discovery — {reason}, but discovery sends whole-PDF document "
+                "blocks. Choose an Anthropic or Nova model."
             )
 
 
@@ -1047,6 +1113,7 @@ def _validate_schema_fields(
         "x-aws-idp-list-item-description",
         "x-aws-idp-page-types",
         "x-aws-idp-source-page-types",
+        "x-aws-idp-instance-array",
     }
 
     non_standard_fields = {}

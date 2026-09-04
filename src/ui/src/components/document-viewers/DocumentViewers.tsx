@@ -9,6 +9,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { copyToBaseline } from '../../graphql/generated';
 import FileViewer from '../document-viewer/FileViewer';
 import { MarkdownReport } from '../document-viewer/MarkdownViewer';
+import EvaluationReport from '../document-viewer/EvaluationReport';
 
 interface ViewerControlsProps {
   onViewSource: () => void;
@@ -117,12 +118,10 @@ const ViewerContent = ({
       )}
       {isReportVisible && (
         <div className="flex-1 min-w-0">
-          <MarkdownReport
-            reportUri={evaluationReportUri ?? ''}
-            documentId={objectKey}
-            title="Evaluation Report"
-            emptyMessage="Evaluation report not available for this document"
-          />
+          {/* Reads the JSON results and renders a real component, falling back to
+              the markdown artifact when they cannot be read. The markdown stays
+              one click away from inside it. */}
+          <EvaluationReport reportUri={evaluationReportUri ?? ''} documentId={objectKey} />
         </div>
       )}
       {isSummaryVisible && (

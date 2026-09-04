@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Policy Discovery Module
 
-The Policy Discovery module extracts **business rules** from policy documents (Medicare/Medicaid policy manuals, prior authorization guidelines, compliance manuals, etc.) and saves them into the versioned configuration as `policy_classes`. Those policy classes are then consumed by the [Rule Validation](rule-validation.md) stage of the unified processing pipeline to evaluate pass/fail for each incoming document against the extracted rules.
+The Policy Discovery module extracts **business rules** from policy documents (Medicare/Medicaid policy manuals, prior authorization guidelines, compliance manuals, etc.) and saves them into the selected configuration profile as `policy_classes`. Those policy classes are then consumed by the [Rule Validation](rule-validation.md) stage of the unified processing pipeline to evaluate pass/fail for each incoming document against the extracted rules.
 
 Policy Discovery is the **rules counterpart** of the classes-based [Discovery Module](discovery.md). Where Discovery tells the system *what fields a document type has*, Policy Discovery tells the system *what rules a document must satisfy to be compliant*.
 
@@ -103,7 +103,7 @@ All rules for a policy document are grouped into a single **policy class** — a
 **Discovery Panel UI (`src/ui/src/components/discovery/DiscoveryPanel.tsx`):**
 - The **Policy Discovery** tab renders inside the same panel as Single Document and Multiple Documents discovery
 - When the Policy Discovery tab is active, the mode selector (Single/Multi-Section), ground-truth file input, and page-range selector are hidden — none of those apply to whole-document rule extraction
-- Submits `UploadDiscoveryDocument` with `discoveryType: "rules"` and the active configuration version
+- Submits `UploadDiscoveryDocument` with `discoveryType: "rules"` and the active configuration profile
 
 **Job Details UI (`src/ui/src/components/discovery/DiscoveryJobDetails.tsx`):**
 - Breadcrumb reads "Policy Discovery Job" when `jobType === 'rules'`
@@ -142,7 +142,7 @@ graph TD
 
 **DynamoDB Integration:**
 - Discovery job tracking (with `jobType='rules'` and `discoveryType='rules'` fields)
-- Versioned configuration storage (`Config#<version>.policy_classes`)
+- Configuration profile storage (`Config#<profile>.policy_classes`)
 
 **Bedrock Integration:**
 - LLM rule extraction (defaults to `global.anthropic.claude-sonnet-4-6`; substitute `us.anthropic.claude-sonnet-4-6` or a regional equivalent if your stack doesn't have access to global inference profiles)
@@ -239,6 +239,13 @@ All Policy Discovery settings live under the `discovery.rules` section of the Co
 > rejected by `idp-cli config-validate` and guarded at runtime. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **⚠️ xAI Grok is NOT supported for Policy/Rule Discovery.** Unlike GPT-5.x,
+> Grok 4.6 does support the Converse-based Strands path — but rule discovery also
+> sends whole-PDF `document` blocks, which Grok rejects (*"This model doesn't
+> support documents"*). Both `us.xai.grok-4.6` and `global.xai.grok-4.6` are
+> rejected by config validation and guarded at runtime. See
+> [xAI Grok Models](grok-models.md).
+
 **Parameter Guidelines:**
 - **Temperature: `0.0`** — deterministic rule extraction; re-running on the same document should give the same rules
 - **Top P: `0.0` / Top K: `5`** — strict decoding, minimizes off-rule hallucination
@@ -278,7 +285,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 **Accessing Policy Discovery:**
 1. Navigate to the **Discovery** page
 2. Select the **Policy Discovery** tab (the third tab, after Single Document and Multiple Documents)
-3. Select a **Configuration Version** to save the extracted rules to
+3. Select a **Configuration Profile** to save the extracted rules to
 4. Upload a policy PDF
 5. Click **"Start Discovery"**
 6. Monitor progress in the Discovery Jobs table below
@@ -333,7 +340,7 @@ discovery = RulesDiscovery(
     input_bucket="my-discovery-bucket",
     input_prefix="policies/ncci-medicare-manual.pdf",
     config=my_rule_discovery_config,
-    version="rule-validation",  # configuration version to save into
+    version="rule-validation",  # configuration profile to save into
     region="us-east-1",
 )
 
@@ -442,7 +449,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Job completes but no new class appears in Policy Schema:**
 - Check the job's `discoveryType` field — must be `"rules"`, not `"classes"`. A misrouted mutation saves to the wrong place.
-- Confirm the `Config#<version>` record in DynamoDB exists — `_save_rules_to_config` targets the active version; if the UI created a new version after the job started, the rules may have landed in the older version.
+- Confirm the `Config#<profile>` record in DynamoDB exists — `_save_rules_to_config` targets the active profile; if the UI created a new profile after the job started, the rules may have landed in the previously active one.
 
 **Job fails with "Failed to extract data from document":**
 - Increase `max_tokens` to 64000+ if the manual is long (100+ rules).
@@ -451,7 +458,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Document Uploads but Rule Validation doesn't fire on subsequent documents:**
 - **Most common cause:** the extracted policy class has no `Document Name Regex` or `Page Content Regex`. See [Required: Add a Document Matching Regex](#required-add-a-document-matching-regex).
-- Check `ProcessResultsFunction` CloudWatch logs for `Rule validation is enabled but no policy_classes configured - skipping rule validation`. If you see that, `policy_classes` is empty in the deployed config version.
+- Check `ProcessResultsFunction` CloudWatch logs for `Rule validation is enabled but no policy_classes configured - skipping rule validation`. If you see that, `policy_classes` is empty in the deployed config profile.
 - Check the Step Functions execution history for whether `PolicyClassificationStep` and `ProcessRuleValidationSections` actually ran, or whether it short-circuited to `SetEmptyRuleValidationResult`.
 
 **Two identical rule classes after re-uploading:**

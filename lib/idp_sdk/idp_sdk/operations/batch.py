@@ -7,6 +7,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from idp_sdk._core.document_processor import _section_instances
+from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
     IDPConfigurationError,
     IDPProcessingError,
@@ -52,7 +54,10 @@ class BatchOperation:
         number_of_files: Optional[int] = None,
         config_path: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         context: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Process multiple documents through the IDP pipeline.
@@ -70,13 +75,18 @@ class BatchOperation:
             recursive: Recursively scan directories
             number_of_files: Limit number of files to process
             config_path: Path to custom configuration file
-            config_version: Configuration version to use for processing
+            config_version: Configuration Profile to use for processing
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
+            config_revision: Optional revision of that profile. Omit to process
+                under the profile's current configuration.
             context: Context for test set processing
             **kwargs: Additional parameters
 
         Returns:
             BatchProcessResult with batch processing information
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         from idp_sdk._core.batch_processor import BatchProcessor
 
         name = self._client._require_stack(stack_name)
@@ -112,7 +122,12 @@ class BatchOperation:
 
             if test_set:
                 result = self._process_test_set(
-                    processor, test_set, context, number_of_files, config_version
+                    processor,
+                    test_set,
+                    context,
+                    number_of_files,
+                    config_version,
+                    config_revision,
                 )
             elif manifest:
                 # Pass config_version to process_batch if the method supports it
@@ -127,6 +142,11 @@ class BatchOperation:
                 )
                 if "config_version" in manifest_sig.parameters and config_version:
                     manifest_kwargs["config_version"] = config_version
+                if (
+                    "config_revision" in manifest_sig.parameters
+                    and config_revision is not None
+                ):
+                    manifest_kwargs["config_revision"] = config_revision
                 result = processor.process_batch(**manifest_kwargs)
             elif directory:
                 import inspect
@@ -142,6 +162,11 @@ class BatchOperation:
                 )
                 if "config_version" in dir_sig.parameters and config_version:
                     dir_kwargs["config_version"] = config_version
+                if (
+                    "config_revision" in dir_sig.parameters
+                    and config_revision is not None
+                ):
+                    dir_kwargs["config_revision"] = config_revision
                 result = processor.process_batch_from_directory(**dir_kwargs)
             else:
                 import inspect
@@ -156,6 +181,8 @@ class BatchOperation:
                 sig = inspect.signature(processor.process_batch_from_s3_uri)
                 if "config_version" in sig.parameters and config_version:
                     s3_kwargs["config_version"] = config_version
+                if "config_revision" in sig.parameters and config_revision is not None:
+                    s3_kwargs["config_revision"] = config_revision
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(
@@ -189,10 +216,14 @@ class BatchOperation:
         number_of_files: Optional[int] = None,
         config_path: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         context: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Deprecated: Use process() instead."""
+        config_version = resolve_config_profile(config_profile, config_version)
         import warnings
 
         warnings.warn(
@@ -214,6 +245,7 @@ class BatchOperation:
             number_of_files=number_of_files,
             config_path=config_path,
             config_version=config_version,
+            config_revision=config_revision,
             context=context,
             **kwargs,
         )
@@ -225,12 +257,14 @@ class BatchOperation:
         context: Optional[str],
         number_of_files: Optional[int],
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Process a test set (internal helper).
 
         Enhancement 1:
         - Step 1: Invoke TestSetResolverFunction (non-fatal if missing)
-        - Step 2: Invoke TestRunnerFunction with configVersion in payload
+        - Step 2: Invoke TestRunnerFunction with configVersion (and configRevision,
+          when the caller pinned one) in payload
         """
         import json
 
@@ -304,6 +338,11 @@ class BatchOperation:
             payload["arguments"]["input"]["numberOfFiles"] = number_of_files
         if config_version:
             payload["arguments"]["input"]["configVersion"] = config_version
+        # Pinning must reach the run, or the caller believes they scored r7 while
+        # the run actually used whatever the profile currently holds — a silently
+        # wrong answer that then goes into a comparison.
+        if config_revision is not None:
+            payload["arguments"]["input"]["configRevision"] = int(config_revision)
 
         response = lambda_client.invoke(
             FunctionName=test_runner_function, Payload=json.dumps(payload)
@@ -1066,14 +1105,27 @@ class BatchOperation:
                     if explainability:
                         confidence = {}
 
+                        def confidence_of(val):
+                            """Mirror one explainability node's shape.
+
+                            Lists are mirrored as lists so a list attribute's
+                            per-row confidence survives instead of being dropped
+                            — including a multi-instance class (#715), whose
+                            entire result sits under one `instances` list and
+                            which would otherwise report NO confidence at all.
+                            """
+                            if isinstance(val, dict):
+                                if "confidence" in val:
+                                    return val["confidence"]
+                                return {k: confidence_of(v) for k, v in val.items()}
+                            if isinstance(val, list):
+                                return [confidence_of(v) for v in val]
+                            return None
+
                         def extract_confidences(obj, target_dict):
                             for key, val in obj.items():
-                                if isinstance(val, dict):
-                                    if "confidence" in val:
-                                        target_dict[key] = val["confidence"]
-                                    else:
-                                        target_dict[key] = {}
-                                        extract_confidences(val, target_dict[key])
+                                if isinstance(val, (dict, list)):
+                                    target_dict[key] = confidence_of(val)
 
                         for item in explainability:
                             extract_confidences(item, confidence)
@@ -1088,6 +1140,10 @@ class BatchOperation:
                 "document_id": doc_id,
                 "document_class": document_class,
                 "fields": fields,
+                # Multi-instance classes (#715) return one entry per document
+                # found in the section; None for a single-record class. Additive
+                # — `fields` still carries the raw shape.
+                "instances": _section_instances(fields),
                 "confidence": confidence,
                 "page_count": page_count,
                 "status": status,
@@ -1098,6 +1154,7 @@ class BatchOperation:
                 "document_id": doc_id,
                 "document_class": None,
                 "fields": None,
+                "instances": None,
                 "confidence": None,
                 "page_count": None,
                 "status": "ERROR",

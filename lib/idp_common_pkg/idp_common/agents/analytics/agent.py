@@ -14,6 +14,7 @@ import boto3
 import strands
 
 from ..common.config import load_result_format_description
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .analytics_logger import analytics_logger
 from .config import load_python_plot_generation_examples
@@ -118,10 +119,31 @@ def create_analytics_agent(
     SELECT COUNT(*) FROM metering WHERE "service_api" LIKE '%w2%'
     ```
     
-    ## For Volume/Cost/Consumption Questions:
-    - "How much did processing cost?" → Use `metering` table
-    - "Token usage by model" → Use `metering` table  
-    - "Pages processed" → Use `metering` table (with proper MAX aggregation)
+    ## For Volume / Cost / Consumption Questions — pick the rollup tier by range
+    Route by requested time range. The rollup tables scan hundreds of rows
+    where raw `metering` scans millions.
+
+    - **< 2 hours** — raw `metering`, filter on `date` AND `hour` to partition-prune.
+    - **2–24 hours** — cost → `metering_hourly`; docs / pages → `metering_docs_hourly`.
+      For the CURRENT partial hour, live-tail from raw `metering` (see `get_table_info(['metering_hourly'])`).
+    - **> 24 hours** — cost → `metering_daily`; docs / pages → `metering_docs_daily`.
+      Live-tail the current day from `metering_hourly` / `metering_docs_hourly`.
+
+    Split rules:
+    - Cost aggregates (`sum_cost` USD) AND per-unit quantities (`sum_value` — tokens/pages/seconds, check `unit`) live on `metering_hourly` / `metering_daily`.
+    - Volume aggregates (`n_docs`, `sum_pages`) live on `metering_docs_hourly` / `metering_docs_daily`.
+    - **NEVER** `SELECT sum_pages FROM metering_hourly` — column doesn't exist there.
+    - **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column doesn't exist there.
+    - **NEVER** `GROUP BY service_api` on `metering_docs_*` — column doesn't exist.
+    - `sum_value` is a **quantity** (tokens / pages / seconds — check `unit`), NOT USD. Use `sum_cost` for dollars.
+    - `metering_daily` uses `day` (DATE), not `hour_ts` — do NOT `SELECT hour_ts FROM metering_daily`.
+
+    For Lambda-level operational cost:
+    - Control-plane Lambdas (dashboards, agents, resolvers) → `control_plane_hourly`.
+    - Data-plane pipeline Lambdas (OCR/Classification/Extraction/etc.) compute → `data_plane_lambda_hourly`.
+    - Total Lambda compute = `SUM(est_lambda_cost)` UNIONed across both.
+
+    Full detail, including tier-picker sample SQL: `get_table_info(['metering_hourly'])`.
     
     ## For Accuracy Questions:
     - "Document accuracy" → Use `evaluation` tables (may be empty)
@@ -233,18 +255,52 @@ def create_analytics_agent(
     
     ## Standard Query Templates:
     ```sql
-    -- Document classification count
-    SELECT COUNT(DISTINCT "document_id") 
-    FROM document_sections_{type} 
+    -- Document classification count (substitute the specific document type,
+    -- e.g. document_sections_w2 or document_sections_invoice)
+    SELECT COUNT(DISTINCT "document_id")
+    FROM document_sections_{{type}}
     WHERE "date" = CAST(CURRENT_DATE AS VARCHAR)
-    
-    -- Cost analysis
-    SELECT "context", SUM("estimated_cost") as total_cost
-    FROM metering 
-    WHERE "date" >= '2024-01-01'
+
+    -- Cost analysis for a WIDE range — prefer the rollup, not raw metering
+    SELECT "service_api", SUM("sum_cost") AS total_cost
+    FROM metering_daily
+    WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+    GROUP BY "service_api"
+    ORDER BY total_cost DESC
+
+    -- Doc-hours and page-hours this month — volume rollup (NOT metering_daily).
+    -- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
+    -- n_docs). For a strict unique-doc count across days, query raw metering
+    -- with COUNT(DISTINCT document_id) and accept the wider scan.
+    SELECT "config_version",
+           SUM("n_docs") AS doc_hours,
+           SUM("sum_pages") AS page_hours
+    FROM metering_docs_daily
+    WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
+    GROUP BY "config_version"
+
+    -- Single-hour drilldown — raw metering for one specific (date, hour)
+    -- partition. NOT for a 24h "tail" query — that needs BOTH the current
+    -- partial hour AND the previous unsealed hour combined with the sealed
+    -- hourly rollup; see get_table_info(['metering_hourly']) for that template.
+    --
+    -- (a) Specific past hour — substitute <YYYY-MM-DD> and <HH> with the
+    --     user-requested date + zero-padded hour (angle-bracket tokens are
+    --     placeholders, NOT literal SQL — replace them, do not quote them):
+    SELECT "context", SUM(CAST("estimated_cost" AS DOUBLE)) AS total_cost
+    FROM metering
+    WHERE "date" = '<YYYY-MM-DD>'
+      AND "hour" = '<HH>'
     GROUP BY "context"
-    
-    -- Joined analysis
+
+    -- (b) Current hour — derive date+hour from the current timestamp:
+    SELECT "context", SUM(CAST("estimated_cost" AS DOUBLE)) AS total_cost
+    FROM metering
+    WHERE "date" = date_format(current_date, '%Y-%m-%d')
+      AND "hour" = date_format(CAST(current_timestamp AS timestamp), '%H')
+    GROUP BY "context"
+
+    -- Joined analysis (uses raw metering for the join key)
     SELECT ds."document_class.type", AVG(CAST(m."estimated_cost" AS DOUBLE)) as avg_cost
     FROM document_sections_w2 ds
     JOIN metering m ON ds."document_id" = m."document_id"
@@ -328,9 +384,14 @@ def create_analytics_agent(
         model_id=model_id, boto_session=session
     )
 
-    # Create the Strands agent with tools and system prompt
+    # Preserve caller-supplied hooks (e.g. DynamoDBMemoryHookProvider from
+    # AgentFactory.create_conversational_agent) and APPEND the control-plane
+    # cost hook — see with_cost_hook helper.
     strands_agent = strands.Agent(
-        tools=tools, system_prompt=system_prompt, model=bedrock_model
+        tools=tools,
+        system_prompt=system_prompt,
+        model=bedrock_model,
+        hooks=with_cost_hook(kwargs.get("hooks"), "analytics-agent", model_id),
     )
 
     logger.info("Analytics agent created successfully")

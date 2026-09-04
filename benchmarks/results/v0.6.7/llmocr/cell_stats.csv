@@ -1,0 +1,2 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+core-llm-simple-sep,9,0,0.11662,0.11044,0.9469,0.014,0.3723,1.0,0.88889,100.62722

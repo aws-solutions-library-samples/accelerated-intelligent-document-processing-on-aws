@@ -351,9 +351,15 @@ def test_fresh_cache_does_not_requeue_when_graded_metrics_legitimately_empty():
     """
     test_run_id = "run-post-graded-empty"
     # A "fresh" post-release cache: adds every key the guard now checks for
-    # (gradedPacketMetrics + excludedDocumentCount as of this release).
+    # (gradedPacketMetrics + excludedDocumentCount + classificationErrors as of
+    # this release). Add the new key here whenever one joins metrics_to_cache,
+    # otherwise this test fails for the right reason — the guard would re-queue
+    # a cache that is in fact complete.
     fresh_cache = dict(
-        _PRE_GRADED_CACHE, gradedPacketMetrics={}, excludedDocumentCount=0
+        _PRE_GRADED_CACHE,
+        gradedPacketMetrics={},
+        excludedDocumentCount=0,
+        classificationErrors={},
     )
     mock_table = Mock()
     mock_table.get_item.return_value = {
@@ -533,13 +539,121 @@ def test_athena_cost_query_accepts_name_with_spaces_and_parens():
             "_execute_athena_query",
             side_effect=lambda q, d: captured.append(q) or [],
         ),
+        patch.object(index, "_lookup_test_run_completed_at", return_value=None),
     ):
         result = index._get_cost_data_from_athena(_UNSAFE_RUN_ID)
 
     assert result == {"total_cost": 0, "cost_breakdown": {}}
     assert f"LIKE '{_UNSAFE_RUN_ID}/%'" in captured[0]
-    # The embedded YYYYMMDD is still parsed out for partition pruning.
+    # The embedded YYYYMMDD is still parsed out for partition pruning. With no
+    # CompletedAt to size the window from, we fall back to the bounded 2-day
+    # ``date IN (run_date, run_date+1)`` — see TestCostQueryDateWindow for the
+    # derived-window cases.
     assert "date IN ('2026-08-13', '2026-08-14')" in captured[0]
+
+
+@pytest.mark.unit
+class TestCostQueryDateWindow:
+    """``metering.date`` became COMPLETION time in the Phase-1 partitioning
+    change, so a window fixed at ``run_date``/``run_date+1`` silently drops any
+    run whose documents finish more than ~24h after the date embedded in its ID
+    (HITL review, throttled or very large batches). The window is now derived
+    from the run's own ``CompletedAt``.
+
+    The opposite failure matters too: an unbounded upper edge scanned days of
+    raw metering, hit ``HIVE_S3_THROTTLING`` and timed out the resolver's poll
+    loop, leaving the UI's cost section empty. Hence the clamp.
+    """
+
+    RUN_ID = "lending-test-20260813-101500"
+
+    def test_same_day_completion_keeps_the_two_day_window(self):
+        """The overwhelmingly common case must not get more expensive: a run
+        that completes the same day yields exactly the pre-change partitions."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-13T11:02:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_completion_just_before_midnight_still_covers_the_next_day(self):
+        """A document completing at 23:58 has its metering row written moments
+        later, possibly in the next date partition — that's the +1 day."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-13T23:58:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_multi_day_run_widens_the_window(self):
+        """The regression this fixes: a 3-day HITL run's later completions used
+        to fall outside the window and vanish from the reported cost."""
+        assert index._cost_query_date_filter(self.RUN_ID, "2026-08-16T09:00:00Z") == (
+            "AND date IN ('2026-08-13', '2026-08-14', '2026-08-15', "
+            "'2026-08-16', '2026-08-17')"
+        )
+
+    def test_window_is_clamped_to_the_configured_maximum(self):
+        """A pathological run (abandoned, or a clock problem putting
+        CompletedAt months out) must not scan the whole lake."""
+        sql = index._cost_query_date_filter(self.RUN_ID, "2026-09-12T09:00:00Z")
+        assert sql.count("'") == 2 * (index._COST_QUERY_MAX_PARTITION_DAYS + 1)
+        assert "'2026-08-13'" in sql  # run date is always the lower bound
+        assert "'2026-09-12'" not in sql  # far edge dropped by the clamp
+
+    def test_unparseable_completed_at_falls_back(self):
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "not-a-timestamp")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_completed_at_before_run_date_falls_back_rather_than_inverting(self):
+        """If the ID's date and the tracking row disagree, take the wider of the
+        two — never emit an empty or inverted range."""
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-01T09:00:00Z")
+            == "AND date IN ('2026-08-13', '2026-08-14')"
+        )
+
+    def test_naive_completed_at_is_treated_as_utc(self):
+        assert (
+            index._cost_query_date_filter(self.RUN_ID, "2026-08-14T09:00:00")
+            == "AND date IN ('2026-08-13', '2026-08-14', '2026-08-15')"
+        )
+
+    def test_run_id_without_a_date_leaves_the_query_unpruned(self):
+        """Pre-existing behavior, unchanged: no parseable date means no filter
+        (the selective ``document_id LIKE`` predicate still bounds the result)."""
+        assert (
+            index._cost_query_date_filter("no-date-here", "2026-08-14T09:00:00Z") == ""
+        )
+
+    def test_lookup_ignores_non_string_completed_at(self):
+        """A stubbed DynamoDB client returns Mocks, not None. Only a real ISO
+        string is usable; anything else must fall back quietly rather than reach
+        the parser."""
+        fake_table = Mock()
+        fake_table.get_item.return_value = {"Item": {"CompletedAt": Mock()}}
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert index._lookup_test_run_completed_at(self.RUN_ID) is None
+
+    def test_lookup_returns_the_stored_string(self):
+        fake_table = Mock()
+        fake_table.get_item.return_value = {
+            "Item": {"CompletedAt": "2026-08-16T09:00:00Z"}
+        }
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert (
+                    index._lookup_test_run_completed_at(self.RUN_ID)
+                    == "2026-08-16T09:00:00Z"
+                )
+
+    def test_lookup_failure_is_survivable(self):
+        fake_table = Mock()
+        fake_table.get_item.side_effect = RuntimeError("throttled")
+        with patch.object(index.dynamodb, "Table", return_value=fake_table):
+            with patch.dict(os.environ, {"TRACKING_TABLE": "t"}):
+                assert index._lookup_test_run_completed_at(self.RUN_ID) is None
 
 
 @pytest.mark.unit
@@ -601,6 +715,104 @@ def test_stickler_metrics_survive_athena_failure():
     assert result["split_classification_metrics"] == {}
     assert result["total_cost"] == 0
     assert result["cost_breakdown"] == {}
+
+
+@pytest.mark.unit
+def test_classification_errors_are_cached_and_served():
+    """The aggregator's per-section class detail must survive the cache round-trip.
+
+    Three hops have to agree for this to reach the UI — the aggregation Lambda's
+    snake_case key, the camelCase key written to testRunResult, and the read path
+    — and each is in a different file, so a rename in one is invisible until the
+    panel is silently empty.
+    """
+    test_run_id = "run-with-class-errors"
+    payload = {
+        "errors": [
+            {
+                "doc_key": "d1.pdf",
+                "section_id": "section_1",
+                "kind": "class",
+                "expected_class": "Invoice",
+                "predicted_class": "Receipt",
+                "expected_pages": [0],
+                "predicted_pages": [0],
+            }
+        ],
+        "total": 1,
+        "documents_affected": 1,
+        "truncated": False,
+    }
+    mock_table = Mock()
+    mock_sqs = Mock()
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", mock_sqs),
+        patch.object(
+            index,
+            "_aggregate_test_run_metrics",
+            return_value={"classification_errors": payload},
+        ),
+    ):
+        index.handle_cache_update_request(
+            {"Records": [{"body": json.dumps({"testRunId": test_run_id})}]}, None
+        )
+
+    cached = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+        ":metrics"
+    ]
+    assert cached["classificationErrors"] == payload
+
+    # And the read path serves it rather than dropping it on the floor.
+    mock_read_table = Mock()
+    mock_read_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(
+            test_run_id,
+            dict(
+                _PRE_GRADED_CACHE,
+                gradedPacketMetrics={},
+                excludedDocumentCount=0,
+                classificationErrors=payload,
+            ),
+        )
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_read_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == payload
+
+
+@pytest.mark.unit
+def test_a_cache_written_before_this_release_serves_an_empty_panel():
+    """An older cache must render as "nothing to show", not crash the query."""
+    test_run_id = "run-pre-class-errors"
+    mock_table = Mock()
+    mock_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(test_run_id, dict(_PRE_GRADED_CACHE))
+    }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == {}
 
 
 @pytest.mark.unit
@@ -1014,3 +1226,82 @@ def test_status_poll_retries_once_throttle_window_expires():
 
     assert result["status"] == "EVALUATING"
     mock_sqs.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+class TestDraftLabelingRunsAreNotAwaitingMetrics:
+    """A draft-labeling run CREATES the baseline, so it can never have metrics.
+
+    Treating one as "awaiting" cost twice: it badged EVALUATING indefinitely
+    (observed live — a run COMPLETE with 100/100 documents processed and
+    CompletedAt set, still EVALUATING three days later), and every view enqueued a
+    full aggregation, re-reading every document's results.json from S3, to compute
+    extraction metrics that are structurally empty because there is nothing to
+    score against.
+    """
+
+    def test_a_draft_labeling_run_is_never_awaiting_metrics(self):
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "draft-labeling",
+            "FilesCount": 100,
+            "CompletedFiles": 100,
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+        # And therefore does not render the EVALUATING badge.
+        assert index._display_status(item, "COMPLETE") == "COMPLETE"
+
+    def test_a_scoring_run_with_no_metrics_still_awaits(self):
+        """The behaviour this must not break: a real scored run genuinely is
+        pending its aggregation, and the badge is how that is communicated."""
+        item = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True
+        assert index._display_status(item, "COMPLETE") == "EVALUATING"
+
+    def test_a_scoring_run_with_metrics_does_not_await(self):
+        item = {"Status": "COMPLETE", "Purpose": "scoring", "testRunResult": {"x": 1}}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+
+    def test_a_run_predating_Purpose_falls_back_to_its_context(self):
+        """Records created before Purpose was persisted carry only the free-text
+        Context. Matched exactly, not as a substring: a user-typed context that
+        merely mentions labeling must not silently suppress a real run's badge."""
+        legacy = {"Status": "COMPLETE", "Context": "Draft labeling run"}
+        assert index._awaiting_metrics(legacy, "COMPLETE") is False
+
+        lookalike = {"Status": "COMPLETE", "Context": "Draft labeling run for Q3"}
+        assert index._awaiting_metrics(lookalike, "COMPLETE") is True
+
+    def test_purpose_wins_over_a_misleading_context(self):
+        """A persisted Purpose is authoritative; Context is user-supplied text."""
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "scoring",
+            "Context": "Draft labeling run",
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True
+
+    def test_the_purpose_is_reported_to_the_ui_not_just_used_internally(self):
+        """The rule has one home, and the UI has to be able to reach the verdict.
+
+        Without this the UI can only guess from the free-text Context, which is the
+        very thing the exact-match fallback exists to distrust — and it warned that
+        accuracy metrics "are not available" on a run that can never have them,
+        describing the expected outcome as a fault.
+        """
+        draft = {"Status": "COMPLETE", "Purpose": "draft-labeling"}
+        scoring = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._is_draft_labeling_run(draft) is True
+        assert index._is_draft_labeling_run(scoring) is False
+
+        # The same distrust of Context that _awaiting_metrics applies.
+        assert index._is_draft_labeling_run({"Context": "Draft labeling run"}) is True
+        assert (
+            index._is_draft_labeling_run({"Context": "Draft labeling run for Q3"})
+            is False
+        )

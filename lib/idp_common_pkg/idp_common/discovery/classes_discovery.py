@@ -5,15 +5,16 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Set, Tuple, cast
 
 import jsonschema
 from jsonschema import Draft202012Validator
 
 from idp_common import bedrock, image
-from idp_common.bedrock.openai_responses import is_openai_responses_model
+from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.class_names import is_valid_class_name, sanitize_class_name
+from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
 from idp_common.utils.s3util import S3Util
@@ -21,20 +22,22 @@ from idp_common.utils.s3util import S3Util
 logger = logging.getLogger(__name__)
 
 
-def _reject_openai_responses_model(model_id: Optional[str]) -> None:
-    """Reject OpenAI GPT-5.x models for discovery.
+def _reject_model_without_document_blocks(model_id: Optional[str]) -> None:
+    """Reject models that cannot accept Converse ``document`` content blocks.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks, which
-    the OpenAI Responses API (bedrock-mantle) does not support — it accepts only
-    text and image input. Routing a GPT-5.x model here would silently drop the
-    document and hallucinate, so fail loudly instead. (These models are also not
-    offered in the discovery model picklists.)
+    Discovery ingests whole PDFs via ``document`` blocks. Two families can't take
+    them — OpenAI GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects
+    them outright: "This model doesn't support documents") — and both accept only
+    text and image input. Routing either here would silently drop the document
+    and hallucinate, so fail loudly instead. (Neither is offered in the discovery
+    model picklists.)
     """
-    if is_openai_responses_model(model_id):
+    reason = document_blocks_unsupported_reason(model_id)
+    if reason:
         raise ValueError(
-            f"OpenAI Responses model '{model_id}' is not supported for discovery. "
-            "Discovery sends whole-PDF document blocks, which the bedrock-mantle "
-            "Responses API cannot accept. Choose an Anthropic or Nova model."
+            f"Model '{model_id}' is not supported for discovery: {reason}. "
+            "Discovery sends whole-PDF document blocks. Choose an Anthropic or "
+            "Nova model."
         )
 
 
@@ -213,7 +216,7 @@ class ClassesDiscovery:
             auto_split_config = self.discovery_config.auto_split
             # Caller-supplied override takes precedence over configured model_id
             model_id = model_id or auto_split_config.model_id
-            _reject_openai_responses_model(model_id)
+            _reject_model_without_document_blocks(model_id)
             top_p = auto_split_config.top_p
             max_tokens = auto_split_config.max_tokens
 
@@ -476,7 +479,8 @@ class ClassesDiscovery:
 
         Steps:
         1. Read existing classes from the target version
-        2. Add/update the new discovered class (deduplicate by $id)
+        2. Add/update the new discovered class (deduplicate by $id), carrying
+           forward any class-level setting discovery did not itself produce
         3. Save back to the target version
 
         Args:
@@ -489,7 +493,7 @@ class ClassesDiscovery:
         # must match [a-zA-Z0-9-_]+), where an invalid character fails the call
         # rather than degrading. Prompt instructions are guidance; this is the
         # guarantee.
-        self._normalize_class_id(new_class)
+        synthesized = self._normalize_class_id(new_class)
 
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
@@ -521,19 +525,45 @@ class ClassesDiscovery:
             # then compose the same BDA blueprint name prefix and fight over one
             # blueprint. Only an id that normalizes to *this* one is replaced;
             # unrelated classes keep their own ids untouched.
-            stale_ids = [
+            stale_ids = sorted(
                 cls_id
                 for cls_id in classes_by_id
                 if cls_id != new_class_id
                 and sanitize_class_name(cls_id) == new_class_id
-            ]
+            )
+            # Whose settings are carried across: the exact-id entry if there is
+            # one, else the first stale spelling. Sorted, so the choice does not
+            # depend on the order DynamoDB happened to return the classes in.
+            existing_class = classes_by_id.get(new_class_id)
+            settings_source = existing_class or (
+                classes_by_id[stale_ids[0]] if stale_ids else None
+            )
             for stale_id in stale_ids:
                 logger.info(
                     "Replacing existing class %r with its normalized id %r.",
                     stale_id,
                     new_class_id,
                 )
+                if classes_by_id[stale_id] is not settings_source:
+                    # More than one spelling normalizes to this id (or an exact
+                    # entry already existed). Only one can supply the settings, so
+                    # name the ones being dropped rather than losing them quietly.
+                    logger.warning(
+                        "Class %r also normalizes to %r; its class-level settings "
+                        "are NOT carried forward (settings taken from %r). "
+                        "Re-apply anything it alone had set.",
+                        stale_id,
+                        new_class_id,
+                        settings_source.get("$id") if settings_source else None,
+                    )
                 del classes_by_id[stale_id]
+            existing_class = settings_source
+
+            if existing_class is not None:
+                # Discovery owns `properties` and the keys it emits; every
+                # other class-level setting on the existing class was authored
+                # by a human and used to be erased here without a trace.
+                carry_forward_authored_settings(existing_class, new_class, synthesized)
 
             classes_by_id[new_class_id] = new_class
 
@@ -548,17 +578,21 @@ class ClassesDiscovery:
         )
 
     @staticmethod
-    def _normalize_class_id(new_class: Dict[str, Any]) -> None:
+    def _normalize_class_id(new_class: Dict[str, Any]) -> Set[str]:
         """Rewrite a discovered class's id in place to a portable form.
 
         Both ``$id`` and ``x-aws-idp-document-type`` are normalized so they
         stay equal to each other; the original text is kept in ``description``
         (when the class has none) so the human-readable name is not lost.
         A class id that is already valid is left untouched.
+
+        Returns the keys this method filled in itself. They are not discovery
+        output, so ``carry_forward_authored_settings`` lets an existing
+        authored value override them.
         """
         original = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
         if not original or is_valid_class_name(original):
-            return
+            return set()
 
         sanitized = sanitize_class_name(original)
         if not sanitized:
@@ -571,7 +605,7 @@ class ClassesDiscovery:
                 "(e.g. BDA sync).",
                 original,
             )
-            return
+            return set()
 
         logger.info(
             "Renaming discovered class %r to %r so it is usable by downstream "
@@ -585,6 +619,8 @@ class ClassesDiscovery:
             new_class["x-aws-idp-document-type"] = sanitized
         if not new_class.get("description"):
             new_class["description"] = original
+            return {"description"}
+        return set()
 
     @staticmethod
     def _extract_json(text: str) -> str:
@@ -670,7 +706,7 @@ class ClassesDiscovery:
         # Get configuration for without ground truth
         # Caller-supplied override takes precedence over configured model_id
         model_id = model_id or self.without_gt_config.model_id
-        _reject_openai_responses_model(model_id)
+        _reject_model_without_document_blocks(model_id)
         system_prompt = (
             self.without_gt_config.system_prompt
             or "You are an expert in processing forms. Extracting data from images and documents"
@@ -806,7 +842,7 @@ class ClassesDiscovery:
         # Get configuration for with ground truth
         # Caller-supplied override takes precedence over configured model_id
         model_id = model_id or self.with_gt_config.model_id
-        _reject_openai_responses_model(model_id)
+        _reject_model_without_document_blocks(model_id)
         system_prompt = (
             self.with_gt_config.system_prompt
             or "You are an expert in processing forms. Extracting data from images and documents"

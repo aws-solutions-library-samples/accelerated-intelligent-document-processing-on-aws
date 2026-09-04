@@ -103,8 +103,9 @@ extraction:
 > here. (`classification` / `summarization` keep their `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`) and OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`) — `reasoning_effort` controls how much
+> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -160,6 +161,16 @@ Agentic extraction requires models with tool-use support:
 > supported for **Simple (non-agentic) extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
+> **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) is served on the standard Converse
+> API and accepts a `toolConfig` with all three `toolChoice` modes, so the Strands
+> agent loop works — making it the only non-Claude/non-Nova option for Advanced
+> extraction. Its 500K context also yields a larger shard budget (~90K tokens)
+> than a 200K-context Claude model (~18K). Note that `temperature` / `top_p` are
+> rejected by Grok and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
+> [xAI Grok Models](grok-models.md).
+
 #### Cost considerations
 
 Agentic extraction may have slightly higher costs due to additional processing
@@ -171,6 +182,52 @@ over 20% in accuracy on the [getomni-ai benchmark](https://getomni.ai/blog/ocr-b
 - **100% schema compliance** vs frequent validation failures
 - **Reduced manual review** and correction efforts
 - **Automatic caching**: For supported models, prompt and tool caching is automatically enabled, reducing costs for repeated extractions with the same configuration
+
+##### Dropping the duplicated schema (`restate_schema_in_system_prompt`)
+
+Agentic extraction sends your class schema **three times** per request: as the
+tool's input schema (required by the API), restated as JSON in the system prompt,
+and again in the schema-reminder tool. Copies 2 and 3 are byte-identical, so the
+system-prompt copy is pure duplication — measured at **2,600 of 6,680 schema
+tokens (38%)** on the lending `Payslip` class.
+
+```yaml
+extraction:
+  agentic:
+    restate_schema_in_system_prompt: true   # default; false removes copy 2
+```
+
+Left **on by default** deliberately. Restating a schema in prose often improves
+adherence, so this is a token/adherence trade rather than a free saving: on a
+list-heavy document, an agent that drifts from the schema returns fewer rows. If
+you turn it off, judge the result on **completeness**, not on the token count.
+The schema-reminder tool is unaffected either way, so the agent can always ask for
+the schema again mid-run.
+
+> **What to expect if you turn it off: nothing much, and that is measured.** On the
+> benchmark suite it cost no completeness and no accuracy — and it did not save
+> anything measurable either. Two reasons, both worth knowing before you tune:
+> the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
+> of input price; and reclaiming them does **not** make a long document split into
+> fewer parts, because the schema text is not counted when the pipeline decides how
+> to split a document — the tokens come out of a safety margin that was already
+> unused. Earlier versions of this page and of the setting's own description said
+> the payoff was context-window headroom; that was wrong, and making it true is
+> tracked in
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
+> Treat this as a setting for measuring the question on your own documents, not as
+> a recommended optimisation.
+
+**Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
+**Configuration → Prompt Preview → System Prompt** tab ends with the
+`Expected Schema:` block this setting controls, and it is included in the token
+total — so turning the setting off shows the total drop instead of leaving it
+unchanged. One caveat the preview states rather than hides: the real block is
+generated from a Pydantic model built from your class (every field gains a
+`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
+can only approximate it from the class schema. Expect the real block to be
+**larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
+which makes the previewed saving a floor, not a ceiling.
 
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
@@ -482,6 +539,461 @@ extraction stub is authoritative). See the demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
 ---
+
+## 2b. Output Correctness: Coercion, Validation & Multi-Document Sections
+
+Three things happen to an extraction result after the model returns it and before
+it is stored. All are configurable under **Configuration → Extraction** in the Web
+UI, so any of them can be turned off without a redeploy if it causes trouble.
+
+### Value coercion (`extraction.coercion`)
+
+Repairs type/format mismatches deterministically — **no model call, no cost**:
+
+| Input | Field type | Becomes |
+|-------|-----------|---------|
+| `"$1,234.00"` | `number` | `1234.0` |
+| `"1.234,56"` (European) | `number` | `1234.56` |
+| `"12.5%"` | `number` | `12.5` (magnitude preserved, **not** divided by 100) |
+| `"03/15/2024"` | `string` + `format: date` | `"2024-03-15"` |
+| `"March 15, 1980"` | `string` + `format: date` | `"1980-03-15"` |
+| `"Yes"` | `boolean` | `true` |
+
+Every change is recorded in the section's `metadata.coercion`, so nothing is
+silently rewritten and you can audit exactly what was changed and why.
+
+**What it refuses to do.** Anything genuinely ambiguous is left untouched and
+recorded as a refusal rather than guessed:
+
+- `"01/02/2024"` — January 2nd or February 1st? (`ambiguous_date`)
+- `"03/15/24"` — a 2-digit year cannot be assigned a century (1924 or 2024 matters
+  for a date of birth)
+- `"2024-03-15T09:00:00Z"` into a `date` field — dropping a time component is data loss
+- `"1,234.56"` into an `integer` field — rounding would discard data
+- Anything across a type family — never string→object, never a scalar wrapped in an array
+
+If your corpus has a known day/month convention, `date_order: MDY` or `DMY`
+resolves the all-numeric ambiguous case. It **never** overrides a value that is
+already unambiguous (a `15` cannot be a month whatever you set).
+
+> ⚠️ **The refusal covers coercion, not the pipeline.** `ambiguous_date` only
+> engages when the model hands back the **raw string**. If the model normalizes
+> the date itself, it picks a day/month order silently — and there is **no
+> refusal, no ProcessingIssue, and no `metadata.coercion` entry at all**. The
+> guess is indistinguishable from a correct reading.
+>
+> Measured on a single-page invoice containing `Shipment Date: 03/04/1985`
+> extracted into a `format: date` field, ground truth `1985-04-03` (D/M/Y):
+>
+> | extraction model | coercion | value returned | refusal recorded? |
+> |---|---|---|---|
+> | `us.anthropic.claude-sonnet-4-6` | off | `1985-03-04` | — |
+> | `us.anthropic.claude-sonnet-4-6` | **on** | `1985-03-04` | **none** |
+> | `us.amazon.nova-lite-v1:0` | off | `1985-03-04` | — |
+> | `us.amazon.nova-lite-v1:0` | **on** | `1985-03-04` | **none** |
+>
+> Both models resolved the ambiguity to M/D/Y on their own and emitted ISO
+> directly, so coercion never saw a string and had nothing to refuse. Note that
+> `date_order` does not help here either — it also only applies to values
+> coercion actually processes.
+>
+> **What this means for you.** The property that holds is "*coercion* never
+> guesses a day/month order", not "the pipeline never does". For date-of-birth,
+> effective-date or any field where a transposed day and month is a correctness
+> problem rather than a formatting one, do not treat an unflagged date as
+> verified.
+>
+> **Two mitigations, both free.** Instruct the model in the class or field
+> description to return dates **verbatim**, which puts the value back on
+> coercion's path and makes the refusal authoritative; and/or set `date_order` to
+> your corpus convention so that path resolves rather than refuses. Note the
+> order matters — `date_order` alone does nothing here, because a
+> pre-normalized ISO value never reaches the code `date_order` governs. If your
+> corpus mixes D/M/Y and M/D/Y sources, neither mitigation is sufficient and
+> numeric dates need review.
+>
+> **This is a documented limitation, not planned work** — see
+> [#717](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/717)
+> for the measurement and the reasoning. Detecting it automatically was
+> prototyped and rejected: the check can only fire on evidence that the *document*
+> is ambiguous, which on a normal US or EU corpus is a large fraction of all
+> dates, so it produced warnings faster than anyone could act on them. It cannot
+> tell you which reading is right — only that one was chosen.
+
+> **How much does coercion actually change?** Measured on a live stack: modern
+> models (Claude Sonnet 4.6, Nova Lite) already return correctly-typed values for
+> scalar fields, so coercion often fires **zero** times and changes nothing. It
+> fires substantially on **long repetitive list rows** (81 coercions across
+> 100-row transaction lists in one benchmark), where model output drifts. Treat it
+> as a **safety net for messy output and non-format-tolerant consumers** — Athena
+> column typing, rule validation, API clients — rather than as an accuracy
+> improver. It did not move evaluation accuracy in either A/B we ran.
+
+### Schema validation (`extraction.validation`)
+
+Validates the result against the **full class JSON Schema** — most importantly the
+`format` keywords (`date`, `email`, `uri`, `uuid`) that type validation alone does
+not enforce. Runs on both Simple and Advanced extraction.
+
+`fail_action` decides what happens when validation fails:
+
+| `fail_action` | Behaviour | Extra inference? |
+|---|---|---|
+| `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
+| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
+| `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
+
+Validation is **on by default** precisely because the default action is free: it
+turns an otherwise-silent schema violation into something visible at no cost —
+the issue reaches the document list's **Processing Issues** column and the
+**Processing Report** tab, naming the failing fields and the first few concrete
+violations, so you do not have to open the section result JSON.
+`escalate` is the opt-in that spends money. Only the failing fields are
+re-extracted and only those are merged back, so an over-eager escalation cannot
+overwrite fields that already validated; if escalation fails, the original
+extraction is kept unchanged.
+
+> **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
+> configurations are migrated automatically on read — no action required.
+
+### Forced tool use (`extraction.forced_tool`) — experimental, off by default
+
+Coercion and validation repair or report a bad result *after* the fact. Forced
+tool use tries to make one shape of bad result impossible in the first place: the
+class schema is sent to the model as a **required tool** whose input *is* your
+schema, rather than described in prose in the prompt, and the API constrains the
+reply to that shape.
+
+```yaml
+extraction:
+  forced_tool:
+    enabled: false             # experimental; measure before turning it on
+    fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
+```
+
+Applies to **Simple** extraction only — Advanced (agentic) extraction already
+sends a tool schema. Configurable under **Configuration → Extraction → Schema
+Enforcement (experimental)**.
+
+**Why it is off by default.** Forcing constrains the *structure* of the reply, not
+the *accuracy* of the values in it. A model that would have emitted a stray key
+may instead emit a worse value that fits the schema, so this is not a free
+accuracy win and it is not yet proven on real corpora. Measure completeness and
+field accuracy on your own documents before enabling it.
+
+**When it is skipped automatically.** Not every route can carry a tool
+configuration. Models reached through a custom Lambda hook and the GPT-5.x
+(Responses API) route fall back to the prompt, and the reason is recorded — so a
+before/after comparison can tell "forcing changed nothing" from "forcing never
+ran", which are very different results.
+
+**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
+`honored` (the model can accept a tool configuration and still answer in prose),
+`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
+the number to look at first: forcing that is not honored has not been tested.
+
+**Visible in the Prompt Preview.** With Extraction mode **Simple** and this
+setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
+the exact `toolSpec` — tool name, tool description, and input schema — and its
+tokens are added to the previewed total, so the cost of turning enforcement on is
+no longer invisible. The tab shows property names **as you authored them** and
+says so, because the wire-safe rewriting below is reversed in the stored result;
+the token estimate is taken from the compact form actually serialized onto the
+request, not from the indentation added for readability.
+
+> **Field names with spaces are handled.** Bedrock restricts top-level tool
+> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
+> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
+> form for the request and restored to exactly what you authored in the stored
+> result — you never see the sanitized names, and no configuration change is
+> needed.
+
+`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
+instead of falling back. That loses data by design and exists only to measure how
+often forcing is actually honored; leave it on in production.
+
+### Multi-document sections (`instance_count`)
+
+Classification splits sections by document *type*. When a packet concatenates
+several records of the **same** type with no separator, there is no type change to
+split on, so they land in one section — and extraction, whose class schema
+describes one document, may return only the first record.
+
+Each section now reports an **instance count**. In the Sections panel it is shown
+only when there is something to say — a badge beside the section's class when the
+count exceeds 1, hoverable for detail. A normal single-document section shows just
+its class name; so does a section whose count was never determined (older
+documents, or extraction that failed before producing a result). The raw value is
+on the API as `Section.InstanceCount` either way.
+
+If a class's schema is **already modelled as a packet of records** (one top-level
+array, one element per record), name that array so the count can be derived:
+
+```yaml
+classes:
+  - $id: patient_packet
+    type: object
+    x-aws-idp-instance-array: records   # each element is one document
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+          properties:
+            patient_name: { type: string }
+```
+
+This changes nothing about extraction output — it only tells the pipeline which
+existing array is the instance axis — so it is safe to add to a working config.
+
+If the model returns a JSON **array** for a single-document schema, every record is
+now preserved (the first becomes the section result, the rest are recorded in
+`metadata.recovered_instances`) and the section is flagged for review rather than
+failed.
+
+#### The silent case, and the warning that catches it
+
+The hard case is the model returning a **single object** for a several-document
+section. Only that one record exists in the response, so nothing can recover the
+others — and until recently nothing reported it either: the section was `SUCCESS`,
+the document `COMPLETED`, `ProcessingIssueCount` was `0`, and the instance count
+was `1`. One record out of three, silently.
+
+Extraction now asks the model, in the **same inference**, how many separate
+documents of the class the supplied pages contain. When that answer exceeds the
+number of records in the result, the section raises
+`extraction_multi_instance_suspected` (severity **warning**) naming both numbers,
+reports the model's count as the section's instance count, and emits a
+`MultiInstanceSectionsSuspected` CloudWatch metric. The badge in the Sections
+panel says the records are *missing*, not that they were extracted.
+
+```yaml
+extraction:
+  multi_instance_detection:
+    enabled: true    # OFF by default — turn it on for multi-record corpora
+    question: ""     # blank = the shipped wording; supports {DOCUMENT_CLASS}
+```
+
+The question is editable, like every other prompt in the system — it is sent as the
+description of the auxiliary property. **Two clauses are load-bearing** and should
+survive any edit: *"do not count pages, sections or repeated headers"* (without it,
+a document carrying an identical banner on each of four pages reads as four
+documents) and *"DIAGNOSTIC METADATA, not extracted document data"* (so the model
+does not treat the field as something to extract from the page).
+
+- **Detection only.** It never changes the extracted data, never fails a section,
+  and never turns on a schema flag for you. Fixing the loss is
+  `x-aws-idp-multi-instance` (below) or splitting the section.
+- **OFF by default — but it is very good at its job.** Measured on two real
+  labeled corpora, 80 paired Test Studio runs (same documents both sides, only the
+  toggle differing):
+
+  | on 40 real bank-check images, against committed ground truth | |
+  |---|---|
+  | multi-check images found | **18 of 18** |
+  | false alarms on the 22 single-check images | **0** |
+  | precision / recall | **1.000 / 1.000** |
+  | count reported *exactly* right | **18 of 18** (2 to 8 checks) |
+  | token cost | input **+1.8%**, output **−0.5%** |
+
+  It found every multi-check sheet and counted it correctly. **But be precise about
+  what those 18 flags mean** — they are a *configuration* finding on this corpus, not
+  averted data loss. The extracted rows were counted afterwards: **0 checks missing
+  in either arm**. `BANK_CHECK`'s schema is a single `checks` array, so the class
+  already models several checks per sheet and nothing was collapsing. What detection
+  correctly spotted is that the class never declares its instance axis, so the
+  section reports 1 instance for a sheet holding 6 documents — fixed for free with
+  `x-aws-idp-instance-array: checks`, no schema change and no baseline migration.
+
+  The distinction matters, because "probe says 6, section says 1" **cannot by itself
+  tell you whether records were lost**: `instance_count` is 1 for any class with no
+  declared instance axis, whether the records are missing or sitting inside a
+  declared array. When detection fires, check the extracted data before concluding
+  anything was dropped.
+
+- **Why it is off anyway.** On a corpus with *no* multi-record documents to find, it
+  is pure cost: `RealKIE-FCC-Verified` lost about **1.3 accuracy points** with it on
+  (0.7678 → 0.7552; worse on 14 of 40 documents, better on 1, sign test
+  **p = 0.001**), spread diffusely over four attributes rather than any single
+  failure mode. A default has to be safe for the deployment that gets no benefit,
+  so the default is off.
+
+- **So: turn it on when a section can hold several records of one class *and the
+  class schema describes only one*.** That combination is what loses records; either
+  half alone does not. Leave it off otherwise. It is per configuration profile, so a
+  multi-record corpus can have it while the rest of your deployment does not.
+
+- **Two uses, and only one is a setting.** As a **diagnostic**, turn it on once, act
+  on what it names, turn it off — that is how the `BANK_CHECK` misconfiguration
+  above was found. As a **standing guard**, leave it on where a corpus genuinely
+  keeps producing merged same-class sections and you want a warning on each one.
+
+### Multi-instance sections (`x-aws-idp-multi-instance`)
+
+Detection tells you records were lost. This **extracts all of them**.
+
+Set `x-aws-idp-multi-instance: true` on a class and its *effective* schema becomes
+a list of that class:
+
+```yaml
+classes:
+  - $id: Pay-Statement
+    type: object
+    x-aws-idp-multi-instance: true      # <- the only change
+    properties:
+      CheckNumber: { type: string }
+      NetPay:      { type: string }
+```
+
+Extraction then requests, and `inference_result` then holds:
+
+```json
+{"instances": [
+  {"CheckNumber": "77310468", "NetPay": "4,104.59"},
+  {"CheckNumber": "77298351", "NetPay": "4,657.95"},
+  {"CheckNumber": "77284207", "NetPay": "16,487.56"}
+]}
+```
+
+You keep authoring the class as **one record** — the wrapper is synthesized, so
+you do not degrade a single-record schema by hand.
+
+In the web UI both modes are one control, under **Configuration → Document
+Schema →** the class:
+
+> **Documents per section**
+> - ( ) One document — *the normal case; nothing changes*
+> - ( ) Several — this class already lists them → **Record array:** `records ▾`
+> - ( ) Several — wrap my single-record class → `instances[ ] → <Class> → { … }`
+
+The two modes are alternatives, so they are one question with three answers rather
+than two separate toggles. The record-array picker appears only in the middle
+branch, and the shape preview and the baseline-migration warning appear only in the
+last one.
+
+**Opt-in per class, never automatic.** Auto-detecting the shape would make every
+single-document section pay for an extra nesting level and would move the
+detection problem one stage later. Nothing changes for a class that does not set
+the flag.
+
+Two known gaps, both filed:
+
+- **Discovery does not suggest it.** Discovery sees the pages and authors the
+  schema, so it is the best place to notice "this sample holds three
+  Pay-Statements" — but it does not, so today you have to already know the
+  feature exists. Tracked in GitHub #765 (suggest, with a one-click apply; never
+  set it silently, because the shape change invalidates baselines).
+- **Re-running Discovery on a class erases the flag** — along with every other
+  class-level `x-aws-idp-*` setting, because the merge replaces the class
+  wholesale. Tracked in GitHub #764. Until it is fixed, re-check the class's
+  settings after any Discovery run that targets a class you have configured by
+  hand.
+
+#### Designate or Synthesize?
+
+The two keys are mutually exclusive (config validation rejects both on one class)
+and answer opposite questions:
+
+| Your class describes… | Key | Schema change | Downstream impact |
+|---|---|---|---|
+| **one record** (the normal case) | `x-aws-idp-multi-instance: true` | wrapper synthesized | shape of `inference_result` changes — **migrate baselines** |
+| **a packet that already holds an array of records** | `x-aws-idp-instance-array: <property>` | none | none |
+
+If you already hand-authored a `List of DocTypeX` class, stay on
+`x-aws-idp-instance-array` — it costs nothing and changes nothing. Migrating to
+Synthesize mode is optional; the payoff is correctly-keyed per-instance
+confidence, Hungarian record matching in evaluation, and a per-attribute (rather
+than one-giant-attribute) evaluation report.
+
+> **An internal list is not a reason to avoid this.** An invoice class with
+> `line_items[]` is a *single-instance* document with an internal list.
+> `x-aws-idp-multi-instance: true` on it is correct and gives
+> `instances[i].line_items[j]` — three invoices in one section. Configuration
+> validation only *warns* when a class's top level is nothing but one record
+> array, because that is the case that would double-wrap.
+
+#### ⚠ Evaluation baselines must be migrated
+
+This is the one part of the feature that can break a working deployment.
+Evaluation compares a prediction against a stored baseline **of the same shape**.
+A wrapped prediction against a flat baseline scores every field as
+missing-on-one-side, so the class's accuracy collapses to ~0 — measured live: a
+correctly-migrated baseline scored **1.000** on the same document where a flat one
+scored **0.000**.
+
+Evaluation now logs a warning naming the class and the exact migration command when
+it sees the two shapes disagree, in either direction — so it is no longer *silent*.
+But the warning is in the evaluation Lambda's log, not on the report, and the score
+is still 0: treat it as a safety net, not a substitute for migrating.
+
+Migrate in the same change as the flag:
+
+```bash
+# Dry run (default — nothing is written)
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack
+
+# Apply, keeping a copy of each original
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack \
+    --apply --backup-suffix .pre-multi-instance
+
+# Rolling the flag back off again
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack \
+    --direction unwrap --apply
+```
+
+The script is idempotent (safe to re-run after an interruption), touches only
+classes that set the flag, and refuses to flatten a multi-record baseline on
+rollback because that would discard ground truth you authored.
+
+**It migrates shape, not content.** Wrapping a one-record baseline gives
+`instances` of length 1. If the document really contains three records — which is
+the reason you turned the flag on — the other two were never in the baseline,
+because the old pipeline could not extract them. You have to add them, or
+evaluation will score the newly-found records as false positives. The script
+lists every document it touched so that work is visible.
+
+#### What else changes
+
+| Area | With the flag on |
+|---|---|
+| Confidence | keyed `instances[i].Field`; each record scored independently |
+| HITL review | alert labels become `instances[i].Field` — correct, but review task labels change |
+| Reporting / Athena | **one row per document**, not per section, with a new `record_index` column. Existing column names are unchanged, so existing queries keep working — but `(document_id, section_id)` is no longer unique |
+| Analytics agent | told about `record_index` for flagged classes |
+| Z3 rules | address a record explicitly: `…inference_result.instances[0].NetPay`. A rule whose path no longer resolves logs what to write instead — a miss otherwise reads as "optional parameter absent" and the rule quietly stops firing |
+| Public SDK | `fields` is unchanged (the raw shape), plus a new `instances` list; `confidence` now walks lists and groups |
+| BDA mode | not applicable — this is a pipeline-mode (`use_bda: false`) feature |
+| Advanced (agentic) extraction | the wrapper applies, but the #753 detection probe does not |
+
+#### What DEGRADES with the flag on — read this before turning it on
+
+The wrapper moves every one of your properties one level down, and three checks
+walk only the **top level** of a class schema. None of them is a correctness bug,
+but all three quietly stop doing anything for a flagged class:
+
+| Check | What stops applying |
+|---|---|
+| BLANK vs MISSING field handling (`x-aws-idp-source-page-types`) | Nothing at the top level carries it any more, so the distinction is not applied at all for a flagged class. |
+| "a declared list came back empty" (`extraction_incomplete`) | The only top-level array is now `instances`, so an **inner** list of a record coming back empty no longer raises it — and that is the largest silent-data-loss shape this pipeline has. |
+| Confidence-prompt property descriptions | The prompt builder descends one level under an array, so a nested group or list *inside* a record loses its sub-field descriptions. |
+| Evaluation report granularity | The per-attribute breakdown becomes **one** attribute (`instances`) carrying every field's rows, instead of one per field. Every row is still there and still drillable — only the grouping is coarser. |
+
+Two more things to know:
+
+- **Few-shot examples are not rewritten.** `x-aws-idp-examples` prompts are
+  hand-authored text. If yours show a flat record they now contradict the requested
+  `{"instances": […]}` shape — and a flat answer is salvaged as exactly **one**
+  instance, so the loss looks like success. Re-author them wrapped. Configuration
+  validation warns when a flagged class carries examples.
+- **The Prompt Preview shows the un-transformed schema**, and says so — for both
+  the wrapper and the detection probe. The preview is
+  built in the browser from the class schema as stored, so for a flagged class the
+  prompt it renders is not the one the pipeline sends; it now carries a warning to
+  that effect rather than quietly misleading you. (It also omits the detection
+  probe when that is on.) The section's stored metadata is the authoritative record
+  of what was sent. Duplicating the transform in TypeScript was considered and
+  rejected: two implementations that must stay in sync are a worse liability than
+  one documented divergence.
 
 ## 3. Confidence Assessment
 
@@ -1018,7 +1530,7 @@ The UI renders confidence with color coding:
 
 Interface coverage includes the **Visual Editor** tab (split-pane document image
 + form editing, bounding-box overlays, recursive nested display, inline editing
-with change tracking), the **JSON Editor** tab, the **Revision History** tab
+with change tracking), the **JSON Editor** tab, the **Edit history** tab
 (audit trail with field-level diffs), **smart filters** (low-confidence,
 evaluation mismatches, collapsible tree), and nested-data support:
 
@@ -1144,10 +1656,14 @@ extraction:
 
 **Supported models** include:
 
-- `us.anthropic.claude-3-5-haiku-20241022-v1:0`
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
+
+`CACHEPOINT_SUPPORTED_MODELS` in
+[`idp_common/bedrock/client.py`](../lib/idp_common_pkg/idp_common/bedrock/client.py)
+is the authoritative list.
 
 **Optimal placement**: separate **static** content (system instructions,
 few-shot examples — cacheable) from **dynamic** content (document text — not
@@ -1288,6 +1804,13 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
 
+A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+rather than the completeness checks:
+
+| Code | Severity | Fires when |
+|---|---|---|
+| `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
+
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:
 
@@ -1314,10 +1837,12 @@ list is populated, the check stays quiet — the detected tables plausibly belon
 that one, and an empty sibling may be genuinely absent.
 
 **This check needs no configuration.** It runs on every Advanced-mode section, and
-in particular it is *not* behind `extraction.agentic.validation.enabled` (which is
-off by default) — a guard against silent data loss that has to be switched on
-protects nobody who did not already know to look. Its only effect is one more agent
-turn; it can never fail a document.
+in particular it is *not* behind `extraction.validation.enabled` — a guard against
+silent data loss that has to be switched on protects nobody who did not already
+know to look. (That argument is also why `extraction.validation.enabled` itself now
+defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+turning validation off does not also disable a check that costs nothing.) Its only
+effect is one more agent turn; it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as

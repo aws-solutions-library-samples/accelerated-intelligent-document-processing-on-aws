@@ -149,7 +149,21 @@ class AssessmentService:
 
     def _get_class_schema(self, class_label: str) -> Dict[str, Any]:
         """
-        Get JSON Schema for a specific document class.
+        Get the EFFECTIVE JSON Schema for a document class.
+
+        Assessment reads the class schema **from config**, not from the
+        extraction output, so it must derive the multi-instance wrapper
+        independently (GitHub #715, plan D2). Doing it here — the single point
+        assessment loads a schema from — is what makes the prompt's property
+        descriptions, the per-attribute threshold lookup, the ``attr_type ==
+        "list"`` branch that produces ``instances[i]`` row keys,
+        ``resolve_array_item_thresholds`` and the batching module's
+        ``_schema_field_mismatch_reason`` guard all see the same shape extraction
+        produced. Without it, ``instances`` is an unknown key: the whole section
+        collapses to one ``{"confidence": 0.5}`` leaf and the escalation ladder
+        blacklists it permanently.
+
+        A no-op (same object) for every unflagged class.
 
         Args:
             class_label: The document class name
@@ -158,8 +172,11 @@ class AssessmentService:
             JSON Schema dict for the class, or empty dict if not found
         """
         from idp_common.assessment.threshold_resolver import find_class_schema
+        from idp_common.schema.multi_instance import wrap_class_schema
 
-        return find_class_schema(class_label, self.config.classes) or {}
+        return (
+            wrap_class_schema(find_class_schema(class_label, self.config.classes)) or {}
+        )
 
     def _resolve_confidence_escalation_model(self, class_label: str) -> Optional[str]:
         """Pick the stronger confidence model the self-healing ladder escalates to.
@@ -1507,10 +1524,22 @@ class AssessmentService:
                 )
                 + audit_issues
             )
-            if processing_issues:
-                extraction_data["metadata"]["processing_issues"] = [
-                    pi.to_dict() for pi in processing_issues
-                ]
+            # MERGE, do not replace. Extraction already wrote its own issues here
+            # (extraction_incomplete, extraction_validation_failed, ...); this step
+            # owns only the assessment-stage ones. Replacing the list dropped
+            # everything extraction had reported — which mattered most for the
+            # on-by-default validation issue, because `separate` (the recommended
+            # confidence mode) is exactly the mode where this step runs.
+            _inherited = [
+                pi
+                for pi in (
+                    extraction_data.get("metadata", {}).get("processing_issues") or []
+                )
+                if isinstance(pi, dict) and pi.get("stage") != "assessment"
+            ]
+            _merged = _inherited + [pi.to_dict() for pi in processing_issues]
+            if _merged:
+                extraction_data["metadata"]["processing_issues"] = _merged
                 # Append a Processing Issues block to the (extraction-generated)
                 # processing report so the human-readable report on the simple/
                 # separate path also surfaces the root cause — the extraction
@@ -1542,7 +1571,20 @@ class AssessmentService:
                     doc_section.confidence_threshold_alerts = (
                         confidence_threshold_alerts
                     )
-                    doc_section.processing_issues = processing_issues
+                    # Replace only the assessment-stage issues, keep the rest.
+                    # The section write that follows in the assessment Lambda
+                    # REPLACES the whole section map, so an unconditional
+                    # `= processing_issues` did not merely skip extraction's
+                    # issues — it deleted them from DynamoDB. Verified live: with
+                    # `confidence.mode: separate` a section whose extraction had
+                    # raised extraction_validation_failed came back with
+                    # ProcessingIssues absent, while the same run under
+                    # `integrated` (no standalone assessment step) kept it.
+                    doc_section.processing_issues = [
+                        pi
+                        for pi in (doc_section.processing_issues or [])
+                        if getattr(pi, "stage", None) != "assessment"
+                    ] + processing_issues
                     break
 
             # Update document with metering data

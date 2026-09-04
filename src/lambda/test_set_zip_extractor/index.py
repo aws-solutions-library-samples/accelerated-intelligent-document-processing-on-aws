@@ -21,6 +21,51 @@ dynamodb = boto3.resource('dynamodb')
 SUPPORTED_EXTENSIONS = ('.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif')
 
 
+# The two folders a test-set zip is organised into.
+ZIP_ROLES = ('input', 'baseline')
+
+
+def classify_zip_entry(file_path):
+    """Which role a zip entry belongs to, and its path relative to that folder.
+
+    Returns ``(role, relative_path)`` where role is ``'input'``, ``'baseline'`` or
+    ``None`` for an entry in neither.
+
+    Matches a whole path **segment**. This was ``'/input/' in file_path`` — a substring
+    test with a leading slash — so a zip built exactly as the wizard's own diagram
+    shows::
+
+        my-test-set.zip
+          input/document1.pdf
+          baseline/document1.pdf/sections/1/result.json
+
+    produced entries like ``input/document1.pdf``, which contain no ``/input/`` and were
+    skipped as "not in input/ or baseline/ folder". Every file was dropped and the set
+    reported 0 documents. Only a zip with a wrapping folder (``wrapper/input/...``)
+    matched, which is why the pre-deployed HuggingFace sets worked and a hand-made one
+    never did. Both shapes resolve here.
+
+    Archive noise macOS adds when compressing a folder is excluded, because
+    ``__MACOSX/input/._document1.pdf`` *does* contain ``/input/``: it used to be taken
+    for an input document and then failed validation as a baseline missing for a file
+    nobody added.
+    """
+    parts = [p for p in file_path.split('/') if p]
+    if not parts:
+        return None, ''
+
+    if parts[0] == '__MACOSX' or any(p.startswith('._') for p in parts):
+        return None, ''
+
+    for index, part in enumerate(parts):
+        if part in ZIP_ROLES:
+            relative = '/'.join(parts[index + 1:])
+            # A bare `input/` directory entry has nothing after it.
+            return (part, relative) if relative else (None, '')
+
+    return None, ''
+
+
 def _match_baseline_name(path_parts, input_names):
     """Find the baseline directory name for a baseline file's path segments.
 
@@ -47,11 +92,18 @@ def handler(event, context):
     logger.info(f"Zip extractor invoked with {len(event['Records'])} S3 events")
     
     for record in event['Records']:
+        # Bind test_set_id fresh per record. Without this, an exception raised
+        # BEFORE the assignment inside the try (e.g. a malformed record with
+        # no 's3' key) would raise NameError in the except clause; and for a
+        # malformed record following a healthy one, the except clause would
+        # carry the PREVIOUS record's test_set_id and flip that (unrelated)
+        # set to FAILED. Cross-record contamination.
+        test_set_id = None
         try:
             # Parse S3 event
             bucket = record['s3']['bucket']['name']
             key = record['s3']['object']['key']
-            
+
             # Extract test set ID from key (key format: test_set_id/test_set_id.zip)
             if '/' in key and key.endswith('.zip'):
                 test_set_id = key.split('/')[0]  # Get the folder name
@@ -60,9 +112,9 @@ def handler(event, context):
                 # Fallback for old format
                 test_set_id = key
                 zip_key = key
-            
+
             logger.info(f"Processing zip extraction for test set: {test_set_id}, key: {key}")
-            
+
             # Extract the uploaded ZIP file
             _extract_uploaded_zip(bucket, test_set_id, zip_key)
 
@@ -71,13 +123,17 @@ def handler(event, context):
 
             # Update test set status to COMPLETED with file count
             _update_test_set_status(test_set_id, 'COMPLETED', None, file_count)
-            
+
             logger.info(f"Successfully processed zip extraction for test set {test_set_id}")
-            
+
         except Exception as e:
-            logger.error(f"Error processing S3 event: {str(e)}")
-            # Update test set status to FAILED
-            _update_test_set_status(test_set_id, 'FAILED', str(e))
+            logger.exception(f"Error processing S3 event: {str(e)}")
+            # Only update status if we identified which test set this record was
+            # for — otherwise a pre-parse failure would either NameError here or,
+            # for a bad record following a healthy one, incorrectly FAIL the
+            # PREVIOUS record's set (cross-record contamination).
+            if test_set_id is not None:
+                _update_test_set_status(test_set_id, 'FAILED', str(e))
 
     
     return {'statusCode': 200}
@@ -105,13 +161,13 @@ def _extract_uploaded_zip(bucket, test_set_id, zip_key):
                 if not file_info.is_dir():
                     file_path = file_info.filename
 
-                    # Check if file is in input/ or baseline/ folder
-                    if '/input/' in file_path:
+                    # Segment match, so the documented root-level layout works as
+                    # well as a wrapped one. See classify_zip_entry.
+                    role, relative = classify_zip_entry(file_path)
+                    if role == 'input':
                         input_files.append(file_info)
-                        # Extract filename for matching
-                        filename = file_path.split('/')[-1]
-                        input_names.add(filename)
-                    elif '/baseline/' in file_path:
+                        input_names.add(relative.split('/')[-1])
+                    elif role == 'baseline':
                         baseline_files.append(file_info)
                     else:
                         logger.warning(f"Skipping file not in input/ or baseline/ folder: {file_path}")
@@ -120,11 +176,11 @@ def _extract_uploaded_zip(bucket, test_set_id, zip_key):
             # named after the input filename and may use any supported document
             # extension (.pdf, .png, .jpg, .jpeg, .tiff, .tif), not just .pdf.
             for file_info in baseline_files:
-                # Extract folder name after /baseline/ for matching
-                parts = file_info.filename.split('/baseline/', 1)
-                if len(parts) == 2 and '/' in parts[1]:
+                # Path relative to baseline/, for matching against input filenames.
+                _role, relative = classify_zip_entry(file_info.filename)
+                if '/' in relative:
                     # Handle nested structure: baseline/category/filename.png/sections/...
-                    path_parts = parts[1].split('/')
+                    path_parts = relative.split('/')
                     if len(path_parts) >= 2:
                         baseline_name = _match_baseline_name(path_parts, input_names)
                         if baseline_name:
@@ -148,41 +204,29 @@ def _extract_uploaded_zip(bucket, test_set_id, zip_key):
             
             logger.info(f"Validation passed: {len(input_names)} input documents match {len(baseline_names)} baseline documents")
             
-            # Extract input files
-            for file_info in input_files:
-                file_content = zip_ref.read(file_info.filename)
-                
-                # Extract relative path after /input/
-                parts = file_info.filename.split('/input/', 1)
-                if len(parts) == 2:
-                    relative_path = parts[1]
-                    dest_key = f"{test_set_id}/input/{relative_path}"
-                    
+            # Both roles, through classify_zip_entry for the relative path. These two
+            # loops carried the same leading-slash split as the partition above, so
+            # fixing only the partition would have let a root-level zip pass validation
+            # and then write nothing: len(parts) == 2 was false and the put_object was
+            # skipped in silence.
+            for role, files in (('input', input_files), ('baseline', baseline_files)):
+                for file_info in files:
+                    _role, relative_path = classify_zip_entry(file_info.filename)
+                    if not relative_path:
+                        # classify_zip_entry already accepted it into this list, so an
+                        # empty relative path is a bug in that function, not a bad zip.
+                        logger.warning(
+                            f"No path below {role}/ for {file_info.filename}; skipping"
+                        )
+                        continue
+
+                    dest_key = f"{test_set_id}/{role}/{relative_path}"
                     s3.put_object(
                         Bucket=bucket,
                         Key=dest_key,
-                        Body=file_content
+                        Body=zip_ref.read(file_info.filename)
                     )
-                    
-                    logger.info(f"Extracted input file: {file_info.filename} -> {dest_key}")
-            
-            # Extract baseline files
-            for file_info in baseline_files:
-                file_content = zip_ref.read(file_info.filename)
-                
-                # Extract relative path after /baseline/
-                parts = file_info.filename.split('/baseline/', 1)
-                if len(parts) == 2:
-                    relative_path = parts[1]
-                    dest_key = f"{test_set_id}/baseline/{relative_path}"
-                    
-                    s3.put_object(
-                        Bucket=bucket,
-                        Key=dest_key,
-                        Body=file_content
-                    )
-                    
-                    logger.info(f"Extracted baseline file: {file_info.filename} -> {dest_key}")
+                    logger.info(f"Extracted {role} file: {file_info.filename} -> {dest_key}")
     
     # Delete original ZIP file
     s3.delete_object(Bucket=bucket, Key=zip_key)
@@ -220,7 +264,15 @@ def _update_test_set_status(test_set_id, status, error=None, file_count=None):
         if file_count is not None:
             update_expression += ', fileCount = :count'
             expression_values[':count'] = file_count
-        
+
+        # REMOVE contentSignature so the resolver's warm-container memo
+        # (in `_reconcile_test_set_tracking_entry`) doesn't skip the next
+        # reconcile via TTL match: our write invalidated whatever signature
+        # was there. Fires on both COMPLETED (with file_count) AND FAILED
+        # (without) — a failed extract may have left partial S3 state, so
+        # the reconcile needs to re-scan even though fileCount didn't move.
+        update_expression += ' REMOVE contentSignature'
+
         table.update_item(
             Key={'PK': f'testset#{test_set_id}', 'SK': 'metadata'},
             UpdateExpression=update_expression,

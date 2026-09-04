@@ -140,17 +140,6 @@ pricing:
       - name: outputTokens
         price: "1.25E-6"
   
-  - name: bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0
-    units:
-      - name: inputTokens
-        price: "8.0E-7"
-      - name: outputTokens
-        price: "4.0E-6"
-      - name: cacheReadInputTokens
-        price: "8.0E-8"
-      - name: cacheWriteInputTokens
-        price: "1.0E-6"
-  
   - name: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
     units:
       - name: inputTokens
@@ -477,6 +466,46 @@ pricing:
         price: "1.1E-7"
       - name: cacheWriteInputTokens
         price: "1.38E-6"
+
+  # ---------------------------------------------------------------------------
+  # Amazon Bedrock Models - xAI Grok (Converse, CRIS-only)
+  # ---------------------------------------------------------------------------
+  # Per 1M tokens (Standard tier), from the Grok 4.6 model card:
+  #   Geo CRIS (us.):    $2.20 in / $6.60 out / $0.55 cache-read
+  #   Global CRIS:       $2.00 in / $6.00 out / $0.50 cache-read
+  # Global is cheaper, so the two prefixes need separate rows.
+  #
+  # cacheWriteInputTokens is 0.0: Grok's model card advertises IMPLICIT prompt
+  # caching only (no explicit breakpoints, hence no write charge), and explicit
+  # cachePoint blocks are rejected outright. Note the cache-read rate is recorded
+  # for completeness but was not observed to engage — four back-to-back identical
+  # 20,033-token prompts all reported cacheReadInputTokens=0 (us-west-2,
+  # 2026-09-02), so do not count on a caching discount.
+  #
+  # No :flex / :priority rows: despite the model card advertising both tiers,
+  # Converse rejects them ("The provided service tier is not supported for this
+  # model") on both prefixes in us-west-2 and us-east-1, verified 2026-09-02.
+  - name: bedrock/us.xai.grok-4.6
+    units:
+      - name: inputTokens
+        price: "2.2E-6"
+      - name: outputTokens
+        price: "6.6E-6"
+      - name: cacheReadInputTokens
+        price: "5.5E-7"
+      - name: cacheWriteInputTokens
+        price: "0.0"
+
+  - name: bedrock/global.xai.grok-4.6
+    units:
+      - name: inputTokens
+        price: "2.0E-6"
+      - name: outputTokens
+        price: "6.0E-6"
+      - name: cacheReadInputTokens
+        price: "5.0E-7"
+      - name: cacheWriteInputTokens
+        price: "0.0"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Amazon Nova (EU)

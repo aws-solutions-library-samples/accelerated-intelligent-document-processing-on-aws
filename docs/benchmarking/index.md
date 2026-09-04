@@ -26,6 +26,7 @@ separate — they answer different questions and are regenerated on different ca
 |----------|--------------------|---------|
 | **This guide** (`index.md`) | *How does the suite work and what do the numbers mean?* | Evergreen; edit when the harness changes. |
 | [Configuration Guidance](./config-guidance.md) | *Which config (OCR / mode / assessment / model) should I pick?* — cross-config at one release | Refreshed per release. |
+| [Classification Confidence](./classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
 | [Release Audit Trail](./releases/) | *Is upgrading from the last published release safe / cheaper / faster?* — release-vs-release | **One new entry per release** (never overwritten). |
 
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
@@ -45,6 +46,22 @@ compares each `develop` prerelease to the previous **published** release, and th
 | **Latency** | Wall-clock per document (and per phase where available). |
 | **Token use** | Per-phase, per-model, per-unit (input / output / cache-read / cache-write) from the document's metering. |
 | **Cost** | Metering priced with `config_library/pricing.yaml`, broken out by phase (OCR / Extraction / Assessment / Summarization / Lambda). |
+
+Three of these have more than one instrument, and picking the wrong one has produced
+wrong conclusions here before:
+
+| Metric | Reads | Use it for |
+|---|---|---|
+| `scalar_accuracy` | The text the document **renders** (`"$685.50"`) | Comparability with historical baselines. Do **not** use it to judge value normalization — a correctly-typed `685.5` scores as a miss. |
+| `typed_accuracy` | The schema-**typed** target (`685.5`) | Whether values came back correctly typed. Populated only for truth files declaring `fields_typed`. |
+| `cell_accuracy` | Per-cell typed match on list rows, matched by `SEQ` tag | Value fidelity *inside* lists. Completeness answers "did the row come back"; this answers "with the right value". |
+| `sections_correct` | Section count vs `expected_sections`, as 1.0/0.0 | Boundary detection. Nothing else can see an over-split: a document split into 3 sections still reports `completeness_recall` 1.0 and status `COMPLETED`. The mean over repeats **is** the pass rate. |
+
+**Did the feature under test actually engage?** `analyze.py` also reads the audit block
+each section records about itself, because a delta of zero is uninterpretable without
+it — no effect, or no opportunity? `forced_tool_honored_rate` (a forced tool the model
+answered in prose has measured nothing), `coercions` / `coercion_refusals`, and
+`validation_valid_rate` are reported per run and rolled up per cell.
 
 Scoring is **resolver-free** — it reads S3 output and DynamoDB metering directly, so it
 works on any stack version (useful for cross-release comparisons).
@@ -89,6 +106,13 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
    uploads the config variants as `Config#bench-*` versions (it **never** mutates
    `Config#default`), launches each (cell × doc) via the stack test runner, and polls the
    tracking table to completion. `--estimate` prints projected doc-count/cost/time first.
+   ⚠️ It can only launch **synthetic** documents. A suite naming a reference corpus
+   (`realkie`, `ocr_bench` — both are in `core_docs`) does not measure it: those are
+   test *sets* on the stack, not local PDFs, and there is no launch path for them yet
+   ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).
+   The launcher says so and records `docs_unlaunchable` in the runmap and `meta.json`,
+   so check that field before reading a suite's result as covering its whole document
+   list; run reference corpora through Test Studio meanwhile.
 4. **Score & aggregate** — `aggregate.py` scores every run on the seven dimensions, rolls
    them into `results/<release>/<suite>/summary.{json,csv}` with a `meta.json` (commit,
    stack, pricing hash, date), diffs against `results/baseline.json` to flag regressions,
@@ -107,6 +131,25 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
+
+**Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
+on **one** deployed stack with identical code — which attributes a delta to the feature
+rather than to anything else that shipped in the same release. All run `repeats: 3` or
+more, because each is judged on a *rate* and a single sample cannot resolve one.
+
+| Suite | Question it answers | Judged on |
+|-------|---------------------|-----------|
+| `enforcement` | Does coercion + validation change what is extracted? | `typed_accuracy`, `cell_accuracy`, `coercions` (a zero-coercion run is not evidence about coercion) |
+| `enforcecost` | What does `fail_action: escalate` cost? | `cost` — the only enforcement arm that spends money per failure; kept separate so it is never run by accident |
+| `forcing` | Does forcing the schema as a tool improve extraction? | `cell_accuracy`, `completeness_recall`, and `forced_tool_honored_rate` — **not** "did it parse" |
+| `restatement` | Does dropping the duplicated schema copy cost completeness? | `completeness_recall`. The gate is completeness, not tokens: a saving that loses list rows is a loss |
+| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-document file (must yield 2). A fix that only stops over-splitting regresses the second |
+| `boundaryctl` | Control for `boundary`: what did the **pre-fix** prompt score? | `sections_correct`. Runs the frozen pre-#653 prompt from `benchmarks/matrices/prompts/`, so the claim is a measured delta rather than a single post-fix number |
+| `splitcost` | What did making `llm_determined` do real work cost? | `cost`, `repeats: 5` |
+
+`kv_form` belongs to a different document class, so suites naming it need a second
+invocation with `--class kv_form` (configs are per class; the harness prints which docs
+it skipped and why).
 
 > **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
 > a **cross-version control** so the release A/B runs on a model every compared release can

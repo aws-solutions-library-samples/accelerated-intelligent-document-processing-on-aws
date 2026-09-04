@@ -44,7 +44,7 @@ import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import { SUPPORTED_DISCOVERY_EXTENSIONS } from '../common/constants';
 import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
-import CreateDiscoveryVersionModal from './CreateDiscoveryVersionModal';
+import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 
 const client = generateClient();
 
@@ -122,7 +122,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   const [isLoadingJobs, setIsLoadingJobs] = useState(false);
   const [isValidatingJson, setIsValidatingJson] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
-  // Save mode: 'augment' (default) adds to the version's existing schema;
+  // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
@@ -390,7 +390,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       return;
     }
     if (selectedVersion?.value === 'default') {
-      setError('The "default" configuration version is read-only. Create a new version to save the discovered schema.');
+      setError('The "default" configuration profile is read-only. Create a new profile to save the discovered schema.');
       return;
     }
 
@@ -690,7 +690,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
     },
     {
       id: 'version',
-      header: 'Config Version',
+      header: 'Config Profile',
       cell: (item: DiscoveryJob) => formatConfigVersionLink(item.version, versions as unknown as ConfigVersion[]),
       width: 140,
     },
@@ -780,35 +780,35 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
           </TextContent>
 
           <FormField
-            label="Configuration Version"
-            description="Select which configuration version to save the discovered document schema to, or create a new one"
+            label="Configuration Profile"
+            description="Select which configuration profile to save the discovered document schema to, or create a new one"
           >
             <SpaceBetween size="xs" direction="horizontal" alignItems="end">
               <Select
                 selectedOption={selectedVersion}
                 onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
                 options={getVersionOptions()}
-                placeholder={versions.length === 0 ? 'Loading versions...' : 'Select configuration version'}
+                placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
                 disabled={isUploading || versionsLoading || versions.length === 0}
-                loadingText="Loading versions..."
+                loadingText="Loading profiles..."
               />
               <Button iconName="add-plus" onClick={() => setShowCreateVersionModal(true)} disabled={isUploading}>
-                Create new version
+                Create profile
               </Button>
             </SpaceBetween>
           </FormField>
 
           {selectedVersion?.value === 'default' && (
             <Alert type="warning">
-              The <strong>default</strong> configuration version is read-only and cannot be overwritten by discovery. Click{' '}
-              <strong>Create new version</strong> to save the discovered schema to a new version (it will be seeded from{' '}
+              The <strong>default</strong> configuration profile is read-only and cannot be overwritten by discovery. Click{' '}
+              <strong>Create profile</strong> to save the discovered schema to a new configuration profile (it will be seeded from{' '}
               <strong>default</strong>).
             </Alert>
           )}
 
           <FormField
             label="Save mode"
-            description="Choose whether discovered classes are added to the version's existing schema or replace it"
+            description="Choose whether discovered classes are added to the profile's existing schema or replace it"
           >
             <RadioGroup
               value={saveMode}
@@ -822,7 +822,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                 {
                   value: 'replace',
                   label: 'Replace existing schema',
-                  description: 'Remove all existing document classes in the selected version, then save only the newly discovered ones.',
+                  description: 'Remove all existing document classes in the selected profile, then save only the newly discovered ones.',
                 },
               ]}
             />
@@ -830,9 +830,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
 
           {saveMode === 'replace' && selectedVersion && (
             <Alert type="warning">
-              Replace mode removes all existing document classes in version <strong>{selectedVersion.value}</strong>{' '}
-              <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the version is
-              left with no classes. This cannot be undone — consider creating a new version instead.
+              Replace mode removes all existing document classes in profile <strong>{selectedVersion.value}</strong>{' '}
+              <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the profile is
+              left with no classes. This cannot be undone — consider creating a new profile instead.
             </Alert>
           )}
 
@@ -1123,7 +1123,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                   label: 'Job properties',
                   options: [
                     { id: 'documentKey', label: 'Document' },
-                    { id: 'version', label: 'Config Version' },
+                    { id: 'version', label: 'Config Profile' },
                     { id: 'status', label: 'Status' },
                     { id: 'createdAt', label: 'Created' },
                     { id: 'elapsed', label: 'Duration' },
@@ -1137,10 +1137,11 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
         }
       />
 
-      <CreateDiscoveryVersionModal
+      <CreateConfigProfileModal
         visible={showCreateVersionModal}
         onDismiss={() => setShowCreateVersionModal(false)}
         defaultSourceVersion={selectedVersion?.value ?? null}
+        infoText="Creates a new configuration profile that inherits its settings and document classes from the selected source profile. Discovered schema will then be saved to this new profile."
         onCreated={async (versionName) => {
           setShowCreateVersionModal(false);
           await fetchVersions();

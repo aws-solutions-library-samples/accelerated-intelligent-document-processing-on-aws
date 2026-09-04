@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useContext, createContext } from 'react';
 import { Document } from '../types/documents';
+import type { DocumentView } from '../hooks/use-graphql-api';
+
+export type { DocumentView };
 
 export interface DateRange {
   startDateTime: string;
@@ -21,9 +24,14 @@ export interface DocumentsContextValue {
   periodsToLoad: number;
   customDateRange: DateRange | null;
   setCustomDateRange: React.Dispatch<React.SetStateAction<DateRange | null>>;
+  /** Which submission partition the list is showing (production vs Test Studio). */
+  documentView: DocumentView;
+  setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
+  /** The Latest load stopped with more documents available beyond what was fetched. */
+  latestTruncated: boolean;
   toolsOpen: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
-  reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
+  reprocessDocuments: (objectKeys: string[], version?: string, revision?: number) => Promise<unknown>;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
 }
 

@@ -86,8 +86,15 @@ class DocumentClassification:
     doc_type: str
     """The classified document type."""
 
-    confidence: float = 1.0
-    """Confidence score for the classification (0-1)."""
+    confidence: Optional[float] = None
+    """Confidence in ``doc_type``, in ``[0.0, 1.0]``, or ``None`` for NOT SCORED.
+
+    ``None`` is the default because most paths produce no score: the model has
+    to be asked for one and has to return it (GitHub #673). Callers that can
+    genuinely assert the class — a document-name regex match, a single-class
+    configuration, a page-content regex match — pass ``1.0`` explicitly, and an
+    errored page carries ``0.0``. See :attr:`idp_common.models.Page.confidence`
+    for why a defaulted ``1.0`` was removed."""
 
     metadata: Dict[str, Any] = field(default_factory=dict)
     """Additional metadata for the classification."""

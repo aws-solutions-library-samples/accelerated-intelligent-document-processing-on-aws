@@ -453,8 +453,8 @@ idp-cli discover-multidoc --dir /path/to/documents/
 # With explicit files
 idp-cli discover-multidoc -d invoice1.pdf -d invoice2.pdf -d w2_form.pdf -d w2_form2.pdf
 
-# Save results to a configuration version
-idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-version v1
+# Save results to a configuration profile
+idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-profile v1
 ```
 
 See [IDP CLI Reference — `discover-multidoc`](idp-cli.md) for all options.
@@ -576,6 +576,15 @@ The Discovery module supports comprehensive configuration through the deployment
 > selecting one via a hand-edited config is rejected by `idp-cli config-validate`
 > and raises at runtime. Use a Claude or Nova model for Discovery. See
 > [OpenAI GPT-5.x Models](openai-models.md).
+
+> **⚠️ xAI Grok is NOT supported for Discovery either.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) reaches the Converse API and works
+> for extraction, but it rejects `document` content blocks outright — *"This
+> model doesn't support documents"* — because its input modalities are text and
+> image only. Both Grok IDs are absent from the discovery model picklists, and
+> selecting one via a hand-edited config is rejected by config validation at save
+> time. Note this does **not** limit Grok for agentic extraction, which it fully
+> supports. See [xAI Grok Models](grok-models.md).
 
 **Model Parameters:**
 ```yaml
@@ -753,15 +762,19 @@ discovery:
 **Accessing Discovery:**
 1. Navigate to the main application dashboard
 2. Click on the "Discovery" tab or panel
-3. Select a **Configuration Version** to save discovered classes to, or click
-   **Create new version** to create one on the fly (the new version inherits its
-   settings and existing document classes from a chosen source version)
+3. Select a **Configuration Profile** to save discovered classes to, or click
+   **Create profile** to create one on the fly (the new profile inherits its
+   settings and existing document classes from a chosen source profile)
 4. Choose a **Save mode**:
-   - **Add to existing schema** (default) — keeps the version's existing document
-     classes and adds/updates the discovered ones (a discovered class with the
-     same name overwrites the existing one)
+   - **Add to existing schema** (default) — keeps the profile's existing document
+     classes and adds/updates the discovered ones. A discovered class with the
+     same name has its **properties** replaced by what discovery found, while
+     the class-level settings you configured on it (extraction model, prompts,
+     confidence thresholds, classification regexes, multi-instance, few-shot
+     examples) are **preserved** — see
+     [Re-discovering a class you have configured](#re-discovering-a-class-you-have-configured)
    - **Replace existing schema** — removes all existing document classes in the
-     selected version first, then saves only the newly discovered ones. For
+     selected profile first, then saves only the newly discovered ones. For
      multi-section discovery, the schema is cleared once before the batch runs,
      so all sections in the run are rebuilt into a clean schema. A confirmation
      warning is shown while Replace is selected.
@@ -772,9 +785,9 @@ discovery:
 7. Click **"Start Discovery"** (or "Start Discovery (N sections)" for multi-section)
 8. Monitor progress in real-time in the Discovery Jobs table below
 
-> **Note:** "Save mode" and "Create new version" apply to Single Document,
+> **Note:** "Save mode" and "Create profile" apply to Single Document,
 > Multiple Documents (multi-doc clustering), and Policy Discovery alike. In
-> Replace mode, class discovery clears the version's `classes` list while Policy
+> Replace mode, class discovery clears the profile's `classes` list while Policy
 > Discovery clears its `policy_classes` list.
 
 **Monitoring Progress:**
@@ -782,7 +795,7 @@ discovery:
 - Live elapsed time counter for active jobs
 - Discovered document class name shown as a green badge on success (e.g., `W4-Form`)
 - Failure root cause displayed in expandable error details with user-friendly messages
-- Search/filter bar to find jobs by document name, config version, status, or class name
+- Search/filter bar to find jobs by document name, config profile, status, or class name
 - Time range selector (Last hour, 24 hours, 2 days, 7 days, All time)
 - Pagination with configurable page size
 - Resizable columns and column visibility preferences (settings gear icon)
@@ -790,7 +803,7 @@ discovery:
 
 **Reviewing Results:**
 - Discovered class name prominently displayed as a badge in the Result column
-- Config Version hyperlinked to the configuration editor
+- Config Profile hyperlinked to the configuration editor
 - Original document filename displayed (timestamp prefix stripped)
 - Duration column showing total processing time
 - Export options for configuration integration
@@ -903,7 +916,7 @@ Notes:
   on the class name) is orphaned by a rename.
 - **The original text is kept** in the class `description` when the class has no
   description of its own, so the human-readable name is not lost.
-- **A version saved before normalization is repaired in place.** If the config
+- **A profile saved before normalization is repaired in place.** If the config
   already holds the un-normalized spelling of a class (`Task cards`),
   re-discovering that document replaces that entry rather than adding
   `Task-cards` beside it — two classes sharing a normalized id would also share
@@ -916,6 +929,56 @@ Notes:
   that derive resource names from the class id.
 - The Web UI's Schema Builder enforces the same character set when you author or
   edit a class by hand.
+
+### Re-discovering a class you have configured
+
+Running Discovery again on a document class that already exists in the target
+configuration profile **updates the class's properties and keeps its class-level
+settings**. Discovery owns what it produces — the property list, and the class id
+when there was none. Everything else you configured on that class in the Schema
+Designer or in YAML is carried forward:
+
+| Setting | Kept across re-discovery |
+|---|---|
+| `x-aws-idp-extraction-model`, `-extraction-escalation-model` | ✅ |
+| `x-aws-idp-extraction-system-prompt`, `-extraction-task-prompt` | ✅ |
+| `x-aws-idp-confidence-threshold`, `-confidence-escalation-model` | ✅ |
+| `x-aws-idp-document-name-regex`, `-document-page-content-regex` | ✅ |
+| `x-aws-idp-page-types` (class-level) | ✅ |
+| `x-aws-idp-exclude-from-processing`, `-exclusion-reason` | ✅ |
+| `x-aws-idp-examples` (few-shot) | ✅ |
+| `x-aws-idp-multi-instance` | ✅ |
+| `x-aws-idp-instance-array` | ✅ **only if** the named array property is still in the new schema (see below) |
+| `properties` (the fields and their descriptions) | ❌ — replaced by what discovery found |
+| `description` | ❌ — discovery is asked for one, so its text replaces yours (logged) |
+| `required`, `$defs` | ❌ — they describe the old properties, so they are dropped with them |
+| Per-**property** `x-aws-idp-evaluation-method` / `-evaluation-threshold` | ❌ — replaced with the property |
+| Per-**property** `x-aws-idp-source-page-types` | ❌ — replaced with the property |
+
+The rule is "preserve anything discovery did not produce", so a class-level
+setting added in a future release is covered without changing this list. If
+discovery does replace a setting, it is logged at write time (a `WARNING` naming
+the key) rather than only becoming visible in the next document processed.
+
+Three consequences worth knowing:
+
+- **Per-attribute** settings are not preserved — evaluation method/threshold, and
+  the `x-aws-idp-source-page-types` that drives BLANK-vs-MISSING page handling.
+  A re-discovered attribute can legitimately come back with a different type, and
+  a stale evaluation method on it can score worse than none. Re-apply these after
+  a re-discovery, or use **Replace existing schema** deliberately.
+- **`x-aws-idp-instance-array` is dropped if its property is gone.** It names a
+  top-level array property, and a configuration naming a property that does not
+  exist is rejected outright — keeping it would fail the whole save rather than
+  lose one setting. The drop is logged; re-declare it on the new schema if the
+  class still holds several records per section.
+- Normalizing a class id (`Task cards` → `Task-cards`) carries the old entry's
+  settings across the rename, so repairing an id does not reset the class. If two
+  spellings normalize to the same id, the settings come from one of them (chosen
+  deterministically) and the other is named in a warning.
+
+Use **Replace existing schema** when you *want* a clean rebuild — it removes the
+profile's document classes first, so nothing is carried forward.
 
 ## BDA Integration
 
@@ -1146,7 +1209,7 @@ The Result column shows additional context:
 
 #### Configuration
 
-Blueprint optimization is disabled by default. To enable it, set both `use_bda: true` and `enable_blueprint_optimization: true` in your configuration version via the View/Edit Configuration UI or directly in the config YAML:
+Blueprint optimization is disabled by default. To enable it, set both `use_bda: true` and `enable_blueprint_optimization: true` in your configuration profile via the View/Edit Configuration UI or directly in the config YAML:
 
 ```yaml
 use_bda: true
@@ -1154,7 +1217,7 @@ enable_blueprint_optimization: true
 ```
 
 When enabled, the optimizer uses:
-- The same BDA project as the main blueprint service (per configuration version)
+- The same BDA project as the main blueprint service (per configuration profile)
 - The same blueprint naming convention (`{StackName}-{ClassName}-{hash}`)
 - The discovery bucket for S3 input/output URIs
 - The `bedrock-data-automation` client with `boto3>=1.42.0` (bundled in the Lambda function's `requirements.txt`)

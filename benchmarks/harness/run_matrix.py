@@ -25,6 +25,7 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_configs import _resolve_value as _resolve_axis_value
 from make_configs import set_path as _set_path
 
 import lib
@@ -40,6 +41,66 @@ RESULTS = os.path.join(BENCH, "results")
 
 def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)  # nosec B602 - operator-owned local harness
+
+
+def stack_fingerprint(stack):
+    """(status, description, last_updated) for ``stack`` — the run's code identity.
+
+    Cheap enough to call before every launch: one DescribeStacks call per ~minute.
+    """
+    import boto3
+
+    cfn = boto3.client(
+        "cloudformation", region_name=os.environ.get("AWS_REGION", "us-west-2")
+    )
+    st = cfn.describe_stacks(StackName=stack)["Stacks"][0]
+    return (
+        st["StackStatus"],
+        st.get("Description", ""),
+        str(st.get("LastUpdatedTime", "")),
+    )
+
+
+def assert_stack_quiesced(stack):
+    """Refuse to start a run against a stack that is mid-update.
+
+    A grid launched into an active CloudFormation update spans more than one build:
+    Lambdas are replaced under it and the results are not attributable to any single
+    version. This happened — the v0.6.7 corefast grid had 22 of 171 runs launched
+    during an update someone else started, which cost the whole run its standing as
+    a release gate (benchmarks/results/v0.6.7/corefast/FINDINGS.md).
+    """
+    status, desc, updated = stack_fingerprint(stack)
+    if "IN_PROGRESS" in status:
+        sys.exit(
+            f"stack '{stack}' is {status} — refusing to start.\n"
+            f"A run launched into an active update spans multiple builds and cannot "
+            f"be attributed to a version. Wait for UPDATE_COMPLETE and re-run."
+        )
+    print(f"  stack {stack}: {status} | {desc.strip()[-40:]} | updated {updated}")
+    return (status, desc, updated)
+
+
+def assert_stack_unchanged(stack, expected, launched):
+    """Abort mid-run if the stack moved underneath us.
+
+    Checked per launch rather than once, because the damage is proportional to how
+    long it goes unnoticed: the corefast grid ran for four hours across three builds
+    and nothing reported it until the results were scored.
+    """
+    try:
+        current = stack_fingerprint(stack)
+    except Exception as exc:  # a transient API error must not kill a paid run
+        print(f"  note: could not verify stack fingerprint ({exc}); continuing")
+        return
+    if current != expected:
+        sys.exit(
+            f"\nABORTING after {launched} launch(es): stack '{stack}' CHANGED mid-run.\n"
+            f"  was: {expected}\n  now: {current}\n"
+            f"Runs already launched span two builds, so this grid is no longer a "
+            f"controlled comparison. Discard it (the runmap is written) and re-run "
+            f"against a quiesced stack."
+        )
 
 
 def resolve_stack(stack):
@@ -130,7 +191,7 @@ def upload_config(stack, version, path, res=None, native=False):
             return False
     r = sh(
         f"PYTHONPATH={REPO}/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload "
-        f'--stack-name {stack} --config-file "{path}" --config-version {version} '
+        f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
     return "uploaded successfully" in (r.stdout + r.stderr)
@@ -194,18 +255,32 @@ def launch(stack, testset_id, version, context):
     return result.get("testRunId")
 
 
-def load_plan(suite, klass):
+def load_plan(suite, klass, overrides=()):
     matrix = yaml.safe_load(open(CFG_MATRIX))
     docm = yaml.safe_load(open(DOC_MATRIX))
     suite_spec = matrix["suites"][suite]
     # cells: read the index written by make_configs.py
-    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}.yaml")
+    # Must match make_configs' namespacing, or a --set run silently reads the
+    # index of a DIFFERENT variant and every result is attributed to the wrong
+    # configuration.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_configs import override_slug
+
+    slug = override_slug(list(overrides))
+    idx_path = os.path.join(CONFIGS, f"_index_{suite}_{klass}{slug}.yaml")
     if not os.path.exists(idx_path):
+        setflags = "".join(f" --set {o}" for o in overrides)
         sys.exit(
-            f"Run make_configs.py --suite {suite} --class {klass} first ({idx_path} missing)"
+            f"Run make_configs.py --suite {suite} --class {klass}{setflags} first "
+            f"({idx_path} missing)"
         )
     cells = yaml.safe_load(open(idx_path))["cells"]
     # docs: may be an explicit list, a named group, or "*"
+    if "docs" not in suite_spec:
+        sys.exit(
+            f"suite '{suite}' declares no `docs:` — a suite with cells but no "
+            f"documents cannot run. Add a docs list or group in config_matrix.yaml."
+        )
     dg = suite_spec["docs"]
     groups = docm["groups"]
     if isinstance(dg, list):
@@ -216,7 +291,87 @@ def load_plan(suite, klass):
         )
     else:
         doc_ids = [dg]
-    return cells, doc_ids, int(suite_spec.get("repeats", 1))
+    named_docs = list(doc_ids)
+    doc_ids, skipped = _docs_for_class(doc_ids, docm, klass)
+    # A reference doc's "class" is its config, so the class filter above removes it
+    # too — but "run them with --class <their class>" is advice that cannot work for
+    # one: make_configs has no config for a reference corpus, so load_plan would
+    # exit on the missing index. Those are reported by their real cause in main()
+    # (#766); this note is only for documents another --class really can run.
+    elsewhere = [d for d in skipped if d not in reference_ids(docm)]
+    if elsewhere:
+        print(
+            f"note: {len(elsewhere)} doc(s) in suite '{suite}' belong to another "
+            f"document class and are NOT run here: {elsewhere}\n"
+            f"      run them with --class <their class> (configs are per class)."
+        )
+    if not doc_ids:
+        sys.exit(
+            f"suite '{suite}' has no docs for class '{klass}' — every doc it names "
+            f"belongs to a different class. Check --class."
+        )
+    return cells, doc_ids, int(suite_spec.get("repeats", 1)), named_docs
+
+
+def reference_ids(docm=None):
+    """Ids of the reference corpora — real labeled test SETS living on the stack.
+
+    They have no PDF under ``corpus/docs`` and this harness launches one local PDF
+    per run, so it cannot run them at all (#766).
+    """
+    if docm is None:
+        docm = yaml.safe_load(open(DOC_MATRIX))
+    return {d["id"] for d in docm.get("reference", [])}
+
+
+def plan_coverage(named_docs, doc_ids, refs):
+    """Split a suite's named documents into measured / unlaunchable / other-class.
+
+    Kept as a pure function so the split is testable without a stack — the first
+    attempt at this fix computed the unlaunchable set *after* ``_docs_for_class``
+    had already removed reference docs by class, so it was always empty and the
+    warning could never fire. Only a behavioral test catches that.
+
+    ``named_docs`` is the suite's list before any filtering, which is what makes
+    the reference corpora visible here: they are unlaunchable whether the class
+    filter removed them (the usual path) or they survived it.
+    """
+    unlaunchable = [d for d in named_docs if d in refs]
+    runnable = [d for d in doc_ids if d not in unlaunchable]
+    other_class = [d for d in named_docs if d not in runnable and d not in unlaunchable]
+    return runnable, unlaunchable, other_class
+
+
+def _docs_for_class(doc_ids, docm, klass):
+    """Split ``doc_ids`` into (runnable under ``klass``, belonging elsewhere).
+
+    A suite may legitimately name documents of several classes — the enforcement
+    suite runs a transaction-list doc AND a flat form, because the feature it
+    measures behaves differently on each. But configs are built per class, so a
+    document scored under another class's schema produces a meaningless number
+    that looks like a real one. ``run_matrix`` used to run every named doc under
+    whatever ``--class`` was passed, despite a comment claiming otherwise; this is
+    that comment, implemented.
+
+    A synthetic doc's class is its generator (``gen``); a reference doc names its
+    config explicitly. Anything unrecognized is left in rather than dropped —
+    silently skipping a document would be its own kind of wrong answer.
+    """
+    by_id = {d["id"]: d for d in docm.get("synthetic", [])}
+    for d in docm.get("reference", []):
+        by_id[d["id"]] = d
+    keep, other = [], []
+    for doc_id in doc_ids:
+        spec = by_id.get(doc_id)
+        if spec is None:
+            keep.append(doc_id)  # unknown: let the existing missing-PDF error fire
+            continue
+        doc_class = spec.get("gen") or spec.get("config")
+        if doc_class is None or doc_class == klass:
+            keep.append(doc_id)
+        else:
+            other.append(doc_id)
+    return keep, other
 
 
 def _dig(d, dotted):
@@ -265,8 +420,14 @@ def verify_config_axes(cells):
                 # (ocr.features becomes [{name: X}, ...]). Reusing the generator's
                 # own function means this check can never disagree with it over a
                 # shape transform — only over a real value difference.
+                # `@file:` axis values (the frozen pre-#653 prompt) name a file
+                # whose CONTENTS get written, so the index's literal
+                # "@file:foo.txt" will never equal what is on disk. Resolve it the
+                # same way make_configs does, or this check reports a mismatch on
+                # a config it generated correctly — which is exactly what it did
+                # the first time boundaryctl ran.
                 probe: dict = {}
-                _set_path(probe, dotted, want)
+                _set_path(probe, dotted, _resolve_axis_value(want))
                 want_written = _dig(probe, dotted)
                 got = _dig(cfg, dotted)
                 if str(got) != str(want_written):
@@ -292,6 +453,18 @@ def main():
     ap.add_argument("--stack", required=True)
     ap.add_argument("--suite", default="core")
     ap.add_argument("--class", dest="klass", default="bank_statement")
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="AXIS=VALUE",
+        help=(
+            "The same --set overrides used to build the configs. Required to "
+            "locate the right index: make_configs namespaces its output by "
+            "overrides, so omitting them here reads a different variant's plan."
+        ),
+    )
     ap.add_argument("--estimate", action="store_true")
     ap.add_argument(
         "--native-upload",
@@ -317,22 +490,65 @@ def main():
         if not v:
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
-    cells, doc_ids, repeats = load_plan(a.suite, a.klass)
+    cells, doc_ids, repeats, named_docs = load_plan(a.suite, a.klass, a.overrides)
     if a.repeats is not None:
         repeats = a.repeats
-    # only synthetic docs handled by this class run here; reference docs use their own config
+
+    # This harness launches one local PDF per run, so a reference corpus — a test
+    # SET on the stack, with no PDF under corpus/docs — cannot be launched at all.
+    # The launch loop used to `continue` past them under the comment "reference
+    # docs handled separately"; nothing handles them separately, there is no other
+    # launch path (#766). A suite naming `core_docs` therefore measured 7 of its 9
+    # documents, dropping the only two corpora with real pages and human-verified
+    # labels, and nothing in the run's own output said which 7 it had been.
+    #
+    # Split on `named_docs` (pre-class-filter) rather than on a missing PDF: the
+    # class filter removes reference docs first, because a reference doc's "class"
+    # is its config. Checking for the PDF here would always come up empty and the
+    # warning would never fire.
+    doc_ids, unlaunchable, other_class = plan_coverage(
+        named_docs, doc_ids, reference_ids()
+    )
+    if unlaunchable:
+        print(
+            f"\n!! {len(unlaunchable)} of the {len(named_docs)} document(s) named by "
+            f"suite '{a.suite}' CANNOT be launched by this harness and are NOT "
+            f"measured: {unlaunchable}\n"
+            "   They are reference corpora — test SETS on the stack, not PDFs under "
+            f"{os.path.relpath(DOCS, REPO)} — and run_matrix has no launch path for "
+            "them (#766).\n"
+            "   Run them through Test Studio (see benchmarks/harness/"
+            "detection_ab_teststudio.py) and treat this run as synthetic-only.\n"
+        )
+
     pairs = [(c, d, r) for c in cells for d in doc_ids for r in range(repeats)]
     print(
         f"plan: {len(cells)} cells x {len(doc_ids)} docs x {repeats} = {len(pairs)} runs"
+        + (f"  ({len(unlaunchable)} doc(s) not launchable)" if unlaunchable else "")
     )
 
     if a.estimate:
         print("(estimate) doc ids:", doc_ids)
+        if unlaunchable:
+            print("(estimate) NOT launchable, not measured:", unlaunchable)
         print("(estimate) cell ids:", [c["cell"] for c in cells])
         print(
             "Run without --estimate to execute. Large docs/advanced cells dominate cost/time."
         )
         return
+
+    # Every remaining doc is a synthetic one, so its PDF must exist. Checked here,
+    # once, rather than per (cell, doc, repeat) in the launch loop — where a
+    # missing PDF used to be skipped silently. `--estimate` deliberately returns
+    # above this: "what would this suite cost" is a fair question to ask before
+    # spending 20 minutes generating the corpus.
+    missing = [d for d in doc_ids if not os.path.exists(os.path.join(DOCS, d + ".pdf"))]
+    if missing:
+        sys.exit(
+            f"no PDF for {missing} under {os.path.relpath(DOCS, REPO)}.\n"
+            f"Run gen_corpus.py (a partial corpus from --only/--series needs the "
+            f"docs this suite names), or check the doc id for a typo."
+        )
 
     run_stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     outdir = os.path.join(RESULTS, f"run-{run_stamp}")
@@ -340,13 +556,15 @@ def main():
 
     # 1. register test sets (unique docs)
     for d in set(doc_ids):
-        pdf = os.path.join(DOCS, d + ".pdf")
-        if os.path.exists(pdf):
-            register_testset(a.stack, res, d, pdf)
-            print(f"  registered bench-{d}")
+        register_testset(a.stack, res, d, os.path.join(DOCS, d + ".pdf"))
+        print(f"  registered bench-{d}")
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
     verify_config_axes(cells)
+
+    # The stack must not move underneath the grid. Checked here and again
+    # before every launch — see assert_stack_unchanged.
+    stack_expected = assert_stack_quiesced(a.stack)
     for c in {cc["version"]: cc for cc in cells}.values():
         ok = upload_config(
             a.stack, c["version"], c["path"], res=res, native=a.native_upload
@@ -362,11 +580,22 @@ def main():
         return st["obj_done"] + st["failed"] >= 1  # 1 doc/run
 
     for c, d, rep in pairs:
+        # No missing-PDF check here: it is done once, above, before anything is
+        # registered or uploaded. It used to live here as a bare `continue`, which
+        # is how a suite silently measured 7 of its 9 documents (#766).
         pdf = os.path.join(DOCS, d + ".pdf")
-        if not os.path.exists(pdf):
-            continue  # reference docs handled separately
-        while len([x for x in inflight if not poll_done(x)]) >= a.max_inflight:
+        # PRUNE finished runs instead of re-polling them. This list used to grow
+        # for the whole suite and every slot check polled ALL of it, so the cost of
+        # deciding whether to launch was O(runs launched so far) DynamoDB queries —
+        # quadratic over a suite. Observed: a 12-run suite averaged 2.5 min/run
+        # while a 30-run suite degraded to 8 min/run, and raising --max-inflight
+        # barely helped because the CHECK was the bottleneck, not the concurrency.
+        # A 171-run grid would have polled ~14,000 times to launch its last run.
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
+            inflight = [x for x in inflight if not poll_done(x)]
+        assert_stack_unchanged(a.stack, stack_expected, len(runmap))
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
         rec = {
@@ -388,6 +617,19 @@ def main():
                 "suite": a.suite,
                 "class": a.klass,
                 "resources": res,
+                # What the suite ASKED for vs. what this run can measure. Without
+                # these a runmap cannot be told apart from one that covered the
+                # whole suite, which is how a 7-of-9 grid got read as complete
+                # (#766). Scoring reads `runs`; these are for whoever reads the
+                # result later. Absent on a runmap written before this existed, or
+                # by another launcher — absent is "unknown", not "nothing skipped".
+                # `docs_other_class` is separate because a suite legitimately names
+                # documents of several classes and runs them under their own
+                # --class; `docs_unlaunchable` is work that CANNOT be run here.
+                "docs_named": named_docs,
+                "docs_run": doc_ids,
+                "docs_unlaunchable": unlaunchable,
+                "docs_other_class": other_class,
                 "runs": runmap,
             },
             open(os.path.join(outdir, "runmap.json"), "w"),

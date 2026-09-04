@@ -128,8 +128,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -180,11 +180,21 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Data-plane Lambda tag check"
+	@if ! make check-data-plane-tags; then \
+		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
 		(echo -e "$(RED)ERROR: Unpaginated filtered DynamoDB scan(s) found!$(NC)" && exit 1)
+
+check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
+	@$(PYTHON) scripts/check_data_plane_tags.py || \
+		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files
 	@echo "Validating buildspec files..."
@@ -259,7 +269,7 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
-TARGET_BRANCH ?= main
+TARGET_BRANCH ?= develop
 typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)
@@ -309,6 +319,12 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
+	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
+	@# Both suites import their own ``index`` module; run each in its
+	@# own directory to prevent the sys.path collision that fails a
+	@# combined pytest invocation.
+	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -325,6 +341,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
 	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
+	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
+	$(PYTHON) -m pytest scripts/srt/tests -q -p no:cacheprovider
+	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
+	$(PYTHON) -m pytest scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -402,6 +422,22 @@ endif
 
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
+
+# Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
+# Browser-driven UX test. Not a self-contained target on purpose: the browsing and
+# the usability judgement are done by the agent following
+# .claude/skills/ux-test.md, so this prepares a throwaway session and prints what
+# to do next rather than pretending a shell script can assess a user experience.
+ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test.md)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
+endif
+	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
+	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	    --group $(if $(GROUP),$(GROUP),Admin) \
+	    $(if $(REGION),--region $(REGION),)
+	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
+	@echo -e "$(YELLOW)Remember to run the teardown command printed above.$(NC)"
 
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.

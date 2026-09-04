@@ -151,15 +151,30 @@ const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey'
 };
 
 /**
+ * Same two states, worded for someone who cannot act on them. Colour is kept from
+ * STATUS_BADGE so the extension still reads as "not current" at a glance — it is the
+ * imperative that misleads, not the emphasis.
+ */
+const NON_ADMIN_BADGE_TEXT: Partial<Record<FeatureStatus, string>> = {
+  install: 'Not installed',
+  update: 'Update available',
+};
+
+/**
  * Build the `info` ReactNode for a nav entry: a status badge (when the feature
  * needs action) wrapped in a Popover that reveals the feature's description on
  * hover/focus. When there's no badge AND no description there's nothing to
  * show, so we return undefined.
  */
-function buildStatusInfo(entry: NavEntry): React.ReactNode {
+function buildStatusInfo(entry: NavEntry, canInstall: boolean): React.ReactNode {
   const status = statusOf(entry);
   const badgeSpec = STATUS_BADGE[status];
-  const badge = badgeSpec ? React.createElement(Badge, { color: badgeSpec.color }, badgeSpec.text) : null;
+  // "Install" and "Update" name an action only an Admin can take (subscribeFeature is
+  // Admin-only, and the feature page routes everyone else to AwaitingAdminInstall). For
+  // the rest, the same lifecycle state is said as a state rather than an invitation —
+  // which is all this badge claims to do anyway, per the note above.
+  const badgeText = !canInstall && (status === 'install' || status === 'update') ? NON_ADMIN_BADGE_TEXT[status] : badgeSpec?.text;
+  const badge = badgeSpec && badgeText ? React.createElement(Badge, { color: badgeSpec.color }, badgeText) : null;
 
   // A not-yet-installed marketplace extension needs a subscription at some point,
   // and the badge no longer says so. Note it in the hover text instead: the nav
@@ -232,7 +247,13 @@ function comingSoonItems(installed: InstalledFeature[]): SideNavigationProps.Lin
   );
 }
 
-export function buildFeaturesNavSection(installed: InstalledFeature[], catalog: CatalogFeature[] = []): SideNavigationProps.Section {
+export function buildFeaturesNavSection(
+  installed: InstalledFeature[],
+  catalog: CatalogFeature[] = [],
+  /* Defaults to true so existing callers and tests keep the admin wording; only the
+     nav, which knows the role, narrows it. */
+  canInstall = true,
+): SideNavigationProps.Section {
   const entries = mergeEntries(installed, catalog);
 
   const items: SideNavigationProps.Item[] = entries.map(
@@ -246,7 +267,7 @@ export function buildFeaturesNavSection(installed: InstalledFeature[], catalog: 
         // status badge, wrapped in a Popover so hovering shows the feature's
         // description. The actual action (Subscribe / Install / Update) lives
         // on the feature page; the nav badge only communicates status.
-        info: buildStatusInfo(e),
+        info: buildStatusInfo(e, canInstall),
       }) as SideNavigationProps.Link,
   );
 

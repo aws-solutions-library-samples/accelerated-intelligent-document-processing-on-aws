@@ -10,6 +10,7 @@ import type {
   WeightedOverallScores,
   SplitClassificationMetrics,
   GradedPacketMetrics,
+  ClassificationErrors,
   FieldMetrics,
   ConfusionMatrix,
   ConfidenceMetrics,
@@ -111,6 +112,10 @@ export function parseSplitClassificationMetrics(json: unknown): SplitClassificat
 
 export function parseGradedPacketMetrics(json: unknown): GradedPacketMetrics {
   return safeParse<GradedPacketMetrics>(json, {});
+}
+
+export function parseClassificationErrors(json: unknown): ClassificationErrors {
+  return safeParse<ClassificationErrors>(json, {});
 }
 
 export function parseFieldMetrics(json: unknown): FieldMetrics {

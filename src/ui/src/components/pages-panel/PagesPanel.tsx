@@ -14,17 +14,19 @@ import {
   Modal,
   Alert,
 } from '@cloudscape-design/components';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassNameText from '../common/ClassNameText';
+import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
 import { useDocumentVersion } from '../../contexts/document-version';
+import usePageThumbnails from '../../hooks/use-page-thumbnails';
 
 const client = generateClient();
 const logger = new ConsoleLogger('PagesPanel');
@@ -32,6 +34,12 @@ const logger = new ConsoleLogger('PagesPanel');
 interface PageItem {
   Id: string;
   Class?: string | null;
+  /** Confidence in Class (0-1). Absent/null = not scored — see ClassConfidence. */
+  ClassConfidence?: number | null;
+  /** The model's stated evidence for Class, when the prompt asked for one. */
+  ClassReason?: string | null;
+  /** Ranked alternatives from classification.confidence.mode: topk. */
+  ClassCandidates?: ({ Class?: string | null; Probability?: number | null } | null)[] | null;
   ImageUri?: string;
   TextUri?: string;
   TextConfidenceUri?: string;
@@ -76,7 +84,7 @@ const ClassCell = ({
   classificationIndex?: ClassificationIndex;
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
-    <span>{item.Class || '-'}</span>
+    <ClassNameText>{item.Class || '-'}</ClassNameText>
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -132,7 +140,9 @@ const EditableClassCell = ({
   <FormField>
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
-        <StatusIndicator>{item.Class}</StatusIndicator>
+        <StatusIndicator>
+          <ClassNameText>{item.Class}</ClassNameText>
+        </StatusIndicator>
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>
@@ -164,6 +174,21 @@ const createViewColumnDefinitions = (
     sortingField: 'Class',
     minWidth: 200,
     width: 200,
+    isResizable: true,
+  },
+  {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
     isResizable: true,
   },
   {
@@ -209,6 +234,21 @@ const createEditColumnDefinitions = (
     isResizable: true,
   },
   {
+    id: 'classConfidence',
+    header: 'Class conf.',
+    // The classifier's confidence in Class, and the affordance for its reasoning
+    // and ranked alternatives. Its own column rather than more text in
+    // Class/Type: it aligns down the column, and it sorts — least-confident-first
+    // is how a reviewer finds the pages worth a second look.
+    cell: (item: PageItem) => (
+      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
+    ),
+    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    minWidth: 140,
+    width: 140,
+    isResizable: true,
+  },
+  {
     id: 'thumbnail',
     header: 'Thumbnail',
     cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
@@ -227,7 +267,6 @@ const createEditColumnDefinitions = (
 ];
 
 const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFICATION_INDEX }: PagesPanelProps): React.JSX.Element => {
-  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string | null>>({});
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedPages, setEditedPages] = useState<PageItem[]>([]);
   const [modifiedPageIds, setModifiedPageIds] = useState<Set<string>>(new Set());
@@ -237,12 +276,13 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const { currentCredentials } = useAppContext();
   const { settings } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview } = useUserRole();
   // When viewing a past version, pin page images to that run's object versions
   // and disable editing (edits write to the current objects, not the snapshot).
-  const { versionIdForUri, runId: viewingRunId, isHistorical } = useDocumentVersion();
+  const { isHistorical } = useDocumentVersion();
+  // Shared with the page-regrouping board, which needs the same signed thumbnails.
+  const thumbnailUrls = usePageThumbnails(pages);
 
   // Edit Mode should be disabled for reviewers until they click Start Review (claim the document)
   const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
@@ -280,28 +320,6 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
     }
   }, [isHistorical, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
 
-  const loadThumbnails = async () => {
-    if (!pages) return;
-
-    const urls: Record<string, string | null> = {};
-    await Promise.all(
-      pages.map(async (page) => {
-        if (page.ImageUri) {
-          try {
-            const url = await generateS3PresignedUrl(page.ImageUri, currentCredentials as Record<string, unknown>, {
-              versionId: versionIdForUri(page.ImageUri),
-            });
-            urls[page.Id] = url;
-          } catch (err) {
-            logger.error('Error generating presigned URL for thumbnail:', err);
-            urls[page.Id] = null;
-          }
-        }
-      }),
-    );
-    setThumbnailUrls(urls);
-  };
-
   // Initialize edited pages when entering edit mode
   useEffect(() => {
     if (isEditMode && pages) {
@@ -316,10 +334,6 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
       setModifiedPageIds(new Set());
     }
   }, [isEditMode, pages]);
-
-  useEffect(() => {
-    loadThumbnails();
-  }, [pages, viewingRunId]);
 
   // Check if current pattern is Pattern-1
   const isPattern1 = () => {
@@ -527,6 +541,14 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
 
   const tableItems = isEditMode ? editedPages : pages || [];
 
+  // Sorting via the design system's own collection hook rather than a hand-rolled
+  // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
+  // the direction, so every column that declares a sort works. Starts unsorted,
+  // so the default view keeps its existing order. `sortedItems` feeds the table
+  // ONLY — `tableItems` still feeds everything else, which must stay in document
+  // order however the table is sorted.
+  const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
+
   return (
     <SpaceBetween size="l">
       <Container
@@ -564,8 +586,8 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
       >
         <Table
           columnDefinitions={columnDefinitions}
-          items={tableItems}
-          sortingDisabled
+          items={sortedItems}
+          {...collectionProps}
           variant="embedded"
           resizableColumns
           stickyHeader

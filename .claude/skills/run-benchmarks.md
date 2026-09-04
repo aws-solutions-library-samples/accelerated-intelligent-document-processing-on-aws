@@ -129,7 +129,7 @@ harness — verify they still hold when the schema evolves:
   testset/output buckets + tracking/config tables by name prefix.
 - It registers `bench-<doc>` test sets and uploads `Config#bench-*` versions.
   **It never mutates `Config#default`.** Clean up afterwards if desired:
-  `idp-cli config-delete --config-version bench-* ` (or leave for the next run).
+  `idp-cli config-delete --config-profile bench-* ` (or leave for the next run).
 - BDA and `bedrock_llm` OCR cells require those features enabled on the stack /
   Bedrock model access; cells that can't run are logged, not silently dropped.
 
@@ -152,6 +152,17 @@ let the data go (git history is the archive — cite the commit, not a path).
 ## Regression thresholds (in aggregate.py --compare)
 accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 → flagged
 as regressions. Improvements ≥ +0.02 accuracy are also reported.
+
+Two calibration separations are tracked, on the same −0.03 threshold:
+`calibration_separation` (extracted FIELDS) and `class_calibration_separation`
+(the CLASSIFICATION, from the eval report's per-page `predicted_confidence` vs
+`correct`). Both are `mean(conf | right) − mean(conf | wrong)`; both are `None`
+when that dimension was not scored, which is the default for classification
+(`classification.confidence.mode: off`) — a `None` there means "not measured",
+not "perfect". Turn the mode on for any run whose point is to judge whether
+classification confidence is worth acting on, and report `class_accuracy` and
+`n_class_scored_pages` alongside it so a separation computed from three pages
+is not read as a result.
 
 ## Honesty
 Report failures explicitly; never average accuracy only over docs that completed

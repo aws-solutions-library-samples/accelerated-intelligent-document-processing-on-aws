@@ -250,6 +250,15 @@ Parameters:
       getFeatureLaunchUrl read it at runtime with a single GetObject (no
       ListObjectsV2). Leave blank to disable catalog-driven discovery.
 
+  IDPCommonBaseLayerArn:
+    Type: String
+    Default: ''
+    Description: ARN of the main stack's IDP Common Base layer. The
+      applyFeatureConfigPreset resolver uses idp_common's ConfigurationManager so a
+      feature's config preset is recorded as a REVISION of the feature's profile
+      rather than as a new profile per release (issue 697). Leave blank and the
+      preset is still applied, but without revision history.
+
   CatalogKey:
     Type: String
     Default: 'config_library/catalog.json'
@@ -286,6 +295,7 @@ Conditions:
 
   HasConfigurationTable: !Not [!Equals [!Ref ConfigurationTableName, '']]
   HasConfigurationBucket: !Not [!Equals [!Ref ConfigurationBucketName, '']]
+  HasIDPCommonBaseLayer: !Not [!Equals [!Ref IDPCommonBaseLayerArn, '']]
   HasReportingBucket: !Not [!Equals [!Ref ReportingBucketName, '']]
   HasOutputBucket: !Not [!Equals [!Ref OutputBucketName, '']]
   HasWorkingBucket: !Not [!Equals [!Ref WorkingBucketName, '']]
@@ -304,7 +314,12 @@ Globals:
     Timeout: 30
     MemorySize: 256
     Tracing: Active
-    Architectures: [arm64]
+    # Architectures is deliberately NOT global here. SAM COMBINES a Globals list
+    # with a function's own rather than overriding it, so a function that needs a
+    # different architecture cannot override this — `sam build` fails with
+    # "property Architectures should be a list of length 1". Every function below
+    # therefore states its own: arm64 as the feature-platform convention, except
+    # ApplyFeatureConfigPresetFunction, which must match the x86_64 IDPCommon layer.
 
 Resources:
 
@@ -372,6 +387,32 @@ Resources:
                 - Effect: Allow
                   Action: s3:GetObject
                   Resource: !Sub 'arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/${CatalogKey}'
+          - !Ref AWS::NoValue
+        # Configuration revision bodies. A feature's config preset is recorded as a
+        # revision of the feature's profile (issue #697), and the bodies live in the
+        # ConfigurationBucket under config_revisions/ — DynamoDB holds only the index
+        # and counters, because a scan bills on full item size regardless of the
+        # projection. Delete is needed too: removeFeatureConfigPreset drops the
+        # profile's history with the profile, and retention pruning deletes bodies
+        # that fall outside the cap. Scoped to that prefix, no ListBucket.
+        - !If
+          - HasConfigurationBucket
+          - PolicyName: ConfigRevisionBodies
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                    - s3:DeleteObject
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*'
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${ConfigurationBucketName}'
+                  Condition:
+                    StringLike:
+                      s3:prefix: 'config_revisions/*'
           - !Ref AWS::NoValue
         - !If
           - HasSellerBuckets
@@ -464,6 +505,7 @@ Resources:
   ListInstalledFeaturesFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/list_installed_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -482,6 +524,7 @@ Resources:
   ListCatalogFeaturesFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/list_catalog_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -494,6 +537,7 @@ Resources:
   RegisterFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/register_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -505,6 +549,7 @@ Resources:
   GetFeatureLaunchUrlFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/get_feature_launch_url/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -527,6 +572,7 @@ Resources:
   CheckFeatureEntitlementFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/check_feature_entitlement/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -578,6 +624,7 @@ Resources:
   SubscribeFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/subscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -601,6 +648,7 @@ Resources:
   UnsubscribeFeatureFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/unsubscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -626,6 +674,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: HasConfigurationTable
     Properties:
+      Architectures: [arm64]
       CodeUri: ./lambdas/register_feature_hooks/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
@@ -647,9 +696,30 @@ Resources:
       CodeUri: ./lambdas/apply_feature_config_preset/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      # Importing idp_common (pydantic + the config models), reading the host
+      # default, merging the preset over it and writing a revision body to S3 does
+      # not fit the 3s default. Install-time only, so the headroom is free.
+      Timeout: 120
+      MemorySize: 1024
+      # MUST match the architecture the IDPCommon layer was built for. This
+      # template's Globals default every function to arm64, but the layer is built
+      # x86_64 (it declares no CompatibleArchitectures, which means x86_64) along
+      # with the rest of the main stack. An arm64 function with that layer attached
+      # deploys fine and then fails at import with
+      # `No module named 'pydantic_core._pydantic_core'` — pydantic_core is a
+      # compiled extension. Found by invoking the deployed function.
+      Architectures: [x86_64]
+      Layers: !If
+        - HasIDPCommonBaseLayer
+        - [!Ref IDPCommonBaseLayerArn]
+        - !Ref AWS::NoValue
       Environment:
         Variables:
           CONFIGURATION_TABLE: !Ref ConfigurationTableName
+          # Revision bodies live here. Without it, ConfigRevisionStore treats
+          # history as DISABLED and silently records nothing — the same trap the
+          # SDK hit before it exported this variable.
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           LOG_LEVEL: !Ref LogLevel
 
   ###########################################################################

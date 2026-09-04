@@ -10,7 +10,7 @@ This script enables incremental type checking for PRs by:
 Usage:
     python scripts/sdlc/typecheck_pr_changes.py [target_branch]
 
-    target_branch: Branch to compare against (default: main)
+    target_branch: Branch to compare against (default: develop)
 
 Examples:
     python scripts/sdlc/typecheck_pr_changes.py main
@@ -25,8 +25,47 @@ from pathlib import Path
 from typing import Any
 
 
+def _git_lines(args: list[str]) -> list[str] | None:
+    """Run a git command and return its stdout lines, or None if it failed."""
+    try:
+        result = subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return result.stdout.splitlines()
+
+
+def _python_files(lines: list[str]) -> list[str]:
+    return [f for f in lines if f.endswith(".py") and Path(f).exists()]
+
+
+def get_uncommitted_files() -> list[str]:
+    """Changed Python files in the working tree — staged, unstaged, or untracked.
+
+    Committed-only diffing makes this gate report success having checked nothing
+    whenever it runs BEFORE a commit, which is exactly when a developer wants it.
+    That is not hypothetical: it is how two `scope_allows is not defined` errors
+    reached CI while the local run printed "No Python files changed".
+    """
+    collected: list[str] = []
+    for args in (
+        ["diff", "--name-only", "HEAD"],  # unstaged
+        ["diff", "--name-only", "--cached"],  # staged
+        ["ls-files", "--others", "--exclude-standard"],  # untracked
+    ):
+        lines = _git_lines(args)
+        if lines:
+            collected.extend(_python_files(lines))
+    return sorted(set(collected))
+
+
 def get_changed_files(target_branch: str = "develop") -> list[str]:
     """Get list of changed Python files compared to target branch.
+
+    The result is the union of what is COMMITTED on this branch and what is still
+    in the working tree, so the answer does not depend on whether the developer
+    has committed yet.
 
     Args:
         target_branch: Git branch to compare against
@@ -42,22 +81,11 @@ def get_changed_files(target_branch: str = "develop") -> list[str]:
     ]
 
     for ref in ref_formats:
-        try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", ref],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            files = [
-                f
-                for f in result.stdout.splitlines()
-                if f.endswith(".py") and Path(f).exists()
-            ]
-            if files or result.returncode == 0:
-                return files
-        except subprocess.CalledProcessError:
+        lines = _git_lines(["diff", "--name-only", ref])
+        if lines is None:
             continue
+        committed = _python_files(lines)
+        return sorted(set(committed) | set(get_uncommitted_files()))
 
     # If all methods fail, print error
     print(
@@ -149,13 +177,19 @@ def run_type_check(config_path: str) -> int:
 
 def main() -> int:
     """Main entry point for incremental type checking."""
-    target_branch = sys.argv[1] if len(sys.argv) > 1 else "main"
+    # `develop` is this repo's default branch, and get_changed_files() already
+    # defaults to it — the two disagreeing meant a bare local run compared against
+    # a branch that may not exist here.
+    target_branch = sys.argv[1] if len(sys.argv) > 1 else "develop"
 
     print(f"🔍 Checking for Python files changed vs {target_branch}...")
     files = get_changed_files(target_branch)
 
     if not files:
-        print("✅ No Python files changed - skipping type check")
+        print(
+            "✅ No Python files changed (committed or in the working tree) "
+            "- skipping type check"
+        )
         return 0
 
     print(f"\n📝 Found {len(files)} changed Python file(s):")

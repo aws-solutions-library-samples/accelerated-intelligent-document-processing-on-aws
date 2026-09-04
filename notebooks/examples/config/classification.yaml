@@ -32,10 +32,24 @@ classification:
     1. Examine the visual layout: headers, logos, formatting, structure, and visual organization
     2. Analyze the textual content: key phrases, terminology, purpose, and information type
     3. Identify distinctive features that match the document type descriptions
-    4. Decide if this page starts a new document (output "start") or continues the previous document (output "continue")
+    4. Decide the document_boundary by applying the <boundary-detection-rules> below
     5. Consider both visual and textual evidence together to determine the best match
     6. CRITICAL: Only use document types explicitly listed in the <document-types> section
     </classification-instructions>
+
+    <boundary-detection-rules>
+    You are classifying ONE page at a time. Any pages shown to you as context are there only to help you judge this page; classify only the page identified as the page to classify.
+    "document_boundary" answers one question: is this page the FIRST page of a document instance ("start"), or a later page of a document instance that already began on an earlier page ("continue")?
+    Decide from this page's own evidence, in priority order:
+    1. PAGINATION: If the page shows pagination such as "Page 2 of 2", "Page 3 of 5", "2/2", or "continued" with a number greater than 1, this page is NOT a first page - output "continue".
+    2. If pagination indicates the first page (for example "Page 1 of 2"), output "start".
+    3. OPENING HEADER BLOCK: A first page normally carries the document's opening identity block - form number and title, addressee name AND full address, date, account or reference numbers. Output "start" when this page carries that opening block.
+    4. CONTINUATION EVIDENCE: A later page normally lacks the opening block and instead shows a form number only in the footer, a table or list continuing from a previous page, or a trailing signature/consent/certification section. Output "continue" for such a page.
+    CRITICAL - no preceding page shown: If you are not shown the preceding page, do NOT conclude that this page must be a first page. Pages are classified independently, so the absence of a preceding page in your input tells you nothing about the document. Judge only from this page's own evidence: a page marked "Page 2 of 2" is a continuation page and must be "continue" even when you cannot see page 1.
+    CRITICAL - consecutive documents of the same type: Output "start" whenever this page IS a first page, even when the preceding page has the same document type. Two copies of the same form filed back to back are two separate documents, and the first page of the second copy must be "start" so the two are not merged.
+    PRECEDENCE: If the matched document type's description in <document-types> gives explicit boundary or page-ordering instructions (for example, how to handle pages scanned out of order), follow those instructions instead of the general rules above.
+    If evidence is genuinely balanced, prefer "continue" for a page that is clearly not a first page, and prefer "start" for a page that carries a complete opening header block.
+    </boundary-detection-rules>
 
     <output-format>
     {

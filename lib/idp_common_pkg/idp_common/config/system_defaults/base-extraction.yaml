@@ -33,15 +33,114 @@ extraction:
                                             # pre-load page images (table path is text-driven;
                                             # view_image fetches on demand). Big cost saver on
                                             # multi-page tables. false = always attach images.
-    validation:
-      enabled: false                        # Full JSON-Schema validation of result (off by default)
-      check_formats: true                   # Enforce 'format' keywords (date/email/uuid). ISO-8601 dates.
-      fail_action: escalate                 # warn | escalate | reject
-      # Stronger model for re-extraction on validation failure. Sonnet 5 with the
-      # 1M-context beta (:1m) is the default escalation target: top-tier quality,
-      # 128K output cap, and a 1M input window that helps re-extraction on large
-      # documents. (Empty = retry with the same extraction model.)
-      escalation_model: "us.anthropic.claude-sonnet-5:1m"
+  # Send the class schema on the wire as a FORCED Converse tool instead of
+  # describing it in the prompt (WS-05). Listed here, alongside its siblings, so it
+  # is visible in Config#default rather than existing only as a Pydantic default.
+  forced_tool:
+    # OFF by default and gated on a measured win: forcing constrains the response
+    # SHAPE, not the values in it, so a model that would have returned a stray key
+    # may instead return a worse value that fits. Routes that cannot carry a
+    # toolConfig (a custom Lambda hook, GPT-5.x) fall back automatically, and the
+    # reason is recorded in the section's metadata.forced_tool.
+    enabled: false
+    # A model can accept the tool and still answer in prose — a normal outcome, not
+    # an error. Keep true in production; set false only to measure how often
+    # forcing is actually honored.
+    fallback_to_prompt: true
+  # Detect a section that holds SEVERAL documents of the same class when the
+  # model returned only one of them (GitHub #753 / #565). One extra integer is
+  # requested in the same inference and stripped from the result; when the answer
+  # exceeds the number of records extracted, an
+  # extraction_multi_instance_suspected warning is raised and the section's
+  # instance count reflects the model's answer.
+  multi_instance_detection:
+    # OFF by default — but not because it works badly. Measured on two real
+    # labeled corpora (80 paired Test Studio runs):
+    #
+    #   * It COUNTS accurately. On 40 bank-check images with committed ground
+    #     truth it found all 18 multi-check images, raised 0 false alarms on the
+    #     22 single-check images, and got the count exactly right on all 18 (2 to
+    #     8 checks). Precision and recall both 1.000.
+    #   * But a WARNING IS NOT EVIDENCE OF LOSS, and that same run is the
+    #     cautionary example. Counting the extracted rows afterwards: 0 checks
+    #     missing, in both arms. BANK_CHECK's schema is a single `checks` array,
+    #     so the class already modelled several checks per sheet and nothing was
+    #     collapsing. The warning fired because instance_extracted_count is 1 for
+    #     a class that declares no instance axis — true whether the records are
+    #     ABSENT or PRESENT INSIDE A DECLARED ARRAY. The predicate cannot tell
+    #     those apart, so when this fires, look at the extracted data before
+    #     concluding anything was dropped. (There it was a real configuration
+    #     finding: the fix was x-aws-idp-instance-array: checks.)
+    #   * Token cost is negligible: input +1.8%, output -0.5%.
+    #   * On a corpus with NO multi-record documents to find, it is pure cost:
+    #     RealKIE-FCC-Verified lost ~1.3 accuracy points (0.7678 -> 0.7552, worse
+    #     on 14 of 40 docs, better on 1, sign test p=0.001), spread diffusely
+    #     across four attributes rather than any one failure mode.
+    #
+    # A default has to be safe for the corpus that gets no benefit, so it ships
+    # off.
+    #
+    # TURN IT ON, per configuration profile, when one section can hold several
+    # documents of the same class AND THE CLASS SCHEMA DESCRIBES ONLY ONE. That
+    # conjunction is what loses records; either half alone does not. A class that
+    # already declares a record array (see x-aws-idp-instance-array) is not
+    # losing anything — it just is not reporting its count.
+    #
+    # Also worth running ONCE as a pure diagnostic on any new corpus, then
+    # turning off: that is how a missing instance axis was found in the shipped
+    # ocr-benchmark preset. Two distinct uses, and only the second is a setting
+    # you leave on:
+    #   * diagnostic  — run once, act on what it names, turn off.
+    #   * standing guard — a corpus that keeps producing merged same-class
+    #     sections, where you want a warning on every affected section.
+    #
+    # Detection NEVER changes the extracted data or a class's schema flags.
+    # Simple extraction only (prompt and forced-tool paths).
+    enabled: false
+    # The question put to the model, as the description of the auxiliary count
+    # property. {DOCUMENT_CLASS} is substituted with the section's class.
+    # Two clauses are load-bearing and should survive any edit:
+    #   * "do not count pages, sections or repeated headers" — without it a
+    #     document with an identical banner on each of four pages reads as four.
+    #   * "DIAGNOSTIC METADATA, not extracted document data" — so the field is
+    #     not mistaken for something to extract from the page.
+    question: >-
+      DIAGNOSTIC METADATA, not extracted document data. How many separate,
+      complete '{DOCUMENT_CLASS}' documents are present in the supplied pages?
+      Answer 1 for the normal case of one document. Answer more than 1 only when
+      the pages clearly contain several distinct documents of this same type — for
+      example statements covering different periods, or records for different
+      people — including when a document starts part-way down a page. Do not count
+      pages, sections or repeated headers: count complete documents. Extract all
+      other fields exactly as you otherwise would.
+  # Deterministic type/format repair applied BEFORE validation, so validation
+  # only reports what could not be fixed for free. No model call.
+  coercion:
+    # Set false to leave the model's output exactly as returned. On by default
+    # because the alternative is a wrongly-typed value reaching storage — but it
+    # does rewrite extracted values, always recorded under metadata.coercion.
+    enabled: true
+    # 'auto' REFUSES to guess on an ambiguous all-numeric date like 01/02/2024.
+    # Set MDY or DMY only for a corpus whose convention you know.
+    date_order: auto
+  # Full JSON-Schema validation of the extraction result (v0.7: moved up from
+  # extraction.agentic.validation — simple extraction runs this path too now).
+  validation:
+    # ON by default as of v0.7. Previously off, which meant the guard against
+    # silent schema violations was disabled on exactly the configurations that
+    # needed it. Paired with fail_action: warn it costs nothing: no extra
+    # inference, just a visible ProcessingIssue instead of a silent violation.
+    enabled: true
+    check_formats: true                     # Enforce 'format' keywords (date/email/uuid). ISO-8601 dates.
+    # warn | escalate | reject. 'warn' is the default because it is FREE.
+    # 'escalate' re-extracts the failing fields with escalation_model and so
+    # costs real money — opt into it deliberately.
+    fail_action: warn
+    # Stronger model for re-extraction when fail_action: escalate. Sonnet 5 with
+    # the 1M-context beta (:1m): top-tier quality, 128K output cap, and a 1M
+    # input window that helps re-extraction on large documents.
+    # (Empty = retry with the same extraction model.)
+    escalation_model: "us.anthropic.claude-sonnet-5:1m"
   image:
     target_width: ""
     target_height: ""

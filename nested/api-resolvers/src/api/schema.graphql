@@ -108,6 +108,8 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   ConfidenceAlertCount: Int
   ProcessingIssueCount: Int
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
   # Number of retained processing runs (versions) for this document. Maintained
   # as a counter on the doc item; intentionally NOT part of the TypeDateIndex
@@ -126,6 +128,8 @@ type DocumentVersion @aws_cognito_user_pools @aws_iam {
   WorkflowStartTime: AWSDateTime
   WorkflowExecutionArn: String
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   PageCount: Int
   FileCount: Int
   ManifestUri: String
@@ -149,6 +153,11 @@ type Section @aws_cognito_user_pools @aws_iam {
   PageIds: [Int]
   Class: String
   OutputJSONUri: String
+  # Confidence in this section's CLASS (0-1), aggregated from its pages as the
+  # minimum. Null means NOT SCORED — the classifier produced no confidence for
+  # at least one page, which is the default until the classification prompt asks
+  # for one. Unrelated to ConfidenceThresholdAlerts below, which are per-field.
+  Confidence: Float
   ConfidenceThresholdAlerts: [ConfidenceThresholdAlert]
   # Structured self-healing / quality issues detected for this section
   # (assessment incomplete, recovered-with-retries, geometry incomplete, …).
@@ -162,6 +171,16 @@ type Section @aws_cognito_user_pools @aws_iam {
   # Optional short category for why the section is excluded (e.g.,
   # "instructions", "legal", "cover-page"). Used for the UI badge text.
   ExclusionReason: String
+  # How many separate documents (instances) of this section's Class extraction
+  # found here. Absent/0 = undetermined, 1 = normal, >1 = the section spans
+  # several distinct documents that classification did not split apart. The UI
+  # surfaces >1 so a multi-document section is visible at a glance.
+  InstanceCount: Int
+}
+
+type ClassCandidate @aws_cognito_user_pools @aws_iam {
+  Class: String
+  Probability: Float
 }
 
 type ConfidenceThresholdAlert @aws_cognito_user_pools @aws_iam {
@@ -185,6 +204,21 @@ type Page @aws_cognito_user_pools @aws_iam {
   TextUri: String
   TextConfidenceUri: String
   OcrPageDataUri: String
+  # Confidence in this page's Class (0-1), null when NOT SCORED. Named
+  # ClassConfidence because TextConfidenceUri above is OCR confidence — a
+  # different measurement.
+  ClassConfidence: Float
+  # The model's stated evidence for this page's Class, when the classification
+  # prompt asked for one (the default prompt does). Null otherwise.
+  ClassReason: String
+  # Ranked alternative classes with probabilities ("80% W-2, 15% 1099"), from
+  # classification.confidence.mode = topk. Empty when nothing asked for them.
+  ClassCandidates: [ClassCandidate]
+  # The classifier's per-page boundary signal ("start" | "continue"), which is
+  # what sectionSplitting: llm_determined splits on. Null when the model
+  # produced no signal. Exposed so an unexpected section merge can be audited
+  # without reading raw DynamoDB items.
+  Boundary: String
 }
 
 type DocumentList @aws_cognito_user_pools @aws_iam {
@@ -252,6 +286,51 @@ type ConfigurationVersion @aws_cognito_user_pools @aws_iam {
   bdaProjectArn: String
   bdaSyncStatus: String
   bdaLastSyncedAt: String
+  # Configuration Profile revision counters. latestRevision is the highest
+  # revision cut; publishedRevision is the one the profile's current
+  # configuration reflects. Null on a profile saved before revision history.
+  latestRevision: Int
+  publishedRevision: Int
+}
+
+# One immutable snapshot of a Configuration Profile's configuration, cut on every
+# save. Revisions are CONTENT inside a profile, not access-control objects: scope
+# is enforced at the profile, so an Author scoped to a profile may read, restore,
+# and label all of its revisions.
+type ConfigProfileRevision @aws_cognito_user_pools @aws_iam {
+  revision: Int!
+  createdAt: AWSDateTime
+  createdBy: String
+  label: String
+  notes: String
+  sizeBytes: Int
+  classFingerprint: String
+  # Pinned by a test run; exempt from retention pruning so a run's configuration
+  # outlives the retention cap and stays comparable.
+  pinned: Boolean
+  # True for the revision the profile's current configuration reflects.
+  published: Boolean
+}
+
+type ConfigProfileRevisionsResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  revisions: [ConfigProfileRevision]
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  # The full configuration recorded in the revision, as a JSON string.
+  config: AWSJSON
+  error: ConfigurationError
+}
+
+type ConfigProfileRevisionMutationResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  message: String
+  # The new revision number, when the operation created one (restore).
+  revision: Int
+  error: ConfigurationError
 }
 
 type ConfigurationVersionsResponse @aws_cognito_user_pools @aws_iam {
@@ -389,6 +468,8 @@ input CreateDocumentInput {
   QueuedTime: AWSDateTime
   ExpiresAfter: AWSTimestamp
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
 }
 
@@ -440,6 +521,8 @@ input UpdateDocumentInput {
   HITLReviewHistory: AWSJSON
   ConfidenceAlertCount: Int
   ConfigVersion: String
+  # Revision of that profile the document was processed under.
+  ConfigRevision: Int
   TraceId: String
 }
 
@@ -505,6 +588,17 @@ type AbortWorkflowResponse @aws_cognito_user_pools @aws_iam {
   abortedCount: Int
   failedCount: Int
   errors: [String]
+}
+
+input DocumentSectionGroupingInput {
+  # The section whose content should carry over. A value not currently on the document
+  # is treated as a new section with no extraction result.
+  sectionId: String!
+  classification: String
+  # Page ids in the document's own numbering — 1-based, except BDA / Pattern-1 which is
+  # 0-based. Passed through unconverted, unlike the test-set path which stores 0-based
+  # page_indices.
+  pageIds: [String!]!
 }
 
 input ModifiedSectionInput {
@@ -673,14 +767,41 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   fieldMetrics: AWSJSON
   splitClassificationMetrics: AWSJSON
   gradedPacketMetrics: AWSJSON
+  # Per-section classification mismatches behind the percentages in
+  # splitClassificationMetrics: which documents were misclassified and as what.
+  # ``{errors: [{doc_key, section_id, kind, expected_class, predicted_class,
+  # expected_pages, predicted_pages}], total, documents_affected, truncated}``
+  # where kind is "class" | "unmatched" | "order". Capped (see
+  # MAX_CLASSIFICATION_ERRORS) because the whole run result is one DynamoDB
+  # attribute; ``total`` is the uncapped count so the UI can say "200 of 340".
+  # Empty on the Athena fallback path, which aggregates percentages only.
+  classificationErrors: AWSJSON
   totalCost: Float
   costBreakdown: AWSJSON
   createdAt: AWSDateTime
   completedAt: AWSDateTime
   context: String
   configVersion: String
+  # The configuration profile revision this run scored against, alongside the
+  # test-set version above: a metric delta between two runs is attributable to
+  # the configuration only when both are known.
+  configRevision: Int
+  # Pinned version scored against, or null when the run scored the set's current
+  # labels. In that case testSetDraftVersion names the version those labels were
+  # being annotated toward, if a transition was open — so a result can say
+  # "current labels, draft toward v2" rather than nothing.
   testSetVersion: Int
+  testSetDraftVersion: Int
   config: AWSJSON
+  # True for a run that PRODUCES ground truth rather than being scored against it.
+  # Such a run has no baseline by construction, so evaluation never runs and there
+  # are no accuracy metrics to wait for — ever. Exposed so the UI can say that,
+  # rather than warning that metrics "are not available" as though something had
+  # gone wrong. The server owns the rule (see _is_draft_labeling_run, which prefers
+  # the persisted Purpose and falls back to an exact Context match for runs created
+  # before Purpose was written); duplicating it client-side would give it two homes
+  # and let the fallback drift.
+  isDraftLabeling: Boolean
 }
 
 type TestRunComparison @aws_cognito_user_pools @aws_iam {
@@ -720,6 +841,10 @@ type TestSet @aws_cognito_user_pools @aws_iam {
   labelJobStatus: String
   status: String
   createdAt: AWSDateTime!
+  # Set by the getTestSets reconcile path when direct-S3 edits are detected.
+  # Absent on rows written before the reconcile logic existed and on rows
+  # that have not been touched since.
+  updatedAt: AWSDateTime
   error: String
   lastAddResult: String
   documentClassType: DocumentClassType
@@ -738,6 +863,16 @@ type TestSet @aws_cognito_user_pools @aws_iam {
 type TestSetDocumentSection @aws_cognito_user_pools @aws_iam {
   sectionId: String!
   baselineKey: String!
+  # This section's own class. Distinct from TestSetDocument.documentClasses, which is
+  # the deduplicated badge list for the whole document — the regrouping board needs one
+  # per section, and the editor loads only the section being viewed.
+  documentClass: String
+  # 0-based page indices this section covers, from split_document.page_indices.
+  # Returned so the page-regrouping editor can render every section's grouping at
+  # once; the resolver already reads each result.json for label state and class, so
+  # this costs no extra S3 reads. Absent when the section's file could not be read —
+  # an empty list would assert the section has no pages, which is a different claim.
+  pageIndices: [Int!]
 }
 
 type TestSetDocument @aws_cognito_user_pools @aws_iam {
@@ -767,6 +902,10 @@ type TestSetDocument @aws_cognito_user_pools @aws_iam {
 type TestSetDocumentsPage @aws_cognito_user_pools @aws_iam {
   documents: [TestSetDocument!]!
   nextToken: String
+  # Documents in the whole test set, not in this page. Without it a caller can
+  # only count what it received, which is how a 100-document set came to be
+  # described as 50 in the labeling dialog.
+  totalCount: Int
   # Set when a draft-labeling job for this set is still RUNNING, so a page load
   # can resume polling it. Labels are harvested on read, so a job only advances
   # while something polls: without this a browser refresh mid-run dropped the
@@ -783,6 +922,29 @@ type TestSetVersion @aws_cognito_user_pools @aws_iam {
   activeReference: Int
   createdAt: AWSDateTime
   createdBy: String
+}
+
+"""
+The version transition an annotation session commits to.
+
+`baseVersion` is the state being left, snapshotted to
+`{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+to whatever the labels happen to be later. `draftVersion` is what the session is working
+toward, and what the queue link carries so a link identifies its transition.
+"""
+type TestSetAnnotationDraft @aws_cognito_user_pools @aws_iam {
+  testSetId: String!
+  baseVersion: Int!
+  draftVersion: Int!
+  # Baseline objects copied into the base version. 0 when the draft was already open.
+  snapshotObjectCount: Int
+  # True when this call found an existing draft rather than opening one, so a caller can
+  # tell "nothing happened" from "a snapshot just ran".
+  alreadyOpen: Boolean
+}
+
+input OpenTestSetAnnotationDraftInput {
+  testSetId: String!
 }
 
 input PublishTestSetVersionInput {
@@ -909,6 +1071,15 @@ type AnnotationQueueItem @aws_cognito_user_pools @aws_iam {
   # Fields below their configured threshold, out of those carrying confidence.
   # The queue is ordered by this, with minConfidence as the tiebreak.
   alertCount: Int
+  # What each of this document's sections was classified as (distinct, in order).
+  # Shown so a reviewer can spot a misclassified document while working the queue.
+  # It is NOT scored and does not affect ordering: nothing here can tell whether a
+  # class is *wrong* — the draft under review IS the candidate ground truth, and
+  # classification carries no real confidence — so this is information for a human
+  # rather than a signal, and it is deliberately kept out of the review-effort
+  # estimator, whose alert counts and confidence curve are defined in terms of
+  # field confidence.
+  documentClasses: [String!]
   fieldCount: Int
   labelSource: String
   sectionCount: Int!
@@ -948,6 +1119,14 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   labelJobStatus: String
   labelJobLabeled: Int
   labelJobTotal: Int
+  # The open version transition, if annotation has begun on this set. Returned here so
+  # the workspace can tell "already in a transition" from "has not started one" on entry,
+  # WITHOUT calling openTestSetAnnotationDraft to find out — that mutation snapshots, so
+  # using it as a probe would open a transition merely by visiting the page, which is the
+  # silent commitment this whole mechanism exists to remove.
+  draftVersion: Int
+  # The version the open transition is moving away from, whose labels are snapshotted.
+  baseVersion: Int
 }
 
 input ReextractTestSetDocumentInput {
@@ -961,13 +1140,48 @@ input ReextractTestSetDocumentInput {
   configVersion: String
 }
 
+input UpdateTestSetDocumentSectionsInput {
+  testSetId: String!
+  objectKey: String!
+  sections: [TestSetSectionGroupingInput!]!
+}
+
+input TestSetSectionGroupingInput {
+  # The section whose content should carry over. A value not present in the current
+  # baseline is treated as a new, empty section.
+  sectionId: String!
+  documentClass: String
+  # 0-based page indices within the document, matching split_document.page_indices.
+  pageIndices: [Int!]!
+}
+
+type TestSetDocumentSections @aws_cognito_user_pools @aws_iam {
+  testSetId: String!
+  objectKey: String!
+  # The grouping as written, renumbered so section ids agree with page order.
+  sections: [TestSetSectionGrouping!]!
+}
+
+type TestSetSectionGrouping @aws_cognito_user_pools @aws_iam {
+  sectionId: String!
+  documentClass: String
+  pageIndices: [Int!]!
+}
+
 input GenerateDraftLabelsInput {
   testSetId: String!
   # Defaults to the deployment's active config when omitted.
   configVersion: String
+  # Optional revision of configVersion.
+  configRevision: Int
   # Optional subset; omit to label every document in the set. Only these
   # documents are processed, and each must exist in the test set.
   objectKeys: [String!]
+  # Forces the class of every document in this run rather than classifying them,
+  # which is how a class correction is re-extracted. The resolver validates the
+  # shape (see validate_document_class) because the value is carried as S3 object
+  # user metadata. It was already honoured by the resolver and undeclared here.
+  documentClass: String
 }
 
 type SendTestRunToReviewResult @aws_cognito_user_pools @aws_iam {
@@ -980,6 +1194,12 @@ type SendTestRunToReviewResult @aws_cognito_user_pools @aws_iam {
 input TestSetUploadInput {
   fileName: String!
   fileSize: Int!
+  # What to call the test set. Optional rather than required only because this
+  # mutation has shipped since 0.6.1 and a required field would break a direct
+  # HTTP-API caller; the resolver falls back to the zip's filename and logs that it
+  # did. Absent it, the name the user typed in the wizard was silently discarded and
+  # the set took the archive's name.
+  name: String
   description: String
   documentClassType: DocumentClassType
 }
@@ -1020,6 +1240,17 @@ input TestRunInput {
   context: String
   numberOfFiles: Int
   configVersion: String
+  # Revision of configVersion to score against. Omit for its current
+  # configuration. Pinning is what makes two runs of the same profile
+  # comparable: it records WHICH configuration produced each result.
+  configRevision: Int
+  # Version of the test set's ground truth to score against. Omit for the set's
+  # current labels, INCLUDING any annotation in progress toward the next version —
+  # correcting documents and running to see the improvement is the expected loop.
+  # Pin a published version to score exactly the labels it preserved; like
+  # configRevision, that is what keeps two runs comparable once the ground truth
+  # has moved.
+  testSetVersion: Int
   # Optional explicit document list. Unlike numberOfFiles (the first N files of
   # the set) this names exactly which documents to process, which is what
   # labeling or re-labeling a subset needs.
@@ -1196,6 +1427,21 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   setActiveVersion(versionName: String!): UpdateConfigurationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Configuration Profile revisions. Restore and label are Admin+Author because
+  # a revision is content inside a profile the Author already owns; deleting a
+  # revision destroys history and stays Admin-only, mirroring
+  # deleteDocumentVersion.
+  restoreConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  labelConfigProfileRevision(
+    profileName: String!
+    revision: Int!
+    label: String
+    notes: String
+  ): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  deleteConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   generateRuleJson(ruleDescription: String!): GenerateRuleJsonResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   syncBdaIdp(direction: String, versionName: String, bdaProjectArn: String, saveArn: Boolean, syncMode: String): SyncBdaIdpResponse
@@ -1206,6 +1452,9 @@ type Mutation {
     prefix: String
     bucket: String
     version: String
+    # Optional revision of `version` to pin the upload to. Omit for the profile's
+    # current configuration.
+    revision: Int
   ): PresignedUrlResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Server-side copy of a bundled sample document (by id, from the
@@ -1254,7 +1503,7 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   copyToBaseline(objectKey: String!): CopyToBaselineResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  reprocessDocument(objectKeys: [String!]!, version: String): Boolean!
+  reprocessDocument(objectKeys: [String!]!, version: String, revision: Int): Boolean!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   abortWorkflow(objectKeys: [String!]!): AbortWorkflowResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
@@ -1296,6 +1545,29 @@ type Mutation {
   # scoped per test set by the resolver via allowedTestSets.
   reextractTestSetDocument(input: ReextractTestSetDocumentInput!): DraftLabelJob
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  # Re-group a document's pages into sections, correcting a wrong packet split.
+  # Annotator-reachable for the same reason as reextractTestSetDocument: it is
+  # annotation work, scoped per test set by the resolver via allowedTestSets.
+  #
+  # Writes ONLY the grouping and the class. Each surviving section keeps its
+  # inference_result, labelSource and _editHistory, so a reviewer's corrections are
+  # never discarded — the fields may no longer match their pages afterwards, which is
+  # what the UI warns about while offering an opt-in re-extract.
+  updateTestSetDocumentSections(input: UpdateTestSetDocumentSectionsInput!): TestSetDocumentSections
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  # Open the version transition that annotating a test set commits to, preserving the
+  # state being left. Idempotent: an already-open draft is returned unchanged.
+  #
+  # Annotating used to edit ground truth in place with nothing recording what it had
+  # been — and a version was a DynamoDB row that copied no objects, so a run stamped
+  # with a version number could not be reproduced against the labels it scored.
+  #
+  # Admin/Author/Annotator, matching the rest of the annotation queue: an annotator is
+  # the role that starts a session. Additionally scope-checked against allowedTestSets in
+  # the resolver, since group membership alone would let one annotator open a transition
+  # on a set they were never assigned.
+  openTestSetAnnotationDraft(input: OpenTestSetAnnotationDraftInput!): TestSetAnnotationDraft
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   sendTestRunToReview(testRunId: String!): SendTestRunToReviewResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Fine-Tuning (Admin + Author)
@@ -1311,6 +1583,33 @@ type Mutation {
     modifiedPages: [ModifiedPageInput!]
   ): ProcessChangesResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Re-group a processed document's pages WITHOUT reprocessing it.
+  #
+  # processChanges clears each changed section's extraction data and requeues the
+  # document, because it delegates persistence to the pipeline — it never writes the
+  # document back, so the run is the only thing that saves the change. A grouping-only
+  # edit persists itself instead (as completeSectionReview does for field edits), which
+  # is why the extracted values survive. They may no longer match their pages, which the
+  # UI says while offering processChanges as the opt-in reprocess.
+  #
+  # Admin/Reviewer/Annotator, matching completeSectionReview — the sibling that edits a
+  # section's content — rather than processChanges' narrower pair.
+  #
+  # Scope, stated because it differs from the test-set side and the difference is easy
+  # to assume away: Cognito group membership is the WHOLE check here. There is no
+  # per-document scoping, so an Annotator may re-group any document in the deployment.
+  # updateTestSetDocumentSections is narrower — it also calls assert_can_access_test_set
+  # against the caller's allowedTestSets — because a test set is an assignable unit of
+  # work and a document is not. This matches completeSectionReview and is not new with
+  # this operation, but it is the kind of asymmetry a reader will otherwise take for an
+  # oversight, or "fix" by adding a scope check that has nothing to key on.
+  #
+  # Refused unless the document is in a terminal state (COMPLETED / FAILED / ABORTED /
+  # REDACTED_SUPERSEDED), since a direct write would race a run. Stated as an allow-list
+  # in the resolver: a denylist of QUEUED/RUNNING missed the 14 intermediate statuses
+  # the pipeline actually spends its time in.
+  updateDocumentSections(objectKey: String!, sections: [DocumentSectionGroupingInput!]!): ProcessChangesResponse!
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   skipAllSectionsReview(objectKey: String!): Document
@@ -1518,8 +1817,28 @@ type Query @aws_cognito_user_pools @aws_iam {
   # Configuration & pricing queries - Admin, Author, Viewer (not Reviewer)
   getConfigVersions: ConfigurationVersionsResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+  # Annotator is included so the annotate view can populate its class dropdown —
+  # correcting a misclassified section is annotation work, and its write side
+  # (reextractTestSetDocument) already accepts them. An Annotator with no other
+  # entitlement receives ONLY the class vocabulary: the resolver reduces the payload
+  # (see _class_vocabulary_only), so prompts, model ids and every other setting stay
+  # out of reach of the lowest-privilege role.
   getConfigVersion(versionName: String!): ConfigurationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer", "Annotator"])
+
+  # Configuration Profile revision history, scope-checked against the caller's
+  # allowedConfigVersions in the resolver.
+  #
+  # Admin/Author/Viewer, deliberately NOT the same set as getConfigVersion above:
+  # Annotator is on that one only because the annotate view needs the class
+  # vocabulary to populate a dropdown, and the resolver reduces its payload to
+  # exactly that. Revision history serves no annotator flow, so the lowest-privilege
+  # role has no reason to read a profile's configuration history.
+  listConfigProfileRevisions(profileName: String!): ConfigProfileRevisionsResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+  getConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
   getPricing: PricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getModelConfigLimits: ModelConfigLimitsResponse
@@ -1583,8 +1902,12 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   getTestSetVersions(testSetId: String!): [TestSetVersion]
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Annotator included: the ground-truth editor polls this for the outcome of the
+  # re-extract it just started (reextractTestSetDocument, also Annotator-reachable).
+  # Without it the job ran and the UI reported failure. Scoped per test set by the
+  # resolver via allowedTestSets.
   getDraftLabelJob(testSetId: String!, jobId: String!): DraftLabelJob
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   # Annotator included so the workspace can show what their review is buying; the
   # resolver additionally enforces allowedTestSets per set.
   estimateReviewEffort(testSetId: String!, targetAccuracy: Float, configVersion: String): ReviewEffortEstimate

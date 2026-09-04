@@ -87,6 +87,7 @@ class BatchProcessor:
         batch_id: Optional[str] = None,
         number_of_files: Optional[int] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         config_path: Optional[str] = None,
         batch_prefix: Optional[str] = None,
     ) -> Dict:
@@ -119,7 +120,12 @@ class BatchProcessor:
 
         if manifest_path:
             return self._process_from_manifest(
-                manifest_path, output_prefix, batch_id, number_of_files, config_version
+                manifest_path,
+                output_prefix,
+                batch_id,
+                number_of_files,
+                config_version,
+                config_revision,
             )
         elif directory:
             return self.process_batch_from_directory(
@@ -130,6 +136,7 @@ class BatchProcessor:
                 batch_id,
                 number_of_files,
                 config_version,
+                config_revision,
             )
         elif s3_uri:
             return self.process_batch_from_s3_uri(
@@ -145,6 +152,7 @@ class BatchProcessor:
         batch_id: Optional[str] = None,
         number_of_files: Optional[int] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> Dict:
         """
         Process batch of documents from manifest
@@ -177,7 +185,12 @@ class BatchProcessor:
 
         # Process documents
         return self._process_documents(
-            documents, batch_id, output_prefix, manifest_path, config_version
+            documents,
+            batch_id,
+            output_prefix,
+            manifest_path,
+            config_version,
+            config_revision,
         )
 
     def process_batch_from_directory(
@@ -189,6 +202,7 @@ class BatchProcessor:
         batch_id: Optional[str] = None,
         number_of_files: Optional[int] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> Dict:
         """
         Process batch of documents from local directory
@@ -296,6 +310,7 @@ class BatchProcessor:
         output_prefix: str,
         source: str,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
         base_dir: Optional[str] = None,
     ) -> Dict:
         """
@@ -341,7 +356,7 @@ class BatchProcessor:
                 # Handle document upload/reference
                 # S3 upload automatically triggers EventBridge -> QueueSender -> SQS
                 s3_key = self._process_document_with_base(
-                    doc, batch_id, base_dir, config_version
+                    doc, batch_id, base_dir, config_version, config_revision
                 )
 
                 results["document_ids"].append(
@@ -491,6 +506,7 @@ class BatchProcessor:
         batch_id: str,
         base_dir: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> str:
         """
         Process document with optional base directory for path preservation
@@ -506,13 +522,13 @@ class BatchProcessor:
         if doc["type"] == "local":
             # Upload local file with path preservation
             s3_key = self._upload_local_file_with_path(
-                doc, batch_id, base_dir, config_version
+                doc, batch_id, base_dir, config_version, config_revision
             )
             logger.info(f"Uploaded {doc['filename']} to {s3_key}")
             return s3_key
         elif doc["type"] == "s3":
             # Copy from external S3 location to InputBucket
-            s3_key = self._copy_s3_file(doc, batch_id, config_version)
+            s3_key = self._copy_s3_file(doc, batch_id, config_version, config_revision)
             logger.info(f"Copied {doc['filename']} from {doc['path']} to {s3_key}")
             return s3_key
         elif doc["type"] == "s3-key":
@@ -530,6 +546,7 @@ class BatchProcessor:
         batch_id: str,
         base_dir: Optional[str] = None,
         config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> str:
         """
         Upload local file to S3 InputBucket with path preservation
@@ -560,12 +577,18 @@ class BatchProcessor:
         if config_version:
             # Use put_object with metadata for config version
             logger.info(f"Adding config-version metadata: {config_version} to {s3_key}")
+            metadata = {"config-version": config_version}
+            # A revision only means anything alongside a profile, so it is only
+            # stamped when one was named. Without it the queue processor pins the
+            # profile's current revision.
+            if config_revision is not None:
+                metadata["config-revision"] = str(config_revision)
             with open(local_path, "rb") as file_data:
                 self.s3.put_object(
                     Bucket=input_bucket,
                     Key=s3_key,
                     Body=file_data,
-                    Metadata={"config-version": config_version},
+                    Metadata=metadata,
                 )
         else:
             logger.info(
@@ -590,7 +613,11 @@ class BatchProcessor:
         return f"{prefix}-{timestamp}"
 
     def _copy_s3_file(
-        self, doc: Dict, batch_id: str, config_version: Optional[str] = None
+        self,
+        doc: Dict,
+        batch_id: str,
+        config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> str:
         """
         Copy file from any S3 location to InputBucket
@@ -626,6 +653,8 @@ class BatchProcessor:
 
         if config_version:
             copy_args["Metadata"] = {"config-version": config_version}
+            if config_revision is not None:
+                copy_args["Metadata"]["config-revision"] = str(config_revision)
             copy_args["MetadataDirective"] = "REPLACE"
             logger.info(
                 f"Adding config-version metadata: {config_version} to copied file {dest_key}"

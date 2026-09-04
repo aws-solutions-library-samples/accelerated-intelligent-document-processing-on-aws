@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from idp_common.bda.bda_ocr import build_profile_arn
 from idp_common.config.class_names import sanitize_class_name
+from idp_common.config.class_settings import carry_forward_authored_settings
 
 if TYPE_CHECKING:
     from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
@@ -721,6 +722,15 @@ class BlueprintOptimizer:
                 classes_by_id[cls_id] = cls
 
         if class_id:
+            # Carry forward the class-level settings the BDA transform does not
+            # produce (extraction/escalation models, confidence thresholds,
+            # classification regexes, multi-instance, few-shot examples).
+            # Assigning the transformed schema straight over the existing class
+            # erased all of them, and the loss only showed up in the next
+            # document processed.
+            existing_class = classes_by_id.get(class_id)
+            if existing_class is not None:
+                carry_forward_authored_settings(existing_class, idp_schema)
             classes_by_id[class_id] = idp_schema
 
         existing_config["classes"] = list(classes_by_id.values())

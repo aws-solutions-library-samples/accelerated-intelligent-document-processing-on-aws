@@ -14,6 +14,112 @@
 # =============================================================================
 
 axes:
+  # Schema enforcement added in v0.7: deterministic value coercion and
+  # full JSON-Schema validation of the extraction result. Both are config
+  # toggles, so this axis A/Bs them on ONE deployed stack with identical code —
+  # which isolates the feature far better than a deploy-vs-deploy comparison.
+  enforcement:
+    'off':
+      extraction.coercion.enabled: false
+      extraction.validation.enabled: false
+    warn:
+      extraction.coercion.enabled: true
+      extraction.validation.enabled: true
+      extraction.validation.fail_action: warn
+    escalate:
+      extraction.coercion.enabled: true
+      extraction.validation.enabled: true
+      extraction.validation.fail_action: escalate
+  # classification.sectionSplitting. The ONE genuine cost increase that shipped
+  # on-by-default in v0.7: fixing #686 made `llm_determined` (the default) perform
+  # real boundary detection for SINGLE-CLASS configs, which previously
+  # short-circuited to one all-pages section with zero inference. So a multi-page
+  # single-class deployment that never set this knob starts paying for
+  # classification calls it never made before. This axis measures that, which
+  # nothing else in the matrix does. Only meaningful on a SINGLE-CLASS config
+  # (bank_statement is one) and a MULTI-PAGE document — a single-page document has
+  # nothing to split, so the call is skipped either way.
+  section_splitting:
+    disabled:       {classification.sectionSplitting: disabled}
+    page:           {classification.sectionSplitting: page}
+    llm_determined: {classification.sectionSplitting: llm_determined}
+  # x-aws-idp-multi-instance on the document class (#715). Replaces the class's
+  # EFFECTIVE schema with an instances[] List-of-Class wrapper, so a section that
+  # holds several documents of the class extracts every one of them instead of
+  # only the first. A per-class JSON-Schema extension rather than a top-level
+  # config path, so it A/Bs on ONE stack with identical code — which is what makes
+  # a delta attributable to the feature.
+  #
+  # Only meaningful on a document that actually contains several records of one
+  # class AND a configuration that puts them in one section: pair it with
+  # `section_splitting: disabled` and the `twodocs_2x20` doc, or the two statements
+  # are split into two sections and there is nothing for the wrapper to do.
+  multi_instance:
+    'off': {classes.x-aws-idp-multi-instance: null}
+    'on':  {classes.x-aws-idp-multi-instance: true}
+  # extraction.multi_instance_detection.enabled (#753). Asks the model, in the same
+  # inference, how many documents of the class the pages hold, and warns when that
+  # exceeds what was extracted. ON by default as shipped; the `off` arm reproduces
+  # the pre-#753 silence on the SAME build, which is the only way to measure both
+  # the detection rate and the false-positive rate on ordinary documents.
+  multi_instance_detection:
+    'off': {extraction.multi_instance_detection.enabled: false}
+    'on':  {extraction.multi_instance_detection.enabled: true}
+  # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
+  # Converse tool instead of describing it in the prompt. The task prompt is
+  # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
+  # are separate questions, and varying both at once would confound each.
+  forcing:
+    'off': {extraction.forced_tool.enabled: false}
+    'on':  {extraction.forced_tool.enabled: true}
+  # extraction.agentic.restate_schema_in_system_prompt (#710). Advanced extraction
+  # sends the class schema THREE times per request; copies 2 and 3 are the same
+  # JSON string, so copy 2 (the system-prompt restatement) is pure duplication —
+  # measured at 2,600 of 6,680 schema tokens on the lending Payslip class (38%).
+  # A config toggle, so this A/Bs on ONE stack with identical code. It is NOT a
+  # free win: restating a schema in prose often improves adherence, so the gate is
+  # "no completeness regression", not "fewer tokens".
+  schema_restatement:
+    'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
+    'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # ocr.image.dpi. Raised 150 -> 300 by #729/#740, and base-ocr.yaml records the
+  # mechanism: "below ~200 dpi Textract silently omits small, faint or skewed
+  # characters - PAGE NUMBERS, box numbers, hand-filled values - from its response
+  # entirely". Page numbers are the primary boundary signal, which makes this axis
+  # a candidate explanation for boundary behaviour that looks like a prompt effect.
+  # 150 is the pre-#740 default and is here to reproduce that world, NOT as a
+  # setting to recommend - see the "Do NOT lower dpi to save cost" note in
+  # base-ocr.yaml.
+  ocr_dpi:
+    '150': {ocr.image.dpi: 150}
+    '300': {ocr.image.dpi: 300}
+  # classification.confidence.mode (#731/#673). Turned ON by default (`topk`) in
+  # v0.7, so every existing deployment starts paying per-page classification
+  # output tokens on upgrade — this axis is how that cost gets measured.
+  #
+  # It is ALSO a confound for any classification study: `topk` rewrites the
+  # classification prompt to ask the model to rank alternative classes with
+  # probabilities. That extra reasoning can improve the boundary decision on its
+  # own, which masks a boundary-prompt comparison — the #653 pre/post control
+  # measured +0.00 on all three shapes with `topk` on, having measured a real
+  # deficit before #731 landed. Hold it `off` to isolate a prompt change.
+  class_confidence:
+    topk: {classification.confidence.mode: topk}
+    'off': {classification.confidence.mode: "off"}
+  # classification.task_prompt, frozen at two points in history. This is the ONLY
+  # axis whose value is a whole prompt rather than a scalar, so it uses the
+  # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
+  # benchmarks/matrices/prompts/.
+  #
+  # It exists because #653 shipped as a PROMPT-ONLY change that is on by default.
+  # Without a runnable pre-fix arm, "the fixed prompt scores 100% on paginated_3pg"
+  # is unfalsifiable — pagination alone could explain it. `legacy` reproduces the
+  # control instead of leaving it as prose in a FINDINGS file. Keep the frozen file
+  # frozen: it is a historical baseline, not a config to maintain.
+  boundary_prompt:
+    current: {}          # whatever the shipped system default is (the fix)
+    legacy:
+      classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -39,6 +145,17 @@ axes:
     sonnet5_1m:   {extraction.model: us.anthropic.claude-sonnet-5:1m}
     nova_pro:     {extraction.model: us.amazon.nova-pro-v1:0}
     nova_lite:    {extraction.model: us.amazon.nova-lite-v1:0}
+  # classification.model. Added for #653: that bug was reported on Sonnet 5 and
+  # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
+  # fix has to be verified on the model it was reported against, not only on the
+  # default. Sonnet 5 also REJECTS temperature/top_p/top_k (they are stripped, see
+  # _CLAUDE_4_7_BASE_NAMES), so it samples where Nova receives temperature: 0 —
+  # which makes it the stricter test of a prompt-only fix.
+  classification_model:
+    nova_2_lite: {classification.model: us.amazon.nova-2-lite-v1:0}
+    nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
+    sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
+    sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
@@ -63,13 +180,38 @@ default_cell:
                                # BOTH v0.5.16 and v0.6 run. Sonnet-5 capability is a
                                # documented v0.6-only delta, not part of the matrix.
   confidence_model: nova_lite
+  classification_model: nova_2_lite   # the shipped default
   reasoning_effort: low
+  enforcement: warn
+  forcing: 'off'             # shipped default; the sweep varies it
+  schema_restatement: 'on'   # current behaviour; the sweep varies it
+  section_splitting: llm_determined   # the shipped default; the sweep varies it
+  boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
+  class_confidence: topk              # the shipped default since #731
+  ocr_dpi: '300'                      # the shipped default since #740
+  multi_instance: 'off'               # shipped default (opt-in per class)
+  multi_instance_detection: 'on'      # shipped default since #753
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
 # These are the "which mode / OCR / assessment should I pick" answers.
 # -----------------------------------------------------------------------------
 core_cells:
+  # A/B pair for the v0.7 schema-enforcement work: identical to
+  # core-tt-simple-sep except for the enforcement axis.
+  - {id: enforce-off,          ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: "off"}
+  - {id: enforce-warn,         ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: warn}
+  - {id: enforce-escalate,     ocr: textract_tables, extraction_mode: simple,   assessment: separate, enforcement: escalate}
+  # Section-splitting cost cells. Identical but for the knob, so the delta is the
+  # classification inference the #686 fix introduced.
+  - {id: split-disabled,       ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: disabled}
+  # #710 pair. ADVANCED mode: the restatement only exists on the agentic path.
+  - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
+  - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
+  - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
+  # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
+  - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
+  - {id: force-on,             ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on'}
   - {id: core-tt-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate}
   - {id: core-tt-simple-int,   ocr: textract_tables, extraction_mode: simple,   assessment: integrated}
   - {id: core-tt-simple-off,   ocr: textract_tables, extraction_mode: simple,   assessment: "off"}
@@ -82,10 +224,63 @@ core_cells:
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
 
 # -----------------------------------------------------------------------------
+# MULTI-INSTANCE cells (#715 / #753). Kept out of `core_cells` on purpose: they
+# are only meaningful on a document that holds several records of one class in ONE
+# section, so running them across `core_docs` would measure nothing and cost real
+# money. `section_splitting: disabled` is what forces the single section — under
+# the default `llm_determined` the two statements are split apart and the wrapper
+# has nothing to do, which is the correct outcome and a different experiment.
+# -----------------------------------------------------------------------------
+multi_instance_cells:
+  # #753 REGRESSION A/B, on ordinary single-document docs. Identical but for the
+  # detection axis, so the delta is exactly "what does adding the auxiliary count
+  # property to the extraction request cost?" — in accuracy, completeness,
+  # calibration and tokens. This is the honest form of the no-regression check for
+  # a feature that ships ON by default: one build, one variable. A deploy-vs-deploy
+  # comparison would confound the change with everything else in the two builds.
+  #
+  # It also measures the FALSE-POSITIVE rate, which #753's acceptance criteria
+  # require to be measured rather than assumed: any
+  # extraction_multi_instance_suspected on a genuinely single-document doc is a
+  # false positive, and a warning that fires on ordinary documents is worse than no
+  # warning at all.
+  - {id: detect-off, ocr: textract_tables, extraction_mode: simple, assessment: separate, multi_instance_detection: 'off'}
+  - {id: detect-on,  ocr: textract_tables, extraction_mode: simple, assessment: separate, multi_instance_detection: 'on'}
+  # The pre-#753 world, reproduced on the SAME build: one section over two
+  # statements, no wrapper, no detection. Expect ~half the rows missing and NO
+  # warning — this is the arm that shows the loss was silent.
+  - {id: mi-silent,   ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'off', multi_instance_detection: 'off'}
+  # #753: same loss, now visible. Same extraction outcome expected; the delta is
+  # the extraction_multi_instance_suspected warning and the instance count.
+  - {id: mi-detected, ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'off', multi_instance_detection: 'on'}
+  # #715: the fix. Expect BOTH statements' rows recovered.
+  - {id: mi-wrapped,  ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'on',  multi_instance_detection: 'on'}
+
+# -----------------------------------------------------------------------------
+# CONTROL cells — deliberately WRONG or historical configurations that exist only
+# as the control arm of a specific study. They are referenceable by name from a
+# suite, but they are NOT part of `core_cells`, because every suite that says
+# `cells: "core_cells"` (core, corefast, coresynth, full) would otherwise run them
+# as if they were a configuration a user might pick. `split-llm-legacyprompt` first
+# landed in core_cells and put a known-defective classification prompt into the
+# release regression grid.
+# -----------------------------------------------------------------------------
+control_cells:
+  # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
+  # boundary claim is a measured delta rather than a single post-fix number.
+  - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
+
+# -----------------------------------------------------------------------------
 # ONE-AXIS sweeps — vary a single knob, everything else = default_cell.
 # Isolates each knob's marginal effect on accuracy/cost/calibration/latency.
 # -----------------------------------------------------------------------------
 sweeps:
+  forcing: ['off', 'on']
+  schema_restatement: ['on', 'off']
+  enforcement:
+  - 'off'
+  - warn
+  - escalate
   ocr:              [textract_layout, textract_tables, bda, bedrock_llm]
   extraction_mode:  [simple, advanced]
   assessment:       ["off", separate, integrated]
@@ -93,6 +288,7 @@ sweeps:
   escalation:       ["off", "on"]           # run on the low-confidence corpus to expose cost
   extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
+  classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]
 
 # -----------------------------------------------------------------------------
@@ -108,6 +304,164 @@ sweeps:
 # repeats=1, so the broad matrices stay at 1 to bound spend; use `cost` (or
 # --repeats) when the question is dollars.
 suites:
+  # A/B for the v0.7 schema-enforcement work. The two cells differ ONLY on the
+  # enforcement axis, on one deployed stack with identical code, so a delta is
+  # attributable to the feature rather than to anything else that shipped.
+  # The docs matter as much as the cells here, and the first version of this suite
+  # got them wrong. `small_narrow`/`tiny_form` render values essentially as a model
+  # returns them and their scalar truth is only two plain strings, so coercion fired
+  # 81 times and moved every metric by exactly zero — the suite could not see the
+  # feature it existed to measure. It now runs the two docs where the feature IS
+  # measurable: `valuenoise_100` (typed per-row truth -> cell_accuracy) and
+  # `kv_form` (typed scalar truth -> typed_accuracy). `small_narrow` stays as the
+  # unaffected control, so a delta on it would mean something has gone wrong.
+  #
+  # repeats: 3 because this is a release gate, for the same reason corefast uses 3
+  # (below): at one sample a non-deterministic extraction outcome is
+  # indistinguishable from a regression.
+  enforcement:
+    cells:
+    - enforce-off
+    - enforce-warn
+    docs:
+    - valuenoise_100
+    - kv_form
+    - small_narrow
+    repeats: 3
+  # The cost-bearing arm, separated so it is never run by accident. `escalate`
+  # re-extracts failing fields with a stronger model, so this is the only
+  # enforcement cell that spends money per failure — run it on the doc that
+  # actually produces validation failures.
+  enforcecost:
+    cells:
+    - enforce-warn
+    - enforce-escalate
+    docs:
+    - valuenoise_100
+    repeats: 5
+  # 0.1: the sectionSplitting cost increase (#686 fix). Single-class config, and a
+  # MULTI-PAGE doc so there is something to split. repeats: 5 to satisfy this
+  # file's own rule for cost CLAIMS — the classification call count is
+  # deterministic per page, but total cost includes extraction, which is not.
+  splitcost:
+    cells:
+    - split-disabled
+    - split-llm
+    docs:
+    - small_narrow
+    repeats: 5
+  # One-off CONTROL for #653: the SAME paginated document under the PRE-FIX
+  # prompt. Without it, `paginated_3pg` scoring 100% with the fix is ambiguous —
+  # pagination alone could explain it, and the prompt change would be taking
+  # credit for the document. Its config is written by hand (the prompt is not an
+  # axis) and namespaced under its own suite so it cannot collide.
+  boundaryctl:
+    cells:
+    - split-llm-legacyprompt
+    docs:
+    - paginated_3pg      # control: does pagination alone explain the 100%?
+    - twodocs_2x20       # control: what does the OLD prompt score on over-merge?
+    - small_narrow       # control: the pre-fix over-split rate, same doc/model
+    repeats: 5
+
+  # Boundary detection, BOTH directions (#653). The two docs pull opposite ways
+  # and a fix must satisfy both at once:
+  #   small_narrow  = ONE 3-page statement  -> must yield 1 section (over-SPLIT)
+  #   twodocs_2x20  = TWO complete statements -> must yield 2 sections (over-MERGE)
+  # `split-disabled` runs as the control: it is correct on small_narrow by
+  # construction and WRONG on twodocs_2x20 by construction (one all-pages
+  # section), which is exactly why `disabled` is not a workaround for packets.
+  # Non-deterministic, so repeats: 5 — a single passing run does not clear it.
+  boundary:
+    cells:
+    - split-llm
+    - split-disabled
+    docs:
+    - small_narrow      # ONE 3-page statement, NO pagination -> 1 section (hard)
+    - paginated_3pg     # ONE 3-page statement, WITH pagination -> 1 section (common)
+    - twodocs_2x20      # TWO statements -> 2 sections (the over-merge direction)
+    repeats: 5
+  # WS-05: does forcing the schema as a tool actually improve extraction?
+  # The null hypothesis is live — forcing constrains the response SHAPE, not the
+  # values in it, so a model that would have emitted a stray key may instead emit
+  # a worse value that fits. Judged on cell_accuracy and typed_accuracy (values),
+  # completeness_recall (rows), and the forced_tool.honored rate in metadata, NOT
+  # on "did it parse". Docs chosen so both value fidelity and list completeness
+  # are measurable; kv_form runs separately (different class).
+  forcing:
+    cells:
+    - force-off
+    - force-on
+    docs:
+    - valuenoise_100    # typed per-row truth -> cell_accuracy (value fidelity)
+    - longdesc_100      # list-heavy -> completeness_recall (does forcing lose rows?)
+    - kv_form           # typed scalar truth; DIFFERENT class, so run with --class kv_form
+    repeats: 3
+  # #710: does dropping the duplicated schema copy cost completeness?
+  # The gate is COMPLETENESS, not tokens — #710 warns the prose restatement may be
+  # load-bearing for adherence, so a token saving that loses rows is a loss. Run on
+  # list-heavy docs where adherence actually shows: if the agent drifts from the
+  # schema, rows go missing. repeats: 3 because the agentic path is
+  # non-deterministic (turn counts have varied ~4x run to run).
+  restatement:
+    cells:
+    - restate-on
+    - restate-off
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    repeats: 3
+  # #715 / #753 three-arm study: silent loss -> visible loss -> fixed. Runs on
+  # `twodocs_2x20` (two complete statements, distinct account numbers, globally
+  # unique SEQ tags across copies, so completeness is exact) plus `small_narrow` as
+  # the SINGLE-document control — a delta there would mean the wrapper or the
+  # detection probe changed behaviour on ordinary documents, which is the
+  # regression that matters most.
+  # repeats: 3 — whether a model volunteers several records for a single-object
+  # schema is non-deterministic, so one sample cannot separate "the fix works"
+  # from "this run happened to comply".
+  multiinstance:
+    cells: "multi_instance_cells"
+    docs:  [twodocs_2x20, small_narrow]
+    repeats: 3
+  # Regression gate for the #715/#753 branch: the cells whose behaviour the change
+  # can reach at all. Simple-mode cells carry the detection probe in the prompt;
+  # `force-on` carries it in the toolSpec; the advanced cell is the CONTROL (the
+  # probe is deliberately not on the agentic path), so a delta there would mean
+  # something leaked. Run the same suite before and after the code change on ONE
+  # stack.
+  migate:
+    cells: [core-tt-simple-sep, core-tt-simple-int, core-tt-adv-sep, force-on, split-disabled]
+    docs:  [tiny_form, small_narrow, longdesc_100]
+    repeats: 3
+  # The #753 detection A/B in isolation: two cells differing ONLY on the detection
+  # axis, on ordinary single-document docs. Answers both "does defaulting it on
+  # cost anything" and "does it fire when it should not".
+  midetect:
+    cells: [detect-off, detect-on]
+    docs:  [tiny_form, small_narrow, longdesc_100]
+    repeats: 3
+  # Follow-up to `midetect`: at repeats 3 AND 5 exactly ONE run deviated on
+  # scalar_accuracy, always on `longdesc_100`. scalar_accuracy has a TWO-field
+  # denominator there, so one field wrong in one run moves the cell mean by 0.033 —
+  # enough to cross the -0.02 regression threshold mechanically without being a
+  # real effect. This suite hammers that one document so the question is answered
+  # with samples rather than argued.
+  midetectlong:
+    cells: [detect-off, detect-on]
+    docs:  [longdesc_100]
+    repeats: 10
+  # The Bedrock-LLM OCR backend on its own. It reads the page image directly rather
+  # than consuming Textract output, so it responds to image-quality changes
+  # differently from the Textract cells — #740's dpi 150 -> 300 is the current
+  # example. Exists as its own suite because it is also the cell most likely to be
+  # cut short by a long grid: it sorts last in corefast and lost 8 of its 9 runs when
+  # a v0.6.7 grid was interrupted.
+  llmocr:
+    cells:
+    - core-llm-simple-sep
+    docs: corefast
+    repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode

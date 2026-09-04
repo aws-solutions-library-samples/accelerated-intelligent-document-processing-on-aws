@@ -38,6 +38,7 @@ interface DocumentApiItem {
   ConfidenceAlertCount?: number;
   ProcessingIssueCount?: number;
   ConfigVersion?: string;
+  ConfigRevision?: number | null;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -81,6 +82,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       HITLStatus: hitlStatus,
       HITLReviewURL: hitlReviewURL,
       ConfigVersion: configVersion,
+      ConfigRevision: configRevision,
     } = item;
 
     // Extract HITL sections arrays
@@ -171,6 +173,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       hitlReviewedByEmail,
       hitlReviewHistory,
       configVersion,
+      configRevision,
     };
 
     return mapping;

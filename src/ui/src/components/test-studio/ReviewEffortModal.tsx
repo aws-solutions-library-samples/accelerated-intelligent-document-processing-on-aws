@@ -133,7 +133,7 @@ const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; he
   measured: {
     type: 'success',
     header: 'Measured on this set',
-    body: 'Derived from observed confidence-vs-accuracy on these documents under this config version.',
+    body: 'Derived from observed confidence-vs-accuracy on these documents under this configuration profile.',
   },
   unreliable: {
     type: 'warning',
@@ -147,6 +147,10 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [estimate, setEstimate] = useState<ReviewEffortEstimate | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Distinct from "still loading" and from an error: a successful estimate over a
+  // set with no draft labels left to review.
+  const nothingToReview = Boolean(estimate) && (estimate?.totalDocs ?? 0) === 0;
+
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
@@ -212,7 +216,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Button variant="link" onClick={onDismiss}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading}>
+            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading || nothingToReview}>
               Continue to annotation
             </Button>
           </SpaceBetween>
@@ -222,6 +226,18 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
       <Form>
         <SpaceBetween size="l">
           {error && <Alert type="error">{error}</Alert>}
+
+          {/* Every document already carries ground truth, so there is no review to
+              size. Without this the dialog priced three strategies over nothing —
+              "about 0 of 0 documents (0–0)", "Est. effort —", "Audit sample 0" —
+              with Continue still enabled, next to a screen saying the set was fully
+              labelled. Say the one true thing instead. */}
+          {nothingToReview && !isLoading && !error && (
+            <Alert type="success" header="Nothing to review">
+              Every document in this set already carries ground truth, so there are no draft labels to check. Run a test to score a
+              configuration against it, or add documents and generate draft labels for those.
+            </Alert>
+          )}
 
           {isLoading && !estimate && (
             <Box textAlign="center" padding="l">
@@ -256,7 +272,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                 ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
                 : ''}
               , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
-              everything, or change the confidence model for this config version and re-score.
+              everything, or change the confidence model for this configuration profile and re-score.
             </Alert>
           )}
 

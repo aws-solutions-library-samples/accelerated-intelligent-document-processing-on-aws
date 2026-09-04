@@ -56,7 +56,7 @@ This configuration demonstrates all three attribute types supported by the GenAI
 
 #### 3. List Attributes
 - **Transactions**: Array of transaction records, each containing:
-  - **Date**: Transaction date in MM/DD/YYYY format (FUZZY evaluation with 0.9 threshold)
+  - **Date**: Transaction date in ISO-8601 format (YYYY-MM-DD), matching the field's `format: date` (DATE evaluation, which is format-tolerant)
   - **Description**: Transaction description or merchant name (SEMANTIC evaluation with 0.7 threshold)
   - **Amount**: Transaction amount with positive/negative values (NUMERIC_EXACT evaluation)
 

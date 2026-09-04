@@ -95,9 +95,29 @@ The one-axis sweeps over geometry / escalation / extraction model / confidence m
 reasoning effort (the `full` suite) were **not** run for this release; §2–§4 vary OCR,
 extraction mode and assessment only.
 
+**Axes added since this grid was run** (all have suites; see [index.md](index.md) for which
+metric each is judged on). Advice for the ones that have been measured is in §7.
+
+| Axis | Config path | Measured? |
+|------|-------------|-----------|
+| Enforcement | `extraction.coercion.enabled`, `extraction.validation.{enabled,fail_action}` | partially — see §7 |
+| Forcing | `extraction.forced_tool.enabled` | yes — §7 |
+| Schema restatement | `extraction.agentic.restate_schema_in_system_prompt` | yes — §7 |
+| Section splitting | `classification.sectionSplitting` | yes — §7 |
+| Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes, but underpowered here — !769 is the authority, §7 |
+| Classification confidence | `classification.confidence.mode` | not yet (cost unmeasured) |
+| Classification model | `classification.model` | held at Sonnet 5 for §7 only |
+| OCR DPI | `ocr.image.dpi` | as a control only — §7 |
+
 ---
 
 ## 2. Configuration matrix (10 cells × 7 synthetic list docs, exact GT)
+
+> **Cell count has since grown.** `core_cells` held 10 entries when this grid was run and
+> now holds 19 — the v0.7 feature A/B cells (enforcement, forcing, schema restatement,
+> section splitting) were added to it, so `coresynth`/`corefast` are no longer the 70/90-run
+> grids described here. Control arms live in a separate `control_cells:` block and are
+> excluded from those expansions.
 
 Mean over 7 bank-statement (transaction-list) documents spanning 5 → 800 rows and varying
 row width, list count and description length (`tiny_form`, `small_narrow`, `med_narrow`,
@@ -140,8 +160,10 @@ properly, with repeats on a single document.
 3. **⚠️ Advanced mode nulled an entire list** on `longdesc_100` (recall 0.000, 0/100 rows,
    $0.143 and 33 s — it gave up early), while simple mode returned all 100. That single
    document is the whole 0.857 for `tt-adv-sep`; the other six are 1.000. Same tool-decline
-   failure path reported at v0.6.0, still open. BDA + advanced did **not** reproduce it this
-   time (1.000 across all 7).
+   failure path reported at v0.6.0. **Fixed since**: #668 shipped a retry when the agent
+   declines the recommended table tool, and the post-fix `advverify` runs no longer
+   reproduce the null (see `docs/benchmarking/releases/`). BDA + advanced did **not**
+   reproduce it here either (1.000 across all 7).
 4. **LAYOUT-only is the cheapest complete option** (simple $0.514, advanced $1.745) and has
    the best-behaved confidence (mean 0.996, **0%** alert rate). Textract TABLES adds cost
    with no completeness benefit at this scale; enable TABLES for very large multi-page
@@ -285,9 +307,11 @@ comparisons of configurations that all did the job.
 > flags any cell with cost CV > 0.25 as unreliable-at-current-n, and
 > `aggregate.py --compare` only reports a cost regression when the mean shift exceeds the
 > combined sampling spread — so agentic noise never masquerades as a regression. That
-> variance-aware treatment applies to **cost only**; recall/accuracy deltas are still
-> compared per-sample, which is how a non-deterministic completeness swing can be reported
-> as an improvement (see [releases/v0.6.5.md §4](releases/v0.6.5.md)).
+> That treatment now covers **accuracy and completeness too**, not only cost: `--compare`
+> reasons about failure *rates* and mean-vs-spread rather than a single draw
+> ([index.md](index.md)). It was cost-only for this edition, which is how a
+> non-deterministic completeness swing got reported as an improvement in
+> [releases/v0.6.5.md §4](releases/v0.6.5.md).
 
 ---
 
@@ -302,8 +326,11 @@ comparisons of configurations that all did the job.
 | Documents with long free-text cells | **simple + separate**, not advanced — advanced nulled the whole list on `longdesc_100` (§2, finding 3) |
 | Confidence needed | **`separate`** assessment. **Never `integrated` with simple extraction** (§2.1) |
 | Cheapest OCR, small documents | Bedrock-LLM (**not** for >100-row lists — loses rows, §2 finding 5) |
+| Packets holding several documents of the **same** class | `x-aws-idp-multi-instance` on that class (**migrate baselines**), or `x-aws-idp-instance-array` if it already lists them (free) — §7 |
+| New corpus, shape unknown | run `extraction.multi_instance_detection` **once** as a diagnostic, act on what it names, then turn it off — §7 |
 
-**Safety notes — both failure modes are silent and both are invisible to field accuracy:**
+**Safety notes — all three failure modes are silent and all three are invisible to field
+accuracy:**
 
 1. Simple mode truncates large lists while reporting success, and a truncated run is
    *cheaper* than a complete one, so neither status nor cost will alert you. If large tables
@@ -312,6 +339,11 @@ comparisons of configurations that all did the job.
 2. **`integrated` confidence with simple extraction returned 1–10 of 100 rows in 4 of 4
    repeats at the shipped default model, with none of them matching ground truth — and
    `scalar_accuracy` 1.000 with status `COMPLETED` throughout.**
+3. **A section holding several documents of the same class returns only the first, and
+   per-field accuracy cannot see it** — the fields that came back are scored, and they can
+   all be right. A section returning 1 of 3 pay statements scores **1.000**. Nothing in
+   §2–§4 of this paper would detect it; only a record count against ground truth, or the
+   §7 detection probe, will.
 
 ---
 
@@ -330,14 +362,250 @@ comparisons of configurations that all did the job.
    finished in 33 s for $0.14 — visibly less work than a real extraction). Fall back to
    direct row extraction rather than nulling, and treat "list null but OCR shows a table" as
    an error.
-4. **Variance-aware comparison for accuracy/recall, not just cost** — `--compare` currently
-   promotes a single-sample recall swing to a headline improvement.
-5. **`kv_form` doc-class benchmark** — add a flat key/value document class so non-list docs
-   are scored against their own schema (currently excluded from the bank_statement matrix).
+4. ~~**Variance-aware comparison for accuracy/recall, not just cost**~~ — **done.**
+   `--compare` now uses failure rates and mean-vs-spread for accuracy and completeness, not
+   just cost.
+5. ~~**`kv_form` doc-class benchmark**~~ — **done.** `kv_form` is a corpus document with its
+   own generated class schema and typed ground truth (`--class kv_form`).
 6. **Reference-corpus cells in the standard release run.** The `core` suite includes two
    20-document reference corpora, which makes it 470 document runs; that is why this edition
    uses the synthetic-only `coresynth` grid and reports no real-world accuracy number. A
    cheaper sampled variant would keep real-world accuracy in every release.
+
+---
+
+## 7. v0.7 configuration options (measured 2026-09-03)
+
+Measured on stack `IDP1` (us-west-2), develop at v0.6.7.dev5 plus PR #744. These are
+**separate measurements from §2–§4** above, which remain v0.6.5 numbers on a different
+stack and are not restated here. Costs are estimates from `config_library/pricing.yaml`,
+rates as of 2026-09-02.
+
+### `extraction.agentic.restate_schema_in_system_prompt` — safe to turn off
+
+Advanced extraction sends the class schema three times per request; the system-prompt
+restatement is a byte-identical duplicate of the tool schema (2,600 of 6,680 schema tokens
+on the lending `Payslip` class). The gate was **completeness**, because restating a schema
+in prose plausibly aids adherence.
+
+| arm | n | failures | completeness recall | cell accuracy |
+|---|---|---|---|---|
+| `restate-on` (default) | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
+| `restate-off` | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
+
+**Guidance: turning it off costs no completeness — and buys nothing measurable either.**
+Observed cost was 12% lower with it off, but at cost CV 0.25–0.43 that is **not resolvable
+at n=6**. Per-document token counts cannot measure it either (83k/54k/115k *within* one
+arm), because agentic turn count is non-deterministic; the per-*request* saving from static
+analysis is the only defensible figure.
+
+⚠️ **Correction.** This entry previously told you to "treat the benefit as context-window
+headroom, not dollars". That was wrong, and it is worth stating plainly because #710 and the
+knob's own documentation made the same claim. Shard planning budgets against **OCR page text
+only** (`sharding.plan_shards`), and the budget is `max_input × (1 - context_buffer)` minus
+an output reserve and an image reserve (`sizing.compute_sizing_plan`) — **prompt overhead is
+never subtracted**. It is absorbed by the blanket `context_buffer` (default 0.30), so the
+reclaimed tokens come off a reserve that is already ~60,000 tokens wide on a 200K-window
+model and were already unused; `max_pages_per_shard` (default 5) closes shards on page count
+regardless. There is therefore **no shard-count mechanism** behind this knob today, which
+explains why no arm of any measurement here found a benefit. Making the budget subtract
+measured prompt overhead is
+[#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775);
+until that lands, treat both #710 knobs as neutral instruments rather than optimisations.
+
+### `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
+
+Declares the class schema as a required Converse tool instead of describing it in prose.
+Measured on a quiesced stack at Sonnet 5, 3 repeats:
+
+| arm | n | failures | completeness recall | cell accuracy | honored rate | cost |
+|---|---|---|---|---|---|---|
+| `force-off` | 6 | 0 | 1.0 every run | 1.0 | — | $0.259 |
+| `force-on` | 6 | 0 | **1.0 every run** | 1.0 | **1.0** | $0.226 |
+
+On `kv_form` both arms score `typed_accuracy` 1.0 with 0 failures.
+
+**Forcing is honored on every run and makes no measurable difference to accuracy or
+completeness** — the null hypothesis the feature was built to test. Cost moves in
+opposite directions on the two classes (−13% and +20%) at n=3–6, so there is nothing to
+claim there either.
+
+The **honored rate** is what makes that readable: without it, "forcing had no effect" and
+"forcing quietly fell back to the prompt" are indistinguishable in the output.
+
+**Guidance: leave it off.** It is not broken and not harmful, it simply buys nothing on
+this corpus. What it buys in principle is unchanged — a malformed-JSON parse failure
+becomes structurally impossible for the fields the schema declares — so if your corpus
+produces parse failures it may be worth measuring there.
+
+> Two earlier attempts at this A/B measured defective code and are void: Bedrock rejects
+> a schema whose `$id` is not a URI-reference (IDP sets it to the class name), and a
+> model that nests its answer under a `fields` key had the entire extraction dropped as
+> an off-schema field — recall 0.0 while reporting COMPLETED. Both fixed in PR #744; this
+> run is the live confirmation, the same cells going recall **0.167 → 1.0**. Details:
+> `benchmarks/results/v0.6.7/forcing/FINDINGS.md`.
+
+⚠️ **Not a verdict on tool use generally.** Advanced (agentic) extraction has always used
+tool-based structured output and scored completeness recall 1.0 across all 12 runs of the
+restatement A/B above.
+
+### `classification.sectionSplitting` — `disabled` is not a workaround for packets
+
+Boundary detection judged on `sections_correct` (1.0/0.0 per run, so the mean over 5
+repeats is the pass rate), classification model Sonnet 5.
+
+| cell | one 3-page statement | same, paginated | two statements in one file |
+|---|---|---|---|
+| `llm_determined` (default) | **1.00** | **1.00** | **1.00** |
+| `disabled` | 1.00 | 1.00 | **0.00** |
+
+`disabled` is correct by construction on a single document and **wrong by construction on a
+packet** — it emits one all-pages section where two are correct, losing the split silently
+(completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
+over-splitting.
+
+### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — the same-class packet
+
+The failure `sectionSplitting: disabled` exposes above has a second, quieter form, and it
+is the one no metric in §2–§4 can see. When one section holds several records of the
+**same** class, classification has no type change to split on; the class schema describes
+one document; the model answers with one object; records 2..N are simply absent. Section
+`SUCCESS`, document `COMPLETED`, `ProcessingIssueCount: 0`.
+
+**Why every accuracy number in this paper is blind to it.** Per-field accuracy scores the
+fields that came back. A section that returns 1 of 3 pay statements can score **1.000 on
+every field it returned**. So a corpus with this shape can look perfect at the top of a
+report while a third of its data never left the page.
+
+Two settings, and they answer different questions:
+
+| setting | scope | what it does | cost |
+|---|---|---|---|
+| `extraction.multi_instance_detection.enabled` | global, per config profile | asks the model, in the same inference, how many documents of the class the pages hold; warns when that exceeds the records extracted | input **+1.8 %**; **−1.3 accuracy points** on a corpus with nothing to find |
+| `x-aws-idp-multi-instance: true` | per class | makes the class's effective schema a **list** of that class, so all records are extracted | ⚠️ changes output shape — **evaluation baselines must be migrated** |
+| `x-aws-idp-instance-array: <prop>` | per class | names an array the class **already** has as its instance axis | none — read-only, no schema or output change |
+
+**Does the transform actually recover the records? Yes.** `twodocs_2x20` — two complete
+statements in one forced section, globally unique `SEQ` tags so completeness is exact,
+`repeats: 3`:
+
+| cell | wrapper | rows extracted | recall | scalar accuracy |
+|---|---|---|---|---|
+| `mi-silent` | off | 40 | 1.00 | 1.00 |
+| `mi-detected` | off | **20** | **0.50** | 1.00 |
+| `mi-wrapped` | **on** | 40 | **1.00** | **1.00** |
+
+⚠️ **`mi-silent`'s recall 1.00 is the trap, not the control.** It reached 40 rows by
+merging *two accounts' transactions into one statement's list* — higher recall,
+semantically wrong data, no warning. A completeness metric therefore **prefers the arm
+that is quietly wrong**, which is worth sitting with before trusting recall alone on any
+packet corpus.
+
+**Detection's cost, measured on two real labeled corpora** (Test Studio, 80 paired runs,
+identical documents per arm, only the toggle differing):
+
+| corpus | accuracy off → on | sign test | input tokens |
+|---|---|---|---|
+| `OmniAI-OCR-Benchmark` (40 docs) | 0.9380 → 0.9461 | p = **1.000** (no effect) | +1.82 % |
+| `RealKIE-FCC-Verified` (40 docs) | 0.7678 → **0.7552** | worse on 14 of 40, better on 1, p = **0.001** | −0.80 % |
+
+Detection counted correctly on every multi-record document it saw: on the bank-check
+images, 18 flagged of 18 multi-check sheets, 0 false alarms on the 22 single-check sheets,
+and the **exact** count right 18 of 18 (2 to 8 checks).
+
+⚠️ **But a warning is not evidence of data loss, and this same run is the cautionary
+example.** Counting the extracted rows on those 18 documents afterwards: **0 checks
+missing**, in both arms. `BANK_CHECK`'s schema is a single `checks` array, so the class
+already modelled several checks per sheet — nothing was collapsing. The warning fired
+because `instance_extracted_count` is **1** for a class that declares no instance axis,
+which is true whether the records are absent *or* present inside a declared array. The
+predicate cannot tell those apart. The finding was real and worth acting on — the preset
+now sets `x-aws-idp-instance-array: checks` — but it was a **configuration** finding, not
+a data-loss one. An earlier draft of the feature study claimed the latter and was wrong.
+
+**Guidance:**
+
+1. **Run detection once as a diagnostic on any new corpus**, then turn it off. That is how
+   the `BANK_CHECK` missing instance axis was found, and it costs one run.
+2. **When it fires, look at the extracted data before concluding anything was lost.** If
+   the records are inside an existing array, set `x-aws-idp-instance-array` — free. If they
+   are genuinely absent, set `x-aws-idp-multi-instance: true` **and migrate the baselines**
+   (`scripts/migrate_multi_instance_baselines.py`), or the class scores ~0 with no error
+   anywhere.
+3. **Leave detection on permanently only** where a section can hold several documents of
+   one class **and** the class schema describes only one. That conjunction is what loses
+   records; either half alone does not. On a single-record corpus it is ~1.3 accuracy
+   points for nothing.
+4. `sectionSplitting` is **not** an alternative here. `disabled` makes it worse (above),
+   and `llm_determined` cannot split what has no type change to split on — which is the
+   whole premise of the failure.
+
+Suites: `multiinstance`, `midetect`, `midetectlong`, `migate`
+(`benchmarks/matrices/config_matrix.yaml`). Full study, including two documented wrong
+conclusions and how each was caught: [`feature-multi-instance.md`](feature-multi-instance.md).
+
+### The `<boundary-detection-rules>` prompt block (#653) — keep it
+
+**Validated by GitLab !769**, which measured the same rules on **DocSplit-Poly-Seq**:
+500 packets, 7,330 pages, 2,027 sections, 5,000 packet-runs, five models, 0 failures.
+Split accuracy on multi-section packets improves on four of five models and regresses
+on none — Qwen3-VL +0.117, Opus 5 +0.040, Nova 2 Lite +0.030, Sonnet 5 +0.013 (all
+p<0.05), gpt-5.6-sol +0.004 (ns). Under-split rate is 0.000 in all ten cells, so the
+anti-over-merge clause holds at scale, and page-level *class* accuracy moves at most
+0.015 — the change touches boundaries only. On #653's reported 2-page form Sonnet 5
+goes 6/24 → 10/10; on a 4-page packet of two copies of one form, 1/10 → 5/5.
+
+⚠️ **Still incomplete**: an unpaginated multi-page document is split roughly 40% of the
+time even with the fix, because the rules lean on pagination markers — corpora whose
+scans lack them benefit least. Raising `classification.contextPagesCount` is not the
+answer (0/5 on the 4-page two-copies packet, by merging all four pages). The block sits
+inside the prompt-cache prefix, so it is not re-billed per page.
+
+⚠️ **A customized `classification.task_prompt` wins over the default**, so a stored
+custom prompt does not receive this fix — re-apply it or reset to the default. The
+presets that pin their own prompt are synced, with a guard test
+(`scripts/tests/test_classification_prompt_copies_in_sync.py`).
+
+> **A local factorial here found nothing, and that was a measurement failure, not a
+> result.** 90 runs over prompt × `classification.confidence.mode` × `ocr.image.dpi`
+> scored 1.00 in all six arms — but on **Sonnet 5**, whose true effect !769 puts at
+> +0.013, across three clean synthetic documents at n=5. That test has no power at
+> that effect size. It also led me to "retract" a 0% → 60% figure that had been
+> measured on **Nova 2 Lite**, which was a cross-model comparison rather than a
+> retraction; !769 independently measures that case at 0/5 → 3/5. Details and the
+> corrected write-up:
+> `benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md`. Measure boundary work on
+> DocSplit-Poly-Seq, not on this corpus.
+
+### `classification.confidence.mode` — measured; worth it depends on the classifier
+
+Defaults to `topk` as of v0.7, spending output tokens on **every page**. Measured under
+#673 on **DocSplit-Poly-Seq** (20 documents, 298 pages per model, `topk` + an `off`
+control, stack `IDPBench066`):
+
+| model | mode | cost/page | output tok/page | class accuracy | calibration separation |
+|---|---|---|---|---|---|
+| Nova 2 Lite (default) | `topk` | $0.000901 | 198.5 | 0.846 | **0.044** |
+| Nova 2 Lite | `off` | $0.000767 | 154.1 | 0.832 | — |
+| Claude Haiku 4.5 | `topk` | $0.005728 | 352.4 | 0.852 | **0.207** |
+| Claude Haiku 4.5 | `off` | $0.004985 | 267.9 | 0.859 | — |
+
+**Cost is ~+17% of the classification step** on the default classifier, which is a small
+share of a typical bill because classification is cheap next to extraction — but it
+scales with **page count**, not section count.
+
+**The number that decides whether to pay it is the separation, and it is
+model-dependent.** On Nova 2 Lite it is **0.044**: mean confidence 0.947 when the page
+is classified correctly against 0.903 when it is wrong, with the median 0.95 in *both*
+cases — a score that can barely rank right from wrong, and one you cannot usefully
+threshold. On Haiku 4.5 the same setting yields **0.207**, which is actionable.
+
+**Guidance:** if you route classification through Nova 2 Lite and intend to *act* on the
+score — threshold it, queue pages for review — measure the separation on your own corpus
+first, because the default classifier's is near zero. If you only want the score for
+after-the-fact triage, or you classify with a stronger model, it is cheap enough to
+leave on. `mode: off` returns the previous behaviour. Full analysis:
+[classification.md](../classification.md) § Classification Confidence.
 
 ---
 
@@ -375,7 +643,28 @@ done
 # §2.1 the integrated-confidence hazard, with repeats + same-doc control
 python3 benchmarks/harness/make_configs.py --suite intconf --class bank_statement --set extraction_model=sonnet5
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite intconf --native-upload
+
+# §7 multi-instance: the transform on a same-class packet, and the detection A/B
+for s in multiinstance midetect migate; do
+  python3 benchmarks/harness/make_configs.py --suite $s --class bank_statement
+  AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite $s --max-inflight 6
+  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/$s
+done
+
+# §7 detection on REAL labeled corpora — via Test Studio, because run_matrix.py silently
+# skips reference corpora (GitHub #766). Two profiles per corpus differing ONLY in
+# extraction.multi_instance_detection.enabled; numberOfFiles takes the same first N.
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> launch --n 40 \
+    --pair ocr-benchmark:mid-off-ocr:mid-on-ocr \
+    --pair realkie-fcc-verified:mid-off-rk:mid-on-rk
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> analyse
 ```
+
+⚠️ **A detection warning count is not a data-loss count**, and §7 records how that error
+was made here. To turn flags into a loss figure you must count the extracted records
+against ground truth — see
+`benchmarks/results/v0.6.7/detection-real-corpora/extracted_vs_ground_truth.txt` for the
+query that settled it.
 
 **Honesty / limits.** Costs are estimates from `pricing.yaml` (rates as of 2026-08; intro
 pricing may apply). §2 is one run per (cell, doc) — reliable for the *exact* completeness and

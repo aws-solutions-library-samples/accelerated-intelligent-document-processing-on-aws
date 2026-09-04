@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
@@ -37,6 +38,49 @@ def validate_test_set_name(name):
     return re.match(r"^[a-zA-Z0-9\s_-]+$", name) and len(name) <= 50
 
 
+# Document class names come from a config's `classes`. All 120 shipped across
+# config_library use letters, digits, spaces, hyphens and underscores and nothing
+# else ("Bank Statement", "Bank-Statement", "PA-Claims-Evidence", "BANK_CHECK"),
+# so the character set is exactly that — no dot and no slash, which a first draft
+# allowed and which let "../../etc/passwd" through.
+#
+# A literal space rather than `\s`, which admits newlines and tabs. And matched with
+# `fullmatch`, not `match`: `$` matches BEFORE a trailing newline, so
+# "Bank Statement\n" passes `^...$` even with the space literal. A test caught that
+# after this comment had already claimed otherwise.
+#
+# ASCII-only matters concretely: the value is carried as S3 object *user metadata*,
+# where a non-ASCII class name surfaced as a botocore failure and a 500 rather
+# than a clean rejection.
+_DOCUMENT_CLASS_RE = re.compile(r"[a-zA-Z0-9 _-]+")
+_DOCUMENT_CLASS_MAX_LEN = 100
+
+
+def validate_document_class(document_class):
+    """Validate a caller-supplied document class before it reaches S3 metadata.
+
+    ``reextractTestSetDocument`` is reachable by the **Annotator** group, the
+    lowest-privilege role, and its ``documentClass`` flows reviewer → resolver →
+    ``generate_draft_labels`` → SQS → S3 user metadata → ``Document.from_s3_event``
+    → a forced class and a forced section. Nothing along that path constrained it,
+    and the dispatcher deliberately does not deep-validate nested input fields.
+
+    This bounds the shape only. It deliberately does NOT check membership of the
+    deployment's configured classes: this Lambda has no CONFIGURATION_TABLE grant,
+    so that check needs an env var and a read permission it does not currently
+    have. A well-formed but unconfigured class therefore still yields a section
+    with no schema and so no extracted fields — visibly wrong in the UI rather
+    than silently wrong. Worth closing separately.
+    """
+    if document_class is None or document_class == "":
+        return True  # Optional: absence means "leave the class alone".
+    if not isinstance(document_class, str):
+        return False
+    if len(document_class) > _DOCUMENT_CLASS_MAX_LEN:
+        return False
+    return bool(_DOCUMENT_CLASS_RE.fullmatch(document_class))
+
+
 def validate_description(description):
     """Validate description: max 500 chars only"""
     if description is None or description == "":
@@ -46,16 +90,84 @@ def validate_description(description):
     return len(description) <= 500
 
 
-# Configure S3 client with S3v4 signature.
-# When S3_ENDPOINT_URL is set (private VPC mode), use virtual-host addressing
-# so the SigV4 host header matches the VPC endpoint DNS.
+# Two S3 clients, deliberately. They differ only in endpoint, and conflating
+# them is what made Test Studio return an opaque 504 in private deployments.
+#
+# S3_ENDPOINT_URL (set only when S3PresignedUrlViaVpcEndpoint=true or a BYO
+# endpoint override is configured) is the *S3 interface VPC endpoint* hostname.
+# Its purpose is the URL string handed to the BROWSER: presigning is an offline
+# signing operation, so a Lambda can mint a VPCE-hosted URL from anywhere.
+#
+# Data-plane calls are the opposite. This function is NOT VPC-attached (see the
+# cfn_nag/checkov notes on TestSetResolverFunction in the nested template), and
+# a VPCE hostname resolves to the endpoint's PRIVATE addresses. Sending LIST /
+# GET / PUT there from outside the VPC does not fail — it hangs until the
+# connect timeout, and since REST API Gateway abandons an integration at 29s the
+# browser only ever sees `504`, with nothing in the resolver log to explain it.
+# getTestSets is where this bites first: it lists the whole test-set bucket plus
+# ~4 more calls per prefix on every poll.
+#
+# So: presign with the endpoint, talk to S3 without it. The regular client also
+# matches what the rest of the codebase already does from these Lambdas
+# (idp_common.s3 builds a plain client), which is why only the calls made
+# through this module were affected.
 _s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL") or None
 _s3_addressing = "virtual" if _s3_endpoint_url else "path"
-s3_config = Config(
+
+# Browser-facing presigned POST/GET URLs only.
+s3_presign_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": _s3_addressing},
 )
-s3_client = boto3.client("s3", endpoint_url=_s3_endpoint_url, config=s3_config)
+s3_presign_client = boto3.client(
+    "s3", endpoint_url=_s3_endpoint_url, config=s3_presign_config
+)
+
+# Bounds for the data-plane client, applied ONLY where there is private-network
+# S3 configuration to get wrong. That is the whole failure this guards: an
+# endpoint or route that cannot be reached, which stalls instead of erroring and
+# gets turned into a bodiless 504 by the 29s API Gateway ceiling. A public
+# deployment has no endpoint and no route to misconfigure, so it keeps botocore's
+# stock timeouts and this change is a no-op there rather than a new way to fail.
+#
+# botocore reads max_attempts as a RETRY count, so this is 2 total attempts:
+# worst case 2 x (3s connect + 8s read) = 22s for a SINGLE call, plus standard-mode
+# backoff sleeps (rand(0,1) x min(2^i, 20)s), which are not in that 22s. This does
+# NOT bound the operation: getTestSets lists the bucket and makes ~4 more calls per
+# prefix, so a whole-operation bound would have to be a multiple of this. It is a
+# per-call guard against an unreachable endpoint stalling indefinitely, not a proof
+# the operation fits the 29s budget — that is the dispatcher's read bound
+# (_RESOLVER_READ_TIMEOUT_SECONDS), which returns a labelled 504 regardless of how
+# many calls this resolver makes. One retry is kept for genuinely transient S3
+# errors (503 SlowDown). read_timeout is per socket read rather than per operation,
+# so 8s of silence mid-transfer is far outside normal for the small LIST/GET
+# responses this resolver makes — S3 answers these in tens of milliseconds.
+_S3_DATAPLANE_BOUNDS = (
+    {
+        "connect_timeout": 3,
+        "read_timeout": 8,
+        "retries": {"mode": "standard", "max_attempts": 1},
+    }
+    if _s3_endpoint_url
+    else {}
+)
+
+# Every actual S3 API call this resolver makes.
+# Fan-out for the baseline snapshot, and the ceiling it can reach inside one request.
+_SNAPSHOT_CONCURRENCY = 16
+# ~16 concurrent server-side copies fit roughly this many objects inside the
+# dispatcher's 29-second budget with margin; see _snapshot_baselines.
+_SNAPSHOT_MAX_OBJECTS = 6000
+
+s3_config = Config(
+    signature_version="s3v4",
+    s3={"addressing_style": "path"},
+    # Two 16-worker pools share this client; the default pool of 10 would log
+    # "Connection pool is full" and serialize the rest.
+    max_pool_connections=_SNAPSHOT_CONCURRENCY,
+    **_S3_DATAPLANE_BOUNDS,
+)
+s3_client = boto3.client("s3", config=s3_config)
 db_client = DynamoDBClient(table_name=os.environ["TRACKING_TABLE"])
 
 
@@ -87,6 +199,22 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # annotator page load and the panel is silently absent for the role it exists
     # for. Per-set scope is still asserted in the handler below.
     "estimateReviewEffort",
+    # Starting a re-extract without being able to watch it is not a capability. The
+    # editor kicks off reextractTestSetDocument (allowed above) and then polls this
+    # for the outcome, so leaving it off the list meant an annotator's class
+    # correction ran to completion server-side while the UI reported
+    # "Could not re-extract this document" — a failure message over a job that
+    # worked. Per-set scope is asserted in the handler below, as for the others.
+    "getDraftLabelJob",
+    # Correcting a wrong packet split is annotation work, exactly as correcting a wrong
+    # class is — and it is the correction most often needed in practice. Per-set scope
+    # asserted in the dispatch below.
+    "updateTestSetDocumentSections",
+    # Opening the version transition annotating commits to. An annotator is the role that
+    # begins an annotation session, so refusing this would make the queue unusable for
+    # them — and it is the operation that preserves the labels being edited away from.
+    # Per-set scope asserted in the dispatch below.
+    "openTestSetAnnotationDraft",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -153,12 +281,25 @@ def handler(event, context):
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
         return generate_draft_labels(event["arguments"], event)
+    elif field_name == "openTestSetAnnotationDraft":
+        # Annotator-reachable: group membership alone would let one annotator open a
+        # version transition on a set they were never assigned.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return open_test_set_annotation_draft(event["arguments"], event)
+    elif field_name == "updateTestSetDocumentSections":
+        # Annotator-reachable: group membership alone would expose other sets.
+        input_data = event["arguments"].get("input", event["arguments"])
+        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        return update_test_set_document_sections(event["arguments"], event)
     elif field_name == "reextractTestSetDocument":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
         assert_can_access_test_set(event, input_data.get("testSetId") or "")
         return reextract_test_set_document(event["arguments"], event)
     elif field_name == "getDraftLabelJob":
+        # Annotator-reachable: group membership alone would expose other sets' jobs.
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         return get_draft_label_job(event["arguments"])
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.
@@ -181,13 +322,26 @@ def add_test_set_from_upload(args):
     zip_filename = input_data["fileName"]
     description = input_data.get("description", "")  # Optional field
     document_class_type = input_data.get("documentClassType")  # Optional field
+    requested_name = (input_data.get("name") or "").strip()
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
         raise Exception("File must be a zip file")
 
-    # Extract test set name from filename (remove .zip extension)
-    test_set_name = zip_filename.replace(".zip", "").replace(".ZIP", "")
+    # The caller's name wins. This used to be derived from the filename
+    # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
+    # Archive.zip got a set called "Archive" — and the wizard's own success toast
+    # reported the name it had never sent. Only the suffix is stripped: `.replace`
+    # removed *every* occurrence, so "my.zip.backup.zip" lost both.
+    derived_name = zip_filename[: -len(".zip")]
+    test_set_name = requested_name or derived_name
+    if not requested_name:
+        # Logged rather than silent: a caller reaching this has no name of its own, and
+        # this is the path that produced the wrong name for two releases.
+        logger.info(
+            f"No name supplied for zip upload '{zip_filename}'; "
+            f"falling back to the filename '{derived_name}'"
+        )
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
@@ -206,8 +360,9 @@ def add_test_set_from_upload(args):
     # Upload with .zip extension in the test set folder
     key = f"{test_set_id}/{zip_filename}"
 
-    # Generate presigned URL for zip file
-    presigned_post = s3_client.generate_presigned_post(
+    # Generate presigned URL for zip file. Presign client: the URL goes to the
+    # browser, so it must carry the VPC-endpoint host in private deployments.
+    presigned_post = s3_presign_client.generate_presigned_post(
         Bucket=test_set_bucket,
         Key=key,
         Fields={"Content-Type": "application/zip"},
@@ -453,8 +608,9 @@ def add_documents_to_test_set_from_upload(args):
     # Upload with .zip extension in the test set folder
     key = f"{test_set_id}/{zip_filename}"
 
-    # Generate presigned URL for zip file
-    presigned_post = s3_client.generate_presigned_post(
+    # Generate presigned URL for zip file. Presign client: the URL goes to the
+    # browser, so it must carry the VPC-endpoint host in private deployments.
+    presigned_post = s3_presign_client.generate_presigned_post(
         Bucket=test_set_bucket,
         Key=key,
         Fields={"Content-Type": "application/zip"},
@@ -598,6 +754,10 @@ def publish_test_set_version(args, event=None):
     pointer_values = {":v": next_version}
     if set_active:
         pointer_expr += ", activeReference = :v"
+    # And the open transition has landed, so it stops being open. Leaving draftVersion
+    # set would have the annotate view reporting a transition toward a version that
+    # already exists, and would stop the next annotation session snapshotting.
+    pointer_expr += " REMOVE draftVersion"
     try:
         tracking_table.update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
@@ -614,6 +774,14 @@ def publish_test_set_version(args, event=None):
             f"Test set '{test_set_id}' pointers already at a version newer than "
             f"{next_version}; leaving them unchanged"
         )
+        # The pointers stay, but the transition this publish closes must still
+        # close: the REMOVE rode on the conditional update and was lost with it,
+        # leaving the annotate view reporting an open draft toward a version that
+        # now exists.
+        tracking_table.update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression="REMOVE draftVersion",
+        )
 
     logger.info(
         f"Published test set '{test_set_id}' version {next_version} "
@@ -624,6 +792,177 @@ def publish_test_set_version(args, event=None):
         next_version if set_active else meta.get("activeReference")
     )
     return result
+
+
+def _snapshot_baselines(test_set_bucket, test_set_id, version):
+    """Copy the live baselines to ``{id}/versions/{version}/baseline/``.
+
+    Server-side copies, paginated: a 2000-document set has thousands of baseline
+    objects, which is exactly why this runs once when a draft opens rather than on every
+    save. Returns the number of objects copied.
+
+    Idempotent by overwrite: re-copying the same keys is harmless, so a retry after a
+    partial failure converges instead of needing cleanup.
+    """
+    source_prefix = f"{test_set_id}/baseline/"
+    dest_prefix = f"{test_set_id}/versions/{int(version)}/baseline/"
+
+    keys = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=source_prefix):
+        for obj in page.get("Contents", []) or []:
+            key = obj["Key"]
+            if not key.endswith("/"):
+                keys.append(key)
+
+    if len(keys) > _SNAPSHOT_MAX_OBJECTS:
+        # Refused with a reason rather than left to time out. The pointer is written
+        # after the copy, so an oversize set would otherwise fail with a generic
+        # error and fail identically on every retry — permanently unable to start
+        # annotating, with nothing saying why.
+        raise Exception(
+            f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
+            f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
+            "Publishing a version of a set this large needs an asynchronous snapshot, "
+            "which is not available yet."
+        )
+
+    def _copy(key):
+        s3_client.copy_object(
+            Bucket=test_set_bucket,
+            CopySource={"Bucket": test_set_bucket, "Key": key},
+            Key=f"{dest_prefix}{key[len(source_prefix) :]}",
+        )
+
+    # Bounded fan-out. Each copy is server-side, so the cost is a round trip, and
+    # this runs inside a synchronous request the dispatcher abandons after 29s: a
+    # sequential pass over a few thousand objects did not fit, and left the draft
+    # unrecorded while the resolver kept copying to its own timeout. Sixteen at a
+    # time fits the set sizes seen so far; beyond that this belongs in an
+    # asynchronous job the UI polls. `list()` re-raises the first failure, so a
+    # partial snapshot is reported as an error rather than as a version.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=_SNAPSHOT_CONCURRENCY
+    ) as pool:
+        list(pool.map(_copy, keys))
+    copied = len(keys)
+
+    logger.info(
+        f"Snapshotted {copied} baseline object(s) for test set '{test_set_id}' "
+        f"as version {version}"
+    )
+    return copied
+
+
+def open_test_set_annotation_draft(args, event=None):
+    """Open the version transition that annotating a test set commits you to.
+
+    Starting annotation on a set, even one that already has ground truth, commits to a
+    new version of it, and the queue link should name that transition.
+
+    The problem underneath is worse than the queue link. A version was
+    a **DynamoDB row only** — ``publish_test_set_version`` records a number, a label and
+    a file count, and copies nothing. Annotation writes straight to ``{id}/baseline/``.
+    So a run stamped ``TestSetVersion = 3`` could not be reproduced against the labels it
+    actually scored: the number was immutable, its content was not.
+
+    This makes the transition explicit and preserves what it moves away from:
+
+      * ``baseVersion`` is the state being left. A set that has never been published gets
+        its arriving labels published as a version first — the "even if we still have
+        ground truth" case, and the common one for an uploaded set.
+      * that state is snapshotted to ``{id}/versions/{baseVersion}/baseline/``, so the
+        number now refers to bytes.
+      * ``draftVersion`` is ``baseVersion + 1``, recorded on the metadata row. The queue
+        link carries it, so a link says which transition it belongs to.
+
+    Idempotent: opening a draft that is already open returns it and copies nothing, which
+    matters because the annotate view calls this on entry.
+
+    Why an explicit call rather than copy-on-write: the editor saves a baseline through a
+    **presigned POST straight from the browser**, so no Lambda observes the write. There
+    is no server-side moment to hang a lazy snapshot on — and making the commitment
+    visible is what was being asked for anyway.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    existing_draft = _as_int(meta.get("draftVersion"))
+    if existing_draft:
+        # Already open. Returning it unchanged keeps the annotate view's on-entry call
+        # cheap and stops a second reviewer opening a second transition.
+        base = existing_draft - 1
+        logger.info(
+            f"Test set '{test_set_id}' already has draft version {existing_draft}; "
+            "returning it"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": base,
+            "draftVersion": existing_draft,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
+
+    base_version = _as_int(meta.get("publishedVersion"))
+    if not base_version:
+        # Never published. Publishing the arriving state first is what stops the labels
+        # a set was uploaded with from being the thing that gets overwritten with no
+        # record of what they were.
+        published = publish_test_set_version(
+            {
+                "input": {
+                    "testSetId": test_set_id,
+                    "label": "As uploaded",
+                    "notes": "Captured automatically before annotation began.",
+                    # Not the active reference: that would let an annotator's Start
+                    # annotating decide which version every future run of the set
+                    # scores against, a choice publishTestSetVersion reserves for
+                    # Admin/Author. Runs default to the set's current labels and pin
+                    # a version only when asked (see test_runner), so nothing needs
+                    # this pointer moved here.
+                    "setAsActiveReference": False,
+                }
+            },
+            event,
+        )
+        base_version = int(published["version"])
+        logger.info(
+            f"Test set '{test_set_id}' had no published version; captured its current "
+            f"labels as version {base_version} before opening a draft"
+        )
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
+
+    # publish_test_set_version reserves ``latestVersion + 1``, and a failed version
+    # write leaves a gap by design, so ``publishedVersion + 1`` can name a number the
+    # next publish will never create. Follow the same counter it does.
+    draft_version = max(_as_int(meta.get("latestVersion")) or 0, base_version) + 1
+    # Written after the snapshot: a failure part-way leaves no draft pointer, so the
+    # next call retries the copy rather than annotating against a version whose content
+    # was never captured.
+    db_client.update_item(
+        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+        update_expression="SET draftVersion = :d",
+        expression_attribute_values={":d": draft_version},
+    )
+
+    logger.info(
+        f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
+        f"(base {base_version}, {copied} baseline object(s) snapshotted)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "baseVersion": base_version,
+        "draftVersion": draft_version,
+        "snapshotObjectCount": copied,
+        "alreadyOpen": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -807,10 +1146,19 @@ def generate_draft_labels(args, event=None):
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     config_version = input_data.get("configVersion")
+    config_revision = input_data.get("configRevision")
     object_keys = input_data.get("objectKeys") or []
+    # Forces the class for this run's documents instead of classifying them. Only
+    # ever set by a single-document re-extract after a class correction.
+    document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -846,8 +1194,14 @@ def generate_draft_labels(args, event=None):
     }
     if config_version:
         run_input["configVersion"] = config_version
+        # Drafting under a pinned revision matters for the same reason scoring
+        # does: a later save must not change what the labels were drafted with.
+        if config_revision is not None:
+            run_input["configRevision"] = config_revision
     if object_keys:
         run_input["objectKeys"] = object_keys
+    if document_class:
+        run_input["documentClass"] = document_class
 
     lambda_client = boto3.client("lambda")
     response = lambda_client.invoke(
@@ -877,6 +1231,7 @@ def generate_draft_labels(args, event=None):
         "jobId": test_run_id,
         "status": "RUNNING",
         "configVersion": config_version,
+        "configRevision": config_revision,
         "total": len(object_keys) or file_count,
         "labeled": 0,
         "objectKeys": object_keys,
@@ -915,8 +1270,21 @@ def reextract_test_set_document(args, event=None):
     reprocessed outside a job would never reach the baseline. Going through a job
     also keeps the harvest's overwrite safety, pruning and curve bookkeeping.
 
-    The class is pinned by writing it to the baseline first, since classification is
-    skipped for pages that already carry one.
+    The corrected class is applied in **two** places, and both are load-bearing:
+
+    1. Sent into the run, which stamps it as S3 metadata on the copied document so
+       the classification step uses it instead of classifying. This is what makes
+       extraction run against the class the reviewer chose.
+    2. Written onto the existing baseline up front, so a run that never completes
+       still records the correction, and so a reviewed label is demoted (the
+       harvest refuses to overwrite ``reviewed-human``).
+
+    Step 2 alone used to be the whole implementation, and it silently did not
+    work: the run classifies from the input document and never sees the test set's
+    baseline, so the pipeline re-derived the original class and the harvest wrote
+    it back over the pin. The observable result was the demotion sticking while
+    the correction vanished, leaving fields extracted under the old schema beside
+    a "Re-extracted as X" success message.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -925,6 +1293,11 @@ def reextract_test_set_document(args, event=None):
 
     if not validate_test_set_name(test_set_id):
         raise Exception("Invalid test set id")
+    if not validate_document_class(document_class):
+        raise Exception(
+            f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+            "characters of letters, digits, spaces, hyphens or underscores"
+        )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -958,6 +1331,14 @@ def reextract_test_set_document(args, event=None):
                 "testSetId": test_set_id,
                 "objectKeys": [object_key],
                 "configVersion": config_version,
+                # The correction has to reach the PIPELINE, not just the baseline.
+                # Stamping it on the baseline alone does not work: the run
+                # classifies from the input document, which never sees the test
+                # set's baseline, and the harvest then writes the pipeline's own
+                # class back over the pin. The visible result was the demotion
+                # sticking while the corrected class silently disappeared, and
+                # fields still extracted under the old schema.
+                "documentClass": document_class,
             }
         },
         event,
@@ -967,6 +1348,226 @@ def reextract_test_set_document(args, event=None):
         f"'{document_class or 'its existing class'}' via job {result['jobId']}"
     )
     return result
+
+
+# A packet with more sections than this is far more likely to be a client bug than a
+# real document, and each section is a separate S3 write.
+MAX_SECTIONS_PER_DOCUMENT = 200
+
+
+def _read_baseline_sections(test_set_bucket, test_set_id, object_key):
+    """Every section of a document's baseline, as ``{section_id: (key, parsed)}``.
+
+    An unreadable section is fatal here, unlike in ``_set_baseline_document_class``
+    where one bad file must not block a class correction. Re-grouping rewrites the
+    whole set of sections, so proceeding without knowing what one of them contained
+    would discard its field values silently.
+    """
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    out = {}
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith("/result.json"):
+                continue
+            section_id = key[len(prefix) :].split("/")[0]
+            body = s3_client.get_object(Bucket=test_set_bucket, Key=key)["Body"].read()
+            out[section_id] = (key, json.loads(body))
+    return out
+
+
+def _validate_regrouping(sections, previously_labelled_pages):
+    """Reject a re-grouping that would corrupt or lose ground truth.
+
+    The client validates more than this — it also requires every page of the rendered
+    PDF to be assigned, which only it can check, because the server would have to
+    parse the document to learn its page count. What the server *can* enforce is that
+    nothing already labelled disappears, and that the result is a partition of what it
+    is given:
+
+    * no page in two sections, which would make the grouping meaningless;
+    * no empty section, which would carry field values belonging to no pages;
+    * no page that was previously labelled going missing, which would silently drop
+      the ground truth for that page.
+
+    A page the baseline never mentioned *is* allowed in: a split that dropped a page
+    entirely is exactly the defect a reviewer is here to fix.
+    """
+    if not sections:
+        raise Exception("A document must have at least one section")
+    if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
+        raise Exception(
+            f"Too many sections ({len(sections)}); the maximum is "
+            f"{MAX_SECTIONS_PER_DOCUMENT}"
+        )
+
+    seen = {}
+    section_ids = set()
+    for section in sections:
+        section_id = str(section.get("sectionId") or "")
+        # Sections are keyed by id when the existing baselines are looked up, so a
+        # repeated id would write the same baseline content into two section files and
+        # renumber around a group that no longer exists. The page-level checks below
+        # cannot catch it: both groups' pages are legitimately accounted for.
+        if section_id in section_ids:
+            raise Exception(f"Section '{section_id}' appears more than once")
+        section_ids.add(section_id)
+        indices = section.get("pageIndices")
+        if not isinstance(indices, list) or not indices:
+            raise Exception(f"Section '{section_id}' has no pages")
+        for raw in indices:
+            if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+                raise Exception(
+                    f"Section '{section_id}' has an invalid page index {raw!r}; "
+                    "expected a non-negative integer"
+                )
+            if raw in seen:
+                raise Exception(
+                    f"Page index {raw} is in both section '{seen[raw]}' and "
+                    f"section '{section_id}'"
+                )
+            seen[raw] = section_id
+
+    lost = sorted(previously_labelled_pages - set(seen))
+    if lost:
+        raise Exception(
+            f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
+            "would no longer belong to any section, which would discard the ground "
+            "truth for those pages"
+        )
+
+
+def update_test_set_document_sections(args, event=None):
+    """Re-group a document's pages into sections, keeping every field value.
+
+    The reason this exists: a packet split that grouped pages wrongly makes the
+    classification ground truth wrong, and until now there was no way to correct it —
+    the editor showed ``page_indices`` read-only. Fixing it by re-running extraction
+    would regenerate the field values, which is precisely the annotation loss the
+    reviewer is trying to avoid.
+
+    So this writes the grouping and the class and **nothing else**. Each surviving
+    section keeps its ``inference_result``, its ``labelSource`` and its
+    ``_editHistory`` — a reviewer's corrections are not touched. The fields may no
+    longer match their pages afterwards, which is true and is why the UI says so and
+    offers an opt-in re-extract rather than doing it here.
+
+    ## Sections are renumbered to agree with page order
+
+    Consumers derive a section's group index from its *position in a list*
+    (``compute_graded_packet_metrics`` enumerates ``sections_gt``), and nothing
+    guarantees that list is in page order. Writing sections as ``1..N`` in first-page
+    order makes id order, lexical key order and page order all the same thing, so no
+    consumer can disagree about which group a page is in.
+
+    That means rewriting every section file rather than renaming a few. Writes happen
+    before deletes, so an interrupted call leaves an extra stale section — visible,
+    and recoverable by re-saving — rather than a missing one.
+    """
+    input_data = args.get("input", args)
+    test_set_id = input_data["testSetId"]
+    object_key = input_data["objectKey"]
+    incoming = input_data.get("sections") or []
+
+    if not validate_test_set_name(test_set_id):
+        raise Exception("Invalid test set id")
+    for section in incoming:
+        if not validate_document_class(section.get("documentClass")):
+            raise Exception(
+                f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
+                "characters of letters, digits, spaces, hyphens or underscores"
+            )
+
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise Exception(f"Test set '{test_set_id}' not found")
+
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
+    if not existing:
+        raise Exception(
+            f"'{object_key}' has no baseline sections to re-group. Generate draft "
+            "labels for this test set first."
+        )
+
+    previously_labelled = {
+        int(index)
+        for _key, parsed in existing.values()
+        for index in (parsed.get("split_document") or {}).get("page_indices") or []
+    }
+    _validate_regrouping(incoming, previously_labelled)
+
+    # First-page order, so the ids we assign below agree with page order. Keyed on
+    # ``min`` rather than ``pageIndices[0]``: now that a section can carry a manual page
+    # order, those differ, and a section's place in the document is where it *starts*, not
+    # which of its pages happens to be read first.
+    ordered = sorted(incoming, key=lambda sec: min(sec["pageIndices"]))
+
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    written_keys = set()
+    for position, section in enumerate(ordered, start=1):
+        source_id = str(section.get("sectionId") or "")
+        _old_key, content = existing.get(source_id, (None, None))
+        if content is None:
+            # A section the reviewer added. It has no field values yet, and saying so
+            # in the data beats writing a plausible-looking empty result.
+            content = {"inference_result": {}, "labelSource": LABEL_SOURCE_DRAFT}
+            logger.info(
+                f"Section '{source_id}' of {object_key} is new; writing it with no "
+                "field values"
+            )
+        content = dict(content)
+
+        split = dict(content.get("split_document") or {})
+        # Order-preserving, deliberately. ``page_indices`` records the section's reading
+        # order as well as its membership: ``split_accuracy_with_order`` compares the two
+        # lists with ``==`` and the graded packet score is half Kendall's Tau over each
+        # page's position (see ``stickler_backend/doc_split.py:111``). Sorting here — as
+        # this once did — silently discarded authored order on every save, including on a
+        # save that only meant to correct a section's class.
+        split["page_indices"] = [int(i) for i in section["pageIndices"]]
+        content["split_document"] = split
+
+        document_class = section.get("documentClass")
+        if document_class:
+            doc_class = dict(content.get("document_class") or {})
+            doc_class["type"] = document_class
+            content["document_class"] = doc_class
+
+        key = f"{prefix}{position}/result.json"
+        s3_client.put_object(
+            Bucket=test_set_bucket,
+            Key=key,
+            Body=json.dumps(content, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        written_keys.add(key)
+
+    # After the writes, never before: an interruption should leave a stale extra
+    # section rather than a hole.
+    for old_key, _content in existing.values():
+        if old_key not in written_keys:
+            s3_client.delete_object(Bucket=test_set_bucket, Key=old_key)
+
+    logger.info(
+        f"Re-grouped {object_key} in {test_set_id} into {len(ordered)} section(s); "
+        f"removed {len(existing) - len(written_keys) if len(existing) > len(written_keys) else 0} "
+        "stale section file(s)"
+    )
+    return {
+        "testSetId": test_set_id,
+        "objectKey": object_key,
+        "sections": [
+            {
+                "sectionId": str(position),
+                "documentClass": section.get("documentClass"),
+                # As written, so the client's board reflects what is now on disk.
+                "pageIndices": [int(i) for i in section["pageIndices"]],
+            }
+            for position, section in enumerate(ordered, start=1)
+        ],
+    }
 
 
 def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class_type):
@@ -1325,6 +1926,12 @@ def get_annotation_queue(args, event=None):
                 "alertCount": doc.get("alertCount"),
                 "fieldCount": doc.get("fieldCount"),
                 "labelSource": doc.get("labelSource"),
+                # So a reviewer can see what each document was classified as
+                # without opening it. A wrong class is not visible any other way
+                # from the queue: extraction under the wrong schema can be
+                # confidently wrong, so the row's confidence and alert count look
+                # entirely normal.
+                "documentClasses": doc.get("documentClasses") or [],
                 "sectionCount": len(doc.get("sections") or []),
                 "sections": doc.get("sections") or [],
                 "claimedBy": owner or None,
@@ -1370,11 +1977,19 @@ def get_annotation_queue(args, event=None):
     # test_uploaded_ground_truth_is_not_counted_as_review_work forbids.
     queue = [e for e in entries if include_completed or not e["reviewed"]]
 
+    # The open transition, so the workspace does not have to call the mutation to discover
+    # one — that call snapshots, and probing with it would open a transition just by
+    # visiting the page. Bound once: `_as_int` is Optional, so calling it twice leaves the
+    # type checker unable to see that the subtraction is guarded.
+    draft_version = _as_int(meta.get("draftVersion")) or None
+
     result = {
         "testSetId": test_set_id,
         "totalDocs": total,
         "inspectedDocs": inspected,
         "reviewedDocs": reviewed_count,
+        "draftVersion": draft_version,
+        "baseVersion": draft_version - 1 if draft_version else None,
         # Documents beyond the inspected page are unreviewed, so they count here.
         "remainingDocs": max(0, total - reviewed_count),
         "claimedByOthers": sum(
@@ -2137,20 +2752,50 @@ def remove_documents_from_test_set(args):
     validation = _validate_test_set_files(
         s3_client, test_set_bucket, test_set_id, allow_unlabeled=True
     )
+    if validation.get("validation_failed"):
+        # Transient S3 error inside the validator — its `input_count=0`
+        # placeholder is NOT a real observation. Writing it to fileCount
+        # would overwrite the correct count with 0. Bail on the counter
+        # update and let the reconcile fix the row on the next
+        # getTestSets when S3 recovers. fileCount stays at
+        # (pre-delete-count - len(deletions)) via S3 side effect on the
+        # next successful validation.
+        logger.warning(
+            f"Skipping fileCount update for {test_set_id}: validator failed "
+            f"transiently ({validation.get('error')}). Reconcile will pick "
+            "up the correct count on the next getTestSets."
+        )
+        return {
+            "id": test_set_id,
+            "name": meta.get("name"),
+            "fileCount": _as_int(meta.get("fileCount")) or 0,
+            "status": meta.get("status"),
+            "createdAt": meta.get("createdAt"),
+            "lastAddResult": f"Removed {removed} document(s)",
+        }
     new_count = validation.get("input_count", 0)
-    tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
-    # lastAddResult is the ASYNCHRONOUS add flow's completion notice: that mutation
-    # returns before the work finishes, so the outcome has nowhere to live but the
-    # record, and the test-set list renders it. This operation is synchronous — the
-    # caller gets the count in the response and shows it there — so persisting a
-    # second copy only produced an immortal alert on the list page, which no amount
-    # of dismissing could remove because dismissal is client-side. Clearing it also
-    # discards any stale notice from an earlier add, which this operation invalidates.
-    tracking_table.update_item(
+    # Two REMOVEs in one UpdateItem:
+    #  - lastAddResult is the ASYNCHRONOUS add flow's completion notice; this
+    #    mutation is synchronous, so the caller sees the count in the response
+    #    and persisting a second copy on the record produced an immortal alert
+    #    that client-side dismissal could not remove.
+    #  - contentSignature is dropped so the next getTestSets reconcile takes
+    #    the full path once and rebuilds it — the file listing we just did
+    #    doesn't include the '.source' bit the reconcile's signature also folds
+    #    in, so we can't cheaply build a correct new signature here. Otherwise
+    #    every remove would leave a stale signature that burns a wasted full
+    #    validate + DDB write on the next poll.
+    _get_tracking_table().update_item(
         Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression="SET fileCount = :c REMOVE lastAddResult",
+        UpdateExpression="SET fileCount = :c REMOVE lastAddResult, contentSignature",
         ExpressionAttributeValues={":c": new_count},
     )
+    # Drop the warm-container memo so this container's next getTestSets
+    # doesn't short-circuit on the pre-remove signature. The signature-
+    # divergence check in _within_reconcile_ttl would catch this anyway
+    # (DDB row's contentSignature was just REMOVEd), but popping is cheap
+    # and explicit.
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(
         f"Removed {removed} document(s) from test set {test_set_id}; "
@@ -2175,6 +2820,9 @@ def clear_draft_labels(args):
 
     Only ``draft-machine`` labels are removed. Reviewed, uploaded and generated
     ground truth survives, so a config retry cannot discard human work.
+
+    Also resets the set's ``labelState`` — see the comment at the update below for
+    why the reconciler cannot be left to do it.
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
@@ -2217,10 +2865,45 @@ def clear_draft_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="REMOVE lastAddResult, labelJobId, labelJobStatus",
-    )
+    #
+    # Two independent skip-markers have to be invalidated here, because two different
+    # reconcilers memoize against this row:
+    #
+    #  - labelProbedFileCount guards _reconcile_label_state, which is keyed on
+    #    fileCount. Clearing drafts deletes baseline objects without changing
+    #    membership, so the marker still matches and the set is skipped on every
+    #    subsequent list. Observed on a dev stack: a set cleared for a retest kept
+    #    reporting "Draft (machine)" and a 97.6% estimated accuracy while every one of
+    #    its 100 documents read "Unlabeled", permanently.
+    #  - contentSignature (plus the in-process memo) guards the file-listing
+    #    reconcile. We just deleted baselines from S3, so the memoized signature no
+    #    longer describes the bucket.
+    #
+    # Dropping the label probe marker is also what makes the ambiguous case correct.
+    # With no drafts left the state is knowably "unlabeled"; with some non-draft labels
+    # surviving it depends on whether coverage is still complete across documents,
+    # which `kept` (a count of label objects) cannot answer. So invalidate the marker
+    # and let the reconciler re-derive it through _validate_test_set_files — the same
+    # helper registration uses, so the two cannot disagree about what "labeled" means.
+    if kept == 0:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "SET labelState = :u "
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount, contentSignature"
+            ),
+            expression_attribute_values={":u": "unlabeled"},
+        )
+    else:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=(
+                "REMOVE lastAddResult, labelJobId, labelJobStatus, "
+                "labelProbedFileCount, contentSignature"
+            ),
+        )
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(
         f"Cleared {len(to_delete)} draft label section(s) from {test_set_id}; "
@@ -2284,13 +2967,18 @@ def reset_test_set_labels(args):
     # Cleared, never written: a synchronous operation returns its count in the
     # response, so persisting a second copy only created an alert nothing could
     # retract. See clear_draft_labels for the full reasoning.
+    # contentSignature is dropped so the next warm-container reconcile within
+    # the TTL window doesn't skip on a stale signature — every baseline just
+    # went away, so the memoized signature no longer describes S3.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=(
-            "SET labelState = :u REMOVE lastAddResult, labelJobId, labelJobStatus"
+            "SET labelState = :u "
+            "REMOVE lastAddResult, labelJobId, labelJobStatus, contentSignature"
         ),
         expression_attribute_values={":u": "unlabeled"},
     )
+    _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(f"Reset {test_set_id}: deleted {len(keys)} baseline object(s)")
     return {
@@ -2523,8 +3211,13 @@ def delete_test_sets(args):
         except Exception as e:
             logger.error(f"Failed to delete files for test set {test_set_id}: {str(e)}")
 
-        # Delete tracking table record
+        # Delete tracking table record + drop the warm-container memo entry.
+        # An id could later be reused (test-set names are user-chosen), and a
+        # stale memo entry from a deleted namesake would occupy memory and
+        # produce spurious signature comparisons on the new set (the DDB
+        # signature-divergence check catches it, but popping is cleaner).
         db_client.delete_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        _RECONCILE_MEMO.pop(test_set_id, None)
 
     logger.info(f"Deleted {len(test_set_ids)} test sets")
     return True
@@ -2622,6 +3315,9 @@ def get_test_sets():
                 "labelJobStatus": item.get("labelJobStatus"),
                 "status": item.get("status"),
                 "createdAt": item["createdAt"],
+                # Set by _reconcile_test_set_tracking_entry when direct-S3
+                # edits are detected; absent on rows that predate reconcile.
+                "updatedAt": item.get("updatedAt"),
                 "error": item.get(
                     "error"
                 ),  # Include error message for failed test sets
@@ -2642,14 +3338,71 @@ def get_test_sets():
         paginator = s3_client.get_paginator("list_objects_v2")
         page_iterator = paginator.paginate(Bucket=test_set_bucket, Delimiter="/")
 
+        # Per-request reconcile budget. Cold-container invocations pay 2
+        # paginated list_objects_v2 + 1 HeadObject per registered prefix
+        # before the warm-container memo kicks in, and this resolver runs
+        # under a 60 s timeout with 256 MB. Cap the work here the same way
+        # ``_reconcile_label_state`` caps its own probes (25 / 5 s) — the
+        # remainder is picked up by the next poll, which is what the memo
+        # is designed for. The listing paths do NOT skip on this budget;
+        # only the reconcile-vs-S3 probes are bounded.
+        reconcile_probes = 0
+        reconcile_deadline = time.monotonic() + RECONCILE_PROBE_BUDGET_SECONDS
+
         for page in page_iterator:
             # Check common prefixes (folders)
             for prefix_info in page.get("CommonPrefixes", []):
                 prefix = prefix_info["Prefix"].rstrip("/")
                 s3_test_sets.add(prefix)
 
-                # Skip if already exists in DynamoDB
+                # Already-registered folders: reconcile in place. Skipping here
+                # (as the original code did) leaves fileCount and status stale
+                # forever when a user drops more files into `<prefix>/input/`
+                # directly in S3 — no S3 notification fires for that, so this
+                # lazy scan is the only chance to refresh the DDB row.
                 if prefix in existing_test_sets:
+                    existing_row = existing_test_sets[prefix]
+                    # Memo check BEFORE the budget gate so a warm container
+                    # serving > MAX_RECONCILE_PROBES sets doesn't lock out the
+                    # alphabetically-later ones. Memo hits are O(1) dict
+                    # lookups with no S3 traffic — the budget exists to cap
+                    # S3 work, not cheap in-process checks. Without this, on
+                    # a stack of 30 sets the first 25 would eat the budget on
+                    # every warm poll (all memo hits, no work) and sets 26-30
+                    # would never be visited by reconcile until cold start.
+                    if _within_reconcile_ttl(
+                        prefix, existing_row.get("contentSignature")
+                    ):
+                        continue
+                    # Budget exhausted? Skip the reconcile — the row keeps its
+                    # last-known values on this response, and the next poll's
+                    # warm-container memo takes the fast path for anything we
+                    # already visited this pass.
+                    if (
+                        reconcile_probes >= MAX_RECONCILE_PROBES
+                        or time.monotonic() > reconcile_deadline
+                    ):
+                        continue
+                    reconcile_probes += 1
+                    reconciled = _reconcile_test_set_tracking_entry(
+                        s3_client,
+                        test_set_bucket,
+                        prefix,
+                        existing_row,
+                    )
+                    if reconciled is not None:
+                        # Refresh the in-memory row + the result entry we
+                        # already appended for this test set.
+                        existing_test_sets[prefix] = reconciled
+                        for entry in result:
+                            if entry["id"] == prefix:
+                                entry["fileCount"] = reconciled.get("fileCount")
+                                entry["status"] = reconciled.get("status")
+                                entry["labelState"] = reconciled.get("labelState")
+                                entry["source"] = reconciled.get("source")
+                                entry["error"] = reconciled.get("error")
+                                entry["updatedAt"] = reconciled.get("updatedAt")
+                                break
                     continue
 
                 # Check if this looks like a test set (has an input/ folder)
@@ -2667,6 +3420,21 @@ def get_test_sets():
                         s3_client, test_set_bucket, prefix, allow_unlabeled=True
                     )
 
+                    # A transient S3 failure in the validator returns a sentinel
+                    # (input_count=0, valid=False, labeled=False) that would look
+                    # exactly like a broken empty folder. Registering the row
+                    # with that would write a FAILED entry with poisoned state
+                    # and leave the UI showing a fake failure. Skip this
+                    # prefix on this pass; the next getTestSets will retry
+                    # once S3 recovers.
+                    if validation_result.get("validation_failed"):
+                        logger.warning(
+                            f"Skipping first-discovery registration for {prefix}: "
+                            f"validator failed transiently "
+                            f"({validation_result.get('error')})."
+                        )
+                        continue
+
                     # Source: synthetic generator drops a '.source' marker; otherwise a user upload
                     source = _get_test_set_source(s3_client, test_set_bucket, prefix)
 
@@ -2675,6 +3443,21 @@ def get_test_sets():
                     error_message = validation_result.get("error")
                     label_state = (
                         "labeled" if validation_result.get("labeled") else "unlabeled"
+                    )
+
+                    # Store the full contentSignature (base + src marker) in
+                    # the exact same format reconcile compares against, so a
+                    # newly-discovered folder does not force one wasted full
+                    # reconcile on the very next poll to normalise it.
+                    # If the marker check failed transiently (source is None),
+                    # skip the signature — reconcile will fill it in later,
+                    # rather than writing a poisoned literal ``|src=None``.
+                    content_signature = (
+                        _compute_content_signature(
+                            validation_result.get("signature", ""), source
+                        )
+                        if source is not None
+                        else None
                     )
 
                     _create_test_set_tracking_entry(
@@ -2686,6 +3469,7 @@ def get_test_sets():
                         created_at,
                         source,
                         label_state,
+                        content_signature,
                     )
 
                     # Add to results
@@ -2746,6 +3530,12 @@ def get_test_sets():
                     {"PK": f"testset#{test_set_id}", "SK": "metadata"}
                 )
                 logger.info(f"Deleted orphaned test set from DynamoDB: {test_set_id}")
+
+                # Drop the warm-container memo entry — an id could be reused
+                # later (test-set names are user-chosen), and a stale entry
+                # from a deleted namesake would produce spurious signature
+                # matches on the new set.
+                _RECONCILE_MEMO.pop(test_set_id, None)
 
                 # Remove from result list
                 result = [item for item in result if item["id"] != test_set_id]
@@ -2859,6 +3649,14 @@ def get_test_set_documents(args):
     result = {
         "documents": documents,
         "nextToken": response.get("NextContinuationToken"),
+        # The set's whole size, not this page's. A paginated response that reports
+        # only what it returned leaves the caller counting the page and calling it
+        # the total: the UI showed "Documents (50)" and offered to "Label 50
+        # document(s)" for a 100-document set, then labeled all 100 — because
+        # select-all sends no objectKeys and the server walks the set itself.
+        # Read from the stored counter already fetched above, so this is O(1) and
+        # stays O(1) as sets grow.
+        "totalCount": _as_int(item.get("fileCount")) or 0,
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested
@@ -2891,7 +3689,7 @@ def _attach_label_metadata(test_set_bucket, documents):
     tasks = []
     for doc in documents:
         for section in doc["sections"]:
-            tasks.append((doc, section["baselineKey"]))
+            tasks.append((doc, section))
     if not tasks:
         for doc in documents:
             doc["labelSource"] = None
@@ -2910,16 +3708,47 @@ def _attach_label_metadata(test_set_bucket, documents):
             return None
 
     per_doc = {
-        id(doc): {"sources": [], "confidences": [], "alerts": [], "fields": []}
+        id(doc): {
+            "sources": [],
+            "confidences": [],
+            "alerts": [],
+            "fields": [],
+            # The class each section was given. Collected here because these
+            # baselines are already being read for label state, so it costs
+            # nothing extra — and a reviewer working the queue could not
+            # previously see what class a document had been assigned without
+            # opening it, which is the whole difficulty with a misclassified
+            # document: extraction against the wrong schema can be confidently
+            # wrong, so nothing else about the row looks unusual.
+            "classes": [],
+        }
         for doc, _ in tasks
     }
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(tasks), 16)
     ) as executor:
-        results = executor.map(lambda t: (t[0], read(t[1])), tasks)
-        for doc, result in results:
+        results = executor.map(lambda t: (t[0], t[1], read(t[1]["baselineKey"])), tasks)
+        for doc, section, result in results:
             if not result:
                 continue
+            # The section's OWN class, distinct from the document-level
+            # `documentClasses` badge list: the regrouping board shows a class per
+            # section, and the editor only ever loads the section being viewed.
+            section_class = (result.get("document_class") or {}).get("type")
+            if section_class:
+                section["documentClass"] = str(section_class)
+            # The section's page grouping, so the page-regrouping editor can show every
+            # section at once instead of fetching each result.json again. Free: this
+            # file is already open for label state and class, same as `classes` below.
+            # Left absent rather than empty when unreadable — an empty grouping would
+            # read as "this section has no pages", which is a different claim.
+            indices = (result.get("split_document") or {}).get("page_indices")
+            if isinstance(indices, list):
+                section["pageIndices"] = [
+                    int(i)
+                    for i in indices
+                    if isinstance(i, int) and not isinstance(i, bool)
+                ]
             bucket_for_doc = per_doc[id(doc)]
             # A baseline with no labelSource is ground truth supplied when the set was
             # created: authoritative, but not reviewed here. Reporting it as
@@ -2948,11 +3777,30 @@ def _attach_label_metadata(test_set_bucket, documents):
             if alerts is not None:
                 bucket_for_doc["alerts"].append(alerts)
                 bucket_for_doc["fields"].append(fields)
+            # Reusing section_class from above — same `result`, same iteration.
+            if section_class:
+                bucket_for_doc["classes"].append(str(section_class))
 
     for doc in documents:
         collected = per_doc.get(
-            id(doc), {"sources": [], "confidences": [], "alerts": [], "fields": []}
+            id(doc),
+            {
+                "sources": [],
+                "confidences": [],
+                "alerts": [],
+                "fields": [],
+                "classes": [],
+            },
         )
+        # Distinct classes, order preserved. A single-section document yields one;
+        # a packet yields the classes its sections were split into. Reported as a
+        # list rather than joined, so the UI decides how to render more than one
+        # rather than parsing a string back apart.
+        seen_classes = []
+        for cls in collected["classes"]:
+            if cls not in seen_classes:
+                seen_classes.append(cls)
+        doc["documentClasses"] = seen_classes
         sources = collected["sources"]
         confidences = collected["confidences"]
         # A document counts as reviewed only when every section is.
@@ -3202,6 +4050,19 @@ def _reconcile_label_state(items):
             logger.warning(f"Could not probe labels for {test_set_id}: {e}")
             continue
 
+        # A transient S3 failure inside the validator surfaces as a sentinel
+        # dict (validation_failed=True) whose ``labeled=False`` value would
+        # otherwise persistently demote a labelled row to 'unlabeled' AND
+        # cache that demotion via `_remember_label_probe`, making it sticky
+        # until the fileCount changes. Skip this row on this pass; the next
+        # getTestSets after S3 recovers will re-probe.
+        if validation.get("validation_failed"):
+            logger.warning(
+                f"Skipping labelState reconciliation for {test_set_id}: "
+                f"validator failed transiently ({validation.get('error')})."
+            )
+            continue
+
         if validation.get("labeled"):
             state = (
                 "draft" if _probed_labels_are_drafts(bucket, test_set_id) else "labeled"
@@ -3284,10 +4145,24 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
     valid but unlabeled and awaits generateDraftLabels. A partially labeled set is an
     error either way, since it indicates a botched upload rather than a deliberate
     label-later flow.
+
+    Also returns a ``signature`` string summarizing the current on-disk state
+    (input/baseline counts + max LastModified). Callers use it as a cheap
+    change-detector: identical signature => nothing to reconcile.
     """
     try:
         input_files = set()
         baseline_files = set()
+        latest_modified = None
+
+        def _observe(obj):
+            # Track the max LastModified across every input+baseline object so a
+            # single deleted file still moves the signature (count changes) and a
+            # single overwritten baseline moves it too (LastModified changes).
+            nonlocal latest_modified
+            lm = obj.get("LastModified")
+            if lm is not None and (latest_modified is None or lm > latest_modified):
+                latest_modified = lm
 
         # Get input files
         paginator = s3_client.get_paginator("list_objects_v2")
@@ -3297,12 +4172,14 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 if not key.endswith("/"):  # Skip directories
                     filename = key.split("/")[-1]
                     input_files.add(filename)
+                    _observe(obj)
 
         # Get baseline folder names (first folder after /baseline/)
         for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/baseline/"):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if not key.endswith("/"):  # Skip directories
+                    _observe(obj)
                     # Extract folder name after /baseline/
                     parts = key.split(f"{prefix}/baseline/", 1)
                     if len(parts) == 2 and "/" in parts[1]:
@@ -3311,9 +4188,20 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                         if folder_name:
                             baseline_files.add(folder_name)
 
+        signature = "{}:{}:{}".format(
+            len(input_files),
+            len(baseline_files),
+            latest_modified.isoformat() if latest_modified is not None else "",
+        )
+
         # Validate matching
         if len(input_files) == 0:
-            return {"valid": False, "error": "No input files found", "input_count": 0}
+            return {
+                "valid": False,
+                "error": "No input files found",
+                "input_count": 0,
+                "signature": signature,
+            }
 
         if len(baseline_files) == 0:
             if allow_unlabeled:
@@ -3321,11 +4209,13 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                     "valid": True,
                     "input_count": len(input_files),
                     "labeled": False,
+                    "signature": signature,
                 }
             return {
                 "valid": False,
                 "error": "No baseline files found",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
         missing_baselines = input_files - baseline_files
@@ -3334,6 +4224,7 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": f"Missing baseline files for: {', '.join(list(missing_baselines)[:3])}{'...' if len(missing_baselines) > 3 else ''}",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
         extra_baselines = baseline_files - input_files
@@ -3342,16 +4233,32 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": f"Extra baseline files: {', '.join(list(extra_baselines)[:3])}{'...' if len(extra_baselines) > 3 else ''}",
                 "input_count": len(input_files),
+                "signature": signature,
             }
 
-        return {"valid": True, "input_count": len(input_files), "labeled": True}
+        return {
+            "valid": True,
+            "input_count": len(input_files),
+            "labeled": True,
+            "signature": signature,
+        }
 
     except Exception as e:
         logger.error(f"Error validating test set files for {prefix}: {str(e)}")
+        # ``validation_failed=True`` is the sentinel that says "the return
+        # values below are not observations of the folder — they're placeholders
+        # from a transient failure." Reconcile MUST check this before writing:
+        # otherwise a throttled S3 call would return ``input_count=0``,
+        # ``valid=False`` and no ``labeled`` key, and reconcile would happily
+        # write that over a valid COMPLETED/labeled/N-file row, destroying its
+        # state until the next successful call.
         return {
             "valid": False,
+            "validation_failed": True,
             "error": f"Validation error: {str(e)}",
             "input_count": 0,
+            "labeled": False,
+            "signature": "",
         }
 
 
@@ -3376,12 +4283,71 @@ def _get_test_set_creation_time(s3_client, bucket, prefix):
 
 
 def _get_test_set_source(s3_client, bucket, prefix):
-    """Return 'synthetic' if the generator left a '.source' marker, else 'uploaded'."""
+    """One HeadObject on ``<prefix>/.source`` producing the row's ``source`` value.
+
+    Returns ``'synthetic'`` if the marker is present, ``'uploaded'`` if it is
+    definitively absent (S3 404), or ``None`` if the answer is transiently
+    unknown (throttling / 5xx / non-ClientError). Callers must treat ``None``
+    as "don't overwrite the row's current source" — flipping synthetic → uploaded
+    on a bad AWS day would misclassify silently.
+
+    This is the *only* helper that reads the marker. Reconcile also uses its
+    return value to build the ``contentSignature`` so a late marker write
+    invalidates the fast path; feeding the signature from a second HeadObject
+    would race this one and let ``signature=src=uploaded`` coexist with
+    ``source='synthetic'`` in the same reconcile pass.
+    """
     try:
         s3_client.head_object(Bucket=bucket, Key=f"{prefix}/.source")
         return "synthetic"
-    except Exception:
-        return "uploaded"
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        # S3 answers 404 as 404, but HeadObject with s3v4 sometimes surfaces
+        # missing objects as NoSuchKey; treat both as definitively absent.
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return "uploaded"
+        if code in ("AccessDenied", "403", "Forbidden"):
+            # Persistent IAM misconfiguration — not transient. Reconcile will
+            # bail for this prefix (None return) until the IAM policy is
+            # fixed, but log at ERROR so operators actually see the problem
+            # instead of watching reconcile silently stop working. Returning
+            # a fabricated 'uploaded' would silently rebrand every stack-
+            # managed dataset on this stack; None is safer.
+            logger.error(
+                f"HeadObject for {prefix}/.source denied ({code}) — IAM policy "
+                "on the resolver's role is missing s3:GetObject on the test-set "
+                "bucket. Reconcile will bail for this prefix until fixed."
+            )
+            return None
+        logger.warning(
+            f"HeadObject for {prefix}/.source failed transiently ({code}); "
+            "returning None (source unchanged)."
+        )
+        return None
+    except Exception as e:
+        # Anything that isn't a ClientError is definitely not "the object is
+        # missing" — SDK/config bug, network unreachable, etc. Same treatment.
+        logger.warning(
+            f"Unexpected error checking {prefix}/.source: {e}; "
+            "returning None (source unchanged)."
+        )
+        return None
+
+
+def _compute_content_signature(base_signature, source):
+    """Combine the validator's base signature with the source marker's state.
+
+    Kept as one helper so the new-folder-discovery ``_create_test_set_tracking_entry``
+    and the reconcile path write signatures in the *exact same format*.
+    Divergence here forces every newly-discovered folder into one wasted full
+    reconcile on the next poll to normalise the signature.
+
+    ``source`` must be one of ``'synthetic' | 'uploaded'``. Callers must not
+    pass ``None`` — they should bail before reaching this helper, because a
+    signature containing the literal string ``|src=None`` would poison the
+    stored signature and trigger a full-scan retry every subsequent poll.
+    """
+    return f"{base_signature}|src={source}"
 
 
 def _create_test_set_tracking_entry(
@@ -3393,6 +4359,7 @@ def _create_test_set_tracking_entry(
     created_at=None,
     source=None,
     label_state=None,
+    content_signature=None,
 ):
     """Create tracking table entry for direct upload test set"""
     try:
@@ -3417,12 +4384,422 @@ def _create_test_set_tracking_entry(
             item["labelState"] = label_state
         if error:
             item["error"] = error
+        if content_signature:
+            item["contentSignature"] = content_signature
 
         db_client.put_item(item)
         logger.info(f"Created tracking entry for direct upload test set {test_set_id}")
 
     except Exception as e:
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
+
+
+# Rows in one of these non-terminal states are being actively mutated by a
+# copier/extractor/generator — reconcile MUST NOT touch them. Row-level
+# protection here; ``ConditionExpression`` on the UpdateItem closes the race
+# window between the read and the write. Gate 1 uses ``IN_FLUX_TEST_SET_STATUSES``
+# (defined above), keyed as an explicit skip-list rather than an allow-list so
+# legacy rows without a persisted ``status`` field remain reconcilable rather
+# than permanently invisible.
+
+# Minimum wait between full reconcile passes for the same prefix. Without this,
+# the UI's 3 s fast poll (armed whenever any row on the page is non-terminal,
+# ``TestSets.tsx``) repeats two paginated ``list_objects_v2`` calls plus a
+# HeadObject per registered test set on every tick — for a 2000+ doc set the
+# ``baseline/`` prefix alone is three or more LIST pages.
+_RECONCILE_TTL_SECONDS = 30
+
+# Per-request cap on reconcile probes, mirroring the label-state probe
+# budget (MAX_LABEL_STATE_PROBES / LABEL_STATE_PROBE_BUDGET_SECONDS above).
+# Reconcile does the same 2 x list_objects_v2 + 1 x HeadObject per prefix
+# on a cold container; the resolver's Timeout is 60 s and MemorySize 256 MB.
+# Beyond this budget, the remainder of the prefixes are picked up by the
+# next getTestSets call (which finds them in the warm-container memo when
+# it comes back for them).
+MAX_RECONCILE_PROBES = 25
+RECONCILE_PROBE_BUDGET_SECONDS = 5
+
+# Warm-container memo of the last time each prefix went through a full reconcile
+# pass. Keyed by (region-agnostic) prefix → (last_signature, monotonic_time).
+# Deliberately in-process rather than on the DDB row: keying on ``updatedAt``
+# would require an unconditional DDB write to bump the timestamp even on the
+# no-op path, defeating the whole point of the fast path. The memo resets on
+# cold start — a fresh Lambda container simply pays for one full scan per set
+# on its first invocation, which is bounded and fine.
+_RECONCILE_MEMO: dict[str, tuple[str, float]] = {}
+
+
+def _within_reconcile_ttl(prefix, existing_signature):
+    """True when the warm-container memo says this prefix was scanned recently
+    AND the DDB row's stored signature still matches what we cached — i.e.
+    nobody else wrote to the row since our last pass, so we can skip the
+    listing.
+    """
+    entry = _RECONCILE_MEMO.get(prefix)
+    if entry is None:
+        return False
+    last_sig, last_ts = entry
+    if (time.monotonic() - last_ts) >= _RECONCILE_TTL_SECONDS:
+        return False
+    # Another writer (copier/extractor/an out-of-process reconcile) may have
+    # bumped the row; if the DDB signature drifted from what we cached, our
+    # stability assumption no longer holds and we must re-check.
+    return last_sig == existing_signature
+
+
+# The row's ``source`` field carries dataset provenance that is not owned by
+# the ``.source`` marker: HuggingFace-backed benchmark deployers (``fake-w2``,
+# ``ocr-benchmark``, ``fcc``, ``docsplit``) and the ConfBench extension write
+# strings like ``huggingface:amazon-agi/fake-w2``. Reconcile must only accept
+# the marker's answer when the current value is one of these three
+# "marker-owned" states — otherwise a first pass on a stack-managed benchmark
+# would silently overwrite ``source`` with ``uploaded``, blank out the Source
+# column in the UI and lose the provenance until the deployer re-runs on the
+# next stack update.
+_MARKER_OWNED_SOURCES = (None, "uploaded", "synthetic")
+
+
+# Lazy singleton so we don't pay ``boto3.resource("dynamodb")`` construction
+# cost per reconciled row inside a hot poll.
+_tracking_table = None
+
+
+def _get_tracking_table():
+    global _tracking_table
+    if _tracking_table is None:
+        _tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    return _tracking_table
+
+
+def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
+    """Reconcile an already-registered test set against its current S3 contents.
+
+    Direct S3 edits (files added or removed under ``<prefix>/input/`` or
+    ``<prefix>/baseline/``) don't fire any event; without this helper the
+    ``getTestSets`` short-circuit at ``if prefix in existing_test_sets: continue``
+    leaves ``fileCount`` and ``status`` stale forever.
+
+    **Not** literally the same treatment as new-folder discovery. New folders
+    hard-fail on partial ``input`` ↔ ``baseline`` pairing because that
+    indicates a broken upload. For a row that has already entered the
+    labeling lifecycle, partial pairing is a legitimate state — the
+    draft-labeling harvester writes baselines one document per poll (leaving
+    a partial state mid-run), and ``clear_draft_labels`` deliberately keeps
+    human-reviewed labels while removing machine drafts (leaving partial
+    pairing as *steady* state). Applying the new-folder rule to those cases
+    would flag every draft-labeling run as FAILED and demote the surviving
+    reviewed labels to ``labelState=unlabeled``. Reconcile therefore
+    refreshes ``fileCount`` and the signature on those rows but leaves
+    ``status`` / ``labelState`` / ``error`` alone.
+
+    Returns a dict of the reconciled fields merged with the existing row, so
+    callers can propagate into the GraphQL response without a second DDB
+    read. Returns None when the row is untouched.
+    """
+    try:
+        # Gate 1 — row-status. Copiers/extractors write fileCount+status
+        # eagerly under UPDATING/QUEUED; reconciling on top would race them.
+        # Skip-list (not allow-list) so legacy rows without a ``status`` are
+        # reconcilable rather than permanently invisible.
+        if existing_row.get("status") in IN_FLUX_TEST_SET_STATUSES:
+            return None
+
+        # Gate 2 — labeling-job-status. The draft-labeling harvester leaves
+        # the row's ``status`` at COMPLETED for the *entire* run while it
+        # writes baselines document-by-document. Partial pairing is the
+        # transient invariant of that flow — reconcile flagging it as FAILED
+        # would break every draft-labeling job that reached the resolver
+        # mid-run (i.e. all of them, since ``getTestSets`` polls every 3s).
+        if existing_row.get("labelJobStatus") == "RUNNING":
+            return None
+
+        # Gate 3 — warm-container TTL. The signature match short-circuits the
+        # DDB write but not the two paginated ``list_objects_v2`` calls that
+        # compute the signature. Under the UI's 3 s fast poll on a stack with
+        # N test sets that is 2N list_objects_v2 requests every 3 s per Lambda
+        # container. The memo says "this prefix was fully scanned within the
+        # last _RECONCILE_TTL_SECONDS and DDB still shows the signature we
+        # cached" — cold starts pay the scan cost once, then coast.
+        if _within_reconcile_ttl(prefix, existing_row.get("contentSignature")):
+            return None
+
+        validation = _validate_test_set_files(
+            s3_client, bucket, prefix, allow_unlabeled=True
+        )
+
+        # A transient S3 failure in the validator returns a sentinel dict
+        # (``validation_failed=True``) whose fields would otherwise look like
+        # "the folder is now empty and broken" — writing that over a real row
+        # destroys its state. Bail without a DDB write; the next successful
+        # reconcile will handle it.
+        if validation.get("validation_failed"):
+            logger.warning(
+                f"Skipping reconcile for {prefix}: validation failed transiently "
+                f"({validation.get('error')})"
+            )
+            return None
+
+        # One HeadObject on ``.source`` produces the row's source value AND
+        # the signature's src component — using two separate HeadObjects that
+        # could disagree on a marker landing between them would let
+        # ``|src=uploaded`` coexist with ``source='synthetic'`` and force a
+        # spurious full reconcile on the next poll.
+        detected_source = _get_test_set_source(s3_client, bucket, prefix)
+
+        # If the marker check failed transiently we cannot build a coherent
+        # signature (writing ``|src=None`` would poison the stored value and
+        # trigger a full-scan retry every subsequent poll until the next
+        # write happens to succeed). Bail — the next reconcile after the TTL
+        # expires will retry.
+        if detected_source is None:
+            logger.warning(
+                f"Skipping reconcile for {prefix}: source marker check failed "
+                "transiently — cannot build a coherent signature."
+            )
+            return None
+
+        base_signature = validation.get("signature", "")
+        new_signature = _compute_content_signature(base_signature, detected_source)
+        old_signature = existing_row.get("contentSignature")
+
+        # Fast path: signature unchanged AND we already have one on the row =>
+        # no S3 delta since last reconcile. Rows written before this change lack
+        # contentSignature entirely — reconcile them once so they get a
+        # baseline. Also update the memo so subsequent polls within the TTL
+        # window can skip the S3 listing entirely.
+        if old_signature and old_signature == new_signature:
+            _RECONCILE_MEMO[prefix] = (new_signature, time.monotonic())
+            return None
+
+        new_file_count = validation.get("input_count", 0)
+        existing_label_state = existing_row.get("labelState")
+        existing_source = existing_row.get("source")
+
+        # Reconcile only ever sees rows that were previously registered, and
+        # partial input/baseline pairing is NEVER the "botched upload" signal
+        # on an already-registered row. That signal belongs to first-discovery
+        # (_create_test_set_tracking_entry) — by the time we get here, the
+        # folder has passed that check once. Partial pairing here is one of:
+        #  - draft-labeling harvest mid-run (per-poll baselines)
+        #  - clear_draft_labels leaving human labels + drop drafts (steady)
+        #  - direct-S3 add of an input on a labelled set (before its baseline)
+        #  - stack-managed dataset with per-doc processing failures
+        # None of these are FAILED conditions.
+        #
+        # We deliberately do NOT key this decision on labelState, because
+        # _reconcile_label_state (index.py:2595, ships from develop) runs
+        # earlier in the same get_test_sets call and CAN demote labelState
+        # to 'unlabeled' in-place on the item we receive. A softening keyed
+        # on labelState=='labeled' would then be defeated by that demoter
+        # — the exact interaction that produced the round-4 blocker.
+        # Keying on the validator's error class survives the demoter
+        # because it looks at S3, not at the row.
+        error_message = validation.get("error") or ""
+        partial_pairing = not validation["valid"] and (
+            error_message.startswith("Missing baseline files for:")
+            or error_message.startswith("Extra baseline files:")
+        )
+        # The one remaining hard-fail: every input file has been deleted from
+        # S3 but the row survives. Truly broken; user should see it.
+        no_inputs = not validation["valid"] and error_message == "No input files found"
+
+        if partial_pairing:
+            # Refresh fileCount and signature; leave status / labelState alone.
+            # Recovery direction (FAILED → COMPLETED when the pairing is fully
+            # restored) is handled by the valid-branch below.
+            new_status = existing_row.get("status")
+            new_label_state = existing_label_state
+            # Error message must reflect the CURRENT partial-pairing state, not
+            # the one recorded at first-discovery time. Example: a row that
+            # started FAILED with "Missing baseline files for: a.pdf, b.pdf,
+            # c.pdf", then the user added baselines for a.pdf and b.pdf. The
+            # validator now reports "Missing baseline files for: c.pdf". If we
+            # kept the old error, the UI would show all three names still.
+            # Only meaningful when the row is FAILED; a COMPLETED row shouldn't
+            # carry an error field.
+            if new_status == "FAILED":
+                new_error = validation.get("error")
+            else:
+                new_error = existing_row.get("error")
+        elif no_inputs:
+            new_status = "FAILED"
+            new_error = error_message
+            # Preserve the current labelState. Overwriting to 'unlabeled' would
+            # silently destroy a 'draft' signal: a user who accidentally deletes
+            # inputs and then restores them would see the recovery valid-branch
+            # promote 'unlabeled' → 'labeled' on the next reconcile, blessing
+            # unreviewed machine drafts as ground truth. The draft-preservation
+            # guard in the valid-branch keys on existing_label_state — if that
+            # was 'draft' before the input deletion, it must stay 'draft'
+            # through the transient FAILED state so recovery preserves it.
+            new_label_state = existing_label_state
+        elif validation["valid"]:
+            # Fully paired OR unlabeled-with-no-baselines (allow_unlabeled=True
+            # path). Both are healthy states.
+            new_status = "COMPLETED"
+            new_error = None
+            # labelState transitions: 'unlabeled', 'draft' (machine labels
+            # awaiting review), 'labeled' (uploaded or reviewed). The
+            # validator only sees folder shape; a fully-paired folder could
+            # be either 'draft' or 'labeled'. Preserve 'draft' when it was
+            # already there — writing 'labeled' would silently promote
+            # unreviewed drafts to "verified" ground truth, which is exactly
+            # what the draft-labeling workflow exists to prevent.
+            if validation.get("labeled"):
+                if existing_label_state == "draft":
+                    new_label_state = "draft"
+                else:
+                    new_label_state = "labeled"
+            else:
+                new_label_state = "unlabeled"
+        else:
+            # Fallback: validator reported valid=False but the error class
+            # was neither Missing/Extra baseline nor "No input files found".
+            # Present-day validator only emits those three, so this branch is
+            # unreachable today — it exists so a future validator error class
+            # doesn't silently mark a broken set as COMPLETED (as the previous
+            # unconditional else did). Hard-fail with the current error string
+            # and preserve labelState so a subsequent classification recovery
+            # keeps whatever lifecycle state the row was in.
+            new_status = "FAILED"
+            new_error = error_message or "Validation failed (unknown error class)"
+            new_label_state = existing_label_state
+
+        # Determine which fields actually changed so we don't issue a DDB write
+        # (or a DDB stream event) for a no-op.
+        changed = {}
+        if existing_row.get("fileCount") != new_file_count:
+            changed["fileCount"] = new_file_count
+        if existing_row.get("status") != new_status:
+            changed["status"] = new_status
+        if existing_row.get("labelState") != new_label_state:
+            changed["labelState"] = new_label_state
+        # Only adopt the marker's answer for marker-owned sources. HuggingFace
+        # or ConfBench provenance is authoritative — the ``.source`` marker's
+        # absence is not evidence that a stack-managed dataset should be
+        # rebranded 'uploaded'. The signature still folds in detected_source
+        # unchanged; that converges after one write regardless.
+        if (
+            existing_source in _MARKER_OWNED_SOURCES
+            and existing_source != detected_source
+        ):
+            changed["source"] = detected_source
+        # Error handling is asymmetric: SET when we have one, REMOVE when we
+        # don't. Use ``in`` rather than truthiness so an empty-string error
+        # attribute would also trigger REMOVE.
+        clear_error = "error" in existing_row and not new_error
+        if new_error and existing_row.get("error") != new_error:
+            changed["error"] = new_error
+        if existing_row.get("contentSignature") != new_signature:
+            changed["contentSignature"] = new_signature
+
+        if not changed and not clear_error:
+            # Nothing to persist, but we did do the full scan — memoize so the
+            # next poll inside the TTL takes the fast path.
+            _RECONCILE_MEMO[prefix] = (new_signature, time.monotonic())
+            return None
+
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        changed["updatedAt"] = now
+
+        # Build one UpdateItem with SET for changed fields and (optionally)
+        # REMOVE for the error attribute when the set is clean again. The
+        # ConditionExpression has two clauses:
+        #  1. Status must still be in {COMPLETED, FAILED} — this closes the
+        #     race with TestSetFileCopier / TestSetZipExtractor / the synthetic
+        #     generator writing a non-terminal status in the window between our
+        #     read and this write.
+        #  2. contentSignature must still match what we read (or still be
+        #     missing if it was missing) — this closes the race between two
+        #     concurrent reconciles: A and B both read sig X, B computes a
+        #     fresh sig Y and writes, A finishes its listing later with a
+        #     stale view and would otherwise clobber Y with a stale sig. With
+        #     the signature match, A's write is rejected and A returns None;
+        #     A's memo divergence check will trip on the next poll and re-scan.
+        expr_names = {"#st": "status", "#sig": "contentSignature"}
+        old_sig = existing_row.get("contentSignature")
+        expr_values = {
+            ":completed": "COMPLETED",
+            ":failed": "FAILED",
+            # Empty string is a sentinel that no real signature can take
+            # (the format is ``count:count:iso|src=...``, always non-empty).
+            # When old_sig is missing the OR branch attribute_not_exists wins;
+            # when old_sig has a value, that branch matches; when someone else
+            # moved the row, both fail and the condition rejects.
+            ":old_sig": old_sig if old_sig else "",
+        }
+        set_parts = []
+        for i, (field, value) in enumerate(changed.items()):
+            name_key = f"#f{i}"
+            value_key = f":v{i}"
+            expr_names[name_key] = field
+            expr_values[value_key] = value
+            set_parts.append(f"{name_key} = {value_key}")
+
+        update_expression = "SET " + ", ".join(set_parts)
+        if clear_error:
+            # Only include #err in ExpressionAttributeNames when it appears in
+            # the expression — DynamoDB errors on unused attribute names.
+            expr_names["#err"] = "error"
+            update_expression += " REMOVE #err"
+
+        # Write is allowed when the row is not being actively mutated
+        # (terminal status OR no status attribute at all — legacy rows) AND
+        # the signature we read is still current (or missing).
+        condition_expression = (
+            "(attribute_not_exists(#st) OR #st IN (:completed, :failed)) "
+            "AND (attribute_not_exists(#sig) OR #sig = :old_sig)"
+        )
+
+        # Use boto3 directly here (rather than db_client.update_item) because
+        # DynamoDBClient.update_item does not expose ConditionExpression, and
+        # the race guards are the whole reason for this write's condition.
+        try:
+            _get_tracking_table().update_item(
+                Key={"PK": f"testset#{prefix}", "SK": "metadata"},
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expr_names,
+                ExpressionAttributeValues=expr_values,
+                ConditionExpression=condition_expression,
+            )
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                logger.info(
+                    f"Skipping reconcile for {prefix}: row was moved by "
+                    "another writer between our read and this write "
+                    "(status changed to non-terminal, OR another reconcile "
+                    "wrote a fresher contentSignature). Our memo-divergence "
+                    "check will pick up the newer state on the next poll."
+                )
+                return None
+            raise
+        # Success — record what we just wrote so the memo can short-circuit
+        # subsequent polls inside the TTL window.
+        _RECONCILE_MEMO[prefix] = (new_signature, time.monotonic())
+        logger.info(
+            f"Reconciled test set {prefix}: {sorted(changed.keys())}"
+            + (" (+cleared error)" if clear_error else "")
+        )
+
+        # Merge into the in-memory row so the caller can return fresh values
+        # without a second DDB read.
+        merged = dict(existing_row)
+        merged.update(changed)
+        if clear_error:
+            merged.pop("error", None)
+        return merged
+
+    except Exception as e:
+        # Reconcile is best-effort; a transient S3/DDB failure must not break
+        # the whole getTestSets response. The next call will retry.
+        # ``logger.exception`` captures the traceback so a programmer bug
+        # (KeyError, AttributeError, TypeError) is visible in CloudWatch
+        # instead of being indistinguishable from a fast-path skip.
+        logger.exception(f"Error reconciling test set {prefix}: {str(e)}")
+        return None
 
 
 def list_bucket_files(args):

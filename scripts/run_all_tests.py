@@ -48,6 +48,13 @@ PRUNE_DIR_MARKERS = (
     "/scratch/",
     # idp_common ships fixture-style helper "tests" that are not a suite.
     "/idp_common/agents/testing/",
+    # Agent worktrees: `git worktree` checkouts of this same repo, created under
+    # .claude/worktrees/ when work is delegated to a subagent. Every test file in
+    # the repo therefore appears once per live worktree, so without this the guard
+    # reports the entire suite as "unregistered test roots" and the gate fails for
+    # a reason that has nothing to do with the code under test. They are also
+    # gitignored, so CI never sees them.
+    "/.claude/worktrees/",
 )
 
 # Generated files that are never source tests. `make srt-scan` nbconverts every
@@ -96,12 +103,25 @@ RUN_ROOTS = [
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # Configuration Profile revision operations: group gate + profile-level scope.
+    "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",
+    # Guards the vendored config_scope copies against drifting from the canonical
+    # idp_common module — a scope matcher that differs per call site is a
+    # privilege-escalation bug.
+    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
+    # Configuration-revision pinning on a test run.
+    "nested/api-resolvers/src/lambda/test_runner",
     "nested/api-resolvers/src/lambda/test_set_resolver",
+    # Reprocess resolver: output-data deletion on reprocess (nested-stack
+    # namespace handling). Arrived with #719 unregistered, which made `make test`
+    # fail on develop and — the reason this guard exists — meant its 5 tests were
+    # never actually run. Verified green headless.
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook",
@@ -128,6 +148,10 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
+    # General scripts/ unit tests (e.g. check_data_plane_tags, run-registry
+    # tests). Run the tests/ subdir specifically for the same "mis-collect
+    # from scripts root" reason as scripts/sdlc/tests above.
+    "scripts/tests",
     # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
     # subdir for the same reason as scripts/sdlc/tests above.
     "scripts/security/tests",
@@ -135,6 +159,10 @@ RUN_ROOTS = [
     # the two above: the parent `scripts` root stays quarantined, so a new test
     # dir under it is invisible to this gate unless registered here.
     "scripts/tests",
+    # SRT gate helpers (ci_paths.py) plus the guard that keeps gitignored
+    # build-artifact paths out of the committed scripts/srt/issues.json baseline.
+    # Same registration reason as the three above.
+    "scripts/srt/tests",
 ]
 
 # --- Registry 2: roots explicitly EXCLUDED, each with a reason ----------------

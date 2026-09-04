@@ -18,19 +18,41 @@ that would break reproducibility) so a regenerated corpus is byte-comparable.
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
 
+> ⚠️ **`run_matrix.py` cannot launch reference corpora yet ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).**
+> It launches one local PDF per run, and a reference doc is a test *set* on the
+> stack with no PDF under `corpus/docs/`. So a suite naming `core_docs` measures
+> **7 of its 9 documents** — without the two corpora that have real documents and
+> human-verified labels. It used to drop them with no record at all; the launcher
+> now names them and records `docs_named` / `docs_run` / `docs_unlaunchable` /
+> `docs_other_class` in `runmap.json`, which `aggregate.py` copies into the
+> committed `meta.json`. **Check `docs_unlaunchable` before quoting a suite's
+> result as covering its whole document list.** Those fields are *absent* on a
+> runmap or `meta.json` produced before this existed (or by another launcher):
+> absent means **unknown**, not "nothing was skipped".
+>
+> `docs_other_class` is a different thing and not a shortfall: a suite may
+> legitimately name documents of several classes (`enforcement` and `forcing` name
+> `kv_form` beside bank-statement docs), and those are run under their own
+> `--class` in a separate invocation.
+>
+> The scorer for reference corpora (`analyze.score_reference()`) is fully
+> implemented and reachable — only the launcher is missing. Until it exists, run
+> them through Test Studio (`harness/detection_ab_teststudio.py` invokes the same
+> TestRunner Lambda the Test Studio UI does) and report them as a separate arm.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).
 - `make_configs.py` expands `config_matrix.yaml` into full v0.6 configs (one per
   cell × doc-class), validates each with `merge_config_with_defaults(..., validate=True)`,
   strips `managed`, and uploads as `Config#bench-<cell>-<class>` via `idp-cli config-upload`.
-- NEVER mutate `Config#default`. Always run against a named `--config-version`.
+- NEVER mutate `Config#default`. Always run against a named `--config-profile`.
 - PYTHONPATH is pinned to the repo's `idp_common` to avoid a stale sibling checkout
   silently stripping v0.6 fields on upload.
 
 ## 3. Execution
 - `run_matrix.py` launches each (config-cell × doc) via the stack TestRunner
-  (`idp-cli run-inference --test-set bench-<id> --config-version bench-<cell>-<class>`),
+  (`idp-cli run-inference --test-set bench-<id> --config-profile bench-<cell>-<class>`),
   records `runId`s to `results/<run>/runmap.json`, and polls per-doc rows in the
   TrackingTable (`ObjectStatus`/`EvaluationStatus`) until COMPLETED/FAILED.
 - Concurrency is capped and large docs are launched last to limit Bedrock throttling.

@@ -15,16 +15,51 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 # Get LOG_LEVEL from environment variable with INFO as default
 
-# Configure S3 client with S3v4 signature.
-# When S3_ENDPOINT_URL is set (private VPC mode), use virtual-host addressing
-# so the SigV4 host header matches the VPC interface endpoint DNS.
+# Two S3 clients: one for the presigned URLs handed to the browser, one for this
+# resolver's own S3 API calls. See the long note in test_set_resolver/index.py —
+# same reasoning, same failure mode. S3_ENDPOINT_URL is the S3 interface VPC
+# endpoint host; presigning with it is correct (offline signing, the URL is for
+# the browser), but calling S3 with it from this NON-VPC-attached function hangs
+# on private addresses it cannot route to, which the 29s REST API Gateway
+# integration ceiling turns into an unexplained 504.
+#
+# Data-plane calls here are listSampleDocuments / uploadSampleDocument
+# (get_object on the manifest, list_objects_v2, copy_object).
 _s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL") or None
 _s3_addressing = "virtual" if _s3_endpoint_url else "path"
-s3_config = Config(
+
+# Browser-facing presigned POST/GET URLs only.
+s3_presign_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": _s3_addressing},
 )
-s3_client = boto3.client("s3", endpoint_url=_s3_endpoint_url, config=s3_config)
+s3_presign_client = boto3.client(
+    "s3", endpoint_url=_s3_endpoint_url, config=s3_presign_config
+)
+
+# Bounds for the data-plane client, applied ONLY where there is private-network
+# S3 configuration to get wrong (see the fuller note in test_set_resolver). A
+# public deployment has no endpoint or route to misconfigure and keeps botocore's
+# stock timeouts, so this change cannot introduce a new way for it to fail.
+# 2 total attempts, worst case 2 x (3s connect + 8s read) = 22s, inside the 29s
+# API Gateway integration budget.
+_S3_DATAPLANE_BOUNDS = (
+    {
+        "connect_timeout": 3,
+        "read_timeout": 8,
+        "retries": {"mode": "standard", "max_attempts": 1},
+    }
+    if _s3_endpoint_url
+    else {}
+)
+
+# Every actual S3 API call this resolver makes.
+s3_config = Config(
+    signature_version="s3v4",
+    s3={"addressing_style": "path"},
+    **_S3_DATAPLANE_BOUNDS,
+)
+s3_client = boto3.client("s3", config=s3_config)
 
 # --- inline log sanitizer ---------------------------------------------------
 # Minimal inline redactor. Kept here rather than importing from idp_common to
@@ -101,6 +136,7 @@ def _handle_upload_document(event):
         content_type = arguments.get('contentType', 'application/octet-stream')
         prefix = arguments.get('prefix', '')
         version = arguments.get('version')  # Optional version parameter
+        revision = arguments.get('revision')  # Optional revision of that version
         
         if not file_name:
             raise ValueError("fileName is required")
@@ -138,8 +174,16 @@ def _handle_upload_document(event):
         if version:
             fields['x-amz-meta-config-version'] = version
             conditions.append({'x-amz-meta-config-version': version})
+            # A revision only means something in the context of a profile, so it
+            # is only stamped when one was chosen. The queue processor pins the
+            # profile's current revision when this is absent.
+            if revision is not None:
+                fields['x-amz-meta-config-revision'] = str(revision)
+                conditions.append({'x-amz-meta-config-revision': str(revision)})
         
-        presigned_post = s3_client.generate_presigned_post(
+        # Presign client: this URL goes to the browser, so it must carry the
+        # VPC-endpoint host in private deployments.
+        presigned_post = s3_presign_client.generate_presigned_post(
             Bucket=bucket_name,
             Key=object_key,
             Fields=fields,
@@ -219,6 +263,7 @@ def _handle_upload_sample_document(event):
         sample_id = arguments.get("sampleId")
         prefix = (arguments.get("prefix") or "").strip("/")
         version = arguments.get("version")
+        revision = arguments.get("revision")
         if not sample_id:
             raise ValueError("sampleId is required")
 
@@ -255,6 +300,8 @@ def _handle_upload_sample_document(event):
         extra_args = {}
         if version:
             extra_args["Metadata"] = {"config-version": version}
+            if revision is not None:
+                extra_args["Metadata"]["config-revision"] = str(revision)
             extra_args["MetadataDirective"] = "REPLACE"
 
         object_keys = []
