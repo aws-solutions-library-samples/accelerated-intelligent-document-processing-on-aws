@@ -149,6 +149,32 @@ classes:
 
 All other settings (OCR, classification, extraction, assessment, evaluation, summarization, discovery, agents) are inherited from the pattern's system defaults.
 
+### The system defaults are the canonical list of every setting
+
+This page is organized by topic and covers the settings people ask about most — it is
+**not** an exhaustive key reference, and a newly added option may not be described here
+yet. The authoritative enumeration is the `system_defaults/` directory itself:
+
+| file | covers |
+|---|---|
+| `base.yaml` | top-level keys shared by every pattern |
+| `base-ocr.yaml` | OCR backends and image handling |
+| `base-classification.yaml` | classification, `sectionSplitting`, `contextPagesCount` |
+| `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
+| `base-confidence.yaml` | assessment / confidence |
+| `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
+| `pattern-1.yaml` / `pattern-2.yaml` | which of the above compose for BDA vs Pipeline mode |
+
+Every key in those files carries its shipped default and an inline comment explaining
+what it does, when to change it, and — where it has been measured — the evidence. Reading
+them is the reliable way to find out what is tunable; they are also what the **Web UI
+shows** for `Config#default`, so what you read there is what the UI presents.
+
+For **measured** guidance on which settings are worth changing — including the ones added
+most recently — see the [Configuration Guidance paper](./benchmarking/config-guidance.md).
+Its §7 covers the current release's options with the A/B numbers behind each
+recommendation, and states plainly where a setting was measured to buy nothing.
+
 ### Override Example
 
 To override specific settings while keeping others at defaults:
