@@ -128,6 +128,13 @@ class ExtractionResult(BaseModel):
     Set only when ``instance_count > 1``. ``extracted_fields`` holds the FIRST
     instance (so the output shape is unchanged for every downstream consumer);
     this carries the rest so nothing the model produced is thrown away."""
+    instance_probe: int | None = None
+    """The model's own answer to "how many separate documents of this class are
+    in these pages" (#753), asked in the same inference and stripped from
+    ``extracted_fields``. None when detection is off, unsupported on this path,
+    or the model did not answer. Greater than the number of records actually in
+    the result means records were silently lost — see
+    ``extraction_multi_instance_suspected``."""
 
 
 class ExtractionService:
@@ -163,6 +170,12 @@ class ExtractionService:
         self._class_label: str = ""
         self._attribute_descriptions: str = ""
         self._class_schema: dict[str, Any] = {}
+        # The class schema as sent to the model (prompt text / forced toolSpec).
+        # Identical to _class_schema except for the multi-instance detection
+        # probe property (#753), which must never reach the off-schema filter,
+        # the validator, or any downstream stage.
+        self._wire_class_schema: dict[str, Any] = {}
+        self._instance_probe_requested: bool = False
         self._page_images: list[bytes] = []
         self._image_uris: list[str] = []
         # Per-page OCR text in section order, populated per section. Used to
@@ -255,7 +268,17 @@ class ExtractionService:
 
     def _get_class_schema(self, class_label: str) -> dict[str, Any]:
         """
-        Get JSON Schema for a specific document class from configuration.
+        Get the EFFECTIVE JSON Schema for a document class from configuration.
+
+        "Effective" because a class flagged ``x-aws-idp-multi-instance: true``
+        (Synthesize mode, GitHub #715) has its schema replaced by an
+        ``instances[]`` List-of-Class wrapper here, at the single point every
+        other part of this service reads the schema from. Wrapping here rather
+        than at each call site is what makes the prompt, the generated Pydantic
+        model, the JSON-Schema validator, the off-schema filter, the completeness
+        check and the instance-count resolver all inherit the transform without
+        knowing about it. The transform is a no-op (returning the same object)
+        for every unflagged class, which is all of them by default.
 
         Args:
             class_label: The document class name
@@ -263,6 +286,8 @@ class ExtractionService:
         Returns:
             JSON Schema for the class, or empty dict if not found
         """
+        from idp_common.schema.multi_instance import wrap_class_schema
+
         # Access classes through IDPConfig - returns List of dicts
         classes_config = self.config.classes
 
@@ -272,7 +297,7 @@ class ExtractionService:
                 X_AWS_IDP_DOCUMENT_TYPE, ""
             )
             if class_id.lower() == class_label.lower():
-                return class_obj
+                return wrap_class_schema(class_obj)
 
         return {}
 
@@ -846,6 +871,8 @@ class ExtractionService:
         self._class_label = ""
         self._attribute_descriptions = ""
         self._class_schema = {}
+        self._wire_class_schema = {}
+        self._instance_probe_requested = False
         self._page_images = []
         self._image_uris = []
         self._grounded_assessment = None
@@ -1125,13 +1152,23 @@ class ExtractionService:
         """
         # Get JSON Schema for this document class
         class_schema = self._get_class_schema(class_label)
-        attribute_descriptions = self._format_schema_for_prompt(class_schema)
+
+        # The schema put ON THE WIRE (prompt text and, when forced tool use is
+        # on, the toolSpec) can differ from the effective class schema by exactly
+        # one auxiliary property: the multi-instance detection probe (#753). It
+        # is added to a COPY, so the off-schema filter, the JSON-Schema
+        # validator, the generated Pydantic model and every downstream stage
+        # still see only the declared fields.
+        wire_schema, probe_added = self._build_wire_schema(class_schema, class_label)
+        attribute_descriptions = self._format_schema_for_prompt(wire_schema)
 
         # Store context in instance variables
         self._document_text = document_text
         self._class_label = class_label
         self._attribute_descriptions = attribute_descriptions
         self._class_schema = class_schema
+        self._wire_class_schema = wire_schema
+        self._instance_probe_requested = probe_added
         self._page_images = page_images
 
         # Prepare image URIs for Lambda
@@ -1884,6 +1921,238 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         return {k: v for k, v in extracted_fields.items() if k in allowed}
 
+    def _build_wire_schema(
+        self, class_schema: dict[str, Any], class_label: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Return ``(schema_to_send_to_the_model, probe_added)``.
+
+        The only difference from the effective class schema is the multi-instance
+        detection probe (#753) — one auxiliary integer property asking how many
+        separate documents of this class the pages contain. Added to a COPY, so
+        the off-schema filter, the validator and every downstream stage still see
+        exactly the declared fields.
+
+        Skipped when detection is disabled, and when Advanced (agentic)
+        extraction is in use: that path validates the response through a
+        generated Pydantic model built from the class schema and shards the work
+        by field, so an auxiliary property would be dropped by validation on some
+        paths and duplicated across shards on others. Simple extraction — the
+        default, and the mode in which the silent loss was reported — is covered
+        on both its prompt and forced-tool paths.
+        """
+        if not self.config.extraction.multi_instance_detection.enabled:
+            return class_schema, False
+        if self.config.extraction.agentic.enabled:
+            return class_schema, False
+
+        from idp_common.extraction.instance_probe import augment_schema_with_probe
+
+        wire, added = augment_schema_with_probe(
+            class_schema,
+            class_label,
+            self.config.extraction.multi_instance_detection.question,
+        )
+        return (wire if isinstance(wire, dict) else class_schema), added
+
+    def _read_instance_probe(self, extracted_fields: Any) -> int | None:
+        """Pop the multi-instance probe from a parsed result and return its value.
+
+        Always pops when present — even when detection was not requested for this
+        section — so the auxiliary field can never reach ``inference_result``,
+        where it would be reported as an off-schema field, scored by assessment,
+        written to a reporting column and compared against a ground-truth
+        baseline that has no such key.
+        """
+        from idp_common.extraction.instance_probe import pop_probe_value
+
+        value = pop_probe_value(extracted_fields)
+        if value is not None:
+            logger.info(
+                "Multi-instance probe: model reports %d '%s' document(s) in this "
+                "section",
+                value,
+                self._class_label,
+            )
+        return value
+
+    def _strip_probe_from_instances(
+        self,
+        extracted_fields: Any,
+        recovered_instances: list[dict[str, Any]] | None,
+    ) -> int | None:
+        """Remove the detection probe from every per-instance record, in place.
+
+        A multi-instance response carries the auxiliary count inside EVERY
+        element, and the records can end up in either of two containers — the
+        synthesized ``instances`` list, or ``recovered_instances`` for an
+        unflagged class — so both are swept. Called after
+        ``_adapt_to_instances_wrapper``, because that is what decides which
+        container holds them.
+
+        Necessary because ``_filter_extracted_to_schema`` only filters TOP-LEVEL
+        keys: a probe left inside a record would reach ``inference_result``, be
+        scored by assessment, become a reporting column, and be diffed against a
+        baseline that has no such key.
+
+        Returns the LARGEST count found inside a record, or None. Normally the
+        caller already has the value from the top-level pop — but a model that
+        answers with the count only inside each record and never at the top level
+        would otherwise leave ``instance_probe`` unset and fire no warning at all,
+        so the value is not thrown away just because it arrived in an unexpected
+        place.
+        """
+        from idp_common.schema.multi_instance import INSTANCES_KEY
+
+        containers: list[Any] = []
+        if isinstance(extracted_fields, dict):
+            containers.append(extracted_fields.get(INSTANCES_KEY))
+        containers.append(recovered_instances)
+
+        best: int | None = None
+        for container in containers:
+            if not isinstance(container, list):
+                continue
+            for record in container:
+                value = self._read_instance_probe(record)
+                if value is not None and (best is None or value > best):
+                    best = value
+        return best
+
+    def _adapt_to_instances_wrapper(
+        self,
+        extracted_fields: Any,
+        recovered_instances: list[dict[str, Any]] | None,
+    ) -> tuple[Any, list[dict[str, Any]] | None]:
+        """Rescue a multi-instance response that ignored the wrapper (#715).
+
+        For a class in Synthesize mode the requested shape is
+        ``{"instances": [ … ]}``, but a model can answer in either of two other
+        shapes, and BOTH are total data loss without this:
+
+        - **A bare top-level array** of records. ``_normalize_list_result``
+          reduces it to element 0, and the off-schema filter — whose only allowed
+          top-level key is now ``instances`` — then deletes even that, emitting
+          ``{}``. Every record lost, from a response that contained all of them.
+        - **A single flat record** (the shape the class had before the flag was
+          set). Same ending: the filter deletes every key and emits ``{}``.
+
+        Both are re-expressed as the wrapper. Deliberately forgiving rather than
+        strict: the alternative to accepting a recoverable shape here is throwing
+        the section's data away, and this feature exists precisely to stop records
+        being discarded silently.
+
+        No-op for an unflagged class, and for a response that already used the
+        wrapper.
+        """
+        from idp_common.schema.multi_instance import INSTANCES_KEY, is_wrapped
+
+        if not is_wrapped(self._class_schema):
+            return extracted_fields, recovered_instances
+
+        # Already correct.
+        if isinstance(extracted_fields, dict) and isinstance(
+            extracted_fields.get(INSTANCES_KEY), list
+        ):
+            return extracted_fields, recovered_instances
+
+        # Shape 1: a bare array, already split out by _normalize_list_result.
+        if recovered_instances:
+            logger.warning(
+                "Class '%s' is multi-instance but the model returned a bare "
+                "array of %d record(s) instead of the '%s' wrapper; adopting the "
+                "array as the instance list",
+                self._class_label,
+                len(recovered_instances),
+                INSTANCES_KEY,
+            )
+            return {INSTANCES_KEY: list(recovered_instances)}, None
+
+        # Shape 2: a single flat record. Only when it actually looks like one —
+        # an error/raw_output sentinel must stay a parse failure.
+        if isinstance(extracted_fields, dict) and extracted_fields:
+            record_properties = (self._class_schema.get(SCHEMA_PROPERTIES) or {}).get(
+                INSTANCES_KEY, {}
+            ).get("items", {}).get(SCHEMA_PROPERTIES) or {}
+            if record_properties and set(extracted_fields) & set(record_properties):
+                logger.warning(
+                    "Class '%s' is multi-instance but the model returned a single "
+                    "flat record instead of the '%s' wrapper; adopting it as one "
+                    "instance",
+                    self._class_label,
+                    INSTANCES_KEY,
+                )
+                return {INSTANCES_KEY: [extracted_fields]}, None
+
+        return extracted_fields, recovered_instances
+
+    def _resolve_instance_reporting(
+        self, result: ExtractionResult
+    ) -> tuple[int, dict[str, Any]]:
+        """Decide the section's instance count and how it was arrived at.
+
+        Returns ``(instance_count, metadata_fragment)``. Split out of
+        ``_save_results`` because it is the whole of the multi-instance
+        reporting contract and needs to be testable without S3.
+
+        ``instance_source`` labels, in resolution order:
+
+        - ``single`` — the ordinary case: the model returned one object, so the
+          count is 1 and nothing was recovered. (Labelling this "recovered", as
+          an earlier version did once the count started reporting 1 for a plain
+          object, is simply untrue in the audit trail and would send someone
+          reading metadata hunting for records that never existed.)
+        - ``recovered`` — the model returned a LIST where the schema describes one
+          document, so the extra documents were unexpected and only the first is
+          scored. Worth a warning (``extraction_multi_instance_detected``).
+        - ``declared`` — the class named its own instance axis
+          (``x-aws-idp-instance-array``, Designate mode) or was transformed into
+          a List-of-Class shape (``x-aws-idp-multi-instance``, Synthesize mode).
+          Several documents are exactly what the config asked for and every one
+          is extracted and scored, so there is nothing to warn about.
+        - ``suspected`` — #753. The model's own answer to "how many separate
+          documents of this class are in these pages" EXCEEDS the number of
+          records in the result, so records were silently lost. The model's count
+          becomes the section's ``instance_count`` (it is the honest answer to
+          "how many documents are in this section") and the number actually
+          extracted is recorded beside it as ``instance_extracted_count``, so the
+          metadata cannot be misread as "3 records were extracted".
+
+          Deliberately NOT limited to unflagged classes: a class in Designate or
+          Synthesize mode whose array came back with fewer records than the model
+          says are present is under-extracting, which is the same data loss.
+        """
+        instance_count = result.instance_count
+        if not instance_count:
+            instance_source: str | None = None
+        elif result.recovered_instances:
+            instance_source = "recovered"
+        else:
+            instance_source = "single"
+
+        meta: dict[str, Any] = {}
+
+        designated = self._designated_instance_count(result.extracted_fields)
+        if designated is not None:
+            instance_count = designated
+            instance_source = "declared"
+
+        probe = result.instance_probe
+        if probe is not None:
+            meta["instance_probe"] = probe
+        if probe is not None and probe > max(instance_count, 1):
+            meta["instance_extracted_count"] = instance_count
+            instance_count = probe
+            instance_source = "suspected"
+            try:
+                metrics.put_metric("MultiInstanceSectionsSuspected", 1)
+            except Exception as e:  # noqa: BLE001 - telemetry must never fail a doc
+                logger.debug("Could not publish suspected-instance metric: %s", e)
+
+        if instance_count:
+            meta["instance_count"] = instance_count
+            meta["instance_source"] = instance_source
+        return instance_count, meta
+
     def _designated_instance_count(self, extracted_fields: Any) -> int | None:
         """Count instances via the class's declared instance axis, or None.
 
@@ -2194,9 +2463,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # "single" to fall through by accident. An ABSENT source is treated as
         # recovered, so metadata written before the label existed still warns.
         instance_count = int(metadata.get("instance_count") or 0)
-        if instance_count > 1 and metadata.get("instance_source") not in (
+        instance_source = metadata.get("instance_source")
+        if instance_count > 1 and instance_source not in (
             "declared",
             "single",
+            "suspected",
         ):
             issues.append(
                 ProcessingIssue(
@@ -2219,6 +2490,56 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     section_id=section_id,
                     details={
                         "instance_count": instance_count,
+                        "agentic": is_agentic,
+                    },
+                )
+            )
+
+        # 2c) The section holds MORE documents than the result contains (#753).
+        #
+        # THE silent case, and the common one. Classification produced one section
+        # over several consecutive records of this class; the schema describes one
+        # document, so the model answered with one object and records 2..N are
+        # simply absent. Nothing reported it: SUCCESS, COMPLETED,
+        # ProcessingIssueCount 0, instance_count 1. #687's array-recovery branch
+        # cannot help — it fires only when the model returned a list, which is the
+        # branch where nothing had been lost yet.
+        #
+        # The evidence is the model's own answer to the auxiliary count asked in
+        # the same inference. A warning, not an error: the extracted record is
+        # real and usable, and failing the section would discard it. The point is
+        # that the loss stops being invisible, so the section can be reviewed or
+        # routed instead of quietly shipping one record out of three.
+        if instance_source == "suspected" and instance_count > 1:
+            extracted_n = int(metadata.get("instance_extracted_count") or 1)
+            missing = max(instance_count - extracted_n, 0)
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code="extraction_multi_instance_suspected",
+                    message=(
+                        f"These pages appear to contain {instance_count} separate "
+                        f"'{self._class_label}' documents, but extraction returned "
+                        f"{extracted_n}. {missing} document(s) are NOT in the "
+                        f"result. Review the section, then either split it "
+                        f"(classification sectionSplitting) or turn on "
+                        f"multi-instance extraction for this class so every "
+                        f"document is extracted."
+                    ),
+                    root_cause=(
+                        f"the extraction model reported {instance_count} document "
+                        f"instance(s) in this section while returning "
+                        f"{extracted_n}; the class schema describes a single "
+                        f"document, so the additional records had nowhere to go "
+                        f"(model "
+                        f"{self._pending_extraction_model or self.config.extraction.model})"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "instance_count": instance_count,
+                        "extracted_instance_count": extracted_n,
+                        "detection": "model_self_report",
                         "agentic": is_agentic,
                     },
                 )
@@ -3524,6 +3845,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # never receive a bare array.
         instance_count = 0
         recovered_instances: list[dict[str, Any]] | None = None
+        # The model's own answer to "how many documents of this class are in
+        # these pages" (#753). None on the agentic path, which does not carry the
+        # probe — see _build_wire_schema.
+        instance_probe: int | None = None
 
         # Initialize analysis tracking
         schema_analysis: dict[str, Any] | None = None
@@ -3907,16 +4232,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 unwrap_tool_payload,
             )
 
+            # The WIRE schema, so a forced toolSpec carries the same shape the
+            # prompt describes — including the multi-instance detection probe
+            # (#753). A forced tool whose input schema lacks the probe would make
+            # the count structurally impossible to return, which is exactly the
+            # regression #753 warns about for forced tool use generally.
             ft_cfg = self.config.extraction.forced_tool
+            wire_schema = self._wire_class_schema or self._class_schema
             force, skip_reason = should_force_tool(
-                model_id, ft_cfg.enabled, self._class_schema
+                model_id, ft_cfg.enabled, wire_schema
             )
             tool_config = tool_choice = None
             tool_name_map = None
             if force:
-                tool_config, tool_name_map = build_extraction_tool_config(
-                    self._class_schema
-                )
+                tool_config, tool_name_map = build_extraction_tool_config(wire_schema)
                 tool_choice = forced_tool_choice()
             elif skip_reason:
                 # Recorded, not just logged: an A/B in which "no effect" and
@@ -3953,7 +4282,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                             dict(response_with_metering),
                             tool_name=EXTRACTION_TOOL_NAME,
                         ),
-                        self._class_schema,
+                        wire_schema,
                         tool_name_map,
                     ),
                     tool_name_map,
@@ -4082,6 +4411,46 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         extracted_fields = {"raw_output": extracted_text}
                         parsing_succeeded = False
 
+            # Multi-instance detection probe (#753): read and REMOVE the auxiliary
+            # count before anything else looks at the result. It must come out
+            # ahead of the off-schema filter (which would otherwise report it as a
+            # hallucinated field), the integrated-confidence split, coercion,
+            # validation and every downstream stage. Popped unconditionally — even
+            # if detection is off for this section, an echoed field must not reach
+            # inference_result.
+            probe_value = self._read_instance_probe(extracted_fields)
+            if probe_value is not None:
+                instance_probe = probe_value
+
+            # Multi-instance (#715): re-express a response that ignored the
+            # wrapper, BEFORE the off-schema filter deletes every key and emits
+            # {}.
+            if parsing_succeeded:
+                extracted_fields, recovered_instances = (
+                    self._adapt_to_instances_wrapper(
+                        extracted_fields, recovered_instances
+                    )
+                )
+
+            # Strip the probe from EVERY instance, from whichever container ends up
+            # holding them, and do it AFTER the adapt above.
+            #
+            # This ran before the adapt and only over `recovered_instances`, which
+            # leaked: for a flagged class answering with a bare array, the adapt
+            # moves the records into `extracted_fields["instances"]` and returns
+            # `recovered_instances = None`, so the loop never ran — and
+            # `_filter_extracted_to_schema` only filters TOP-LEVEL keys, so the
+            # probe survived inside `inference_result["instances"][1..N]` to be
+            # scored by assessment, written to a reporting column and diffed
+            # against a baseline that has no such key. Element 0 looked clean
+            # because it is aliased to `extracted_fields`, which is why the
+            # isolated unit tests passed.
+            nested_probe = self._strip_probe_from_instances(
+                extracted_fields, recovered_instances
+            )
+            if instance_probe is None and nested_probe is not None:
+                instance_probe = nested_probe
+
             # Schema-compliance filter (simple/traditional extraction only): drop
             # any top-level fields the model returned that the class schema does
             # NOT define. Unlike Advanced (agentic) extraction — which validates
@@ -4167,6 +4536,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             ocr_analysis=ocr_analysis,
             instance_count=instance_count,
             recovered_instances=recovered_instances,
+            instance_probe=instance_probe,
         )
 
     def _split_inline_confidence(
@@ -4624,34 +4994,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # keeps the first so the output shape is unchanged; these carry the rest
         # so nothing is discarded, and _build_extraction_issues turns the count
         # into a user-visible warning.
-        instance_count = result.instance_count
-        # "recovered" = the model returned a list for a single-object schema, so
-        # the extra documents were unexpected and only the first is scored —
-        # that is worth a warning. "declared" = the class named its own instance
-        # axis with x-aws-idp-instance-array, so several documents are exactly
-        # what the config asked for and there is nothing to warn about.
-        # "single" is the ordinary case: the model returned one object, so the
-        # count is 1 and nothing was recovered. Labelling that "recovered" —
-        # which an earlier version did once instance_count started reporting 1
-        # for a plain object — is simply untrue in the audit trail, and would
-        # have someone reading metadata looking for records that never existed.
-        if not instance_count:
-            instance_source = None
-        elif result.recovered_instances:
-            instance_source = "recovered"
-        else:
-            instance_source = "single"
-
-        # Designate mode: a class whose schema is ALREADY modelled as a packet of
-        # records names its own instance axis. The count comes from that array's
-        # length, and nothing else changes — no schema transform, no shape change,
-        # no downstream impact. This is how configs that already solved
-        # multi-record packets by hand get the count and the UI badge without
-        # restructuring anything.
-        designated = self._designated_instance_count(result.extracted_fields)
-        if designated is not None:
-            instance_count = designated
-            instance_source = "declared"
+        instance_count, instance_meta = self._resolve_instance_reporting(result)
+        metadata.update(instance_meta)
 
         # Assigned unconditionally, including 0. A re-extraction (reprocess, or a
         # reclassify that reuses the section) starts from the RESTORED section,
@@ -4660,9 +5004,6 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # document in, or failed on entirely. 0 renders as "-" (undetermined),
         # which is the honest reading of a run that determined nothing.
         section.instance_count = instance_count
-        if instance_count:
-            metadata["instance_count"] = instance_count
-            metadata["instance_source"] = instance_source
         if result.recovered_instances:
             metadata["recovered_instances"] = result.recovered_instances
             # Surface on the dashboard so multi-document sections are visible

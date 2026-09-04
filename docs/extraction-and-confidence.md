@@ -717,11 +717,231 @@ now preserved (the first becomes the section result, the rest are recorded in
 `metadata.recovered_instances`) and the section is flagged for review rather than
 failed.
 
-> **Known limitation.** If the model returns a single object for a
-> several-document section, only that one record exists in the response and
-> nothing can recover the others. Use `x-aws-idp-instance-array` with a
-> packet-shaped class for those packets. Automatic list-schema synthesis is
-> tracked separately.
+#### The silent case, and the warning that catches it
+
+The hard case is the model returning a **single object** for a several-document
+section. Only that one record exists in the response, so nothing can recover the
+others — and until recently nothing reported it either: the section was `SUCCESS`,
+the document `COMPLETED`, `ProcessingIssueCount` was `0`, and the instance count
+was `1`. One record out of three, silently.
+
+Extraction now asks the model, in the **same inference**, how many separate
+documents of the class the supplied pages contain. When that answer exceeds the
+number of records in the result, the section raises
+`extraction_multi_instance_suspected` (severity **warning**) naming both numbers,
+reports the model's count as the section's instance count, and emits a
+`MultiInstanceSectionsSuspected` CloudWatch metric. The badge in the Sections
+panel says the records are *missing*, not that they were extracted.
+
+```yaml
+extraction:
+  multi_instance_detection:
+    enabled: true    # OFF by default — turn it on for multi-record corpora
+    question: ""     # blank = the shipped wording; supports {DOCUMENT_CLASS}
+```
+
+The question is editable, like every other prompt in the system — it is sent as the
+description of the auxiliary property. **Two clauses are load-bearing** and should
+survive any edit: *"do not count pages, sections or repeated headers"* (without it,
+a document carrying an identical banner on each of four pages reads as four
+documents) and *"DIAGNOSTIC METADATA, not extracted document data"* (so the model
+does not treat the field as something to extract from the page).
+
+- **Detection only.** It never changes the extracted data, never fails a section,
+  and never turns on a schema flag for you. Fixing the loss is
+  `x-aws-idp-multi-instance` (below) or splitting the section.
+- **OFF by default — but it is very good at its job.** Measured on two real
+  labeled corpora, 80 paired Test Studio runs (same documents both sides, only the
+  toggle differing):
+
+  | on 40 real bank-check images, against committed ground truth | |
+  |---|---|
+  | multi-check images found | **18 of 18** |
+  | false alarms on the 22 single-check images | **0** |
+  | precision / recall | **1.000 / 1.000** |
+  | count reported *exactly* right | **18 of 18** (2 to 8 checks) |
+  | token cost | input **+1.8%**, output **−0.5%** |
+
+  Without it, those 18 documents each silently lose between 1 and 7 checks. That is
+  #565, on a real corpus, and detection catches every one of them.
+
+- **Why it is off anyway.** On a corpus with *no* multi-record documents to find, it
+  is pure cost: `RealKIE-FCC-Verified` lost about **1.3 accuracy points** with it on
+  (0.7678 → 0.7552; worse on 14 of 40 documents, better on 1, sign test
+  **p = 0.001**), spread diffusely over four attributes rather than any single
+  failure mode. A default has to be safe for the deployment that gets no benefit,
+  so the default is off.
+
+- **So: turn it on when your documents can contain several records of one class**,
+  and leave it off when they cannot. It is per configuration profile, so a
+  multi-record corpus can have it while the rest of your deployment does not.
+
+### Multi-instance sections (`x-aws-idp-multi-instance`)
+
+Detection tells you records were lost. This **extracts all of them**.
+
+Set `x-aws-idp-multi-instance: true` on a class and its *effective* schema becomes
+a list of that class:
+
+```yaml
+classes:
+  - $id: Pay-Statement
+    type: object
+    x-aws-idp-multi-instance: true      # <- the only change
+    properties:
+      CheckNumber: { type: string }
+      NetPay:      { type: string }
+```
+
+Extraction then requests, and `inference_result` then holds:
+
+```json
+{"instances": [
+  {"CheckNumber": "77310468", "NetPay": "4,104.59"},
+  {"CheckNumber": "77298351", "NetPay": "4,657.95"},
+  {"CheckNumber": "77284207", "NetPay": "16,487.56"}
+]}
+```
+
+You keep authoring the class as **one record** — the wrapper is synthesized, so
+you do not degrade a single-record schema by hand.
+
+In the web UI both modes are one control, under **Configuration → Document
+Schema →** the class:
+
+> **Documents per section**
+> - ( ) One document — *the normal case; nothing changes*
+> - ( ) Several — this class already lists them → **Record array:** `records ▾`
+> - ( ) Several — wrap my single-record class → `instances[ ] → <Class> → { … }`
+
+The two modes are alternatives, so they are one question with three answers rather
+than two separate toggles. The record-array picker appears only in the middle
+branch, and the shape preview and the baseline-migration warning appear only in the
+last one.
+
+**Opt-in per class, never automatic.** Auto-detecting the shape would make every
+single-document section pay for an extra nesting level and would move the
+detection problem one stage later. Nothing changes for a class that does not set
+the flag.
+
+Two known gaps, both filed:
+
+- **Discovery does not suggest it.** Discovery sees the pages and authors the
+  schema, so it is the best place to notice "this sample holds three
+  Pay-Statements" — but it does not, so today you have to already know the
+  feature exists. Tracked in GitHub #765 (suggest, with a one-click apply; never
+  set it silently, because the shape change invalidates baselines).
+- **Re-running Discovery on a class erases the flag** — along with every other
+  class-level `x-aws-idp-*` setting, because the merge replaces the class
+  wholesale. Tracked in GitHub #764. Until it is fixed, re-check the class's
+  settings after any Discovery run that targets a class you have configured by
+  hand.
+
+#### Designate or Synthesize?
+
+The two keys are mutually exclusive (config validation rejects both on one class)
+and answer opposite questions:
+
+| Your class describes… | Key | Schema change | Downstream impact |
+|---|---|---|---|
+| **one record** (the normal case) | `x-aws-idp-multi-instance: true` | wrapper synthesized | shape of `inference_result` changes — **migrate baselines** |
+| **a packet that already holds an array of records** | `x-aws-idp-instance-array: <property>` | none | none |
+
+If you already hand-authored a `List of DocTypeX` class, stay on
+`x-aws-idp-instance-array` — it costs nothing and changes nothing. Migrating to
+Synthesize mode is optional; the payoff is correctly-keyed per-instance
+confidence, Hungarian record matching in evaluation, and a per-attribute (rather
+than one-giant-attribute) evaluation report.
+
+> **An internal list is not a reason to avoid this.** An invoice class with
+> `line_items[]` is a *single-instance* document with an internal list.
+> `x-aws-idp-multi-instance: true` on it is correct and gives
+> `instances[i].line_items[j]` — three invoices in one section. Configuration
+> validation only *warns* when a class's top level is nothing but one record
+> array, because that is the case that would double-wrap.
+
+#### ⚠ Evaluation baselines must be migrated
+
+This is the one part of the feature that can break a working deployment.
+Evaluation compares a prediction against a stored baseline **of the same shape**.
+A wrapped prediction against a flat baseline scores every field as
+missing-on-one-side, so the class's accuracy collapses to ~0 — measured live: a
+correctly-migrated baseline scored **1.000** on the same document where a flat one
+scored **0.000**.
+
+Evaluation now logs a warning naming the class and the exact migration command when
+it sees the two shapes disagree, in either direction — so it is no longer *silent*.
+But the warning is in the evaluation Lambda's log, not on the report, and the score
+is still 0: treat it as a safety net, not a substitute for migrating.
+
+Migrate in the same change as the flag:
+
+```bash
+# Dry run (default — nothing is written)
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack
+
+# Apply, keeping a copy of each original
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack \
+    --apply --backup-suffix .pre-multi-instance
+
+# Rolling the flag back off again
+python3 scripts/migrate_multi_instance_baselines.py --stack-name MyStack \
+    --direction unwrap --apply
+```
+
+The script is idempotent (safe to re-run after an interruption), touches only
+classes that set the flag, and refuses to flatten a multi-record baseline on
+rollback because that would discard ground truth you authored.
+
+**It migrates shape, not content.** Wrapping a one-record baseline gives
+`instances` of length 1. If the document really contains three records — which is
+the reason you turned the flag on — the other two were never in the baseline,
+because the old pipeline could not extract them. You have to add them, or
+evaluation will score the newly-found records as false positives. The script
+lists every document it touched so that work is visible.
+
+#### What else changes
+
+| Area | With the flag on |
+|---|---|
+| Confidence | keyed `instances[i].Field`; each record scored independently |
+| HITL review | alert labels become `instances[i].Field` — correct, but review task labels change |
+| Reporting / Athena | **one row per document**, not per section, with a new `record_index` column. Existing column names are unchanged, so existing queries keep working — but `(document_id, section_id)` is no longer unique |
+| Analytics agent | told about `record_index` for flagged classes |
+| Z3 rules | address a record explicitly: `…inference_result.instances[0].NetPay`. A rule whose path no longer resolves logs what to write instead — a miss otherwise reads as "optional parameter absent" and the rule quietly stops firing |
+| Public SDK | `fields` is unchanged (the raw shape), plus a new `instances` list; `confidence` now walks lists and groups |
+| BDA mode | not applicable — this is a pipeline-mode (`use_bda: false`) feature |
+| Advanced (agentic) extraction | the wrapper applies, but the #753 detection probe does not |
+
+#### What DEGRADES with the flag on — read this before turning it on
+
+The wrapper moves every one of your properties one level down, and three checks
+walk only the **top level** of a class schema. None of them is a correctness bug,
+but all three quietly stop doing anything for a flagged class:
+
+| Check | What stops applying |
+|---|---|
+| BLANK vs MISSING field handling (`x-aws-idp-source-page-types`) | Nothing at the top level carries it any more, so the distinction is not applied at all for a flagged class. |
+| "a declared list came back empty" (`extraction_incomplete`) | The only top-level array is now `instances`, so an **inner** list of a record coming back empty no longer raises it — and that is the largest silent-data-loss shape this pipeline has. |
+| Confidence-prompt property descriptions | The prompt builder descends one level under an array, so a nested group or list *inside* a record loses its sub-field descriptions. |
+| Evaluation report granularity | The per-attribute breakdown becomes **one** attribute (`instances`) carrying every field's rows, instead of one per field. Every row is still there and still drillable — only the grouping is coarser. |
+
+Two more things to know:
+
+- **Few-shot examples are not rewritten.** `x-aws-idp-examples` prompts are
+  hand-authored text. If yours show a flat record they now contradict the requested
+  `{"instances": […]}` shape — and a flat answer is salvaged as exactly **one**
+  instance, so the loss looks like success. Re-author them wrapped. Configuration
+  validation warns when a flagged class carries examples.
+- **The Prompt Preview shows the un-transformed schema**, and says so — for both
+  the wrapper and the detection probe. The preview is
+  built in the browser from the class schema as stored, so for a flagged class the
+  prompt it renders is not the one the pipeline sends; it now carries a warning to
+  that effect rather than quietly misleading you. (It also omits the detection
+  probe when that is on.) The section's stored metadata is the authoritative record
+  of what was sent. Duplicating the transform in TypeScript was considered and
+  rejected: two implementations that must stay in sync are a worse liability than
+  one documented divergence.
 
 ## 3. Confidence Assessment
 

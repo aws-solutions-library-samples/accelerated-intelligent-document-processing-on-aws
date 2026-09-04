@@ -193,6 +193,19 @@ export const X_AWS_IDP_EXCLUSION_REASON = 'x-aws-idp-exclusion-reason';
 export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
 
 /**
+ * Class-level: replace the class's EFFECTIVE schema with a List-of-Class
+ * wrapper, `{instances: {type: array, items: <the original class schema>}}`, so
+ * a section holding several documents of this class extracts every one of them
+ * instead of silently returning only the first.
+ *
+ * The counterpart to X_AWS_IDP_INSTANCE_ARRAY above and mutually exclusive with
+ * it: that key NAMES an array the class already has, this one CREATES one.
+ * Changes the shape of inference_result, so evaluation baselines for the class
+ * must be migrated. Must stay in sync with schema_constants.py.
+ */
+export const X_AWS_IDP_MULTI_INSTANCE = 'x-aws-idp-multi-instance';
+
+/**
  * Declares the named page sub-types a class can include. Each entry has a
  * `name`, optional `description`, and `x-aws-idp-document-page-content-regex`
  * used to detect the page type from per-page OCR text.

@@ -1334,6 +1334,76 @@ class EvaluationService:
         expected_instance, actual_instance = build()
         return expected_instance, actual_instance, skipped
 
+    def _warn_on_multi_instance_shape_mismatch(
+        self,
+        class_name: Optional[str],
+        expected_results: Any,
+        actual_results: Any,
+        section_id: Any,
+    ) -> None:
+        """Say so loudly when a baseline's shape does not match the prediction's.
+
+        Turning on ``x-aws-idp-multi-instance`` (GitHub #715) changes a class's
+        ``inference_result`` from a flat record to ``{"instances": [ … ]}``.
+        Evaluation compares against a stored baseline **of the same shape**, so a
+        wrapped prediction against a flat baseline scores every field as
+        missing-on-one-side: the class reads ~0 accuracy and **nothing says why**.
+        That is the single biggest risk this feature introduces, and relying on the
+        operator to remember
+        ``scripts/migrate_multi_instance_baselines.py`` is not a control.
+
+        Both directions are checked, because the rollback (flag off, baselines
+        still wrapped) fails exactly as silently.
+
+        Advisory only — it never changes a score. The point is that a mismatch
+        stops being invisible.
+        """
+        from idp_common.schema.multi_instance import is_multi_instance, unwrap_instances
+
+        class_schema = None
+        for candidate in self.config.classes or []:
+            if not isinstance(candidate, dict):
+                continue
+            label = candidate.get("$id") or candidate.get("x-aws-idp-document-type")
+            if (
+                isinstance(label, str)
+                and isinstance(class_name, str)
+                and label.lower() == class_name.lower()
+            ):
+                class_schema = candidate
+                break
+        if class_schema is None:
+            return
+
+        flagged = is_multi_instance(class_schema)
+        expected_wrapped = unwrap_instances(expected_results) is not None
+        actual_wrapped = unwrap_instances(actual_results) is not None
+
+        if flagged and actual_wrapped and not expected_wrapped:
+            logger.warning(
+                "Section %s (class=%s): the extraction result is multi-instance "
+                "({'instances': [...]}) but the evaluation BASELINE is flat, so "
+                "every field will score as missing on one side and this class's "
+                "accuracy will read as ~0 for reasons that have nothing to do "
+                "with extraction quality. Migrate the baselines: "
+                "python3 scripts/migrate_multi_instance_baselines.py "
+                "--stack-name <stack> --apply",
+                section_id,
+                class_name,
+            )
+        elif not flagged and expected_wrapped and not actual_wrapped:
+            logger.warning(
+                "Section %s (class=%s): the evaluation BASELINE is multi-instance "
+                "({'instances': [...]}) but the extraction result is flat — "
+                "x-aws-idp-multi-instance was presumably turned back off without "
+                "migrating the baselines back. This class's accuracy will read as "
+                "~0. Roll the baselines back: "
+                "python3 scripts/migrate_multi_instance_baselines.py "
+                "--stack-name <stack> --direction unwrap --apply",
+                section_id,
+                class_name,
+            )
+
     def evaluate_section(
         self,
         section: Section,
@@ -1380,6 +1450,10 @@ class EvaluationService:
                     f"evaluation schema; section excluded from scoring."
                 ),
             )
+
+        self._warn_on_multi_instance_shape_mismatch(
+            class_name, expected_results, actual_results, section.section_id
+        )
 
         try:
             # Get Stickler model for this document class

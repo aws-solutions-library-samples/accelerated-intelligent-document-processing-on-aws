@@ -495,6 +495,24 @@ def get_dynamic_document_sections_description(
                 "  - Various `metadata.*` columns (strings): Processing metadata\n"
             )
 
+            # Multi-instance classes (#715) fan out to ONE ROW PER DOCUMENT
+            # INSTANCE rather than one row per section, so the attribute columns
+            # below are unchanged but a row is no longer uniquely identified by
+            # (document_id, section_id). Without this the agent writes COUNT(*)
+            # and per-section joins that silently multiply by the instance count.
+            from idp_common.schema.multi_instance import is_multi_instance
+
+            if is_multi_instance(schema):
+                description += (
+                    "  - `record_index` (int): **This class is multi-instance.** One "
+                    "section can contain several separate documents of this class, and "
+                    "this table stores ONE ROW PER DOCUMENT, numbered from 0 within "
+                    "the section. So (`document_id`, `section_id`) is NOT unique here "
+                    "— use (`document_id`, `section_id`, `record_index`). The "
+                    "`inference_result.*` columns below hold that one document's "
+                    "values, exactly as for a single-record class.\n"
+                )
+
             # Configuration-specific columns - reset column count for each table
             if properties:
                 description += "- **Configuration-Specific Columns**:\n"
@@ -917,9 +935,30 @@ def _get_specific_document_sections_table_info(
 - `"timestamp"` (timestamp): When document was processed in YYYY-MM-DD hh:mm:ss.ms format
 - `"date"` (string): Partition key in YYYY-MM-DD format
 - `"config_version"` (string): Configuration version used for processing
-
-#### Columns specific to this table:
 """
+
+        # A multi-instance class (#715) stores ONE ROW PER DOCUMENT, not per
+        # section, so (document_id, section_id) is not unique here. Without this
+        # the agent writes COUNT(*) and per-section joins that silently multiply
+        # by the instance count. It must be on THIS path too, not only on
+        # get_dynamic_document_sections_description: this is the detailed
+        # per-table description the agent reads after get_table_info, and it is
+        # the one it plans queries from.
+        from idp_common.schema.multi_instance import is_multi_instance
+
+        if is_multi_instance(matching_schema):
+            info += (
+                '- `"record_index"` (int): **This class is multi-instance.** One '
+                "section can hold several separate documents of this class, and "
+                "this table stores ONE ROW PER DOCUMENT, numbered from 0 within "
+                "the section. So (`document_id`, `section_id`) is NOT unique — use "
+                "(`document_id`, `section_id`, `record_index`), and count documents "
+                'of this class with `COUNT(*)`, not `COUNT(DISTINCT "document_id")` '
+                "(one input file can contain many). The columns below hold that "
+                "one document's values, exactly as for a single-record class.\n"
+            )
+
+        info += "\n#### Columns specific to this table:\n"
 
         if properties:
             for prop_desc_text, _ in _walk_properties_for_columns(

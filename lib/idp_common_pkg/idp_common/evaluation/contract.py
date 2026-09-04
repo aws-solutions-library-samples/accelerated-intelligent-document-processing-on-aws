@@ -540,6 +540,30 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     # against unexpected shapes; this one should be too.
     raw = fc.get("expected_key") or fc.get("actual_key") or fc.get("field_path") or ""
     path = raw if isinstance(raw, str) else str(raw)
+    # NOTE on multi-instance (GitHub #715): for a wrapped class every row's path is
+    # `instances[i].Field`, so every leaf groups under the single root `instances`
+    # and the per-attribute report is one giant attribute rather than one per
+    # field. That is a real granularity loss — but it must NOT be "fixed" here by
+    # stepping past the synthesized root.
+    #
+    # Measured live: doing that made `row_root_attribute` return `CheckNumber`,
+    # which matches no attribute at all, because the attribute list is built from
+    # the class SCHEMA — and a wrapped class has exactly one property, `instances`.
+    # All 24 of Stickler's field_comparisons rows were therefore dropped from
+    # `field_comparison_details`, emptying the report's per-field drilldown and the
+    # UI's mismatch highlighting (which joins on `expected_key`). The section-level
+    # metrics stayed correct, so the loss was invisible in the numbers — accuracy
+    # still read 1.000 with an empty drilldown.
+    #
+    # Recovering per-field granularity for a wrapped class means changing how the
+    # ATTRIBUTE LIST is constructed (unwrapping one level when the class is
+    # flagged), not how rows are keyed. Until then, one drillable attribute
+    # carrying every row beats N attributes carrying none.
+    return _first_path_segment(path)
+
+
+def _first_path_segment(path: str) -> str:
+    """Everything before the first ``[`` or ``.`` in a field path."""
     idx_bracket = path.find("[")
     idx_dot = path.find(".")
     cuts = [i for i in (idx_bracket, idx_dot) if i >= 0]

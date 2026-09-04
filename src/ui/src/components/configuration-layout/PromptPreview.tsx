@@ -28,7 +28,7 @@ import {
   CopyToClipboard,
   Alert,
 } from '@cloudscape-design/components';
-import { DEFS_FIELD, REF_FIELD } from '../../constants/schemaConstants';
+import { DEFS_FIELD, REF_FIELD, X_AWS_IDP_MULTI_INSTANCE } from '../../constants/schemaConstants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -211,6 +211,42 @@ function derefSchema(node: PropertySchema, root: ClassSchema, seen: Set<string> 
  *   - A ``$ref`` already entered on the current branch is emitted as a leaf
  *     rather than re-entered, so a recursive ``$defs`` terminates.
  */
+/**
+ * The server-side schema transforms this browser-side preview cannot show.
+ *
+ * Exported and pure so it can be tested without mounting the whole preview. The
+ * alert's only job is to be *accurate* about what the model receives, so a wrong
+ * bullet is worse than no bullet — and the step-dependence below is exactly the
+ * kind of detail that drifts silently:
+ *
+ * - `wrapped` applies to BOTH stages: `ExtractionService._get_class_schema` and
+ *   `AssessmentService._get_class_schema` each wrap independently from config.
+ * - `probe` applies to the EXTRACTION step ONLY. It is added in
+ *   `ExtractionService._build_wire_schema`; assessment wraps but never augments,
+ *   so claiming it on the confidence step made this alert state something false.
+ *   It also applies to every class when detection is on, not just a flagged one,
+ *   which is why it comes from the config rather than from the class.
+ */
+export const schemaDivergenceFor = (
+  formValues: Record<string, unknown> | null | undefined,
+  selectedClass: Record<string, unknown> | null | undefined,
+  selectedStep: string,
+): { wrapped: boolean; probe: boolean } => {
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const detection = (extraction.multi_instance_detection as Record<string, unknown>) || {};
+  const enabled = detection.enabled;
+  // Match pydantic's bool coercion, so a hand-written `enabled: yes` is not
+  // silently left unwarned.
+  const on =
+    enabled === true ||
+    enabled === 1 ||
+    (typeof enabled === 'string' && ['true', 'yes', 'on', '1', 't', 'y'].includes(enabled.trim().toLowerCase()));
+  return {
+    wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
+    probe: on && selectedStep === 'extraction',
+  };
+};
+
 export function getAttributeNamesForClass(cls: ClassSchema): string[] {
   const properties = cls.properties;
   if (!properties || typeof properties !== 'object') return [];
@@ -602,6 +638,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
   }, [classes, selectedClassId]);
 
+  const schemaDivergence = useMemo(
+    () => schemaDivergenceFor(formValues, selectedClass, selectedStep),
+    [formValues, selectedClass, selectedStep],
+  );
+
   // Build config-derived substitutions based on the selected step
   const buildSubstitutions = useCallback((): Record<string, string> => {
     const subs: Record<string, string> = {};
@@ -714,6 +755,38 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           }
           return <Alert type={selectedStep === 'confidence' && !enabled ? 'warning' : 'info'}>{msg}</Alert>;
         })()}
+
+      {/* The preview is built in the browser from the class schema as stored, so
+          two server-side transforms are not reflected. Saying so is much cheaper —
+          and much less likely to rot — than duplicating the Python transform in
+          TypeScript and keeping the two in sync. */}
+      {/* Two server-side transforms are NOT reflected here, because the preview is
+          built in the browser from the class schema as stored. Saying so is much
+          cheaper — and much less likely to rot — than duplicating the Python
+          transforms in TypeScript and keeping them in sync.
+          Both steps render the class schema and BOTH wrap it server-side
+          (ExtractionService._get_class_schema / AssessmentService._get_class_schema),
+          so both previews diverge identically. */}
+      {['extraction', 'confidence'].includes(selectedStep) && (schemaDivergence.wrapped || schemaDivergence.probe) ? (
+        <Alert type="warning" header="The real prompt differs from this preview">
+          <SpaceBetween size="xxs">
+            {schemaDivergence.wrapped && (
+              <span>
+                <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
+                <code>instances[]</code> array — one entry per document found in the section.
+              </span>
+            )}
+            {schemaDivergence.probe && (
+              <span>
+                <strong>Multi-document Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
+                added to the schema sent for every class, asking the model how many documents the pages contain. It is stripped from the
+                result and never appears in your extracted data.
+              </span>
+            )}
+            <span>The section&apos;s stored metadata is the authoritative record of what was sent.</span>
+          </SpaceBetween>
+        </Alert>
+      ) : null}
 
       {/* Info about what's shown */}
       <Alert type="info" header="About Prompt Preview">

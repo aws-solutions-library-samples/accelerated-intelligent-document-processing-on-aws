@@ -81,6 +81,21 @@ def set_path(cfg, dotted, value):
     if dotted == "ocr.features":
         cfg.setdefault("ocr", {})["features"] = [{"name": f} for f in value]
         return
+    # A CLASS-level JSON-Schema extension, applied to every document class in the
+    # config. `classes` is a list, which the generic dotted walk below cannot
+    # address, and the benchmark configs are single-class by construction — so
+    # "set it on every class" is both unambiguous and what the axis means.
+    # Written as `classes.<extension>`, e.g.
+    # `classes.x-aws-idp-multi-instance: true`.
+    if dotted.startswith("classes.") and dotted.count(".") == 1:
+        key = dotted.split(".", 1)[1]
+        for doc_class in cfg.get("classes") or []:
+            if isinstance(doc_class, dict):
+                if value is None:
+                    doc_class.pop(key, None)
+                else:
+                    doc_class[key] = value
+        return
     parts = dotted.split(".")
     node = cfg
     for p in parts[:-1]:
@@ -233,9 +248,16 @@ def cells_for_suite(matrix, suite):
     spec = matrix["suites"][suite]["cells"]
     core = {c["id"]: c for c in matrix["core_cells"]}
     controls = {c["id"]: c for c in matrix.get("control_cells") or []}
+    # Multi-instance cells (#715/#753) are their own registry for the same reason
+    # control_cells is: they are only meaningful on a document holding several
+    # records of one class in ONE section, so a suite saying `cells: "core_cells"`
+    # must not pick them up and spend money measuring nothing.
+    multi = {c["id"]: c for c in matrix.get("multi_instance_cells") or []}
     out = []
     if spec == "core_cells":
         out = list(core.values())
+    elif spec == "multi_instance_cells":
+        out = list(multi.values())
     elif spec == "core_cells+sweeps":
         out = list(core.values())
         # add one-axis sweeps as cells (default + varied axis)
@@ -248,12 +270,13 @@ def cells_for_suite(matrix, suite):
         # the run — it produces a one-armed "A/B" whose delta is undefined, and
         # nothing downstream can tell that from a suite that was declared with
         # one cell. A typo'd cell id is exactly how a control arm disappears.
-        known = {**core, **controls}
+        known = {**core, **controls, **multi}
         missing = [i for i in spec if i not in known]
         if missing:
             raise SystemExit(
-                f"suite '{suite}' names cell(s) not defined in core_cells or "
-                f"control_cells: {missing}. Add them there or fix the suite."
+                f"suite '{suite}' names cell(s) not defined in core_cells, "
+                f"control_cells or multi_instance_cells: {missing}. Add them "
+                f"there or fix the suite."
             )
         out = [known[i] for i in spec]
     return out

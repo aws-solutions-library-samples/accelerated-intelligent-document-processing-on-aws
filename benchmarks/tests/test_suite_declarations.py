@@ -58,9 +58,15 @@ def suites(matrix):
 
 def _cell_ids(matrix):
     """Every id a suite may name: the core grid plus the control arms."""
-    return {c["id"] for c in matrix["core_cells"]} | {
-        c["id"] for c in matrix.get("control_cells") or []
-    }
+    return (
+        {c["id"] for c in matrix["core_cells"]}
+        | {c["id"] for c in matrix.get("control_cells") or []}
+        # Multi-instance cells (#715/#753) are their own registry, for the same
+        # reason control_cells is: they are only meaningful on a document holding
+        # several records of one class in ONE section, so a suite saying
+        # `cells: "core_cells"` must not pick them up.
+        | {c["id"] for c in matrix.get("multi_instance_cells") or []}
+    )
 
 
 def _doc_ids(docm):
@@ -96,7 +102,8 @@ def test_every_named_cell_exists(matrix, suites):
     }
     bad = {k: v for k, v in bad.items() if v}
     assert not bad, (
-        f"suite(s) name cells that are not defined in core_cells: {bad}. "
+        f"suite(s) name cells that are not defined in core_cells / "
+        f"control_cells / multi_instance_cells: {bad}. "
         f"An undefined cell is dropped, which silently removes an A/B arm."
     )
 
@@ -127,7 +134,9 @@ def test_every_cell_uses_only_declared_axes(matrix):
     axes = set(matrix["axes"])
     bad = {
         c["id"]: [k for k in c if k != "id" and k not in axes]
-        for c in matrix["core_cells"] + (matrix.get("control_cells") or [])
+        for c in matrix["core_cells"]
+        + (matrix.get("control_cells") or [])
+        + (matrix.get("multi_instance_cells") or [])
     }
     bad = {k: v for k, v in bad.items() if v}
     assert not bad, f"cell(s) key on undeclared axes: {bad}"
@@ -140,7 +149,9 @@ def test_default_cell_covers_every_axis_a_cell_varies(matrix):
     default = set(matrix["default_cell"])
     used = {
         k
-        for c in matrix["core_cells"] + (matrix.get("control_cells") or [])
+        for c in matrix["core_cells"]
+        + (matrix.get("control_cells") or [])
+        + (matrix.get("multi_instance_cells") or [])
         for k in c
         if k != "id"
     }
@@ -298,7 +309,9 @@ def test_control_cells_are_not_in_the_core_grid(matrix):
     release regression grid.
     """
     core = {c["id"] for c in matrix["core_cells"]}
-    controls = {c["id"] for c in matrix.get("control_cells") or []}
+    controls = {c["id"] for c in matrix.get("control_cells") or []} | {
+        c["id"] for c in matrix.get("multi_instance_cells") or []
+    }
     overlap = core & controls
     assert not overlap, (
         f"cell(s) declared as BOTH a core grid cell and a control arm: {overlap}. "

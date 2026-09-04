@@ -471,6 +471,76 @@ class ForcedToolConfig(BaseModel):
     )
 
 
+class MultiInstanceDetectionConfig(BaseModel):
+    """Detect a section that holds several documents of the same class (#753).
+
+    When classification finds no type change to split on, several consecutive
+    records of one class land in a single section. The class schema describes ONE
+    document, and the model overwhelmingly prefers to answer with one object — so
+    the second and third records are simply absent from the response and
+    **nothing anywhere reports it**: the section is SUCCESS, the document is
+    COMPLETED, ``instance_count`` is 1, and no issue is raised. That is the
+    original complaint in GitHub #565 and it is the common branch, not the rare
+    one (the rare one — a top-level JSON array — is already recovered and
+    warned about).
+
+    The mechanism is to ask the model, in the SAME inference, how many separate
+    documents of the class the supplied pages contain: one extra integer in the
+    response, no second call, and it asks the only component that has both the
+    pages and the schema in front of it. The field is stripped from the result
+    before anything downstream sees it.
+
+    **Detection only.** A count greater than 1 raises the
+    ``extraction_multi_instance_suspected`` warning and populates
+    ``Section.instance_count``; it never changes the extracted data, never fails
+    the section, and never flips a class's schema flags. Turning a class into a
+    List-of-Class shape stays an explicit opt-in
+    (``x-aws-idp-multi-instance`` / ``x-aws-idp-instance-array``).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Ask the extraction model, in the same inference, how many separate "
+            "documents of the section's class the pages contain, and warn when "
+            "the answer exceeds the number of records in the result. One extra "
+            "integer of output; no second call. "
+            "MEASURED on two real labeled corpora (80 paired Test Studio runs): "
+            "it is excellent at the job — on 40 bank-check images with committed "
+            "ground truth it found all 18 multi-check images, raised 0 false "
+            "alarms on the 22 single-check images, and got the count EXACTLY "
+            "right on all 18 (2 to 8 checks). Token cost is negligible (input "
+            "+1.8%, output -0.5%). "
+            "But on a corpus with NO multi-record documents to find it is pure "
+            "cost: RealKIE-FCC-Verified lost ~1.3 accuracy points (0.7678 -> "
+            "0.7552; worse on 14 of 40 documents, better on 1, sign test "
+            "p=0.001), spread diffusely over four attributes rather than any one "
+            "failure mode. "
+            "So it is OFF by default — a default has to be safe for the corpus "
+            "that gets no benefit from it — and you should turn it ON, per "
+            "configuration profile, whenever one section can hold several "
+            "documents of the same class. There the measurement says it will be "
+            "right, and the alternative is shipping one record out of N with no "
+            "signal at all. "
+            "Applies to Simple extraction (prompt and forced-tool paths); "
+            "Advanced (agentic) extraction is not covered."
+        ),
+    )
+    question: str = Field(
+        default="",
+        description=(
+            "The question put to the model, as the description of the auxiliary "
+            "count property. Supports {DOCUMENT_CLASS}. Populated from system "
+            "defaults; leave blank to use the shipped wording. Two clauses are "
+            "load-bearing and should survive any edit: 'do not count pages, "
+            "sections or repeated headers' (without it, a document with an "
+            "identical banner on each of four pages reads as four documents), and "
+            "'DIAGNOSTIC METADATA, not extracted document data' (so the field is "
+            "not mistaken for something to extract)."
+        ),
+    )
+
+
 class CoercionConfig(BaseModel):
     """Deterministic type/format repair of extraction output before validation.
 
@@ -1047,6 +1117,14 @@ class ExtractionConfig(BaseModel):
             "Send the class schema as a forced Converse tool rather than "
             "describing it in the prompt. Off by default and gated on a measured "
             "win — see ForcedToolConfig."
+        ),
+    )
+    multi_instance_detection: MultiInstanceDetectionConfig = Field(
+        default_factory=MultiInstanceDetectionConfig,
+        description=(
+            "Detect (and warn about) a section that holds several documents of "
+            "the same class when the model returned only one — see "
+            "MultiInstanceDetectionConfig."
         ),
     )
     coercion: CoercionConfig = Field(
@@ -2958,6 +3036,8 @@ class IDPConfig(BaseModel):
         Note ``_validate_schema_fields`` only walks ``properties``/``$defs`` and
         never inspects class-level keys, hence this validator.
         """
+        import logging
+
         from idp_common.config.schema_constants import (
             SCHEMA_ITEMS,
             SCHEMA_PROPERTIES,
@@ -2966,18 +3046,120 @@ class IDPConfig(BaseModel):
             TYPE_OBJECT,
             X_AWS_IDP_DOCUMENT_TYPE,
             X_AWS_IDP_INSTANCE_ARRAY,
+            X_AWS_IDP_MULTI_INSTANCE,
         )
         from idp_common.config.schema_utils import deref_schema
+        from idp_common.schema.multi_instance import (
+            INSTANCES_KEY,
+            is_multi_instance,
+            is_wrapped,
+        )
+
+        logger = logging.getLogger(__name__)
 
         for doc_class in v:
             if not isinstance(doc_class, dict):
                 continue
-            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
-            if prop_name is None:
-                continue
             label = (
                 doc_class.get("$id") or doc_class.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
             )
+            properties_map = doc_class.get(SCHEMA_PROPERTIES)
+            properties_map = properties_map if isinstance(properties_map, dict) else {}
+
+            # An ALREADY-TRANSFORMED schema legitimately carries both keys (the
+            # wrapper sets instance-array: instances so #694's count machinery
+            # applies to it). The transform is applied at runtime and never
+            # persisted to config, so this should not happen — but rejecting a
+            # schema this code produced itself would be a nasty trap for anyone
+            # who round-trips one, so recognise and skip it.
+            if is_wrapped(doc_class):
+                continue
+
+            if is_multi_instance(doc_class):
+                # The two modes answer opposite questions — Designate names an
+                # array the class ALREADY has, Synthesize creates one — so
+                # setting both is not a stronger request, it is a contradiction.
+                if doc_class.get(X_AWS_IDP_INSTANCE_ARRAY) is not None:
+                    raise ValueError(
+                        f"Class '{label}' sets both {X_AWS_IDP_MULTI_INSTANCE} and "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY}, which are mutually exclusive. "
+                        f"Use {X_AWS_IDP_MULTI_INSTANCE} when the class describes "
+                        f"ONE record and you want a list of them synthesized; use "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY} when the class is already a "
+                        f"packet of records and you only want to name its existing "
+                        f"instance axis."
+                    )
+
+                # Wrapper-key collision: the transform adds a top-level
+                # 'instances' property, which would shadow the user's own field
+                # of that name and make the original unreachable. Rejected, not
+                # renamed — a silent rename changes the extraction contract under
+                # the user.
+                if INSTANCES_KEY in properties_map:
+                    raise ValueError(
+                        f"Class '{label}' sets {X_AWS_IDP_MULTI_INSTANCE} but "
+                        f"already declares a top-level property named "
+                        f"'{INSTANCES_KEY}', which the synthesized wrapper would "
+                        f"shadow. Rename that property, or use "
+                        f"{X_AWS_IDP_INSTANCE_ARRAY}: {INSTANCES_KEY} instead if it "
+                        f"is already the class's record array."
+                    )
+
+                # WARN ONLY when the class looks like it is already a list
+                # wrapper. Deliberately narrow: having an internal array is NOT
+                # evidence of this. An invoice with line_items[] is a
+                # single-instance document with an internal list, and
+                # multi-instance on it is perfectly correct — three invoices in
+                # one section becomes instances[i].line_items[j]. Erroring here
+                # would block a legitimate and common case, so this is a log
+                # line, never a failure.
+                array_props = [
+                    name
+                    for name, spec in properties_map.items()
+                    if isinstance(spec, dict)
+                    and deref_schema(spec, doc_class).get(SCHEMA_TYPE) == TYPE_ARRAY
+                ]
+                # Few-shot examples are hand-authored FLAT JSON in
+                # `attributesPrompt`. For a flagged class they therefore teach the
+                # model the opposite of the requested shape — and
+                # `_adapt_to_instances_wrapper` then rescues the flat answer as
+                # exactly ONE instance, so the loss looks like success. Warn, not
+                # error: the examples may already have been re-authored wrapped,
+                # and this validator cannot read prose.
+                examples = doc_class.get("x-aws-idp-examples")
+                if isinstance(examples, list) and examples:
+                    logger.warning(
+                        "Class '%s' sets %s and also carries %d few-shot "
+                        "example(s). Example prompts are hand-authored text: if "
+                        "they show a FLAT record they now contradict the "
+                        "requested {'instances': [...]} shape, and a flat answer "
+                        "is salvaged as exactly one instance — so the loss looks "
+                        "like success. Re-author them wrapped.",
+                        label,
+                        X_AWS_IDP_MULTI_INSTANCE,
+                        len(examples),
+                    )
+
+                if len(array_props) == 1 and len(properties_map) == 1:
+                    only = array_props[0]
+                    logger.warning(
+                        "Class '%s' sets %s but its top level is nothing but the "
+                        "array property '%s', so it already looks like a packet of "
+                        "records — the transform would produce instances[i].%s[j], "
+                        "one level too many. If '%s' is the record array, use "
+                        "%s: %s instead.",
+                        label,
+                        X_AWS_IDP_MULTI_INSTANCE,
+                        only,
+                        only,
+                        only,
+                        X_AWS_IDP_INSTANCE_ARRAY,
+                        only,
+                    )
+
+            prop_name = doc_class.get(X_AWS_IDP_INSTANCE_ARRAY)
+            if prop_name is None:
+                continue
             if not isinstance(prop_name, str) or not prop_name:
                 raise ValueError(
                     f"{X_AWS_IDP_INSTANCE_ARRAY} on class '{label}' must be the "

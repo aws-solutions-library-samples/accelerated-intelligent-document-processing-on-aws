@@ -19,6 +19,38 @@ standalone step auto-skips.
 > `granular.*` keys still validate but are ignored. See
 > `docs/migration-granular-retirement.md`.
 
+> **A list row with a nested group or an inner list is not "unscored."**
+> `batching._row_confidence_missing` used to look exactly one level down, so a
+> nested group inside a list row was mistaken for a confidence leaf (a group has no
+> `confidence` key, so the lookup returned `None`) and an inner list was skipped by
+> the `isinstance(v, dict)` filter entirely. Measured live on a 3-record pay
+> statement whose rows carry an `Employee` group and an `Earnings` list: every leaf
+> came back at 0.99–1.0 with OCR geometry and `truncated_calls: 0`, and the section
+> still reported `assessment_incomplete` (**error**) for all 3 rows after burning a
+> `claude-sonnet-5:1m` escalation that recovered 0 — a stronger model reproduces
+> the identical shape, so the ladder had no way out. The predicate now recurses
+> (`_iter_confidence_leaves`). Pre-existing for any list-of-object attribute whose
+> rows contain a group or an inner list; multi-instance sections (GitHub #715) make
+> every record a row, so it became universal there.
+>
+> Two consequences worth knowing: a row whose group carries no leaves at all, next
+> to at least one scored scalar leaf, now counts as scored (the old predicate
+> flagged it); and for a wrapped class the retry unit is the whole record, so one
+> unscored leaf anywhere re-runs that entire record.
+
+> **Multi-instance (#715).** `_get_class_schema` returns the **effective** schema,
+> so a flagged class's `instances` array is a real top-level array property here:
+> the `attr_type == "list"` branch produces `instances[i]` row keys,
+> `resolve_array_item_thresholds` resolves per-record sub-field thresholds, and
+> `batching._schema_field_mismatch_reason` does not blacklist the section. Without
+> the wrap, `instances` is an unknown key and the whole section collapses to one
+> `{"confidence": 0.5}` leaf that the escalation ladder then skips permanently.
+> Two known granularity losses for a flagged class: `_format_property_descriptions`
+> descends one level under an array, so a nested group/list *inside* a record loses
+> its sub-field descriptions in the confidence prompt; and
+> `assessment_function/assessment_validator.py` compares one top-level attribute
+> (`instances`) rather than per-field.
+
 > **Compact reasons (default prompts).** The shipped confidence prompts ask the
 > model to emit `confidence_reason` **only for leaves below 0.9 confidence**;
 > confident leaves emit just `{"confidence": <score>}`. Because output tokens

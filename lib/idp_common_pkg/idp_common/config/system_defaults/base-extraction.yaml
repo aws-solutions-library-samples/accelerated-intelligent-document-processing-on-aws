@@ -47,6 +47,49 @@ extraction:
     # an error. Keep true in production; set false only to measure how often
     # forcing is actually honored.
     fallback_to_prompt: true
+  # Detect a section that holds SEVERAL documents of the same class when the
+  # model returned only one of them (GitHub #753 / #565). One extra integer is
+  # requested in the same inference and stripped from the result; when the answer
+  # exceeds the number of records extracted, an
+  # extraction_multi_instance_suspected warning is raised and the section's
+  # instance count reflects the model's answer.
+  multi_instance_detection:
+    # OFF by default — but not because it works badly. Measured on two real
+    # labeled corpora (80 paired Test Studio runs):
+    #
+    #   * It is EXCELLENT at the job. On 40 bank-check images with committed
+    #     ground truth it found all 18 multi-check images, raised 0 false alarms
+    #     on the 22 single-check images, and got the count exactly right on all
+    #     18 (2 to 8 checks). Precision and recall both 1.000.
+    #   * Token cost is negligible: input +1.8%, output -0.5%.
+    #   * On a corpus with NO multi-record documents to find, it is pure cost:
+    #     RealKIE-FCC-Verified lost ~1.3 accuracy points (0.7678 -> 0.7552, worse
+    #     on 14 of 40 docs, better on 1, sign test p=0.001), spread diffusely
+    #     across four attributes rather than any one failure mode.
+    #
+    # A default has to be safe for the corpus that gets no benefit, so it ships
+    # off. TURN IT ON, per configuration profile, whenever one section can hold
+    # several documents of the same class — there the measurement says it will be
+    # right, and the alternative is shipping one record out of N with no signal.
+    # Detection NEVER changes the extracted data or a class's schema flags.
+    # Simple extraction only (prompt and forced-tool paths).
+    enabled: false
+    # The question put to the model, as the description of the auxiliary count
+    # property. {DOCUMENT_CLASS} is substituted with the section's class.
+    # Two clauses are load-bearing and should survive any edit:
+    #   * "do not count pages, sections or repeated headers" — without it a
+    #     document with an identical banner on each of four pages reads as four.
+    #   * "DIAGNOSTIC METADATA, not extracted document data" — so the field is
+    #     not mistaken for something to extract from the page.
+    question: >-
+      DIAGNOSTIC METADATA, not extracted document data. How many separate,
+      complete '{DOCUMENT_CLASS}' documents are present in the supplied pages?
+      Answer 1 for the normal case of one document. Answer more than 1 only when
+      the pages clearly contain several distinct documents of this same type — for
+      example statements covering different periods, or records for different
+      people — including when a document starts part-way down a page. Do not count
+      pages, sections or repeated headers: count complete documents. Extract all
+      other fields exactly as you otherwise would.
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.
   coercion:
