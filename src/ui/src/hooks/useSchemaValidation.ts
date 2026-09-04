@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo } from 'react';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { SchemaValidationError } from '../types/common';
-import { X_AWS_IDP_INSTANCE_ARRAY, X_AWS_IDP_MULTI_INSTANCE } from '../constants/schemaConstants';
+import { validateIdpClassExtensions } from '../utils/idpSchemaExtensions';
 
 interface ValidatableAttribute {
   type?: string;
@@ -70,90 +70,6 @@ const EXTRACTION_JSON_SCHEMA = {
   },
   required: ['name', 'attributes'],
   additionalProperties: true,
-};
-
-/**
- * The `x-aws-idp-*` class-level rules the BACKEND hard-rejects at config load.
- *
- * Ajv only checks standard JSON-Schema keywords, so before this an invalid
- * `x-aws-idp-instance-array` was displayed with red `errorText` in the inspector
- * and then saved anyway — the message said "will be rejected on save" and Save
- * worked. The rejection arrived later, from the server, on a config the user had
- * been told was a problem.
- *
- * A client-side PREFLIGHT, not a second source of truth: `IDPConfig` stays
- * authoritative, and these mirror `validate_instance_array` in
- * `idp_common/config/models.py`. Keep the two in step.
- */
-const validateIdpClassExtensions = (schema: unknown): SchemaValidationError[] => {
-  if (!schema || typeof schema !== 'object') return [];
-  const cls = schema as Record<string, unknown>;
-  const errors: SchemaValidationError[] = [];
-
-  // The designer shape nests properties under `attributes`; an exported class has
-  // them at the top. Accept both so this works wherever it is called from.
-  const attributes = cls.attributes as { properties?: Record<string, unknown> } | undefined;
-  const properties = (attributes?.properties ?? (cls.properties as Record<string, unknown>) ?? {}) as Record<string, unknown>;
-
-  const designated = cls[X_AWS_IDP_INSTANCE_ARRAY];
-  const raw = cls[X_AWS_IDP_MULTI_INSTANCE];
-  const multi = raw === true || (typeof raw === 'string' && ['true', 'yes', '1'].includes(raw.trim().toLowerCase()));
-
-  // The synthesized wrapper legitimately carries BOTH keys. It is produced at
-  // runtime and never stored, but rejecting a schema the pipeline itself emits
-  // would be a nasty trap for anyone who round-trips one.
-  const isWrapper = multi && Object.keys(properties).length === 1 && 'instances' in properties;
-  if (isWrapper) return [];
-
-  if (multi && designated !== undefined && designated !== null && designated !== '') {
-    errors.push({
-      path: `/${X_AWS_IDP_MULTI_INSTANCE}`,
-      message:
-        'A class cannot set both Multi-instance Sections and Instance Array — they are mutually exclusive. ' +
-        'Use Multi-instance when the class describes ONE record; use Instance Array when it already lists records.',
-    });
-  }
-
-  if (multi && 'instances' in properties) {
-    errors.push({
-      path: `/${X_AWS_IDP_MULTI_INSTANCE}`,
-      message:
-        'Multi-instance Sections wraps this class in a top-level "instances" property, which would shadow the ' +
-        'existing property of that name. Rename that property first.',
-    });
-  }
-
-  if (typeof designated === 'string' && designated !== '') {
-    const spec = properties[designated] as { type?: string; items?: { type?: string; $ref?: string; properties?: unknown } } | undefined;
-    const available = Object.keys(properties).sort().join(', ') || 'none';
-    if (!spec || typeof spec !== 'object') {
-      errors.push({
-        path: `/${X_AWS_IDP_INSTANCE_ARRAY}`,
-        message: `Instance Array names "${designated}", which is not a property of this class. Available: ${available}.`,
-      });
-    } else if (spec.type !== 'array') {
-      errors.push({
-        path: `/${X_AWS_IDP_INSTANCE_ARRAY}`,
-        message: `Instance Array names "${designated}", which is type "${spec.type ?? 'unset'}" — it must be an array, because each element is one document.`,
-      });
-    } else {
-      const items = spec.items;
-      const itemsAreObjects = Boolean(items) && (Boolean(items?.$ref) || items?.type === 'object' || Boolean(items?.properties));
-      if (!itemsAreObjects) {
-        errors.push({
-          path: `/${X_AWS_IDP_INSTANCE_ARRAY}`,
-          message: `Instance Array names "${designated}", whose items are not objects — each element must be an object representing one document.`,
-        });
-      }
-    }
-  } else if (designated !== undefined && designated !== null && designated !== '') {
-    errors.push({
-      path: `/${X_AWS_IDP_INSTANCE_ARRAY}`,
-      message: 'Instance Array must be the name of a top-level array-of-objects property.',
-    });
-  }
-
-  return errors;
 };
 
 export const useSchemaValidation = (): UseSchemaValidationReturn => {

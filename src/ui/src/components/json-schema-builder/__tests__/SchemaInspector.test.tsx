@@ -436,14 +436,57 @@ describe('SchemaInspector "Documents per section"', () => {
 
   it('flags — rather than silently erases — a designation that is not an array of objects', () => {
     const onUpdateClass = renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'CheckNumber' }));
-    expect(screen.getByText(/is not a top-level array-of-objects property/)).toBeInTheDocument();
+    // The wording is `designationProblem`'s, the same string the save gate reports,
+    // so the inline warning and the blocking error cannot say different things.
+    expect(screen.getByText(/it must be an array, because each element is one document/)).toBeInTheDocument();
     expect(onUpdateClass).not.toHaveBeenCalled();
   });
 
   it('accepts an array whose items are a $ref, the idiom this editor emits', () => {
     renderClass(docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: { type: 'array', items: { $ref: '#/$defs/Rec' } } }));
     expect(screen.getByText('Record array')).toBeInTheDocument();
-    expect(screen.queryByText(/is not a top-level array-of-objects property/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/must be an array/)).not.toBeInTheDocument();
+  });
+
+  it('lets Designate be selected when there are SEVERAL candidate arrays, and asks which', () => {
+    // The regression this guards: `mode` used to be derived purely from the schema,
+    // and with >=2 candidates there is nothing to preselect — so the key stayed
+    // undefined, the derived mode snapped back to "One document", and the picker
+    // never rendered. Clicking the option did literally nothing, for exactly the
+    // class shape where naming the record axis is mandatory.
+    const twoArrays = {
+      ...scalars,
+      statements: { type: 'array', items: { type: 'object', properties: {} } },
+      transactions: { type: 'array', items: { type: 'object', properties: {} } },
+    };
+    const onUpdateClass = renderClass(docClass({}, twoArrays));
+    fireEvent.click(screen.getByText('Several — this class already lists them'));
+    expect(onUpdateClass).toHaveBeenCalledWith(
+      expect.objectContaining({ [X_AWS_IDP_MULTI_INSTANCE]: undefined, [X_AWS_IDP_INSTANCE_ARRAY]: undefined }),
+    );
+    // The picker is now on screen, prompting, rather than the mode silently reverting.
+    expect(screen.getByText('Record array')).toBeInTheDocument();
+    expect(screen.getByText(/Select which array holds one record per document/)).toBeInTheDocument();
+  });
+
+  it('preselects the sole candidate, because with one array there is no choice to make', () => {
+    const onUpdateClass = renderClass(docClass({}, { ...scalars, records: { type: 'array', items: { type: 'object', properties: {} } } }));
+    fireEvent.click(screen.getByText('Several — this class already lists them'));
+    expect(onUpdateClass).toHaveBeenCalledWith(expect.objectContaining({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }));
+  });
+
+  it('does not claim a designation the picker would not offer is invalid, when the backend accepts it', () => {
+    // The picker's filter is deliberately conservative (plainly-object items only).
+    // Reusing it as the validity verdict — which is what `!arrayProps.includes()`
+    // did — told the user a saveable schema "will be rejected on save". A typeless
+    // `items` (a oneOf record) is accepted by `validate_instance_array`, so the
+    // designation must be shown as selected and unflagged.
+    renderClass(
+      docClass({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' }, { records: { type: 'array', items: { oneOf: [{ type: 'object' }] } } }),
+    );
+    expect(screen.getByText('Record array')).toBeInTheDocument();
+    expect(screen.queryByText(/must be an array/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not an array of objects/)).not.toBeInTheDocument();
   });
 
   it('is not rendered for a policy/rule class', () => {

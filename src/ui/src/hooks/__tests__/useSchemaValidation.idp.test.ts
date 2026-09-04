@@ -61,10 +61,80 @@ describe('IDP class-level preflight validation', () => {
     expect(r.errors.some((e) => e.message.includes('must be an array'))).toBe(true);
   });
 
-  it('rejects a designation whose items are not objects', () => {
+  it('rejects a designation whose items are explicitly a non-object', () => {
     const r = validate(cls({ 'x-aws-idp-instance-array': 'tags' }, { tags: { type: 'array', items: { type: 'string' } } }));
     expect(r.valid).toBe(false);
-    expect(r.errors.some((e) => e.message.includes('items are not objects'))).toBe(true);
+    expect(r.errors.some((e) => e.message.includes('items are type "string"'))).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // The preflight must not be STRICTER than the backend. It blocks Save, so a
+  // shape `validate_instance_array` accepts must stay saveable — otherwise the
+  // schema becomes unstorable in the UI and the only way out is the CLI.
+  // ---------------------------------------------------------------------------
+
+  it('accepts typeless items — a oneOf/allOf record, which the backend allows', () => {
+    const r = validate(
+      cls(
+        { 'x-aws-idp-instance-array': 'records' },
+        { records: { type: 'array', items: { oneOf: [{ type: 'object' }, { type: 'object' }] } } },
+      ),
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it('accepts an array with no items at all, which the backend allows', () => {
+    const r = validate(cls({ 'x-aws-idp-instance-array': 'records' }, { records: { type: 'array' } }));
+    expect(r.valid).toBe(true);
+  });
+
+  it('accepts an empty items schema, which the backend allows', () => {
+    const r = validate(cls({ 'x-aws-idp-instance-array': 'records' }, { records: { type: 'array', items: {} } }));
+    expect(r.valid).toBe(true);
+  });
+
+  it('accepts items with properties but no explicit type', () => {
+    const r = validate(
+      cls({ 'x-aws-idp-instance-array': 'records' }, { records: { type: 'array', items: { properties: { A: { type: 'string' } } } } }),
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it('accepts an array property declared entirely by $ref, resolving it through $defs', () => {
+    // `{"$ref": "#/$defs/RecordList"}` is the idiom this editor emits for a reusable
+    // record type. Un-dereferenced the node has no `type`, so a naive check reports
+    // 'type "unset" — it must be an array' and blocks Save on a valid schema.
+    const schema = {
+      name: 'Pay-Statement',
+      'x-aws-idp-instance-array': 'records',
+      attributes: {
+        properties: { records: { $ref: '#/$defs/RecordList' } },
+        $defs: { RecordList: { type: 'array', items: { type: 'object', properties: { A: { type: 'string' } } } } },
+      },
+    };
+    expect(validate(schema).valid).toBe(true);
+  });
+
+  it('still rejects a $ref that resolves to a non-array', () => {
+    const schema = {
+      name: 'Pay-Statement',
+      'x-aws-idp-instance-array': 'records',
+      attributes: {
+        properties: { records: { $ref: '#/$defs/OneRecord' } },
+        $defs: { OneRecord: { type: 'object', properties: { A: { type: 'string' } } } },
+      },
+    };
+    const r = validate(schema);
+    expect(r.valid).toBe(false);
+    expect(r.errors.some((e) => e.message.includes('type "object"'))).toBe(true);
+  });
+
+  it('falls back to the un-dereferenced check when the $ref cannot be resolved', () => {
+    // A dangling ref must degrade exactly as the backend's deref_schema does —
+    // node returned as-is, then type-checked — not throw and not pass blindly.
+    const r = validate(cls({ 'x-aws-idp-instance-array': 'records' }, { records: { $ref: '#/$defs/Missing' } }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.some((e) => e.message.includes('must be an array'))).toBe(true);
   });
 
   it('rejects both keys on one class', () => {

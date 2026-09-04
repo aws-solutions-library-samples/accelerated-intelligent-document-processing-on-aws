@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { getAttributeNamesForClass } from '../PromptPreview';
+import { getAttributeNamesForClass, schemaDivergenceFor } from '../PromptPreview';
 
 describe('getAttributeNamesForClass', () => {
   it('walks flat scalars, nested objects and arrays of objects', () => {
@@ -150,5 +150,51 @@ describe('getAttributeNamesForClass', () => {
 
   it('returns an empty list for a class with no properties', () => {
     expect(getAttributeNamesForClass({})).toEqual([]);
+  });
+});
+
+/**
+ * The preview renders the AUTHORED class schema; extraction and assessment send
+ * transformed ones. This predicate decides what the "the real prompt differs from
+ * this preview" alert claims — so its whole value is being right about which
+ * transform applies to which step. Getting that wrong makes the accuracy warning
+ * itself inaccurate, which is worse than not having it.
+ */
+describe('schemaDivergenceFor', () => {
+  const on = { extraction: { multi_instance_detection: { enabled: true } } };
+  const off = { extraction: { multi_instance_detection: { enabled: false } } };
+  const flagged = { 'x-aws-idp-multi-instance': true };
+
+  it('reports neither transform when nothing is enabled', () => {
+    expect(schemaDivergenceFor(off, {}, 'extraction')).toEqual({ wrapped: false, probe: false });
+  });
+
+  it('reports the wrapper on BOTH extraction and confidence', () => {
+    // ExtractionService and AssessmentService each wrap in their own
+    // _get_class_schema, so the confidence step really does receive the wrapper.
+    expect(schemaDivergenceFor(off, flagged, 'extraction').wrapped).toBe(true);
+    expect(schemaDivergenceFor(off, flagged, 'confidence').wrapped).toBe(true);
+  });
+
+  it('reports the probe on extraction ONLY, because assessment never adds it', () => {
+    expect(schemaDivergenceFor(on, {}, 'extraction').probe).toBe(true);
+    expect(schemaDivergenceFor(on, {}, 'confidence').probe).toBe(false);
+  });
+
+  it('treats the truthy spellings pydantic accepts as enabled', () => {
+    // The UI control emits real booleans, but a hand-edited YAML `enabled: yes`
+    // coerces to True server-side and would otherwise put the probe on the wire
+    // with no warning at all.
+    for (const v of [true, 1, 'true', 'True', ' yes ', 'on', '1', 'y']) {
+      expect(schemaDivergenceFor({ extraction: { multi_instance_detection: { enabled: v } } }, {}, 'extraction').probe).toBe(true);
+    }
+  });
+
+  it('treats falsey spellings and absent config as disabled', () => {
+    for (const v of [false, 0, 'false', 'no', 'off', '', undefined, null]) {
+      expect(schemaDivergenceFor({ extraction: { multi_instance_detection: { enabled: v } } }, {}, 'extraction').probe).toBe(false);
+    }
+    expect(schemaDivergenceFor(undefined, undefined, 'extraction')).toEqual({ wrapped: false, probe: false });
+    expect(schemaDivergenceFor({}, {}, 'extraction').probe).toBe(false);
   });
 });

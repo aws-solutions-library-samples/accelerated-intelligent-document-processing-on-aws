@@ -211,6 +211,42 @@ function derefSchema(node: PropertySchema, root: ClassSchema, seen: Set<string> 
  *   - A ``$ref`` already entered on the current branch is emitted as a leaf
  *     rather than re-entered, so a recursive ``$defs`` terminates.
  */
+/**
+ * The server-side schema transforms this browser-side preview cannot show.
+ *
+ * Exported and pure so it can be tested without mounting the whole preview. The
+ * alert's only job is to be *accurate* about what the model receives, so a wrong
+ * bullet is worse than no bullet — and the step-dependence below is exactly the
+ * kind of detail that drifts silently:
+ *
+ * - `wrapped` applies to BOTH stages: `ExtractionService._get_class_schema` and
+ *   `AssessmentService._get_class_schema` each wrap independently from config.
+ * - `probe` applies to the EXTRACTION step ONLY. It is added in
+ *   `ExtractionService._build_wire_schema`; assessment wraps but never augments,
+ *   so claiming it on the confidence step made this alert state something false.
+ *   It also applies to every class when detection is on, not just a flagged one,
+ *   which is why it comes from the config rather than from the class.
+ */
+export const schemaDivergenceFor = (
+  formValues: Record<string, unknown> | null | undefined,
+  selectedClass: Record<string, unknown> | null | undefined,
+  selectedStep: string,
+): { wrapped: boolean; probe: boolean } => {
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const detection = (extraction.multi_instance_detection as Record<string, unknown>) || {};
+  const enabled = detection.enabled;
+  // Match pydantic's bool coercion, so a hand-written `enabled: yes` is not
+  // silently left unwarned.
+  const on =
+    enabled === true ||
+    enabled === 1 ||
+    (typeof enabled === 'string' && ['true', 'yes', 'on', '1', 't', 'y'].includes(enabled.trim().toLowerCase()));
+  return {
+    wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
+    probe: on && selectedStep === 'extraction',
+  };
+};
+
 export function getAttributeNamesForClass(cls: ClassSchema): string[] {
   const properties = cls.properties;
   if (!properties || typeof properties !== 'object') return [];
@@ -602,17 +638,10 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
   }, [classes, selectedClassId]);
 
-  // The two server-side schema transforms this browser-side preview cannot show.
-  // `probe` applies to EVERY class when detection is on, not just a flagged one —
-  // which is why it is derived from the config rather than from the class.
-  const schemaDivergence = useMemo(() => {
-    const extraction = (formValues?.extraction as Record<string, unknown>) || {};
-    const detection = (extraction.multi_instance_detection as Record<string, unknown>) || {};
-    return {
-      wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
-      probe: detection.enabled === true || detection.enabled === 'true',
-    };
-  }, [formValues, selectedClass]);
+  const schemaDivergence = useMemo(
+    () => schemaDivergenceFor(formValues, selectedClass, selectedStep),
+    [formValues, selectedClass, selectedStep],
+  );
 
   // Build config-derived substitutions based on the selected step
   const buildSubstitutions = useCallback((): Record<string, string> => {

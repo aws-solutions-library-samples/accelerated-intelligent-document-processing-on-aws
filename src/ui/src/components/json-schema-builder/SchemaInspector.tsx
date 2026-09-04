@@ -57,6 +57,7 @@ import {
   X_AWS_IDP_RULE_JSON,
   VALIDATION_ENGINE_OPTIONS,
 } from '../../constants/schemaConstants';
+import { designationProblem } from '../../utils/idpSchemaExtensions';
 
 interface SchemaAttribute {
   type?: string;
@@ -303,12 +304,37 @@ const MultiInstanceModeField = ({
 
   const designated = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
   const synthesize = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
-  const mode = synthesize ? MODE_SYNTHESIZE : designated ? MODE_DESIGNATE : MODE_ONE;
+  const storedMode = synthesize ? MODE_SYNTHESIZE : designated ? MODE_DESIGNATE : MODE_ONE;
+
+  // "Designate, but no property chosen yet" is a real state and the schema cannot
+  // express it — `x-aws-idp-instance-array` is either a name or absent, and absent
+  // reads as "One document". Deriving the mode purely from the schema therefore made
+  // Designate UNREACHABLE for the class that needs it most: with two or more
+  // candidate arrays there is nothing to preselect, so the key stayed undefined, the
+  // derived mode snapped straight back to "One document", and the picker never
+  // rendered. Clicking the option did nothing at all, and the only way to configure
+  // such a class was hand-editing YAML — the thing this control exists to avoid.
+  //
+  // So the radio holds its own state, seeded from the schema. `pendingMode` is
+  // cleared whenever the schema catches up, so an external edit still wins.
+  const [pendingMode, setPendingMode] = useState<string | null>(null);
+  const mode = pendingMode ?? storedMode;
+  useEffect(() => {
+    if (pendingMode && pendingMode === storedMode) setPendingMode(null);
+  }, [pendingMode, storedMode]);
 
   // A value set outside the UI (YAML/CLI), or left behind after the property's
   // type changed, is kept and flagged — never silently dropped. This key has had
   // one silent-erase bug already.
-  const staleDesignation = Boolean(designated) && !arrayProps.includes(designated);
+  //
+  // The verdict comes from `designationProblem`, the SAME predicate the save gate
+  // uses, so the two cannot disagree. It matters which way they disagreed before:
+  // this used to be `!arrayProps.includes(designated)`, and `arrayProps` is
+  // deliberately conservative (it only offers items that are plainly objects), so a
+  // designation the backend accepts — `items` with a `oneOf`, or a `$ref`'d array
+  // property — was labelled "will be rejected on save" while Save worked fine.
+  const designationError = designated ? designationProblem(selectedClass, designated) : null;
+  const staleDesignation = Boolean(designationError);
   const collides = Object.prototype.hasOwnProperty.call(properties, 'instances');
   // Narrow on purpose: an internal array is NOT evidence of being a list wrapper.
   // An invoice with line_items[] is a single-instance document and Synthesize on
@@ -317,10 +343,15 @@ const MultiInstanceModeField = ({
 
   const selectMode = (next: string): void => {
     if (next === mode) return;
+    // Every branch writes BOTH keys, so the mutual exclusion config-validate
+    // enforces is structurally unreachable rather than merely checked.
+    setPendingMode(next);
     if (next === MODE_ONE) {
       onUpdateClass({ [X_AWS_IDP_MULTI_INSTANCE]: undefined, [X_AWS_IDP_INSTANCE_ARRAY]: undefined });
     } else if (next === MODE_DESIGNATE) {
       // Preselect the only candidate — with one array there is no choice to make.
+      // With several, the key stays undefined and the picker asks; `pendingMode`
+      // is what keeps the mode selected while it does.
       onUpdateClass({
         [X_AWS_IDP_MULTI_INSTANCE]: undefined,
         [X_AWS_IDP_INSTANCE_ARRAY]: designated || (arrayProps.length === 1 ? arrayProps[0] : undefined),
@@ -332,7 +363,12 @@ const MultiInstanceModeField = ({
 
   const designateOptions = [
     ...arrayProps.map((name) => ({ label: name, value: name })),
-    ...(staleDesignation ? [{ label: `${designated} (not an array of objects)`, value: designated }] : []),
+    // Keep a designation the picker would not have offered (set outside the UI, or
+    // a shape the conservative filter skips) as a selectable option, so switching
+    // away from it is a deliberate act rather than a silent reset on first render.
+    ...(designated && !arrayProps.includes(designated)
+      ? [{ label: designationError ? `${designated} (not an array of objects)` : designated, value: designated }]
+      : []),
   ];
 
   return (
@@ -368,14 +404,16 @@ const MultiInstanceModeField = ({
           ]}
         />
 
+        {/* "Designate, nothing chosen yet" has no schema representation, so an unset
+            key saves as One document. The picker says so rather than discarding the
+            intent silently — it cannot be a save-blocking error. */}
         {mode === MODE_DESIGNATE && (
           <FormField
             label="Record array"
             description="The top-level array-of-objects property holding one record per document."
             errorText={
-              staleDesignation
-                ? `"${designated}" is not a top-level array-of-objects property of this class; the configuration will be rejected on save.`
-                : undefined
+              designationError ??
+              (designated ? undefined : 'Select which array holds one record per document — until then this class saves as “One document”.')
             }
           >
             <Select
