@@ -75,6 +75,7 @@ if not result["valid"]:
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
+| `class_settings.py` | `carry_forward_authored_settings()` — preserve a class's hand-authored class-level `x-aws-idp-*` keys when a generator (Discovery, BDA blueprint optimization) regenerates that class. See [Regenerating a class](#regenerating-a-class). |
 | `schema_constants.py` | JSON Schema extension keys (e.g. `x-aws-idp-document-type`, `x-aws-idp-extraction-model`, `x-aws-idp-extraction-system-prompt`, `x-aws-idp-extraction-task-prompt`). |
 | `schema_utils.py` | `deref_schema()` — resolve a local `#/$defs/<name>` `$ref` against a class schema. See [Dereferencing `$ref` subschemas](#dereferencing-ref-subschemas). |
 | `system_defaults/` | Packaged default configuration YAML used as the merge base. |
@@ -166,6 +167,53 @@ prefixes — all three must agree), `bda/blueprint_optimizer.py`,
 `discovery/multi_document_discovery.py` (reports the id that was saved).
 The Web UI's `SchemaBuilder.tsx` enforces the same pattern for hand-authored
 classes.
+
+## Regenerating a class
+
+Three write paths regenerate an existing document class from a model's output —
+Discovery (`discovery/classes_discovery.py::_merge_and_save_class`), BDA
+blueprint optimization (`bda/blueprint_optimizer.py::_apply_optimized_schema`)
+and schema bootstrap (`synthesis/bootstrap.py::merge_class_into_version`).
+All three used to assign the generated dict over the existing class, which erased
+every class-level `x-aws-idp-*` key an author had set. The write reported
+success, the class looked right, and the loss only appeared in the *next*
+document processed — as a different extraction model, a missing escalation, a
+re-included class or dropped records.
+
+```python
+from idp_common.config.class_settings import carry_forward_authored_settings
+
+carried = carry_forward_authored_settings(existing_class, new_class, synthesized)
+# new_class is mutated in place; `carried` lists the keys taken from existing_class
+```
+
+- **The rule is "preserve anything the generator did not emit"**, not a list of
+  keys to keep — a deny-list silently stops covering extension keys added later.
+  It has exactly two carve-outs, both for keys that describe the `properties` map
+  the generator just replaced rather than the class itself:
+  `_PROPERTY_COUPLED_KEYS` (`required`, `$defs`, `dependentRequired`,
+  `propertyNames`) are never carried — a stale `required` is validated against
+  every extracted object, so it reports a missing property on every document
+  forever — and `x-aws-idp-instance-array` is carried only while the property it
+  names survives, because `IDPConfig.validate_instance_array` **raises** otherwise
+  and the save path constructs `IDPConfig`, so a dangling pointer aborts the whole
+  write instead of losing one setting. Both drops are logged.
+- **`synthesized`** names keys the caller derived itself rather than receiving
+  from the model, so they lose to an authored value. Discovery passes
+  `{"description"}` when `_normalize_class_id()` filled a description in from a
+  class id it had to rename.
+- **Falsy authored values are settings**, not absences:
+  `x-aws-idp-exclude-from-processing: false` and a `0` threshold are carried.
+- **Scope is class-level.** Keys inside `properties` (per-attribute
+  `x-aws-idp-evaluation-method` / `-evaluation-threshold`) are replaced along with
+  the property, because a regenerated attribute can legitimately change type and
+  carrying a stale evaluation method onto it can be worse than dropping it.
+- **Carried values are deep-copied**, so a carried list/dict is not shared with
+  the existing class dict — `_apply_optimized_schema` hands its result back to a
+  caller that may still hold that dict.
+- A setting the generator *does* replace is logged as a `WARNING` naming the key,
+  including `description`. `$id` / `x-aws-idp-document-type` are excluded: those
+  are rewritten by the caller's id normalization, which logs its own rename.
 
 ## Configuration records
 

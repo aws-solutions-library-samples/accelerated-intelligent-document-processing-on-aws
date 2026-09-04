@@ -685,10 +685,11 @@ class TestApplyOptimizedSchema:
         original = _make_class_schema(class_id="Invoice")
         mock_blueprint_service.transform_bda_blueprint_to_idp_class_schema.return_value = {
             "type": "object",
+            "properties": {"new": {}},
         }
         mock_config_manager.get_raw_configuration.return_value = {
             "classes": [
-                {"$id": "Invoice", "type": "object", "old": True},
+                {"$id": "Invoice", "type": "object", "properties": {"old": {}}},
                 {"$id": "Receipt", "type": "object"},
             ]
         }
@@ -702,7 +703,59 @@ class TestApplyOptimizedSchema:
             c for c in saved_config["classes"] if c.get("$id") == "Invoice"
         ]
         assert len(invoice_classes) == 1
-        assert "old" not in invoice_classes[0]
+        # The optimized schema's own content replaces the old content. Settings
+        # the transform does not produce are carried forward instead — see
+        # TestApplyOptimizedSchemaPreservesAuthoredSettings (#764).
+        assert invoice_classes[0]["properties"] == {"new": {}}
+
+
+# ---------------------------------------------------------------------------
+# Regression (#764): blueprint optimization regenerates the class from the BDA
+# transform, which emits no x-aws-idp-* authoring keys. Saving it over the
+# existing class erased the author's model pins, thresholds and routing hints —
+# silently, surfacing only in the next document processed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestApplyOptimizedSchemaPreservesAuthoredSettings:
+    """Optimization may rewrite the schema, not the class's settings."""
+
+    def test_authored_class_settings_survive_optimization(
+        self, optimizer, mock_config_manager, mock_blueprint_service
+    ):
+        original = _make_class_schema(class_id="Invoice")
+        mock_blueprint_service.transform_bda_blueprint_to_idp_class_schema.return_value = {
+            "type": "object",
+            "properties": {"Total": {"type": "number"}},
+        }
+        mock_config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Invoice",
+                    "x-aws-idp-document-type": "Invoice",
+                    "type": "object",
+                    "properties": {"Total": {"type": "string"}},
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                    "x-aws-idp-confidence-threshold": 0.9,
+                    "x-aws-idp-multi-instance": True,
+                    "x-aws-idp-exclude-from-processing": False,
+                }
+            ]
+        }
+
+        optimizer._apply_optimized_schema(
+            "arn:bp-1", "arn:proj-1", {}, original, "default"
+        )
+
+        saved_config = mock_config_manager.save_raw_configuration.call_args[0][1]
+        (saved,) = [c for c in saved_config["classes"] if c.get("$id") == "Invoice"]
+        # The optimization's whole point — the new schema — still lands.
+        assert saved["properties"] == {"Total": {"type": "number"}}
+        assert saved["x-aws-idp-extraction-model"] == "us.amazon.nova-pro-v1:0"
+        assert saved["x-aws-idp-confidence-threshold"] == 0.9
+        assert saved["x-aws-idp-multi-instance"] is True
+        assert saved["x-aws-idp-exclude-from-processing"] is False
 
 
 # ---------------------------------------------------------------------------
