@@ -715,6 +715,20 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           return <Alert type={selectedStep === 'confidence' && !enabled ? 'warning' : 'info'}>{msg}</Alert>;
         })()}
 
+      {/* The preview is built in the browser from the class schema as stored, so
+          two server-side transforms are not reflected. Saying so is much cheaper —
+          and much less likely to rot — than duplicating the Python transform in
+          TypeScript and keeping the two in sync. */}
+      {selectedStep === 'extraction' && selectedClass?.['x-aws-idp-multi-instance'] ? (
+        <Alert type="warning" header="This class is multi-instance — the real prompt differs">
+          <span>
+            <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
+            <code>instances[]</code> array (one entry per document found in the section). This preview shows the class as you authored it,
+            not the wrapped form. The section&apos;s stored metadata is the authoritative record of what was sent.
+          </span>
+        </Alert>
+      ) : null}
+
       {/* Info about what's shown */}
       <Alert type="info" header="About Prompt Preview">
         <SpaceBetween size="xxs">

@@ -1975,7 +1975,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         self,
         extracted_fields: Any,
         recovered_instances: list[dict[str, Any]] | None,
-    ) -> None:
+    ) -> int | None:
         """Remove the detection probe from every per-instance record, in place.
 
         A multi-instance response carries the auxiliary count inside EVERY
@@ -1989,6 +1989,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         keys: a probe left inside a record would reach ``inference_result``, be
         scored by assessment, become a reporting column, and be diffed against a
         baseline that has no such key.
+
+        Returns the LARGEST count found inside a record, or None. Normally the
+        caller already has the value from the top-level pop — but a model that
+        answers with the count only inside each record and never at the top level
+        would otherwise leave ``instance_probe`` unset and fire no warning at all,
+        so the value is not thrown away just because it arrived in an unexpected
+        place.
         """
         from idp_common.schema.multi_instance import INSTANCES_KEY
 
@@ -1997,11 +2004,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             containers.append(extracted_fields.get(INSTANCES_KEY))
         containers.append(recovered_instances)
 
+        best: int | None = None
         for container in containers:
             if not isinstance(container, list):
                 continue
             for record in container:
-                self._read_instance_probe(record)
+                value = self._read_instance_probe(record)
+                if value is not None and (best is None or value > best):
+                    best = value
+        return best
 
     def _adapt_to_instances_wrapper(
         self,
@@ -4430,7 +4441,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # against a baseline that has no such key. Element 0 looked clean
             # because it is aliased to `extracted_fields`, which is why the
             # isolated unit tests passed.
-            self._strip_probe_from_instances(extracted_fields, recovered_instances)
+            nested_probe = self._strip_probe_from_instances(
+                extracted_fields, recovered_instances
+            )
+            if instance_probe is None and nested_probe is not None:
+                instance_probe = nested_probe
 
             # Schema-compliance filter (simple/traditional extraction only): drop
             # any top-level fields the model returned that the class schema does

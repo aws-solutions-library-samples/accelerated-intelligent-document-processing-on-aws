@@ -1,9 +1,9 @@
 docs:
 - id: tiny_form
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/tiny_form.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/tiny_form.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/tiny_form.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/tiny_form.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/tiny_form.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/tiny_form.pdf
   rows: 5
   pages: 1
   documents: 1
@@ -11,9 +11,9 @@ docs:
   series: null
 - id: small_narrow
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/small_narrow.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/small_narrow.pdf
   rows: 100
   pages: 3
   documents: 1
@@ -21,9 +21,9 @@ docs:
   series: null
 - id: manylists_400
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/manylists_400.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/manylists_400.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/manylists_400.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/manylists_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/manylists_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/manylists_400.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -31,9 +31,9 @@ docs:
   series: null
 - id: longdesc_100
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/longdesc_100.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/longdesc_100.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/longdesc_100.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/longdesc_100.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/longdesc_100.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/longdesc_100.pdf
   rows: 100
   pages: 3
   documents: 1
@@ -41,17 +41,17 @@ docs:
   series: null
 - id: kv_form
   gen: kv_form
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/kv_form.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/kv_form.pdf
   fields: 25
   tag: doc_type=keyvalue
   series: null
 - id: scale_25
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_25.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_25.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_25.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_25.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_25.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_25.pdf
   rows: 25
   pages: 1
   documents: 1
@@ -59,9 +59,9 @@ docs:
   series: scaling
 - id: scale_100
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_100.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_100.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_100.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_100.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_100.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_100.pdf
   rows: 100
   pages: 3
   documents: 1
@@ -69,9 +69,9 @@ docs:
   series: scaling
 - id: scale_400
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_400.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_400.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_400.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_400.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -79,9 +79,9 @@ docs:
   series: scaling
 - id: scale_800
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_800.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_800.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_800.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_800.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_800.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_800.pdf
   rows: 800
   pages: 17
   documents: 1
@@ -89,9 +89,9 @@ docs:
   series: scaling
 - id: scale_1200
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1200.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1200.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1200.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1200.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1200.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1200.pdf
   rows: 1200
   pages: 25
   documents: 1
@@ -99,9 +99,9 @@ docs:
   series: scaling
 - id: scale_1600
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1600.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1600.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_1600.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1600.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1600.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_1600.pdf
   rows: 1600
   pages: 33
   documents: 1
@@ -109,9 +109,9 @@ docs:
   series: scaling
 - id: scale_3200
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_3200.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_3200.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/scale_3200.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_3200.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_3200.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/scale_3200.pdf
   rows: 3200
   pages: 66
   documents: 1
@@ -119,9 +119,9 @@ docs:
   series: scaling
 - id: med_narrow
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/med_narrow.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/med_narrow.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/med_narrow.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/med_narrow.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/med_narrow.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/med_narrow.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -129,9 +129,9 @@ docs:
   series: null
 - id: large_narrow
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/large_narrow.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/large_narrow.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/large_narrow.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/large_narrow.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/large_narrow.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/large_narrow.pdf
   rows: 800
   pages: 17
   documents: 1
@@ -139,9 +139,9 @@ docs:
   series: null
 - id: xl_narrow
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/xl_narrow.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/xl_narrow.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/xl_narrow.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/xl_narrow.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/xl_narrow.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/xl_narrow.pdf
   rows: 1600
   pages: 33
   documents: 1
@@ -149,9 +149,9 @@ docs:
   series: null
 - id: wide_400
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/wide_400.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/wide_400.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/wide_400.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/wide_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/wide_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/wide_400.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -159,9 +159,9 @@ docs:
   series: null
 - id: noisy_400
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/noisy_400.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/noisy_400.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/noisy_400.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/noisy_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/noisy_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/noisy_400.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -169,9 +169,9 @@ docs:
   series: null
 - id: valuenoise_100
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_100.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_100.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_100.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_100.pdf
   rows: 100
   pages: 3
   documents: 1
@@ -179,9 +179,9 @@ docs:
   series: null
 - id: valuenoise_400
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_400.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_400.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/valuenoise_400.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/valuenoise_400.pdf
   rows: 400
   pages: 9
   documents: 1
@@ -189,9 +189,9 @@ docs:
   series: null
 - id: twodocs_2x20
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/twodocs_2x20.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/twodocs_2x20.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/twodocs_2x20.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/twodocs_2x20.pdf
   rows: 20
   pages: 2
   documents: 2
@@ -199,9 +199,9 @@ docs:
   series: null
 - id: paginated_3pg
   gen: bank_statement
-  pdf: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/paginated_3pg.pdf
-  truth: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/paginated_3pg.pdf.truth.json
-  out: /home/ec2-user/projects/idp2/benchmarks/corpus/docs/paginated_3pg.pdf
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/paginated_3pg.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/paginated_3pg.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/paginated_3pg.pdf
   rows: 100
   pages: 3
   documents: 1

@@ -830,8 +830,14 @@ than one-giant-attribute) evaluation report.
 This is the one part of the feature that can break a working deployment.
 Evaluation compares a prediction against a stored baseline **of the same shape**.
 A wrapped prediction against a flat baseline scores every field as
-missing-on-one-side, so the class's accuracy collapses to ~0 **with no error
-anywhere**.
+missing-on-one-side, so the class's accuracy collapses to ~0 — measured live: a
+correctly-migrated baseline scored **1.000** on the same document where a flat one
+scored **0.000**.
+
+Evaluation now logs a warning naming the class and the exact migration command when
+it sees the two shapes disagree, in either direction — so it is no longer *silent*.
+But the warning is in the evaluation Lambda's log, not on the report, and the score
+is still 0: treat it as a safety net, not a substitute for migrating.
 
 Migrate in the same change as the flag:
 
@@ -892,11 +898,14 @@ Two more things to know:
   `{"instances": […]}` shape — and a flat answer is salvaged as exactly **one**
   instance, so the loss looks like success. Re-author them wrapped. Configuration
   validation warns when a flagged class carries examples.
-- **The Prompt Preview shows the un-wrapped schema.** The preview is built in the
-  browser from the flat class schema, so for a flagged class it shows a prompt the
-  pipeline does not send. (It also omits the detection probe, which is added
-  server-side for every Simple-mode class.) The stored section metadata is the
-  authoritative record of what was sent.
+- **The Prompt Preview shows the un-wrapped schema**, and says so. The preview is
+  built in the browser from the class schema as stored, so for a flagged class the
+  prompt it renders is not the one the pipeline sends; it now carries a warning to
+  that effect rather than quietly misleading you. (It also omits the detection
+  probe when that is on.) The section's stored metadata is the authoritative record
+  of what was sent. Duplicating the transform in TypeScript was considered and
+  rejected: two implementations that must stay in sync are a worse liability than
+  one documented divergence.
 
 ## 3. Confidence Assessment
 

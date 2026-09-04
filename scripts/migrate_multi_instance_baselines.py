@@ -249,12 +249,12 @@ def main() -> int:
                 unchanged += 1
             continue
 
-        changed += 1
-        if args.direction == "wrap":
-            single_record.append(key)
         print(f"  {'MIGRATE' if args.apply else 'WOULD MIGRATE'} {key}")
 
         if not args.apply:
+            changed += 1
+            if args.direction == "wrap":
+                single_record.append(key)
             continue
 
         try:
@@ -272,10 +272,22 @@ def main() -> int:
             )
         except ClientError as exc:
             failed += 1
-            changed -= 1
-            single_record.pop()
             print(f"  ERROR writing         {key}: {exc}")
             continue
+
+        # Counted only AFTER the write actually landed. The counters used to be
+        # incremented up-front and rolled back in the error handler, and the
+        # rollback popped `single_record` unconditionally — which raises
+        # IndexError on `--direction unwrap`, because nothing is ever appended
+        # there. So a single AccessDenied during a rollback crashed with a
+        # traceback: exactly the failure this error handling was added to remove,
+        # on the path where an operator is already having a bad day.
+        #
+        # Counting after the fact also makes the printed list mean "written",
+        # which is what a reader needs it to mean.
+        changed += 1
+        if args.direction == "wrap":
+            single_record.append(key)
 
     print()
     print(f"scanned                 : {scanned}")

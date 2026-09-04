@@ -806,3 +806,44 @@ def test_strip_tolerates_missing_and_malformed_containers():
     svc._strip_probe_from_instances({"instances": "not-a-list"}, None)
     svc._strip_probe_from_instances(None, None)
     svc._strip_probe_from_instances({"instances": [None, "x", {"a": 1}]}, None)
+
+
+def test_a_count_that_arrives_ONLY_inside_records_is_still_used():
+    """The value is not thrown away just because it turned up in the wrong place.
+
+    A model that answers with the count inside each record and never at the top
+    level would otherwise leave instance_probe unset and fire no warning at all.
+    """
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    fields = {
+        "instances": [
+            {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+            {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        ]
+    }
+    assert svc._read_instance_probe(fields) is None  # nothing at the top level
+    assert svc._strip_probe_from_instances(fields, None) == 3
+    assert all(INSTANCE_PROBE_FIELD not in r for r in fields["instances"])
+
+
+def test_the_largest_nested_count_wins():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    fields = {
+        "instances": [
+            {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 2},
+            {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        ]
+    }
+    assert svc._strip_probe_from_instances(fields, None) == 3
+
+
+def test_no_nested_count_returns_none():
+    svc = _wrapped_svc()
+    assert (
+        svc._strip_probe_from_instances({"instances": [{"CheckNumber": "1"}]}, None)
+        is None
+    )
