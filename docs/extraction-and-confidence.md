@@ -204,6 +204,20 @@ you turn it off, judge the result on **completeness**, not on the token count.
 The schema-reminder tool is unaffected either way, so the agent can always ask for
 the schema again mid-run.
 
+> **What to expect if you turn it off: nothing much, and that is measured.** On the
+> benchmark suite it cost no completeness and no accuracy — and it did not save
+> anything measurable either. Two reasons, both worth knowing before you tune:
+> the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
+> of input price; and reclaiming them does **not** make a long document split into
+> fewer parts, because the schema text is not counted when the pipeline decides how
+> to split a document — the tokens come out of a safety margin that was already
+> unused. Earlier versions of this page and of the setting's own description said
+> the payoff was context-window headroom; that was wrong, and making it true is
+> tracked in
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
+> Treat this as a setting for measuring the question on your own documents, not as
+> a recommended optimisation.
+
 **Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
 **Configuration → Prompt Preview → System Prompt** tab ends with the
 `Expected Schema:` block this setting controls, and it is included in the token

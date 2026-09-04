@@ -393,11 +393,25 @@ in prose plausibly aids adherence.
 | `restate-on` (default) | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
 | `restate-off` | 6 | 0 | **1.0** (sd 0.0) | 1.0 |
 
-**Guidance: turning it off costs no completeness.** Observed cost was 12% lower with it
-off, but at cost CV 0.25–0.43 that is **not resolvable at n=6** — treat the benefit as
-context-window headroom, not dollars. Per-document token counts cannot measure it either
-(83k/54k/115k *within* one arm), because agentic turn count is non-deterministic; the
-per-*request* saving from static analysis is the defensible figure.
+**Guidance: turning it off costs no completeness — and buys nothing measurable either.**
+Observed cost was 12% lower with it off, but at cost CV 0.25–0.43 that is **not resolvable
+at n=6**. Per-document token counts cannot measure it either (83k/54k/115k *within* one
+arm), because agentic turn count is non-deterministic; the per-*request* saving from static
+analysis is the only defensible figure.
+
+⚠️ **Correction.** This entry previously told you to "treat the benefit as context-window
+headroom, not dollars". That was wrong, and it is worth stating plainly because #710 and the
+knob's own documentation made the same claim. Shard planning budgets against **OCR page text
+only** (`sharding.plan_shards`), and the budget is `max_input × (1 - context_buffer)` minus
+an output reserve and an image reserve (`sizing.compute_sizing_plan`) — **prompt overhead is
+never subtracted**. It is absorbed by the blanket `context_buffer` (default 0.30), so the
+reclaimed tokens come off a reserve that is already ~60,000 tokens wide on a 200K-window
+model and were already unused; `max_pages_per_shard` (default 5) closes shards on page count
+regardless. There is therefore **no shard-count mechanism** behind this knob today, which
+explains why no arm of any measurement here found a benefit. Making the budget subtract
+measured prompt overhead is
+[#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775);
+until that lands, treat both #710 knobs as neutral instruments rather than optimisations.
 
 ### `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
 
