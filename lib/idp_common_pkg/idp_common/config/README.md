@@ -264,6 +264,20 @@ confidence number *means* (extraction model/sampling, assessment). It is recorde
 every revision so confidence curves can eventually be branched per semantics rather
 than per profile; nothing keys off it yet.
 
+Both fingerprints normalize numerics (`_canonical_numbers`) before hashing, because
+a configuration arrives here by two routes that disagree about numeric type: from a
+save it is JSON (`float`), read back from DynamoDB it is `Decimal`, and `json.dumps`
+falls back to `default=str` for `Decimal`. Without normalization `temperature: 0.0`
+hashed three different ways — as `0.0`, as `"0.0"`, and as `"0"` when DynamoDB
+returned an unscaled zero — giving one configuration several fingerprints, which is
+precisely what a fingerprint exists to rule out. `bool` is special-cased because it
+is an `int` subclass and `enabled: true` must not collapse into `enabled: 1`.
+
+Fingerprints recorded by revisions cut before this normalization landed may differ
+from the value the same configuration hashes to now. That is harmless while nothing
+keys off them, but anything that starts comparing stored fingerprints must treat a
+mismatch on a pre-normalization revision as "unknown" rather than "changed".
+
 ## Rollback-safe DynamoDB serialization
 
 A CloudFormation stack rollback reverts the config custom-resource Lambda to the
