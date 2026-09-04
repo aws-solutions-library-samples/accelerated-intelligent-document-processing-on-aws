@@ -3091,6 +3091,27 @@ class IDPConfig(BaseModel):
                     if isinstance(spec, dict)
                     and deref_schema(spec, doc_class).get(SCHEMA_TYPE) == TYPE_ARRAY
                 ]
+                # Few-shot examples are hand-authored FLAT JSON in
+                # `attributesPrompt`. For a flagged class they therefore teach the
+                # model the opposite of the requested shape — and
+                # `_adapt_to_instances_wrapper` then rescues the flat answer as
+                # exactly ONE instance, so the loss looks like success. Warn, not
+                # error: the examples may already have been re-authored wrapped,
+                # and this validator cannot read prose.
+                examples = doc_class.get("x-aws-idp-examples")
+                if isinstance(examples, list) and examples:
+                    logger.warning(
+                        "Class '%s' sets %s and also carries %d few-shot "
+                        "example(s). Example prompts are hand-authored text: if "
+                        "they show a FLAT record they now contradict the "
+                        "requested {'instances': [...]} shape, and a flat answer "
+                        "is salvaged as exactly one instance — so the loss looks "
+                        "like success. Re-author them wrapped.",
+                        label,
+                        X_AWS_IDP_MULTI_INSTANCE,
+                        len(examples),
+                    )
+
                 if len(array_props) == 1 and len(properties_map) == 1:
                     only = array_props[0]
                     logger.warning(

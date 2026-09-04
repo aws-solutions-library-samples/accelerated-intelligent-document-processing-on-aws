@@ -1971,6 +1971,38 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         return value
 
+    def _strip_probe_from_instances(
+        self,
+        extracted_fields: Any,
+        recovered_instances: list[dict[str, Any]] | None,
+    ) -> None:
+        """Remove the detection probe from every per-instance record, in place.
+
+        A multi-instance response carries the auxiliary count inside EVERY
+        element, and the records can end up in either of two containers — the
+        synthesized ``instances`` list, or ``recovered_instances`` for an
+        unflagged class — so both are swept. Called after
+        ``_adapt_to_instances_wrapper``, because that is what decides which
+        container holds them.
+
+        Necessary because ``_filter_extracted_to_schema`` only filters TOP-LEVEL
+        keys: a probe left inside a record would reach ``inference_result``, be
+        scored by assessment, become a reporting column, and be diffed against a
+        baseline that has no such key.
+        """
+        from idp_common.schema.multi_instance import INSTANCES_KEY
+
+        containers: list[Any] = []
+        if isinstance(extracted_fields, dict):
+            containers.append(extracted_fields.get(INSTANCES_KEY))
+        containers.append(recovered_instances)
+
+        for container in containers:
+            if not isinstance(container, list):
+                continue
+            for record in container:
+                self._read_instance_probe(record)
+
     def _adapt_to_instances_wrapper(
         self,
         extracted_fields: Any,
@@ -4377,20 +4409,28 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
             # Multi-instance (#715): re-express a response that ignored the
             # wrapper, BEFORE the off-schema filter deletes every key and emits
-            # {}. Must run after the probe is popped so the probe cannot end up
-            # inside a synthesized instance.
+            # {}.
             if parsing_succeeded:
                 extracted_fields, recovered_instances = (
                     self._adapt_to_instances_wrapper(
                         extracted_fields, recovered_instances
                     )
                 )
-            if recovered_instances:
-                # A multi-instance array response carries the probe inside every
-                # element; strip it from all of them so the recovered instances
-                # are clean too.
-                for recovered in recovered_instances:
-                    self._read_instance_probe(recovered)
+
+            # Strip the probe from EVERY instance, from whichever container ends up
+            # holding them, and do it AFTER the adapt above.
+            #
+            # This ran before the adapt and only over `recovered_instances`, which
+            # leaked: for a flagged class answering with a bare array, the adapt
+            # moves the records into `extracted_fields["instances"]` and returns
+            # `recovered_instances = None`, so the loop never ran — and
+            # `_filter_extracted_to_schema` only filters TOP-LEVEL keys, so the
+            # probe survived inside `inference_result["instances"][1..N]` to be
+            # scored by assessment, written to a reporting column and diffed
+            # against a baseline that has no such key. Element 0 looked clean
+            # because it is aliased to `extracted_fields`, which is why the
+            # isolated unit tests passed.
+            self._strip_probe_from_instances(extracted_fields, recovered_instances)
 
             # Schema-compliance filter (simple/traditional extraction only): drop
             # any top-level fields the model returned that the class schema does

@@ -30,11 +30,16 @@ from .models import RuleJSON
 
 logger = logging.getLogger(__name__)
 
-# `name`, `name[0]`, `name[0][2]`, `name[-1]`. Anything else in the brackets is a
-# syntax error rather than a silent miss — a typo'd subscript that resolved to
-# None would look exactly like an absent optional parameter, which is the failure
-# mode this whole module's error handling exists to avoid.
-_SUBSCRIPT_RE = re.compile(r"^(?P<key>[^\[\]]*)(?P<subs>(?:\[-?\d+\])*)$")
+# `name`, `name[0]`, `name[0][2]`, `name[-1]`.
+#
+# The key must be NON-EMPTY. Allowing an empty one let `a.[0].b` match with
+# key="", which resolved to a silent miss — indistinguishable from an absent
+# optional parameter, which is the exact failure mode this module's error handling
+# exists to avoid.
+_SUBSCRIPT_RE = re.compile(r"^(?P<key>[^\[\]]+)(?P<subs>(?:\[-?\d+\])+)$")
+# A subscript with no property name in front of it: `[0]`, `[-1]`. Not a legal
+# dot-notation segment, so it is a malformed path rather than a key.
+_EMPTY_KEY_SUBSCRIPT_RE = re.compile(r"^(?:\[-?\d+\])+$")
 
 
 def _split_subscripts(
@@ -44,18 +49,35 @@ def _split_subscripts(
 
     A component with no subscripts returns an empty index list, so the ordinary
     dot-notation path is unaffected.
+
+    A component is treated as subscripted ONLY when it is a non-empty key followed
+    by one or more bracketed integers. Anything else is an ordinary key, brackets
+    and all — so a legitimate data key like ``Amount[USD]`` (plausible in an ERP
+    payload) still resolves by plain lookup and still just *misses*, exactly as it
+    did before subscripts existed. Turning that into a hard error would convert
+    "this rule was never firing" into "this document fails", which is a worse
+    outcome than the latent bug.
+
+    The one shape that IS rejected is a subscript with no key at all (``[0]``,
+    ``.[1].x``). That cannot be a real dot-notation segment, so it is unambiguously
+    a malformed path — and letting it match with an empty key resolved it to a
+    silent miss, indistinguishable from an absent optional parameter, which is the
+    exact failure mode this module's error handling exists to avoid.
     """
-    match = _SUBSCRIPT_RE.match(component)
-    if not match:
+    if _EMPTY_KEY_SUBSCRIPT_RE.match(component):
         raise ExtractionError(
             message=(
                 f"Invalid list subscript in path component {component!r} (in "
-                f"path {path!r}); expected name[<integer>]"
+                f"path {path!r}): a subscript needs a property name before it, "
+                f"e.g. name[0]"
             ),
             operation="extract_path",
             rule_id=rule_id,
             data_path=path,
         )
+    match = _SUBSCRIPT_RE.match(component)
+    if not match or not match.group("subs"):
+        return component, []
     subs = match.group("subs")
     indices = [int(value) for value in re.findall(r"\[(-?\d+)\]", subs)]
     return match.group("key"), indices
@@ -235,16 +257,22 @@ class DataExtractor:
             )
 
         # Split path into components
-        components = path.split(".")
+        # Parse EVERY component before traversing, so a malformed path is reported
+        # as malformed whatever the data happens to contain. Parsing lazily inside
+        # the loop meant a bad segment later in the path was masked by an ordinary
+        # miss earlier in it — the error surfaced or not depending on the document,
+        # which is the worst of both behaviours.
+        components = [
+            (component, *_split_subscripts(component, path, rule_id))
+            for component in path.split(".")
+        ]
 
         # Traverse the nested structure
         current = data
         traversed_path = []
 
-        for component in components:
+        for component, key, indices in components:
             traversed_path.append(component)
-
-            key, indices = _split_subscripts(component, path, rule_id)
 
             # Check if current level is a dictionary
             if not isinstance(current, dict):

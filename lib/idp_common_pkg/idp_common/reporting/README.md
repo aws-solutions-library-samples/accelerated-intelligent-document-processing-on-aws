@@ -9,6 +9,30 @@ The Reporting module provides comprehensive functionality for saving document pr
 
 ## Key Components
 
+### Multi-instance sections: one row per DOCUMENT (#715)
+
+A class flagged `x-aws-idp-multi-instance` produces
+`inference_result = {"instances": [ … ]}`. Left alone, `_flatten_json_data`
+`json.dumps`'s that list into a **single opaque `inference_result.instances`
+column**: N columns collapse to 1 and every existing dashboard query against the
+class's fields returns NULL.
+
+So `_multi_instance_records` fans a wrapped section out into **one parquet row per
+instance**, with a `record_index` column — the same column names a single-record
+class produces, so existing queries keep working. Glue tables are
+crawler-discovered, so there is no static column list to update.
+
+Two things to know:
+
+- ⚠️ `(document_id, section_id)` is **no longer unique** for such a table; the key
+  is `(document_id, section_id, record_index)`. `COUNT(DISTINCT document_id)`
+  undercounts documents of the class, because one input file can contain several.
+  The analytics agent is told this for flagged classes.
+- The decision is driven by **config**, not by the shape of the output, so a
+  Designate-mode class that happens to name its own array `instances` keeps its
+  existing reporting shape. An empty `instances` list falls back to the single-row
+  path.
+
 ### SaveReportingData Class
 
 The `SaveReportingData` class is the main component of the reporting module. It provides methods to save different types of document data to a reporting bucket in Parquet format, including automated cost calculation capabilities.

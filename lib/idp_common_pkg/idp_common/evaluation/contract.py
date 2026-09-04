@@ -550,9 +550,18 @@ def row_root_attribute(fc: Dict[str, Any]) -> str:
     # most records in them. Step past the synthesized root so a multi-instance
     # class reports the same per-attribute breakdown a single-record class does.
     #
-    # Narrow on purpose: this is ONLY the wrapper's reserved key. A user's own
-    # list attribute still groups under itself, which is the intended design (a
-    # list is one attribute).
+    # Narrow on purpose: ONLY the wrapper's reserved key. Every other list
+    # attribute still groups under itself, which is the intended design (a list is
+    # one attribute).
+    #
+    # Honest limitation: this has no access to the class's flag, so it keys on the
+    # literal name. A class with a top-level array genuinely NAMED `instances` and
+    # the flag OFF is therefore also stepped past — legal, because validation only
+    # rejects that collision when the flag is set. Threading the flag through here
+    # would mean passing a class schema into a helper the whole cross-Lambda
+    # contract module depends on; the trade was judged not worth it for a name
+    # collision this specific, but it is a real difference between the comment
+    # above and the code.
     if root == _INSTANCES_ROOT:
         remainder = path[len(root) :]
         # `instances[3].Field` -> `Field`; `instances[3]` (a row-level verdict

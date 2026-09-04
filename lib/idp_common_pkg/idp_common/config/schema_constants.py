@@ -111,7 +111,8 @@ X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
 # whose schema is ALREADY a packet of records; this one creates the packet).
 #
 # ⚠ Changes the shape of inference_result, so evaluation baselines for the class
-# must be migrated to the wrapped shape — see docs/multi-instance-sections.md.
+# must be migrated to the wrapped shape — see docs/extraction-and-confidence.md
+# and scripts/migrate_multi_instance_baselines.py.
 X_AWS_IDP_MULTI_INSTANCE = "x-aws-idp-multi-instance"
 
 # ============================================================================

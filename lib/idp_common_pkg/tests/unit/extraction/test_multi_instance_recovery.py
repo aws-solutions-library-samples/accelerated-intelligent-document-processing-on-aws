@@ -699,3 +699,82 @@ def test_an_empty_response_is_not_turned_into_an_instance():
     svc = _wrapped_svc()
     fields, _ = svc._adapt_to_instances_wrapper({}, None)
     assert fields == {}
+
+
+# --------------------------------------------------------------------------
+# The probe must not survive inside ANY instance.
+#
+# Found in review: the strip loop ran BEFORE _adapt_to_instances_wrapper and
+# only over `recovered_instances`. For a flagged class answering with a bare
+# array the adapt moves the records into extracted_fields["instances"] and
+# returns recovered_instances=None, so the loop never ran — and
+# _filter_extracted_to_schema only filters TOP-LEVEL keys, so the probe survived
+# inside inference_result["instances"][1..N]. Element 0 looked clean because it
+# is ALIASED to extracted_fields, which is exactly why testing the adapt in
+# isolation passed.
+# --------------------------------------------------------------------------
+
+
+def test_probe_is_stripped_from_every_instance_of_a_wrapped_result():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    records = [
+        {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "3", INSTANCE_PROBE_FIELD: 3},
+    ]
+    fields = {"instances": records}
+    svc._strip_probe_from_instances(fields, None)
+    assert all(INSTANCE_PROBE_FIELD not in r for r in fields["instances"])
+    assert [r["CheckNumber"] for r in fields["instances"]] == ["1", "2", "3"]
+
+
+def test_probe_is_stripped_from_recovered_instances_of_an_unflagged_class():
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _svc()
+    recovered = [
+        {"patient_name": "A", INSTANCE_PROBE_FIELD: 2},
+        {"patient_name": "B", INSTANCE_PROBE_FIELD: 2},
+    ]
+    svc._strip_probe_from_instances(recovered[0], recovered)
+    assert all(INSTANCE_PROBE_FIELD not in r for r in recovered)
+
+
+def test_the_adapt_then_strip_ORDER_leaves_no_probe_anywhere():
+    """The end-to-end ordering, which is the thing that was actually wrong.
+
+    A bare array from a flagged class: adapt moves it under `instances` and drops
+    `recovered_instances`, so the sweep must happen AFTER the adapt and must look
+    at the wrapper.
+    """
+    from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+    svc = _wrapped_svc()
+    records = [
+        {"CheckNumber": "1", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "2", INSTANCE_PROBE_FIELD: 3},
+        {"CheckNumber": "3", INSTANCE_PROBE_FIELD: 3},
+    ]
+    # What the parse path produces for a bare array: fields aliases element 0.
+    extracted, recovered = svc._normalize_list_result(records, context="t")[0], records
+    assert svc._read_instance_probe(extracted) == 3  # the top-level pop
+    extracted, recovered = svc._adapt_to_instances_wrapper(extracted, recovered)
+    svc._strip_probe_from_instances(extracted, recovered)
+
+    assert extracted["instances"] and len(extracted["instances"]) == 3
+    for record in extracted["instances"]:
+        assert INSTANCE_PROBE_FIELD not in record, (
+            "the probe survived inside an instance — it would be scored by "
+            "assessment, written to a reporting column and diffed against a "
+            "baseline that has no such key"
+        )
+
+
+def test_strip_tolerates_missing_and_malformed_containers():
+    svc = _wrapped_svc()
+    svc._strip_probe_from_instances({}, None)
+    svc._strip_probe_from_instances({"instances": "not-a-list"}, None)
+    svc._strip_probe_from_instances(None, None)
+    svc._strip_probe_from_instances({"instances": [None, "x", {"a": 1}]}, None)

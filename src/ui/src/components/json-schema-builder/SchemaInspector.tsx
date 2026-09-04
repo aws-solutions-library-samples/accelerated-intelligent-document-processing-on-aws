@@ -377,6 +377,11 @@ const InstanceArrayField = ({
 }): React.JSX.Element => {
   const candidates = arrayOfObjectPropertyNames(selectedClass);
   const current = (selectedClass[X_AWS_IDP_INSTANCE_ARRAY] as string) || '';
+  // Mutual exclusion, BOTH ways. Disabling only the multi-instance checkbox left
+  // the contradiction reachable from this side — a user could designate an array
+  // while multi-instance was on and save a config `validate_instance_array` then
+  // hard-rejects at load. "Unreachable" has to mean unreachable.
+  const multiInstanceOn = Boolean(selectedClass[X_AWS_IDP_MULTI_INSTANCE]);
   // A value set outside the UI (YAML/CLI) that no longer matches an
   // array-of-object property is kept and flagged rather than dropped — silently
   // erasing a user's configuration on open is the failure mode this whole key
@@ -393,9 +398,11 @@ const InstanceArrayField = ({
     <FormField
       label="Instance Array (Optional)"
       description={
-        candidates.length === 0 && !isStale
-          ? 'Only for a class whose schema is already a PACKET of records — it names the top-level array-of-objects property holding one record per document. This class has no array-of-objects property, so there is nothing to designate.'
-          : 'For a class whose schema is already a PACKET of records: names the top-level array-of-objects property that holds one record per document. The section then reports that array’s length as its instance count (shown as a badge in the Sections panel) instead of always 1. Purely a signal — it does not change the extraction shape or any downstream output.'
+        multiInstanceOn
+          ? 'Unavailable while Multi-instance Sections is on. The two are mutually exclusive: this names a record array the class already has, that one creates one.'
+          : candidates.length === 0 && !isStale
+            ? 'Only for a class whose schema is already a PACKET of records — it names the top-level array-of-objects property holding one record per document. This class has no array-of-objects property, so there is nothing to designate.'
+            : 'For a class whose schema is already a PACKET of records: names the top-level array-of-objects property that holds one record per document. The section then reports that array’s length as its instance count (shown as a badge in the Sections panel) instead of always 1. Purely a signal — it does not change the extraction shape or any downstream output.'
       }
       errorText={
         isStale
@@ -407,7 +414,7 @@ const InstanceArrayField = ({
         selectedOption={options.find((o) => o.value === current) || options[0]}
         onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_INSTANCE_ARRAY]: detail.selectedOption.value || undefined })}
         options={options}
-        disabled={candidates.length === 0 && !isStale}
+        disabled={multiInstanceOn || (candidates.length === 0 && !isStale)}
         placeholder="(None — one document per section)"
       />
     </FormField>

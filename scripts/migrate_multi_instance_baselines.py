@@ -43,9 +43,11 @@ from typing import Any
 
 try:
     import boto3
-except ImportError:  # pragma: no cover - operational script
-    print("boto3 is required: pip install boto3", file=sys.stderr)
-    raise
+    from botocore.exceptions import ClientError
+except ImportError as _exc:  # pragma: no cover - operational script
+    raise SystemExit(
+        f"boto3 is required to run this script (pip install boto3): {_exc}"
+    ) from _exc
 
 sys.path.insert(
     0,
@@ -71,20 +73,36 @@ def stack_outputs(stack_name: str, region: str | None) -> dict[str, str]:
     return {o["OutputKey"]: o["OutputValue"] for o in stacks[0].get("Outputs", [])}
 
 
+def _configuration_table(stack_name: str, region: str | None) -> str:
+    """Physical name of the stack's ``ConfigurationTable``.
+
+    ``describe_stack_resource`` rather than ``list_stack_resources``: the latter
+    returns at most 100 resources per page and the main template has close to 300,
+    so an unpaginated scan looked fine on a toy stack and then raised a bare
+    ``StopIteration`` on a real one — on the DEFAULT invocation of the very script
+    that mitigates this feature's one deployment-breaking risk.
+    """
+    cfn = boto3.client("cloudformation", region_name=region)
+    try:
+        resource = cfn.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId="ConfigurationTable"
+        )
+    except ClientError as exc:
+        raise SystemExit(
+            f"Could not find the ConfigurationTable resource in stack "
+            f"{stack_name!r}: {exc}. Pass --class-label to skip the config lookup "
+            f"and name the classes to migrate explicitly."
+        ) from exc
+    return resource["StackResourceDetail"]["PhysicalResourceId"]
+
+
 def load_classes(
     stack_name: str, region: str | None, config_profile: str | None
 ) -> list[dict[str, Any]]:
     """Read the stack's document classes from its Configuration table."""
     from idp_common.config.configuration_manager import ConfigurationManager
 
-    cfn = boto3.client("cloudformation", region_name=region)
-    resources = cfn.list_stack_resources(StackName=stack_name)["StackResourceSummaries"]
-    table = next(
-        r["PhysicalResourceId"]
-        for r in resources
-        if r["LogicalResourceId"] == "ConfigurationTable"
-    )
-    manager = ConfigurationManager(table_name=table)
+    manager = ConfigurationManager(table_name=_configuration_table(stack_name, region))
     config = (
         manager.get_merged_config(config_profile)
         if config_profile
@@ -193,9 +211,18 @@ def main() -> int:
     scanned = skipped_class = changed = unchanged = refused = 0
     single_record: list[str] = []
 
+    failed = 0
     for key in iter_section_results(s3, bucket, args.prefix):
         scanned += 1
-        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        # One AccessDenied or throttle must not abort the run with a traceback:
+        # the transform is idempotent, so the right behaviour is to report the
+        # object, keep going, and exit non-zero at the end.
+        try:
+            body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as exc:
+            failed += 1
+            print(f"  ERROR reading         {key}: {exc}")
+            continue
         try:
             result = json.loads(body)
         except json.JSONDecodeError:
@@ -230,18 +257,25 @@ def main() -> int:
         if not args.apply:
             continue
 
-        if args.backup_suffix:
-            s3.copy_object(
+        try:
+            if args.backup_suffix:
+                s3.copy_object(
+                    Bucket=bucket,
+                    Key=f"{key}{args.backup_suffix}",
+                    CopySource={"Bucket": bucket, "Key": key},
+                )
+            s3.put_object(
                 Bucket=bucket,
-                Key=f"{key}{args.backup_suffix}",
-                CopySource={"Bucket": bucket, "Key": key},
+                Key=key,
+                Body=json.dumps(migrated, indent=2).encode("utf-8"),
+                ContentType="application/json",
             )
-        s3.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=json.dumps(migrated, indent=2).encode("utf-8"),
-            ContentType="application/json",
-        )
+        except ClientError as exc:
+            failed += 1
+            changed -= 1
+            single_record.pop()
+            print(f"  ERROR writing         {key}: {exc}")
+            continue
 
     print()
     print(f"scanned                 : {scanned}")
@@ -250,6 +284,8 @@ def main() -> int:
     print(f"already correct         : {unchanged}")
     if refused:
         print(f"refused (multi-record)  : {refused}")
+    if failed:
+        print(f"FAILED (S3 errors)      : {failed}")
 
     if args.direction == "wrap" and single_record:
         print()
@@ -267,6 +303,13 @@ def main() -> int:
     if not args.apply and changed:
         print()
         print("Dry run — nothing was written. Re-run with --apply.")
+    if failed:
+        print()
+        print(
+            f"{failed} object(s) could not be processed. The transform is "
+            f"idempotent, so re-running after fixing permissions is safe."
+        )
+        return 1
     return 0
 
 

@@ -501,3 +501,26 @@ describe('SchemaInspector Multi-instance control', () => {
     expect(screen.queryByText('Multi-instance Sections (Optional)')).not.toBeInTheDocument();
   });
 });
+
+describe('SchemaInspector Designate/Synthesize mutual exclusion is bidirectional', () => {
+  const recordsArray = { type: 'array', items: { type: 'object', properties: {} } };
+  const cls = (overrides: Record<string, unknown>) => ({
+    id: 'class-1',
+    name: 'Pay-Statement',
+    [X_AWS_IDP_DOCUMENT_TYPE]: true,
+    attributes: { properties: { records: recordsArray }, required: [] },
+    ...overrides,
+  });
+
+  it('disables Instance Array while Multi-instance is on', () => {
+    // Disabling only the checkbox left the contradiction reachable from the other
+    // side, so a user could save a config the backend hard-rejects at load.
+    render(<SchemaInspector selectedClass={cls({ [X_AWS_IDP_MULTI_INSTANCE]: true })} onUpdate={vi.fn()} onUpdateClass={vi.fn()} />);
+    expect(screen.getByText(/Unavailable while Multi-instance Sections is on/)).toBeInTheDocument();
+  });
+
+  it('disables Multi-instance while Instance Array is set', () => {
+    render(<SchemaInspector selectedClass={cls({ [X_AWS_IDP_INSTANCE_ARRAY]: 'records' })} onUpdate={vi.fn()} onUpdateClass={vi.fn()} />);
+    expect(screen.getByText(/mutually exclusive/)).toBeInTheDocument();
+  });
+});

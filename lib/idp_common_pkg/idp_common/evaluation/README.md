@@ -19,6 +19,51 @@ All code that touches `stickler.*` lives under `idp_common/evaluation/stickler_b
 - `results.py` — Stickler `compare_with` dict → IDP `SectionEvaluationResult` (no re-scoring; encodes R3).
 - `doc_split.py` — thin adapters over `stickler.doc_split` for `load_sections_for_doc_split` and `compute_graded_packet_metrics` (R14).
 
+Outside that boundary:
+
+- `baseline_migration.py` — pure helpers for migrating stored evaluation
+  baselines to/from the multi-instance shape (GitHub #715). The operational S3
+  walker is `scripts/migrate_multi_instance_baselines.py` (dry-run by default,
+  idempotent, `--direction unwrap` to roll back).
+
+## Multi-instance classes (#715) — baselines must match the prediction's shape
+
+A class flagged `x-aws-idp-multi-instance` extracts
+`{"instances": [ …record… ]}`. Evaluation compares against a stored baseline **of
+the same shape**, so a wrapped prediction against a flat baseline scores every
+field as missing-on-one-side: the class reads ~0 accuracy and nothing explains
+why. This is the single biggest risk the feature introduces.
+
+Three things handle it:
+
+1. `stickler_backend/mapper.py` `build_all_stickler_configs` wraps each class
+   before translating it. Built from the flat schema, the prediction's only key is
+   `instances`, zero declared fields match, and the section **silently scores
+   0.0**.
+2. `contract.py` `row_root_attribute` steps past the synthesized `instances` root,
+   so a multi-instance class keeps the per-attribute report breakdown a
+   single-record class gets instead of collapsing every leaf under one giant
+   attribute. ⚠️ It keys on the literal `instances`, not on the class's flag, so a
+   class with a top-level array *named* `instances` and the flag OFF is also
+   affected (legal — validation only rejects the collision when the flag is set).
+3. `service.py` `_warn_on_multi_instance_shape_mismatch` logs a warning naming the
+   migration command when the two shapes disagree, in **either** direction
+   (rollback fails just as silently). Advisory only; it never changes a score.
+
+## Confidence-curve keys (`curve_store.py`)
+
+⚠️ **Key-shape change.** `_flatten_confidences` / `_flatten_values` used to key the
+list index off list *length* (`prefix if len(node) == 1 else prefix[i]`), so any
+single-element list lost its index: a one-row table keyed `Transactions.date`
+while a two-row table keyed `Transactions[0].date`. They now key off *depth* — only
+the outer `explainability_info` wrapper is un-indexed — so a list is always
+`Field[i].Sub`.
+
+Consequence to be honest about: a list whose length *varied* never joined and now
+does. But a list that was **always** single-element joined fine before, and its
+stored history is now orphaned — there is no migration and no read-side fallback,
+so those curve points will not join with new ones.
+
 Everything else — `service.py` (orchestration), `models.py` (dataclasses),
 `stickler_mapper.py` / `llm_comparator.py` (thin re-export shims for
 backward compatibility) — is backend-agnostic. A future Stickler upgrade is

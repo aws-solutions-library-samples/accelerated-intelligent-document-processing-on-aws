@@ -160,5 +160,9 @@ def pop_probe_value(fields: Any) -> int | None:
     raw = fields.pop(INSTANCE_PROBE_FIELD)
     value = _coerce_probe_value(raw)
     if value is None and raw is not None:
-        logger.info("Multi-instance probe returned an unusable value %r; ignoring", raw)
+        # Truncated: this is arbitrary model output, and an unusable "value" can be
+        # a paragraph of prose.
+        logger.info(
+            "Multi-instance probe returned an unusable value %.120r; ignoring", raw
+        )
     return value

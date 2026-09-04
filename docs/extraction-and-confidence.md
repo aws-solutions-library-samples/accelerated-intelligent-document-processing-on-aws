@@ -860,6 +860,31 @@ lists every document it touched so that work is visible.
 | BDA mode | not applicable — this is a pipeline-mode (`use_bda: false`) feature |
 | Advanced (agentic) extraction | the wrapper applies, but the #753 detection probe does not |
 
+#### What DEGRADES with the flag on — read this before turning it on
+
+The wrapper moves every one of your properties one level down, and three checks
+walk only the **top level** of a class schema. None of them is a correctness bug,
+but all three quietly stop doing anything for a flagged class:
+
+| Check | What stops applying |
+|---|---|
+| BLANK vs MISSING field handling (`x-aws-idp-source-page-types`) | Nothing at the top level carries it any more, so the distinction is not applied at all for a flagged class. |
+| "a declared list came back empty" (`extraction_incomplete`) | The only top-level array is now `instances`, so an **inner** list of a record coming back empty no longer raises it — and that is the largest silent-data-loss shape this pipeline has. |
+| Confidence-prompt property descriptions | The prompt builder descends one level under an array, so a nested group or list *inside* a record loses its sub-field descriptions. |
+
+Two more things to know:
+
+- **Few-shot examples are not rewritten.** `x-aws-idp-examples` prompts are
+  hand-authored text. If yours show a flat record they now contradict the requested
+  `{"instances": […]}` shape — and a flat answer is salvaged as exactly **one**
+  instance, so the loss looks like success. Re-author them wrapped. Configuration
+  validation warns when a flagged class carries examples.
+- **The Prompt Preview shows the un-wrapped schema.** The preview is built in the
+  browser from the flat class schema, so for a flagged class it shows a prompt the
+  pipeline does not send. (It also omits the detection probe, which is added
+  server-side for every Simple-mode class.) The stored section metadata is the
+  authoritative record of what was sent.
+
 ## 3. Confidence Assessment
 
 Confidence assessment produces a per-field confidence score (0.0–1.0) and an

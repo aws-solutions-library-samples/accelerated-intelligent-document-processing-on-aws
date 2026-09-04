@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from idp_common.config import schema_constants as sc
+from idp_common.schema.multi_instance import wrap_class_schema
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,17 @@ def index_config_classes(classes: List[Dict[str, Any]]) -> List[CatalogEntry]:
                 name=str(name),
                 source="config",
                 description=cls.get("description", ""),
-                schema=cls,
+                # The EFFECTIVE schema. A class flagged x-aws-idp-multi-instance
+                # (GitHub #715) extracts `{"instances": [ … ]}`, so a synthetic
+                # test set generated from the FLAT schema produces ground truth of
+                # the wrong shape — and evaluation then scores every field as
+                # missing on one side, which is the silent ~0 this feature's
+                # baseline migration exists to prevent. Every consumer of the
+                # catalog (synthesis bootstrap, the Quick Start tools, the
+                # data-generator extension) reads `schema` from here, so wrapping
+                # once at the source covers all of them. A no-op for an unflagged
+                # class.
+                schema=wrap_class_schema(cls),
             )
         )
     return entries

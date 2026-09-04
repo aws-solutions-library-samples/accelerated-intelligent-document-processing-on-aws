@@ -61,6 +61,7 @@ from typing import Any
 from idp_common.config.schema_constants import (
     DEFS_FIELD,
     ID_FIELD,
+    REF_FIELD,
     SCHEMA_FIELD,
     SCHEMA_ITEMS,
     SCHEMA_PROPERTIES,
@@ -110,6 +111,21 @@ _RECORD_SHAPE_KEYS = frozenset(
         "else",
         "title",
         "description",
+        # A class-level $ref/$dynamicRef describes the RECORD (2020-12 allows it
+        # alongside `properties`), so it must move down with them — left on the
+        # wrapper it would claim the wrapper is that type.
+        REF_FIELD,
+        "$dynamicRef",
+        # `examples`/`default`/`readOnly`/`writeOnly`/`deprecated`/`const`/`enum`
+        # annotate the RECORD's value. An `examples` list of flat records left on
+        # the wrapper would document the wrapper as being a record.
+        "examples",
+        "default",
+        "const",
+        "enum",
+        "readOnly",
+        "writeOnly",
+        "deprecated",
     }
 )
 
@@ -273,7 +289,18 @@ def unwrap_instances(inference_result: Any) -> list[dict[str, Any]] | None:
     value = inference_result.get(INSTANCES_KEY)
     if not isinstance(value, list):
         return None
-    return [item for item in value if isinstance(item, dict)]
+    records = [item for item in value if isinstance(item, dict)]
+    if len(records) != len(value):
+        # A dropped record is exactly the loss this whole feature exists to
+        # surface, so it must not happen quietly.
+        logger.warning(
+            "%d of %d elements of '%s' were not objects and were dropped; those "
+            "records are NOT in the result",
+            len(value) - len(records),
+            len(value),
+            INSTANCES_KEY,
+        )
+    return records
 
 
 def wrap_instances(records: list[dict[str, Any]]) -> dict[str, Any]:

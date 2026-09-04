@@ -43,6 +43,28 @@ axes:
     disabled:       {classification.sectionSplitting: disabled}
     page:           {classification.sectionSplitting: page}
     llm_determined: {classification.sectionSplitting: llm_determined}
+  # x-aws-idp-multi-instance on the document class (#715). Replaces the class's
+  # EFFECTIVE schema with an instances[] List-of-Class wrapper, so a section that
+  # holds several documents of the class extracts every one of them instead of
+  # only the first. A per-class JSON-Schema extension rather than a top-level
+  # config path, so it A/Bs on ONE stack with identical code — which is what makes
+  # a delta attributable to the feature.
+  #
+  # Only meaningful on a document that actually contains several records of one
+  # class AND a configuration that puts them in one section: pair it with
+  # `section_splitting: disabled` and the `twodocs_2x20` doc, or the two statements
+  # are split into two sections and there is nothing for the wrapper to do.
+  multi_instance:
+    'off': {classes.x-aws-idp-multi-instance: null}
+    'on':  {classes.x-aws-idp-multi-instance: true}
+  # extraction.multi_instance_detection.enabled (#753). Asks the model, in the same
+  # inference, how many documents of the class the pages hold, and warns when that
+  # exceeds what was extracted. ON by default as shipped; the `off` arm reproduces
+  # the pre-#753 silence on the SAME build, which is the only way to measure both
+  # the detection rate and the false-positive rate on ordinary documents.
+  multi_instance_detection:
+    'off': {extraction.multi_instance_detection.enabled: false}
+    'on':  {extraction.multi_instance_detection.enabled: true}
   # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
   # Converse tool instead of describing it in the prompt. The task prompt is
   # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
@@ -167,6 +189,8 @@ default_cell:
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
   class_confidence: topk              # the shipped default since #731
   ocr_dpi: '300'                      # the shipped default since #740
+  multi_instance: 'off'               # shipped default (opt-in per class)
+  multi_instance_detection: 'on'      # shipped default since #753
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -198,6 +222,39 @@ core_cells:
   - {id: core-bda-simple-sep,  ocr: bda,             extraction_mode: simple,   assessment: separate}
   - {id: core-bda-adv-sep,     ocr: bda,             extraction_mode: advanced, assessment: separate}
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
+
+# -----------------------------------------------------------------------------
+# MULTI-INSTANCE cells (#715 / #753). Kept out of `core_cells` on purpose: they
+# are only meaningful on a document that holds several records of one class in ONE
+# section, so running them across `core_docs` would measure nothing and cost real
+# money. `section_splitting: disabled` is what forces the single section — under
+# the default `llm_determined` the two statements are split apart and the wrapper
+# has nothing to do, which is the correct outcome and a different experiment.
+# -----------------------------------------------------------------------------
+multi_instance_cells:
+  # #753 REGRESSION A/B, on ordinary single-document docs. Identical but for the
+  # detection axis, so the delta is exactly "what does adding the auxiliary count
+  # property to the extraction request cost?" — in accuracy, completeness,
+  # calibration and tokens. This is the honest form of the no-regression check for
+  # a feature that ships ON by default: one build, one variable. A deploy-vs-deploy
+  # comparison would confound the change with everything else in the two builds.
+  #
+  # It also measures the FALSE-POSITIVE rate, which #753's acceptance criteria
+  # require to be measured rather than assumed: any
+  # extraction_multi_instance_suspected on a genuinely single-document doc is a
+  # false positive, and a warning that fires on ordinary documents is worse than no
+  # warning at all.
+  - {id: detect-off, ocr: textract_tables, extraction_mode: simple, assessment: separate, multi_instance_detection: 'off'}
+  - {id: detect-on,  ocr: textract_tables, extraction_mode: simple, assessment: separate, multi_instance_detection: 'on'}
+  # The pre-#753 world, reproduced on the SAME build: one section over two
+  # statements, no wrapper, no detection. Expect ~half the rows missing and NO
+  # warning — this is the arm that shows the loss was silent.
+  - {id: mi-silent,   ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'off', multi_instance_detection: 'off'}
+  # #753: same loss, now visible. Same extraction outcome expected; the delta is
+  # the extraction_multi_instance_suspected warning and the instance count.
+  - {id: mi-detected, ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'off', multi_instance_detection: 'on'}
+  # #715: the fix. Expect BOTH statements' rows recovered.
+  - {id: mi-wrapped,  ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'on',  multi_instance_detection: 'on'}
 
 # -----------------------------------------------------------------------------
 # CONTROL cells — deliberately WRONG or historical configurations that exist only
@@ -353,6 +410,36 @@ suites:
     docs:
     - valuenoise_100
     - longdesc_100
+    repeats: 3
+  # #715 / #753 three-arm study: silent loss -> visible loss -> fixed. Runs on
+  # `twodocs_2x20` (two complete statements, distinct account numbers, globally
+  # unique SEQ tags across copies, so completeness is exact) plus `small_narrow` as
+  # the SINGLE-document control — a delta there would mean the wrapper or the
+  # detection probe changed behaviour on ordinary documents, which is the
+  # regression that matters most.
+  # repeats: 3 — whether a model volunteers several records for a single-object
+  # schema is non-deterministic, so one sample cannot separate "the fix works"
+  # from "this run happened to comply".
+  multiinstance:
+    cells: "multi_instance_cells"
+    docs:  [twodocs_2x20, small_narrow]
+    repeats: 3
+  # Regression gate for the #715/#753 branch: the cells whose behaviour the change
+  # can reach at all. Simple-mode cells carry the detection probe in the prompt;
+  # `force-on` carries it in the toolSpec; the advanced cell is the CONTROL (the
+  # probe is deliberately not on the agentic path), so a delta there would mean
+  # something leaked. Run the same suite before and after the code change on ONE
+  # stack.
+  migate:
+    cells: [core-tt-simple-sep, core-tt-simple-int, core-tt-adv-sep, force-on, split-disabled]
+    docs:  [tiny_form, small_narrow, longdesc_100]
+    repeats: 3
+  # The #753 detection A/B in isolation: two cells differing ONLY on the detection
+  # axis, on ordinary single-document docs. Answers both "does defaulting it on
+  # cost anything" and "does it fire when it should not".
+  midetect:
+    cells: [detect-off, detect-on]
+    docs:  [tiny_form, small_narrow, longdesc_100]
     repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}

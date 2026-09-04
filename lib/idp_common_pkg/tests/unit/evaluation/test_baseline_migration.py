@@ -180,3 +180,80 @@ def test_section_class_label_reads_document_class_type():
     assert section_class_label({"document_class": {}}) is None
     assert section_class_label({}) is None
     assert section_class_label(None) is None
+
+
+# --------------------------------------------------------------------------
+# The shape-mismatch warning. Relying on the operator remembering to run the
+# migration script is not a control: a wrapped prediction against a flat
+# baseline reads ~0 accuracy and nothing says why.
+# --------------------------------------------------------------------------
+
+
+FLAGGED_CLASS = {
+    "$id": "Pay-Statement",
+    "x-aws-idp-document-type": "Pay-Statement",
+    "type": "object",
+    "x-aws-idp-multi-instance": True,
+    "properties": {"CheckNumber": {"type": "string"}},
+}
+PLAIN_CLASS = {
+    "$id": "Pay-Statement",
+    "x-aws-idp-document-type": "Pay-Statement",
+    "type": "object",
+    "properties": {"CheckNumber": {"type": "string"}},
+}
+WRAPPED = {"instances": [{"CheckNumber": "1"}]}
+FLAT_RESULT = {"CheckNumber": "1"}
+
+
+def _svc(classes):
+    from idp_common.evaluation.service import EvaluationService
+
+    return EvaluationService(config={"classes": classes})
+
+
+def _warn(caplog, classes, expected, actual):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _svc(classes)._warn_on_multi_instance_shape_mismatch(
+            "Pay-Statement", expected, actual, "1"
+        )
+    return caplog.text
+
+
+def test_wrapped_prediction_against_a_flat_baseline_warns(caplog):
+    text = _warn(caplog, [FLAGGED_CLASS], FLAT_RESULT, WRAPPED)
+    assert "BASELINE is flat" in text
+    assert "migrate_multi_instance_baselines.py" in text
+    assert "--apply" in text
+
+
+def test_wrapped_baseline_after_rolling_the_flag_back_off_warns(caplog):
+    """The rollback direction fails exactly as silently."""
+    text = _warn(caplog, [PLAIN_CLASS], WRAPPED, FLAT_RESULT)
+    assert "turned back off" in text
+    assert "--direction unwrap" in text
+
+
+def test_matching_shapes_are_silent(caplog):
+    assert _warn(caplog, [FLAGGED_CLASS], WRAPPED, WRAPPED) == ""
+    assert _warn(caplog, [PLAIN_CLASS], FLAT_RESULT, FLAT_RESULT) == ""
+
+
+def test_an_unknown_class_is_silent(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _svc([FLAGGED_CLASS])._warn_on_multi_instance_shape_mismatch(
+            "SomeOtherClass", FLAT_RESULT, WRAPPED, "1"
+        )
+    assert caplog.text == ""
+
+
+def test_the_check_never_raises_on_odd_inputs(caplog):
+    svc = _svc([FLAGGED_CLASS])
+    for expected, actual in ((None, None), ("x", 3), ({}, []), (WRAPPED, None)):
+        svc._warn_on_multi_instance_shape_mismatch(
+            "Pay-Statement", expected, actual, "1"
+        )

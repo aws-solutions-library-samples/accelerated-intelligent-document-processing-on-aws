@@ -225,12 +225,30 @@ def test_z3_plain_dot_paths_are_unaffected():
     assert ex._extract_path(data, "a.b") == {"c": 7}
 
 
-def test_z3_rejects_a_malformed_subscript_rather_than_missing_silently():
+def test_z3_rejects_a_subscript_with_no_property_name():
+    """`[0]` is not a legal dot-notation segment, so it is a malformed path — and
+    matching it with an empty key resolved it to a silent miss, indistinguishable
+    from an absent optional parameter."""
     from idp_common.rule_validation.z3.data_extractor import DataExtractor
     from idp_common.rule_validation.z3.exceptions import ExtractionError
 
-    with pytest.raises(ExtractionError, match="subscript"):
-        DataExtractor()._extract_path(Z3_DATA, "documents.pay_statement[abc].x")
+    for path in ("documents.[0].x", "[0]", "a.[-1]"):
+        with pytest.raises(ExtractionError, match="subscript"):
+            DataExtractor()._extract_path(Z3_DATA, path)
+
+
+@pytest.mark.parametrize("key", ["Amount[USD]", "a[abc]", "a]["])
+def test_z3_treats_a_bracketed_DATA_KEY_as_a_key_not_a_bad_subscript(key):
+    """A legitimate key containing brackets (plausible in an ERP payload) must
+    still resolve by plain lookup and still just MISS, as it did before subscripts
+    existed. Raising would turn "this rule was never firing" into "this document
+    fails", which is worse than the latent bug."""
+    from idp_common.rule_validation.z3.data_extractor import DataExtractor
+
+    data = {"sap": {key: "7"}}
+    ex = DataExtractor()
+    assert ex._extract_path(data, f"sap.{key}") == "7"
+    assert ex._extract_path({"sap": {}}, f"sap.{key}") is None
 
 
 # --------------------------------------------------------------------------
