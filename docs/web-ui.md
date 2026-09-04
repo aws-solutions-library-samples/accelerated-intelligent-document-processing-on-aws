@@ -373,7 +373,9 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 - **Class Selection**: For Extraction and Assessment, select a specific document class to see how its JSON Schema appears in the prompt
 - **Filled Placeholders**: Config-derived values (`{CLASS_NAMES_AND_DESCRIPTIONS}`, `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`, `{DOCUMENT_CLASS}`) are replaced with actual values from your configuration
 - **Runtime Markers**: Document-specific placeholders (`{DOCUMENT_TEXT}`, `{DOCUMENT_IMAGE}`, etc.) are shown as highlighted yellow markers indicating where document content will be inserted at processing time
-- **Token Estimates**: Approximate token counts for system and task prompts help with cost awareness
+- **Token Estimates**: Approximate token counts for the system prompt, task prompt and — when Schema Enforcement is on — the tool schema, so the total reflects everything your configuration puts on the wire
+- **Tool Schema**: With Extraction mode Simple and [Schema Enforcement](extraction-and-confidence.md#forced-tool-use-extractionforced_tool) on, a **Tool Schema** tab shows the `toolSpec` (tool name, description, input schema) the model is forced to call
+- **Agentic Schema Restatement**: With Extraction mode Advanced, the System Prompt tab includes the `Expected Schema:` block that [`restate_schema_in_system_prompt`](extraction-and-confidence.md#dropping-the-duplicated-schema-restate_schema_in_system_prompt) controls, shown as a labelled approximation of the generated schema
 - **Copy to Clipboard**: Copy rendered or raw prompt templates for use in external tools
 - **Substitution Details**: See the exact formatted class list or cleaned JSON Schema that gets inserted into the prompt
 

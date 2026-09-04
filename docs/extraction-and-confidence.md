@@ -204,6 +204,17 @@ you turn it off, judge the result on **completeness**, not on the token count.
 The schema-reminder tool is unaffected either way, so the agent can always ask for
 the schema again mid-run.
 
+**Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
+**Configuration → Prompt Preview → System Prompt** tab ends with the
+`Expected Schema:` block this setting controls, and it is included in the token
+total — so turning the setting off shows the total drop instead of leaving it
+unchanged. One caveat the preview states rather than hides: the real block is
+generated from a Pydantic model built from your class (every field gains a
+`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
+can only approximate it from the class schema. Expect the real block to be
+**larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
+which makes the previewed saving a floor, not a ceiling.
+
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
 > types) into Pydantic models internally. Improving your configuration directly
@@ -666,6 +677,15 @@ ran", which are very different results.
 `honored` (the model can accept a tool configuration and still answer in prose),
 `renamed_properties`, and `skipped` with a reason where applicable. `honored` is
 the number to look at first: forcing that is not honored has not been tested.
+
+**Visible in the Prompt Preview.** With Extraction mode **Simple** and this
+setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
+the exact `toolSpec` — tool name, tool description, and input schema — and its
+tokens are added to the previewed total, so the cost of turning enforcement on is
+no longer invisible. The tab shows property names **as you authored them** and
+says so, because the wire-safe rewriting below is reversed in the stored result;
+the token estimate is taken from the compact form actually serialized onto the
+request, not from the indentation added for readability.
 
 > **Field names with spaces are handled.** Bedrock restricts top-level tool
 > property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
