@@ -33,6 +33,26 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Analytics** for querying and visualizing processed document data
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
+## Document List
+
+The default page lists processed documents, over a scope chosen with the **Load** menu:
+
+- **Latest** (the default) — the most recent documents regardless of age. It is the default because a time window shows an empty table whenever the stack has been quiet for longer than the window, which reads as a broken deployment rather than as "nothing recent"; Latest is empty only when there are genuinely no documents. It is also the cheapest option, since a time window loads *every* document in its range while Latest stops after the newest 200. Capped at 200 documents: when more exist beyond those loaded, the header counter reads `(200+)` instead of `(200)`.
+- **A time window** — 2 hours through 30 days, or **Custom range…** for explicit start and end dates. Pick one of these when you want activity in a specific period rather than the most recent work.
+
+Your choice is remembered, so changing it once sticks for later visits.
+
+### Production vs Test Studio documents
+
+Test Studio submits its documents through the same pipeline as ordinary uploads — deliberately, so confidence and cost figures match what real runs produce. Because it makes them indistinguishable once processed, they are recorded on a separate index partition and the Document List shows one partition at a time, selected with the **Production / Test Studio** control beside the search box:
+
+- **Production** (the default on every visit) — documents submitted by upload, the API, the CLI, or an extension.
+- **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
+
+The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+> **Note:** documents processed before v0.6.5 carry no provenance metadata. The `ItemType` backfill run at upgrade retypes them where it can prove they came from a test run; any it cannot prove remain in the Production view. See the 0.6.5 upgrade note in [CHANGELOG.md](../CHANGELOG.md).
+
 ## Upload Documents
 
 The **Upload Documents** panel accepts documents from two sources, selected with the **Document source** toggle:
@@ -52,6 +72,123 @@ Many bundled samples are tuned for a specific configuration preset in the [Confi
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
+## Evaluation report
+
+On a document that was evaluated against a baseline, **View Evaluation Report**
+opens a summary that leads with the two figures the report exists to answer:
+
+- **Extraction accuracy** — weighted by field importance when the configuration
+  assigns weights, otherwise the plain proportion of fields that matched (the
+  label says which, because they are not the same number).
+- **Classification accuracy** — page level, shown separately because
+  classification and extraction fail independently. A document can be classified
+  perfectly and extracted badly, or the reverse, and one number cannot stand for
+  both.
+- **F1 score**, with precision and recall beneath it.
+
+A figure with no value is **omitted rather than shown as 0%** — a zero would be
+indistinguishable from "scored nothing correctly", which is the one actively
+wrong reading available. A document that could not be scored at all (no section
+had an extractable schema) says so instead of showing zeros.
+
+Below that, one expandable section per document section, each carrying the
+per-field table: expected value, extracted value, score, and the comparison
+method with the evaluator's own reason in a tooltip. Sections with mismatches are
+expanded by default. **Mismatches only** hides everything that matched, for
+working through problems on a wide document. A wrong class is called out at the
+top of its section, because it makes the field table below it meaningless rather
+than merely wrong.
+
+**Comparison methods used** lists the comparators this document's evaluation
+applied. Worth checking when a score is surprising: "Acme Inc" not matching
+"Acme, Inc." is usually a comparison-method question rather than an extraction
+one.
+
+The markdown report is still generated and is one click away via **Markdown
+report**, which is also where **download** and **print** live. Documents
+evaluated by an older build, whose JSON results cannot be read, fall back to the
+markdown automatically.
+
+## Comparing a document against its baseline
+
+On a document that has an evaluation baseline, **View Data** shows the
+**document class** comparison straight away — predicted, expected, and a verdict
+— and **Show evaluation** adds the field-by-field comparison, highlighting
+mismatched fields with their scores and reasons. The class is
+model output like any other, and getting it wrong invalidates everything beneath
+it — extraction runs against that class's schema, so the fields can be filled in
+competently and still be wrong. A banner above the fields reports one of:
+
+- **Classification matches ground truth** — the class agrees.
+- **Wrong class** — expected and predicted are both named, with a note that the
+  fields below were extracted under the predicted class's schema.
+- **No matching section** — the ground truth expects a section covering these
+  pages that no predicted section matched. A splitting difference, not a
+  labelling one.
+- **Page order** — right class and pages, different order. Extraction is
+  unaffected.
+
+The banner is omitted when the evaluation carries no split detail, and also when
+a multi-section document's section cannot be matched to a ground-truth section
+unambiguously — showing a *guessed* expected class would be worse than showing
+none, since a reviewer might "correct" a document that was already right.
+
+For the run-level view of the same information across every document in a test
+set, see
+[Finding classification errors](./test-studio.md#finding-classification-errors).
+
+## Re-grouping a processed document's pages
+
+**Document Sections → Edit page grouping** opens a board with every section side by
+side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
+to section** menu — the keyboard and screen-reader route to the same operation.
+Shift-click selects a run of pages so they move together, which is usually what a wrong
+split needs.
+
+Pages within a section can also be **reordered**: drop a page onto another to place it
+immediately before that one, or use **Order within this section → Move earlier / Move
+later**. Dropping onto the column's empty space instead places the page in document order,
+so an ordinary move does not create a custom order by accident. It is the same board as
+the annotate view, so the gesture is identical — see
+[Page order within a section](./test-studio.md#page-order-within-a-section), which also
+covers why order matters for scoring.
+
+One caveat specific to this surface: extraction sorts a section's pages before reading
+them, so reordering here does not change what the pipeline extracts. It is stored and it
+matters if the document is used as the prediction side of an evaluation.
+
+**The extracted values are kept and the document is not reprocessed.** Saving writes
+the page grouping and the section classes and nothing else, so extracted fields and any
+a reviewer corrected by hand survive. They were extracted from a different set of pages,
+so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
+would rather the pipeline redo them.
+
+That is the difference between the two routes, and it is the reason both exist:
+
+| | Edit page grouping | Edit Mode → Process Changes |
+|---|---|---|
+| Page assignments | drag and drop | comma-separated text |
+| Page order within a section | drag, or Move earlier / later | order of the ids you type |
+| Section ids | not editable | editable |
+| Extracted values | **kept** | cleared and regenerated |
+| Reprocessing | none | the document is requeued |
+| Roles | Admin, Reviewer, Annotator | Admin, Reviewer |
+
+**Refused while the document is processing.** `Edit Mode → Process Changes` is safe to
+use mid-run because it never writes the document itself — it hands it to the pipeline,
+which saves it. A grouping-only save writes directly, so it would race a run in
+progress; if the document is queued or running the save is refused with a message, and
+the arrangement you made is left on screen rather than discarded.
+
+Not available for Pattern-1, where BDA owns the section structure.
+
+Every page must end up in exactly one section, and a section with no pages blocks the
+save rather than vanishing — deleting a section discards its extracted values, so it
+stays a deliberate act. The same board and the same rules are used for test-set ground
+truth; see
+[test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
+being preserved matters most because they are the annotations being built.
+
 ## Edit Sections
 
 The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
@@ -60,7 +197,7 @@ The Edit Sections feature provides an intelligent interface for modifying docume
 
 - **Section Management**: Create, update, and delete document sections with validation
 - **Classification Updates**: Change section document types with real-time validation
-- **Page Reassignment**: Move pages between sections with overlap detection
+- **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
 - **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
 - **Immediate Feedback**: Status updates appear instantly in the UI
 - **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1

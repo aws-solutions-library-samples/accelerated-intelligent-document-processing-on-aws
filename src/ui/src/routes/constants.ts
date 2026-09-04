@@ -48,6 +48,14 @@ export const testSetAnnotateHref = (testSetId: string, objectKey?: string): stri
  * straight to the queue instead.
  */
 export const ANNOTATE_LANDING_PATH = `${TEST_STUDIO_PATH}/annotate`;
+/**
+ * Hash-link helper: href for one test run's results tab. Test Studio is a single
+ * route with tabs selected by ?tab=, so a deep link needs both params.
+ */
+export const testRunResultsHref = (testRunId: string): string =>
+  `#${TEST_STUDIO_PATH}?tab=results&testRunId=${encodeURIComponent(testRunId)}`;
+/** Hash-link helper: href for the Test Executions tab. */
+export const testExecutionsHref = (): string => `#${TEST_STUDIO_PATH}?tab=executions`;
 export const CUSTOM_MODELS_PATH = `${DOCUMENTS_PATH}/custom-models`;
 
 // --- Feature Platform ---

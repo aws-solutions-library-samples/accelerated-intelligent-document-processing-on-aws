@@ -40,6 +40,15 @@ def _env():
             "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/1/test-queue",
             "TRACKING_TABLE": "test-tracking",
             "LOG_LEVEL": "INFO",
+            # index.py builds boto3 clients at import, which need a region. Without
+            # this the tests inherit one from the developer's environment (or
+            # ~/.aws/config) and pass locally, then fail in CI with NoRegionError —
+            # the same trap 79de4f1d3 fixed for queue_sender's tests. Reproduce a
+            # CI-like environment with:
+            #   env -u AWS_DEFAULT_REGION -u AWS_REGION -u AWS_PROFILE \
+            #     AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+            #     pytest test_delete_output_data.py
+            "AWS_DEFAULT_REGION": "us-east-1",
         },
     ):
         yield

@@ -390,7 +390,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       return;
     }
     if (selectedVersion?.value === 'default') {
-      setError('The "default" configuration profile is read-only. Create a new version to save the discovered schema.');
+      setError('The "default" configuration profile is read-only. Create a new profile to save the discovered schema.');
       return;
     }
 
@@ -793,7 +793,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                 loadingText="Loading profiles..."
               />
               <Button iconName="add-plus" onClick={() => setShowCreateVersionModal(true)} disabled={isUploading}>
-                Create new version
+                Create profile
               </Button>
             </SpaceBetween>
           </FormField>
@@ -801,7 +801,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
           {selectedVersion?.value === 'default' && (
             <Alert type="warning">
               The <strong>default</strong> configuration profile is read-only and cannot be overwritten by discovery. Click{' '}
-              <strong>Create new version</strong> to save the discovered schema to a new version (it will be seeded from{' '}
+              <strong>Create profile</strong> to save the discovered schema to a new configuration profile (it will be seeded from{' '}
               <strong>default</strong>).
             </Alert>
           )}
@@ -822,7 +822,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                 {
                   value: 'replace',
                   label: 'Replace existing schema',
-                  description: 'Remove all existing document classes in the selected version, then save only the newly discovered ones.',
+                  description: 'Remove all existing document classes in the selected profile, then save only the newly discovered ones.',
                 },
               ]}
             />
@@ -830,9 +830,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
 
           {saveMode === 'replace' && selectedVersion && (
             <Alert type="warning">
-              Replace mode removes all existing document classes in version <strong>{selectedVersion.value}</strong>{' '}
-              <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the version is
-              left with no classes. This cannot be undone — consider creating a new version instead.
+              Replace mode removes all existing document classes in profile <strong>{selectedVersion.value}</strong>{' '}
+              <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the profile is
+              left with no classes. This cannot be undone — consider creating a new profile instead.
             </Alert>
           )}
 

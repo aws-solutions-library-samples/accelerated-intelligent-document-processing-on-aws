@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Wiring test for the "Instances" column in the Document Sections table.
+ * Wiring test for the multi-instance annotation in the Document Sections table.
  *
  * `Section.InstanceCount` is how many separate documents of the section's Class
- * extraction found in it. The presentation contract this pins:
- *   > 1        -> emphasised, and explains itself on hover (a section holding
- *                 several documents is the thing a user must notice).
- *   1          -> present but quiet; the normal case must not draw the eye.
- *   0 / absent -> undetermined (older documents, or extraction that failed
- *                 before producing a result). Renders "-", never "0", and never
- *                 as a problem — reading it as an alert would flag every
- *                 document processed before the field existed.
+ * extraction found in it. It used to have its own column; it is now a badge inside
+ * the Class/Type cell, shown ONLY when the count exceeds 1. The presentation
+ * contract this pins:
+ *   > 1          -> a badge beside the class name, explaining itself on hover (a
+ *                   section holding several documents is the thing a user must
+ *                   notice).
+ *   1, 0, absent -> NOTHING. A column rendered "1" on every row of a normal
+ *                   document and cost width the table did not have — it wrapped
+ *                   its own header and pushed Actions off the panel.
+ *
+ * This drops one distinction on purpose: the old column separated "1"
+ * (determined) from "-" (undetermined, i.e. older documents or extraction that
+ * failed before producing a result). Neither is actionable in this table, and both
+ * remain on the API and in the Processing Report.
  */
 
 import React from 'react';
@@ -49,19 +55,19 @@ const renderPanel = () =>
     </DocumentVersionProvider>,
   );
 
-/** Column index of the "Instances" header, resolved from the rendered table. */
-const instancesColumnIndex = (): number => {
+/** Column index of a header, resolved from the rendered table. */
+const columnIndex = (header: string): number => {
   const headers = Array.from(document.querySelectorAll('th'));
-  const index = headers.findIndex((th) => th.textContent?.trim() === 'Instances');
+  const index = headers.findIndex((th) => th.textContent?.trim() === header);
   expect(index).toBeGreaterThanOrEqual(0);
   return index;
 };
 
-/** The Instances cell for the row containing the given section Id. */
-const instancesCell = (sectionId: string): HTMLElement => {
+/** The Class/Type cell for the row containing the given section Id. */
+const classCell = (sectionId: string): HTMLElement => {
   const row = screen.getByText(sectionId).closest('tr');
   expect(row).not.toBeNull();
-  const cell = row!.querySelectorAll('td')[instancesColumnIndex()];
+  const cell = row!.querySelectorAll('td')[columnIndex('Class/Type')];
   expect(cell).toBeTruthy();
   return cell as HTMLElement;
 };
@@ -81,17 +87,19 @@ describe('InstanceCount GraphQL selection sets', () => {
   });
 });
 
-describe('SectionsPanel Instances column', () => {
-  it('renders the column', () => {
+describe('SectionsPanel multi-instance annotation', () => {
+  it('has no Instances column', () => {
     renderPanel();
-    expect(screen.getByText('Instances')).toBeInTheDocument();
+    const headers = Array.from(document.querySelectorAll('th')).map((th) => th.textContent?.trim());
+    expect(headers).not.toContain('Instances');
   });
 
-  it('emphasises a multi-instance section and explains it on hover', () => {
+  it('emphasises a multi-instance section beside its class, and explains it on hover', () => {
     renderPanel();
 
-    const cell = instancesCell('sec-multi');
-    expect(cell.textContent).toBe('3');
+    const cell = classCell('sec-multi');
+    expect(cell.textContent).toContain('BankStatement');
+    expect(cell.textContent).toContain('3');
 
     // The count alone is cryptic, so >1 is the only state that carries an
     // interactive explanation. Opening it is also what distinguishes the
@@ -103,26 +111,29 @@ describe('SectionsPanel Instances column', () => {
     expect(screen.getByText(/3 separate BankStatement documents/)).toBeInTheDocument();
   });
 
-  it('renders a single-instance section quietly', () => {
+  it('says nothing at all for a single-instance section', () => {
     renderPanel();
 
-    const cell = instancesCell('sec-single');
-    expect(cell.textContent).toBe('1');
-    // No popover trigger, and nothing that reads as a status/alert.
+    const cell = classCell('sec-single');
+    // Just the class name — the normal case must not spend a pixel.
+    expect(cell.textContent).toBe('W2');
     fireEvent.click(cell);
     expect(screen.queryByText(/Multiple documents in one section/)).not.toBeInTheDocument();
   });
 
-  it('renders an undetermined count as blank, not as "0" and not as an alert', () => {
+  it('says nothing for an undetermined count either', () => {
     renderPanel();
 
-    for (const sectionId of ['sec-zero', 'sec-absent']) {
-      const cell = instancesCell(sectionId);
-      expect(cell.textContent).toBe('-');
+    for (const [sectionId, className] of [
+      ['sec-zero', 'Invoice'],
+      ['sec-absent', 'Payslip'],
+    ]) {
+      const cell = classCell(sectionId);
+      // No count, no "0", and nothing that reads as a status or a problem: an
+      // undetermined count is what every document processed before the field
+      // existed has, and it is not news.
+      expect(cell.textContent).toBe(className);
       expect(cell.textContent).not.toContain('0');
-      expect(cell.textContent).not.toMatch(/instance/i);
-      // Cloudscape renders a StatusIndicator with a role="img" icon; an
-      // undetermined count must not produce one.
       expect(cell.querySelector('[role="img"]')).toBeNull();
     }
   });

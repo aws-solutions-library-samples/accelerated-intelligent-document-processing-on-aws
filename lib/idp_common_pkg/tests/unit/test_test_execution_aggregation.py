@@ -173,8 +173,8 @@ class TestAggregation:
             with patch.object(index, "_load_s3_json") as mock_load_s3:
                 mock_load_s3.return_value = mock_s3_results
 
-                results, scores, graded, excluded = index._load_comparison_results(
-                    "test-run-123", "test-table"
+                results, scores, graded, excluded, _cls = (
+                    index._load_comparison_results("test-run-123", "test-table")
                 )
 
                 assert len(results) == 2  # Two documents with stickler results
@@ -206,7 +206,7 @@ class TestAggregation:
         with patch.object(index, "dynamodb") as mock_dynamodb:
             mock_dynamodb.Table.return_value = incomplete_table
 
-            results, scores, graded, excluded = index._load_comparison_results(
+            results, scores, graded, excluded, _cls = index._load_comparison_results(
                 "test-run-123", "test-table"
             )
 
@@ -426,8 +426,8 @@ class TestAggregation:
         with patch.object(index, "dynamodb") as mock_dynamodb:
             mock_dynamodb.Table.return_value = table
             with patch.object(index, "_load_s3_json", side_effect=fake_load):
-                results, scores, _graded, excluded = index._load_comparison_results(
-                    "test-run-123", "test-table"
+                results, scores, _graded, excluded, _cls = (
+                    index._load_comparison_results("test-run-123", "test-table")
                 )
 
         # Only the scored doc contributed a Stickler comparison result and a
@@ -477,7 +477,7 @@ class TestAggregation:
         with patch.object(index, "dynamodb") as mock_dynamodb:
             mock_dynamodb.Table.return_value = table
             with patch.object(index, "_load_s3_json", return_value=payload):
-                _, _, graded, _excluded = index._load_comparison_results(
+                _, _, graded, _excluded, _cls = index._load_comparison_results(
                     "test-run-123", "test-table"
                 )
 
@@ -488,6 +488,177 @@ class TestAggregation:
             "final_score": 0.85,
             "v_measure": 0.9,
             "avg_ordering_score": 0.75,
+        }
+
+    def test_load_comparison_results_reads_classification_errors(self, mock_env):
+        """The per-section class detail must reach the run level.
+
+        It was computed for every document and then discarded here, which is why
+        a misclassified document was invisible in Test Studio except as a dip in
+        an aggregate percentage.
+        """
+        index = import_test_module()
+
+        table = MagicMock()
+        table.scan.return_value = {
+            "Items": [
+                {
+                    "PK": "doc#test-run-123#doc1.pdf",
+                    "ObjectKey": "doc1.pdf",
+                    "EvaluationStatus": "COMPLETED",
+                },
+            ]
+        }
+        payload = {
+            "overall_metrics": {"weighted_overall_score": 0.9},
+            "section_results": [
+                {"section_id": "1", "stickler_comparison_result": {"tp": 1}}
+            ],
+            "doc_split_metrics": {
+                "section_details_with_order": [
+                    {
+                        "section_id": "section_1",
+                        "ground_truth_class": "Invoice",
+                        "ground_truth_pages": [0, 1],
+                        "predicted_class": "Receipt",
+                        "predicted_pages": [0, 1],
+                        "order_matched": False,
+                    },
+                    {
+                        "section_id": "section_2",
+                        "ground_truth_class": "W2",
+                        "ground_truth_pages": [2],
+                        "predicted_class": "W2",
+                        "predicted_pages": [2],
+                        "order_matched": True,
+                    },
+                ]
+            },
+        }
+        with patch.object(index, "dynamodb") as mock_dynamodb:
+            mock_dynamodb.Table.return_value = table
+            with patch.object(index, "_load_s3_json", return_value=payload):
+                _, _, _graded, _excluded, cls_errors = index._load_comparison_results(
+                    "test-run-123", "test-table"
+                )
+
+        # Only the mismatched section is reported; the agreeing one is not noise.
+        assert set(cls_errors) == {"doc1.pdf"}
+        assert len(cls_errors["doc1.pdf"]) == 1
+        error = cls_errors["doc1.pdf"][0]
+        assert error["kind"] == "class"
+        assert error["expected_class"] == "Invoice"
+        assert error["predicted_class"] == "Receipt"
+        assert error["section_id"] == "section_1"
+
+    def test_classification_error_kinds_are_distinguished(self, mock_env):
+        """A wrong class, a missing section and a wrong page order differ.
+
+        Conflating them would misdirect whoever is debugging: only ``class``
+        means extraction ran the wrong schema.
+        """
+        index = import_test_module()
+
+        errors = index._classification_errors_for_doc(
+            "d.pdf",
+            {
+                "section_details_with_order": [
+                    {
+                        "section_id": "s1",
+                        "ground_truth_class": "Invoice",
+                        "predicted_class": "Receipt",
+                    },
+                    {
+                        "section_id": "s2",
+                        "ground_truth_class": "Invoice",
+                        "predicted_class": None,
+                    },
+                    {
+                        "section_id": "s3",
+                        "ground_truth_class": "Invoice",
+                        "predicted_class": "Invoice",
+                        "order_matched": False,
+                    },
+                    {
+                        "section_id": "s4",
+                        "ground_truth_class": "Invoice",
+                        "predicted_class": "Invoice",
+                        "order_matched": True,
+                    },
+                ]
+            },
+        )
+
+        assert [e["kind"] for e in errors] == ["class", "unmatched", "order"]
+
+    def test_classification_errors_tolerate_a_malformed_payload(self, mock_env):
+        """A missing or non-list section detail must not fail the whole run."""
+        index = import_test_module()
+
+        assert index._classification_errors_for_doc("d.pdf", {}) == []
+        assert (
+            index._classification_errors_for_doc(
+                "d.pdf", {"section_details_with_order": None}
+            )
+            == []
+        )
+        assert (
+            index._classification_errors_for_doc(
+                "d.pdf", {"section_details_with_order": ["not-a-dict", 5]}
+            )
+            == []
+        )
+
+    def test_collect_classification_errors_caps_and_reports_the_total(self, mock_env):
+        """The run result is one DynamoDB attribute, so the list must be bounded.
+
+        And the cap must not hide the scale of the problem: ``total`` is the
+        uncapped count, and class errors sort ahead of page-order nits so a noisy
+        run cannot push the ones that matter past the cap.
+        """
+        index = import_test_module()
+
+        per_doc = {
+            f"order{i}.pdf": [
+                {
+                    "doc_key": f"order{i}.pdf",
+                    "kind": "order",
+                    "expected_class": "A",
+                    "predicted_class": "A",
+                }
+            ]
+            for i in range(index.MAX_CLASSIFICATION_ERRORS + 50)
+        }
+        per_doc["wrong.pdf"] = [
+            {
+                "doc_key": "wrong.pdf",
+                "kind": "class",
+                "expected_class": "A",
+                "predicted_class": "B",
+            }
+        ]
+
+        result = index._collect_classification_errors(per_doc)
+
+        assert len(result["errors"]) == index.MAX_CLASSIFICATION_ERRORS
+        assert result["total"] == index.MAX_CLASSIFICATION_ERRORS + 51
+        assert result["truncated"] is True
+        assert result["documents_affected"] == index.MAX_CLASSIFICATION_ERRORS + 51
+        # The class error survived the cap despite being added last.
+        assert result["errors"][0]["kind"] == "class"
+        assert result["errors"][0]["doc_key"] == "wrong.pdf"
+
+    def test_collect_classification_errors_on_a_clean_run(self, mock_env):
+        """A run with nothing wrong reports zero, not absence."""
+        index = import_test_module()
+
+        result = index._collect_classification_errors({})
+
+        assert result == {
+            "errors": [],
+            "total": 0,
+            "documents_affected": 0,
+            "truncated": False,
         }
 
     def test_load_s3_json(self, mock_env):
@@ -1759,6 +1930,7 @@ class TestRunLevelRowAggregates:
                 {"doc-a.pdf": 0.9},  # doc_weighted_scores
                 {"doc-a.pdf": {"final_score": 0.9}},  # doc_graded_packet_scores
                 ["excluded-b.pdf", "excluded-c.pdf"],  # excluded_doc_keys
+                {},  # doc_classification_errors
             )
             result = index.aggregate_test_run_with_stickler("test-run-1", "test-table")
 
@@ -1771,6 +1943,34 @@ class TestRunLevelRowAggregates:
         assert result.get("excluded_document_count") == 2
         # And graded_packet_metrics folded in.
         assert "graded_packet_metrics" in result
+
+    def test_missing_output_bucket_degrades_instead_of_raising(self, mock_env):
+        """The path that had no test, which is why it broke.
+
+        ``_load_comparison_results`` returns a fixed-width tuple that the caller
+        unpacks positionally. When ``doc_classification_errors`` was added, the success
+        path, the type annotation and the unpack were all widened to five and this early
+        return was left at four — so a function with no OUTPUT_BUCKET raised
+        ``ValueError: not enough values to unpack`` on the unpack instead of logging the
+        misconfiguration and returning empties. Nothing failed, because nothing came
+        through here.
+
+        Pinned on the arity rather than the values: the point is that every exit from
+        this helper stays the same width as the annotation.
+        """
+        index = import_test_module()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OUTPUT_BUCKET", None)
+            result = index._load_comparison_results("test-run-1", "test-table")
+
+        assert len(result) == 5
+        comparison_results, weighted, graded, excluded, classification_errors = result
+        assert comparison_results == []
+        assert weighted == {}
+        assert graded == {}
+        assert excluded == []
+        assert classification_errors == {}
 
     def test_top_equals_sum_of_per_field_on_mixed_shape_row(self, mock_env):
         """Structural invariant: on a row whose value shape mixes

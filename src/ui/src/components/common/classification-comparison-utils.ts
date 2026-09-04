@@ -192,7 +192,14 @@ export const compareSectionClass = (
  */
 export const evaluationResultsUriFrom = (evaluationReportUri: string | undefined | null): string | null => {
   if (!evaluationReportUri) return null;
-  if (!evaluationReportUri.endsWith('/report.md')) return null;
+  // Matched against the whole `evaluation/report.md` tail rather than the
+  // filename alone, so this stays pinned to the one documented key template
+  // (EVALUATION_RESULTS_KEY_TEMPLATE, `{input_key}/evaluation/results.json`).
+  // A document also carries a summary report; deriving a results URI from that
+  // would produce a path that does not exist and read as a missing evaluation
+  // rather than as the wrong input. A version snapshot's longer prefix still
+  // ends this way, so nothing legitimate is excluded.
+  if (!evaluationReportUri.endsWith('/evaluation/report.md')) return null;
   return evaluationReportUri.replace(/\/report\.md$/, '/results.json');
 };
 

@@ -36,12 +36,15 @@ import useAppContext from '../../contexts/app';
 import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
+import ClassificationErrorsPanel from './ClassificationErrorsPanel';
+import { asFiniteNumber, formatCostUsd, formatUnitCostUsd } from './formatCost';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
   parseAccuracyBreakdown,
   parseSplitClassificationMetrics,
   parseGradedPacketMetrics,
+  parseClassificationErrors,
   parseFieldMetrics,
   parseConfusionMatrix,
   parseConfidenceMetrics,
@@ -795,6 +798,7 @@ const ComprehensiveBreakdown = ({
         <Container header={<Header variant="h3">Estimated Cost</Header>}>
           <Table
             resizableColumns
+            wrapLines
             items={(() => {
               const costItems: CostItem[] = [];
               let totalCost = 0;
@@ -813,6 +817,12 @@ const ComprehensiveBreakdown = ({
                   const api = apiParts.join('/');
 
                   const cost = (details.estimated_cost as number) || 0;
+                  const unitCost = asFiniteNumber(details.unit_cost);
+                  // Rows like `totalTokens` and `requests` are counts, not charges:
+                  // nothing prices them and nothing is billed for them. Seen live
+                  // reading "$0" unit cost beside "N/A" estimated cost, which says
+                  // both "free" and "not priced" in the same row.
+                  const isUnpriced = cost === 0 && (unitCost === null || unitCost === 0);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -820,8 +830,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: details.unit_cost ? `$${details.unit_cost}` : 'None',
-                    estimatedCost: cost > 0 ? `$${cost.toFixed(4)}` : 'N/A',
+                    unitCost: isUnpriced ? '—' : unitCost === null ? 'Not priced' : formatUnitCostUsd(unitCost),
+                    estimatedCost: isUnpriced ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
                     sortOrder: 0, // Regular items
                   });
                 });
@@ -858,7 +868,7 @@ const ComprehensiveBreakdown = ({
                     unit: '',
                     value: '',
                     unitCost: '',
-                    estimatedCost: `$${contextTotals[item.context].toFixed(4)}`,
+                    estimatedCost: formatCostUsd(contextTotals[item.context]),
                     isSubtotal: true,
                     sortOrder: 1, // Subtotal items
                   });
@@ -873,7 +883,7 @@ const ComprehensiveBreakdown = ({
                   unit: '',
                   value: '',
                   unitCost: '',
-                  estimatedCost: `$${totalCost.toFixed(4)}`,
+                  estimatedCost: formatCostUsd(totalCost),
                   isTotal: true,
                   sortOrder: 2, // Total item
                 });
@@ -929,10 +939,9 @@ const ComprehensiveBreakdown = ({
                   if (item.isSubtotal || item.isTotal) {
                     return <span style={{ fontWeight: 'bold', color: item.isTotal ? '#0073bb' : 'inherit' }}>{item.estimatedCost}</span>;
                   }
-                  const cost = item.estimatedCost;
-                  if (cost === 'N/A' || !cost) return 'N/A';
-                  const numValue = parseFloat(cost.toString().replace('$', ''));
-                  return isNaN(numValue) ? cost : `$${numValue.toFixed(4)}`;
+                  // Already formatted when the row was built; re-running toFixed(4)
+                  // here is what turned a sub-cent row back into '$0.0000'.
+                  return item.estimatedCost || 'N/A';
                 },
               },
             ]}
@@ -1133,6 +1142,10 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
       : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fieldMetrics: any = results.fieldMetrics ? parseFieldMetrics(results.fieldMetrics as string) : null;
+  // Per-section classification mismatches. Absent on runs aggregated before this
+  // shipped and on the Athena fallback path, both of which parse to {} — the
+  // panel renders nothing rather than an empty table in that case.
+  const classificationErrors = results.classificationErrors ? parseClassificationErrors(results.classificationErrors as string) : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _confusionMatrix: any = results.confusionMatrix ? parseConfusionMatrix(results.confusionMatrix as string) : null;
 
@@ -1376,9 +1389,23 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Alert>
         )}
 
-        {!hasAccuracyData && results.status === 'COMPLETE' && (
+        {/* A draft-labeling run has no baseline by construction — producing the
+            labels is the point — so evaluation never runs and there are never
+            accuracy metrics. Warning that they "are not available" described an
+            expected outcome as a fault, on a screen already displaying "Context:
+            Draft labeling run" two lines above. The server owns the rule and
+            reports it as isDraftLabeling. */}
+        {!hasAccuracyData && results.status === 'COMPLETE' && results.isDraftLabeling && (
+          <Alert type="info" header="No accuracy metrics — this run produced labels rather than being scored">
+            A draft-labeling run creates the ground truth, so there is nothing to score it against. Review the drafts in the test set, then
+            run a test against the published version to get accuracy metrics.
+          </Alert>
+        )}
+
+        {!hasAccuracyData && results.status === 'COMPLETE' && !results.isDraftLabeling && (
           <Alert type="warning" header="No Accuracy Data">
-            Test run completed but accuracy metrics are not available
+            Test run completed but accuracy metrics are not available. This usually means the test set had no published ground truth to
+            score against.
           </Alert>
         )}
 
@@ -1656,8 +1683,10 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Container>
         )}
 
-        {/* Lowest Scoring Documents Table */}
-        {results?.weightedOverallScores && (
+        {/* Lowest Scoring Documents Table. Suppressed for a draft-labeling run:
+            nothing was scored, so the table rendered its headers over an empty
+            body — directly under an alert explaining that there are no scores. */}
+        {results?.weightedOverallScores && !results.isDraftLabeling && (
           <Container
             header={
               <Header
@@ -1727,16 +1756,24 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Container>
         )}
 
-        {/* Breakdown Tables */}
+        {/* Above the breakdown tables on purpose: a wrong class invalidates the
+            field numbers below it, so it should be read first. */}
+        <ClassificationErrorsPanel classificationErrors={classificationErrors} testSetId={results.testSetId as string | undefined} />
+
+        {/* Breakdown Tables. A draft-labeling run keeps its COST breakdown — it
+            spends real money and that is worth seeing — but not the accuracy
+            tables, which the backend fills with structural zeros. "Classification:
+            Page Level Accuracy 0.000" on a run that scored nothing asserts total
+            failure where the honest answer is "not applicable". */}
         {(costBreakdown || accuracyBreakdown || splitClassificationMetrics || gradedPacketMetrics || fieldMetrics) && (
           <ComprehensiveBreakdown
             costBreakdown={costBreakdown}
-            accuracyBreakdown={accuracyBreakdown}
-            splitClassificationMetrics={splitClassificationMetrics}
-            gradedPacketMetrics={gradedPacketMetrics}
-            fieldMetrics={fieldMetrics}
-            averageWeightedScore={averageWeightedScore}
-            confidenceMetrics={results.confidenceMetrics}
+            accuracyBreakdown={results.isDraftLabeling ? null : accuracyBreakdown}
+            splitClassificationMetrics={results.isDraftLabeling ? null : splitClassificationMetrics}
+            gradedPacketMetrics={results.isDraftLabeling ? null : gradedPacketMetrics}
+            fieldMetrics={results.isDraftLabeling ? null : fieldMetrics}
+            averageWeightedScore={results.isDraftLabeling ? null : averageWeightedScore}
+            confidenceMetrics={results.isDraftLabeling ? null : results.confidenceMetrics}
           />
         )}
       </SpaceBetween>
@@ -1778,7 +1815,16 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             <strong>Files:</strong>{' '}
             {testSetStatus === 'NOT_FOUND' ? 'Test set deleted' : testSetFileCount !== null ? `${testSetFileCount} files` : 'Loading...'}
           </Box>
-          <FormField label="Number of Files" description={`Optional: Limit the number of files to process (max: ${testSetFileCount || 0})`}>
+          <FormField
+            label="Number of Files"
+            // Same reasoning as TestRunner: an unknown maximum must not render as
+            // a maximum of zero.
+            description={
+              testSetFileCount
+                ? `Optional: Limit the number of files to process (max: ${testSetFileCount})`
+                : 'Optional: Limit the number of files to process.'
+            }
+          >
             <Input
               value={reRunNumberOfFiles}
               onChange={({ detail }) => {

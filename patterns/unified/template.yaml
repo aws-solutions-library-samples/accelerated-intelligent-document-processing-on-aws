@@ -59,6 +59,23 @@ Parameters:
     Type: Number
     Default: 30000
 
+  BDACallbackTimeoutSeconds:
+    Type: Number
+    Default: 7200
+    MinValue: 60
+    MaxValue: 86400
+    Description: >-
+      Maximum seconds the BDA step waits for its asynchronous completion
+      callback before failing the execution. Only affects BDA mode
+      (use_bda: true). The BDA step uses waitForTaskToken, so it blocks until an
+      external SendTaskSuccess/SendTaskFailure arrives; without a bound, any
+      break in that path (BDA job stuck, task token lost, a dropped EventBridge
+      hop, the completion handler failing before it responds) leaves the
+      execution waiting forever, emitting neither ExecutionsFailed nor
+      ExecutionTime -- so no alarm can see it while it holds a concurrency slot.
+      Raise this if you process very large packets and see spurious
+      States.Timeout failures; the cost of a high value is only slower detection
+      of a genuinely stuck job, while too low a value fails healthy work.
 
   PreviousIDPPattern:
     Type: String
@@ -1343,8 +1360,9 @@ Resources:
               forced_tool:
                 type: object
                 sectionLabel: Schema Enforcement (experimental)
-                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction; Advanced already sends a tool schema."
+                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction only (Advanced already sends a tool schema), so this is shown only when Extraction mode is 'simple'."
                 order: 4.05
+                dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean
@@ -1360,12 +1378,13 @@ Resources:
               coercion:
                 type: object
                 sectionLabel: Value Coercion
-                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction; Advanced already coerces through its generated model."
+                description: "Deterministically repairs type/format mismatches in the extraction result before it is validated - currency and thousands separators in either convention into a number field, named-month and unambiguous numeric dates into a 'format: date' field, boolean-ish strings into a boolean. Costs nothing (no model call) and every change is recorded in the section's metadata. Applies to Simple extraction only (Advanced already coerces through its generated model), so this is shown only when Extraction mode is 'simple'."
                 # Fractional slots keep these two next to the other
                 # result-handling groups (confidence 3, geometry 4) without
                 # colliding with model (5) / model_lambda_hook_arn (6), whose
                 # integer slots are already taken.
                 order: 4.1
+                dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean
@@ -6357,6 +6376,11 @@ Resources:
         InvokeBDALambdaArn: !GetAtt InvokeBDAFunction.Arn
         BDAProcessResultsLambdaArn: !GetAtt BDAProcessResultsFunction.Arn
         WorkingBucket: !Ref WorkingBucket
+        # Bounds the waitForTaskToken wait on BDA_InvokeDataAutomation. The
+        # placeholder is UNQUOTED in the ASL because TimeoutSeconds must be an
+        # integer, which is why that file is not parseable as JSON without
+        # resolving substitutions first.
+        BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
         # Pipeline branch functions
         OCRFunctionArn: !GetAtt OCRFunction.Arn
         ClassificationFunctionArn: !GetAtt ClassificationFunction.Arn

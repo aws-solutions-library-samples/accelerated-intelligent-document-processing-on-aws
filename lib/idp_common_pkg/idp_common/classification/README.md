@@ -72,6 +72,16 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 `(absent)` means the model omitted the field, in which case the code defaults it to `"continue"`. That is deliberately reported as distinct from an explicit `"continue"`: an omitted signal merges pages *by accident*, while an explicit `"continue"` is the model's judgement. Distinguishing the two is what makes an unexpected merge diagnosable.
 
+### A class description can override the boundary rules (`PRECEDENCE`)
+
+`<boundary-detection-rules>` in the default `classification.task_prompt` ends with a `PRECEDENCE:` clause that promotes a document type's **own** boundary instructions above the generic rules. `_format_classes_list()` puts every class's `description` into `{CLASS_NAMES_AND_DESCRIPTIONS}`, so that clause makes the description the supported place to state a per-class rule — no code path or config key is involved.
+
+This is the fix for the one shape the generic rules get wrong ([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)): a long table that reprints its title and column headers on every page and paginates with a bare number. Rule 3 (opening header block ⇒ `start`) outranks rule 4 (continuation evidence ⇒ `continue`), the running header satisfies rule 3, and a lone `7` matches none of rule 1's pagination patterns — so continuation pages are read as new documents. Measured on `us.amazon.nova-2-lite-v1:0` at `temperature: 0`, a 16-page fund table split into 2–5 sections in 10 of 10 runs; with a `BOUNDARY:` sentence in the class description, 1 section in 10 of 10.
+
+Working example: `scripts/sdlc/config/nuveen.yaml` (the CI Step 8 config), guarded by `scripts/tests/test_nuveen_boundary_precedence.py` — which also asserts the `PRECEDENCE:` clause still exists, since removing it would silently disable every class-level instruction that depends on it. Name `"start"` / `"continue"` explicitly in the description; those are the values `document_boundary` takes.
+
+Two things this is **not** a workaround for, both measured: prompt-level wording changes that generalise the rule (they regress the no-pagination over-split case) and `contextPagesCount: 1` (it regresses back-to-back duplicates). See [docs/classification.md](../../../../docs/classification.md#known-failure-mode-repeating-running-headers) for the numbers.
+
 ### Classification confidence (`confidence`, `classification_reason`)
 
 Two OPTIONAL keys in the model's response are parsed alongside `class` and
@@ -154,7 +164,8 @@ when the probabilities sum to more than 1.0** — a distribution cannot exceed 1
 whereas a sum below 1 legitimately means "possibly some other class" and
 inflating the top candidate to absorb it would manufacture confidence.
 
-`resolve_top_k` clamps the requested candidate count to
+`resolve_top_k` clamps the requested count —
+`classification.confidence.top_k_candidates` (default **3**) — to
 `[2, len(valid_doc_types)]`: asking for more candidates than there are classes
 invites invented ones, and a single candidate is a verbalized confidence with
 extra syntax — the calibration benefit comes precisely from having to rank

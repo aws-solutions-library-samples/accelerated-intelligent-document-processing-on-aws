@@ -17,16 +17,16 @@ import {
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
+import ClassNameText from '../common/ClassNameText';
 import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
 import { useDocumentVersion } from '../../contexts/document-version';
+import usePageThumbnails from '../../hooks/use-page-thumbnails';
 
 const client = generateClient();
 const logger = new ConsoleLogger('PagesPanel');
@@ -84,7 +84,7 @@ const ClassCell = ({
   classificationIndex?: ClassificationIndex;
 }): React.JSX.Element => (
   <SpaceBetween direction="horizontal" size="xs">
-    <span>{item.Class || '-'}</span>
+    <ClassNameText>{item.Class || '-'}</ClassNameText>
     <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
   </SpaceBetween>
 );
@@ -140,7 +140,9 @@ const EditableClassCell = ({
   <FormField>
     {item.Class ? (
       <SpaceBetween direction="horizontal" size="xs">
-        <StatusIndicator>{item.Class}</StatusIndicator>
+        <StatusIndicator>
+          <ClassNameText>{item.Class}</ClassNameText>
+        </StatusIndicator>
         <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
         <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
       </SpaceBetween>
@@ -265,7 +267,6 @@ const createEditColumnDefinitions = (
 ];
 
 const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFICATION_INDEX }: PagesPanelProps): React.JSX.Element => {
-  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string | null>>({});
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedPages, setEditedPages] = useState<PageItem[]>([]);
   const [modifiedPageIds, setModifiedPageIds] = useState<Set<string>>(new Set());
@@ -275,12 +276,13 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const { currentCredentials } = useAppContext();
   const { settings } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview } = useUserRole();
   // When viewing a past version, pin page images to that run's object versions
   // and disable editing (edits write to the current objects, not the snapshot).
-  const { versionIdForUri, runId: viewingRunId, isHistorical } = useDocumentVersion();
+  const { isHistorical } = useDocumentVersion();
+  // Shared with the page-regrouping board, which needs the same signed thumbnails.
+  const thumbnailUrls = usePageThumbnails(pages);
 
   // Edit Mode should be disabled for reviewers until they click Start Review (claim the document)
   const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
@@ -318,28 +320,6 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
     }
   }, [isHistorical, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
 
-  const loadThumbnails = async () => {
-    if (!pages) return;
-
-    const urls: Record<string, string | null> = {};
-    await Promise.all(
-      pages.map(async (page) => {
-        if (page.ImageUri) {
-          try {
-            const url = await generateS3PresignedUrl(page.ImageUri, currentCredentials as Record<string, unknown>, {
-              versionId: versionIdForUri(page.ImageUri),
-            });
-            urls[page.Id] = url;
-          } catch (err) {
-            logger.error('Error generating presigned URL for thumbnail:', err);
-            urls[page.Id] = null;
-          }
-        }
-      }),
-    );
-    setThumbnailUrls(urls);
-  };
-
   // Initialize edited pages when entering edit mode
   useEffect(() => {
     if (isEditMode && pages) {
@@ -354,10 +334,6 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
       setModifiedPageIds(new Set());
     }
   }, [isEditMode, pages]);
-
-  useEffect(() => {
-    loadThumbnails();
-  }, [pages, viewingRunId]);
 
   // Check if current pattern is Pattern-1
   const isPattern1 = () => {

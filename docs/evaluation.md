@@ -960,14 +960,21 @@ classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.
 
-**Visual Editor ("View Data") under Show Evaluation.** Toggling **Show
-Evaluation** now compares the section's `document_class` as well as its fields,
-above the field list: the class this run assigned, the class ground truth
-expects, and a match/mismatch verdict. Both values are shown whether or not they
-agree, since you asked to see the comparison. It reads the same
-`evaluation/results.json` the field-level comparison already loads, and falls
-back to the baseline file's own `document_class.type` for a document with no
-page-level comparison.
+**Visual Editor ("View Data").** The class comparison appears above the field
+list on any document that has an evaluation baseline — the class this run
+assigned, the class ground truth expects, and a match/mismatch verdict. Both
+values are shown whether or not they agree.
+
+It is **not** behind the **Show Evaluation** toggle. That toggle defaults to off
+and only appears once the evaluation status resolves, so gating the class verdict
+with it made the headline signal invisible in the place people go looking for it.
+The baseline is loaded whenever one exists, so the single line costs nothing;
+the toggle still controls the noisier per-field scores and reasons.
+
+It reads the same `evaluation/results.json` the field-level comparison loads, and
+falls back to the baseline file's own `document_class.type` for a document with
+no page-level comparison. On a document with no baseline nothing is shown, since
+there is no expected class to compare against.
 
 Why this matters when reading scores: a misclassified page was extracted against
 the **wrong schema**, so its low extraction score is a symptom, not the cause.

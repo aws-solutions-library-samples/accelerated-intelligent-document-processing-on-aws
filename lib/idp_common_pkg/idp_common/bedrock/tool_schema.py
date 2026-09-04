@@ -61,6 +61,53 @@ _INVALID = re.compile(r"[^a-zA-Z0-9_.-]")
 # never `enum` values, never description text.
 _SUBSCHEMA_LISTS = ("anyOf", "allOf", "oneOf", "prefixItems")
 
+#: Keywords that identify a schema DOCUMENT rather than constrain a value, and
+#: which must not be sent inside a ``toolSpec.inputSchema``.
+#:
+#: Bedrock meta-validates the tool schema and enforces that ``$id`` is an RFC 3986
+#: URI-reference. An IDP class schema sets ``$id`` to the document-class name, so a
+#: class called ``Policy Application Form`` produces
+#: ``$id: "Policy Application Form"`` — spaces, therefore not a URI-reference, and
+#: Converse rejects the whole request with:
+#:
+#:     ValidationException: The json schema definition at
+#:     toolConfig.tools.0.toolSpec.inputSchema is invalid. ... $.$id: does not
+#:     match the uri-reference pattern
+#:
+#: These keywords carry no constraint, so dropping them cannot change what the
+#: model is asked for.
+_DOCUMENT_METADATA_KEYS = frozenset({"$id", "$schema", "$anchor", "$comment", "id"})
+
+#: Prefix of the accelerator's own schema extensions (few-shot examples, per-class
+#: prompt and model overrides, instance-array flags). They are instructions to THIS
+#: codebase, not to the model, and some hold large example payloads — so sending
+#: them would spend tokens on a directive the model cannot act on.
+_IDP_EXTENSION_PREFIX = "x-aws-idp-"
+
+
+def strip_non_wire_keywords(node: Any) -> Any:
+    """Recursively drop schema-document metadata and ``x-aws-idp-*`` extensions.
+
+    Applied to every node, not just the root: ``$id``/``$comment`` are legal on any
+    subschema, and a nested one would fail the same Bedrock meta-validation. Values
+    that are not dicts/lists pass through untouched.
+    """
+    if isinstance(node, list):
+        return [strip_non_wire_keywords(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    out: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _DOCUMENT_METADATA_KEYS or key.startswith(_IDP_EXTENSION_PREFIX):
+            continue
+        # `properties` keys are user-authored FIELD names, which may legitimately
+        # be spelled like a metadata keyword — never filter inside them.
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {k: strip_non_wire_keywords(v) for k, v in value.items()}
+        else:
+            out[key] = strip_non_wire_keywords(value)
+    return out
+
 
 def is_valid_tool_property_name(name: str) -> bool:
     """True if ``name`` can be sent as a toolSpec property key as-is."""
@@ -202,7 +249,9 @@ def sanitize_tool_schema(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], NameMa
     empty (``NameMap.is_empty()``), and ``restore_names`` is then a no-op — so a
     schema Bedrock already accepts costs nothing and is sent unchanged.
     """
-    clean, name_map = _sanitize_node(schema)
+    # Strip first: metadata keys can never be property names, and removing them
+    # before the rename walk keeps the two concerns separate.
+    clean, name_map = _sanitize_node(strip_non_wire_keywords(schema))
     if name_map.renamed or name_map.children or name_map.items:
         logger.debug(
             "Sanitized %d top-level tool-schema property name(s) for Bedrock",
@@ -278,3 +327,42 @@ def find_invalid_property_names(schema: Any, _path: str = "") -> List[str]:
             for branch in value:
                 bad += find_invalid_property_names(branch, _path)
     return bad
+
+
+def find_document_metadata_keywords(schema: Any, _path: str = "") -> List[str]:
+    """Paths of schema-DOCUMENT keywords that must not reach a toolSpec.
+
+    The read-only counterpart to :func:`strip_non_wire_keywords`, used by the
+    Bedrock client to fail locally with an actionable message instead of letting
+    Converse reject the request. Walks the same subschema keywords as
+    :func:`find_invalid_property_names`, and — like it — never looks *inside*
+    ``properties`` keys, because a user-authored field may legitimately be named
+    like a keyword.
+    """
+    found: List[str] = []
+    if isinstance(schema, list):
+        for i, item in enumerate(schema):
+            found += find_document_metadata_keywords(item, f"{_path}[{i}]")
+        return found
+    if not isinstance(schema, dict):
+        return found
+    for key, value in schema.items():
+        here = f"{_path}.{key}" if _path else str(key)
+        if key in _DOCUMENT_METADATA_KEYS or key.startswith(_IDP_EXTENSION_PREFIX):
+            found.append(here)
+            continue
+        if key == "properties" and isinstance(value, dict):
+            for prop_name, prop_schema in value.items():
+                sub = f"{_path}.{prop_name}" if _path else str(prop_name)
+                found += find_document_metadata_keywords(prop_schema, sub)
+        elif key == "items":
+            found += find_document_metadata_keywords(value, f"{_path}[]")
+        elif key == "$defs" and isinstance(value, dict):
+            for def_name, def_schema in value.items():
+                found += find_document_metadata_keywords(
+                    def_schema, f"$defs/{def_name}"
+                )
+        elif key in _SUBSCHEMA_LISTS and isinstance(value, list):
+            for branch in value:
+                found += find_document_metadata_keywords(branch, _path)
+    return found

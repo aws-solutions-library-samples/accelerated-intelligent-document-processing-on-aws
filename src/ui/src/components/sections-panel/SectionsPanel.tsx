@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Container,
@@ -28,9 +28,14 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
-import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
+import ClassNameText from '../common/ClassNameText';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getConfigClassOptions } from '../common/config-class-options';
+import PageGroupingEditor from '../common/PageGroupingEditor';
+import type { GroupedSection } from '../common/section-grouping';
+import { updateDocumentSections } from '../../graphql/generated';
+import usePageThumbnails from '../../hooks/use-page-thumbnails';
+import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
 import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
@@ -112,18 +117,23 @@ const ClassCell = ({
     <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
   );
 
+  // Only rendered when the section holds more than one document, so a normal
+  // section is just its class name.
+  const instances = <MultiInstanceBadge item={item} />;
+
   if (item.Excluded) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
-        <span style={{ color: '#5f6b7a' }}>{item.Class}</span>
+        <ClassNameText color="#5f6b7a">{item.Class}</ClassNameText>
         <Badge color="grey">Skipped: {item.ExclusionReason || 'excluded'}</Badge>
       </SpaceBetween>
     );
   }
-  if (!mismatch) return <span>{item.Class}</span>;
+  if (!mismatch && !instances) return <ClassNameText>{item.Class}</ClassNameText>;
   return (
     <SpaceBetween direction="horizontal" size="xs">
-      <span>{item.Class}</span>
+      <ClassNameText>{item.Class}</ClassNameText>
+      {instances}
       {mismatch}
     </SpaceBetween>
   );
@@ -131,29 +141,28 @@ const ClassCell = ({
 
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
 
-// Instance count cell. `InstanceCount` is how many separate documents of this
-// section's Class extraction found in it:
-//   absent / 0 -> undetermined (older documents, or extraction that failed
-//                 before producing a result). Rendered as "-": it is not a
-//                 problem and must not read as "0 instances".
-//   1          -> the normal case. Rendered quietly, in secondary text.
+// Multi-instance annotation, rendered INSIDE the class cell rather than in a
+// column of its own. `InstanceCount` is how many separate documents of this
+// section's Class extraction found in it, and it is worth screen space in
+// exactly one case:
 //   > 1        -> the section holds several distinct documents that
-//                 classification did not split apart. Emphasised with a Badge
-//                 (the same Badge vocabulary ClassCell uses for "Skipped") plus
-//                 a hover Popover, following the StatusCell precedent.
+//                 classification did not split apart. A Badge (the same Badge
+//                 vocabulary the "Skipped" annotation uses) plus a hover Popover.
+//   1, 0, absent -> nothing at all. A column showed "1" on every row of a normal
+//                 document and cost width the table did not have (it wrapped its
+//                 own header to "Instanc/es" and pushed Actions off the panel).
+//                 It also distinguished "1" from "undetermined" — a diagnostic
+//                 distinction, still available on the API and in the Processing
+//                 Report, that no reader of this table was acting on.
 // The *warning* for the unflagged case is owned by the Status column (backend
-// raises a `extraction_multi_instance_detected` ProcessingIssue), so this
-// column deliberately stays factual rather than alarming — a class configured
-// for multiple instances is working as intended.
-const InstancesCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+// raises a `extraction_multi_instance_detected` ProcessingIssue), so this stays
+// factual rather than alarming — a class configured for multiple instances is
+// working as intended.
+const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element | null => {
   const count = item.InstanceCount ?? 0;
 
-  if (count <= 0) {
-    return <Box color="text-status-inactive">-</Box>;
-  }
-
-  if (count === 1) {
-    return <Box color="text-body-secondary">1</Box>;
+  if (count <= 1) {
+    return null;
   }
 
   return (
@@ -684,27 +693,6 @@ const createColumnDefinitions = (
       isResizable: true,
     },
     {
-      id: 'instances',
-      header: 'Instances',
-      cell: (item: SectionItem) => <InstancesCell item={item} />,
-      sortingField: 'InstanceCount',
-      minWidth: 110,
-      width: 110,
-      isResizable: true,
-    },
-    {
-      id: 'classConfidence',
-      header: 'Class conf.',
-      // Confidence in the section's CLASS — the minimum across its pages. A
-      // static badge, deliberately not clickable: the per-page reasoning lives
-      // in the Document Pages table, and a section aggregate has none of its own.
-      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
-      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
-      minWidth: 130,
-      width: 130,
-      isResizable: true,
-    },
-    {
       id: 'confidenceAlerts',
       header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
@@ -793,27 +781,6 @@ const createPattern1EditColumnDefinitions = (
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
       minWidth: 120,
       width: 120,
-      isResizable: true,
-    },
-    {
-      id: 'instances',
-      header: 'Instances',
-      cell: (item: SectionItem) => <InstancesCell item={item} />,
-      sortingField: 'InstanceCount',
-      minWidth: 110,
-      width: 110,
-      isResizable: true,
-    },
-    {
-      id: 'classConfidence',
-      header: 'Class conf.',
-      // Confidence in the section's CLASS — the minimum across its pages. A
-      // static badge, deliberately not clickable: the per-page reasoning lives
-      // in the Document Pages table, and a section aggregate has none of its own.
-      cell: (item: SectionItem) => <ClassConfidence confidence={item.Confidence} variant="badge" />,
-      sortingComparator: (a: SectionItem, b: SectionItem) => compareClassConfidence(a.Confidence, b.Confidence),
-      minWidth: 130,
-      width: 130,
       isResizable: true,
     },
     {
@@ -953,6 +920,10 @@ const SectionsPanel = ({
   classificationIndex = EMPTY_CLASSIFICATION_INDEX,
 }: SectionsPanelProps): React.JSX.Element => {
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isRegrouping, setIsRegrouping] = useState(false);
+  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
+  const [groupingNotice, setGroupingNotice] = useState<string | null>(null);
+  const thumbnailUrls = usePageThumbnails(pages);
   const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -1007,6 +978,64 @@ const SectionsPanel = ({
   const processingStatuses = ['queued', 'running', 'processing', 'postprocessing', 'summarizing', 'evaluating'];
   const docStatus = documentItem?.objectStatus?.toLowerCase() || '';
   const isDocumentProcessing = processingStatuses.includes(docStatus);
+
+  /**
+   * Pages for the board, in the document's OWN numbering.
+   *
+   * Passed through unconverted, unlike the test-set path: document page ids are 1-based
+   * except BDA / Pattern-1, which is 0-based, and `section-grouping` is deliberately
+   * base-agnostic for exactly this reason. Converting here would put an off-by-one into
+   * the surface that has two numbering conventions.
+   */
+  const boardPages = useMemo(
+    () => (pages ?? []).map((page) => ({ id: page.Id, imageUri: thumbnailUrls[String(page.Id)] ?? null })),
+    [pages, thumbnailUrls],
+  );
+
+  const boardSections = useMemo<GroupedSection[]>(
+    () =>
+      (sections ?? []).map((section) => ({
+        sectionId: String(section.Id),
+        documentClass: section.Class ?? null,
+        pageIds: (section.PageIds ?? []).map((id) => Number(id)),
+      })),
+    [sections],
+  );
+
+  const handleSaveGrouping = async (next: GroupedSection[]) => {
+    const documentKey = documentItem?.objectKey || documentItem?.ObjectKey;
+    if (!documentKey) return;
+    setIsSavingGrouping(true);
+    try {
+      const response = await client.graphql({
+        query: updateDocumentSections,
+        variables: {
+          objectKey: documentKey,
+          sections: next.map((section) => ({
+            sectionId: section.sectionId,
+            classification: section.documentClass ?? undefined,
+            pageIds: section.pageIds.map((id) => String(id)),
+          })),
+        },
+      });
+      const result = response.data?.updateDocumentSections;
+      if (!result?.success) {
+        // Surfaced rather than thrown: the resolver returns a reasoned refusal for the
+        // cases a reviewer can act on — a document mid-pipeline, most of all.
+        setGroupingNotice(result?.message ?? 'The page grouping could not be saved.');
+        return;
+      }
+      setGroupingNotice(result.message ?? null);
+      setIsRegrouping(false);
+      // The document record changed underneath the page, so the caller refetches.
+      if (onDocumentUpdate) onDocumentUpdate((prev) => ({ ...prev }));
+    } catch (err) {
+      logger.error('Could not save the page grouping:', err);
+      setGroupingNotice(`Could not save the page grouping: ${getErrorMessage(err)}`);
+    } finally {
+      setIsSavingGrouping(false);
+    }
+  };
 
   // Disable edit mode if:
   // - User has no write or review permissions (Viewer role), OR
@@ -1317,9 +1346,12 @@ const SectionsPanel = ({
       return true;
     }
 
-    // Check for changes in page IDs (deep comparison)
-    const originalPageIds = [...(originalSection.PageIds || [])].sort();
-    const currentPageIds = [...(section.PageIds || [])].sort();
+    // Page ids, compared in order. Both sides used to be sorted before comparing, which
+    // made a pure reorder invisible — Save would stay disabled on a real change — and the
+    // sort had no comparator, so it ordered numbers lexicographically (1, 10, 2). Order is
+    // part of the grouping: it is what `split_accuracy_with_order` scores.
+    const originalPageIds = originalSection.PageIds || [];
+    const currentPageIds = section.PageIds || [];
 
     if (originalPageIds.length !== currentPageIds.length) {
       return true;
@@ -1562,6 +1594,16 @@ const SectionsPanel = ({
                         Skip All Reviews
                       </Button>
                     )}
+                    {/* Distinct from Edit Mode on purpose, and the labels carry the
+                        difference: this keeps the extracted values, whereas Edit Mode's
+                        save is already called "Process Changes" / "Save and Reprocess"
+                        because it regenerates them. Hidden for Pattern-1, where BDA owns
+                        the section structure. */}
+                    {!isPattern1() && (
+                      <Button iconName="edit" onClick={() => setIsRegrouping(true)} disabled={isEditModeDisabled}>
+                        Edit page grouping
+                      </Button>
+                    )}
                     <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick} disabled={isEditModeDisabled}>
                       Edit Mode
                     </Button>
@@ -1595,6 +1637,32 @@ const SectionsPanel = ({
           </Header>
         }
       >
+        {groupingNotice && (
+          <Alert type="info" dismissible onDismiss={() => setGroupingNotice(null)}>
+            {groupingNotice}
+          </Alert>
+        )}
+
+        {isRegrouping && (
+          <PageGroupingEditor
+            pages={boardPages}
+            sections={boardSections}
+            classOptions={getAvailableClasses()}
+            canChangeClass={!isEditModeDisabled}
+            consequence={
+              <>
+                Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> — including
+                any a reviewer corrected — and the document is <b>not</b> reprocessed, so they may no longer match their pages. Use{' '}
+                <b>Edit Mode → Process Changes</b> afterwards if you would rather the pipeline redo them.
+              </>
+            }
+            saveLabel="Save page grouping"
+            isSaving={isSavingGrouping}
+            onSave={handleSaveGrouping}
+            onCancel={() => setIsRegrouping(false)}
+          />
+        )}
+
         {hasValidationErrors && (
           <Alert type="error" header="Validation Errors">
             Please fix the following errors before saving:

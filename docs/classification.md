@@ -202,9 +202,127 @@ and is not re-billed per page.
 
 > `contextPagesCount: 1` is not a substitute. It fixes the simple two-page case but
 > biases the model toward `continue`, which then merges genuinely separate
-> back-to-back documents — trading over-splitting for over-merging. It remains the
-> right answer for one case the rules cannot cover: **pages scanned out of order**,
-> where a page has no way to know it is physically second.
+> back-to-back documents — trading over-splitting for over-merging. Measured on a
+> 4-page packet holding two copies of one form, `contextPagesCount: 1` **on its own
+> scores 0/5** — it merges all four pages. It remains the right answer for one case
+> the rules cannot cover: **pages scanned out of order**, where a page has no way to
+> know it is physically second.
+
+###### Measured effect
+
+On **DocSplit-Poly-Seq** — 500 packets, 7,330 pages, 2,027 sections, 5,000
+packet-runs — split accuracy on multi-section packets, rules vs. the prior prompt:
+
+| Model | Δ split accuracy | |
+|---|---|---|
+| Qwen3-VL | +0.117 | p<0.05 |
+| Claude Opus 5 | +0.040 | p<0.05 |
+| Amazon Nova 2 Lite (default) | +0.030 | p<0.05 |
+| Claude Sonnet 5 | +0.013 | p<0.05 |
+| gpt-5.6-sol | +0.004 | not significant |
+
+Paired bootstrap + Wilcoxon; **no model regresses**. Under-split rate is 0.000 in
+all ten cells, so the over-merge guard holds. Page-level *class* accuracy moves at
+most 0.015 — the rules affect boundaries only, not classification. On #653's
+reported two-page form, Sonnet 5 goes from 6/24 to 10/10.
+
+Two limits worth knowing before you rely on this:
+
+- **It leans on pagination markers.** Corpora whose scans mostly lack them (for
+  example RVL-CDIP) see much less benefit — the header-block and continuation
+  heuristics are softer signals than `Page 2 of 3`.
+- **`llm_determined` over-splits 1.5×–2.3× on real-world packets regardless of
+  prompt.** That is a separate and larger problem than the one these rules fix; the
+  rules narrow the gap, they do not close it. If exact section counts matter to you,
+  measure on your own documents.
+
+###### Known failure mode: repeating running headers
+
+The rules are wrong on one common document shape, and the fix is a per-class
+setting rather than a change to the rules
+([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)).
+
+A long table — a fund/distribution schedule, a brokerage or transaction
+statement — typically reprints its **title, logo and column headers on every
+page** and paginates with a **bare page number** (`7`), not `Page 7 of 17`. That
+combination defeats the priority order above:
+
+- rules 1–2 never fire, because a lone `7` matches none of the pagination
+  patterns the model is given;
+- rule 3 (opening header block ⇒ `start`) is evaluated **before** rule 4
+  (continuation evidence ⇒ `continue`), and the repeated running header satisfies
+  it — especially when the reprinted column headers themselves carry a date
+  (`NAV as of 10/31/2024`), which rule 3 lists as page-1 evidence;
+- `contextPagesCount: 0` (the default) means rule 4's *"a table continuing from a
+  previous page"* has no preceding page to compare against.
+
+The model says so in its own reasoning: *"The page number '15' at the top right
+indicates this is part of a multi-page document, **but the presence of the full
+title** and structured data table **confirms this is the start** of the
+document's content."*
+
+It is **silent**: each fragment is still 100% complete and the document still
+reaches `COMPLETED`. Only the section count changes — so a downstream consumer
+that reads one section sees a truncated list and blames extraction.
+
+**The supported fix is the `PRECEDENCE` clause: put the boundary rule in the
+class description.** A document type's own boundary instructions override the
+generic rules, which is exactly what this shape needs:
+
+```yaml
+classes:
+  - x-aws-idp-document-type: AnnualDistributions
+    description: >-
+      Annual taxable distributions schedule.
+      BOUNDARY: this is ONE continuous multi-page document - a single table that
+      runs to the disclosures page. Every page reprints the title, logo and table
+      column headers and carries only a bare page number, so only the page
+      numbered 1 is "start"; every other page is "continue".
+```
+
+Name `"start"` and `"continue"` explicitly — those are the values
+`document_boundary` takes, and a paraphrase leaves the mapping to the model.
+
+**Why this is not fixed in the shared prompt.** Every generic lever was measured
+against the three boundary fixtures in `benchmarks/matrices/doc_matrix.yaml`
+(Nova 2 Lite, `temperature: 0`, 10 runs per cell, scored against exact ground
+truth). Each one buys the running-header case at the cost of a case #653 already
+balances:
+
+| prompt / setting | 16-page running-header table (want 1) | `small_narrow` — 3-page statement, no pagination (want 1) | `paginated_3pg` (want 1) | `twodocs_2x20` — two forms back to back (want 2) |
+|---|---|---|---|---|
+| shipped rules | **0/10** | 7/10 | 10/10 | 10/10 |
+| + *"a running header is not an opening block"* | — | 4/10 ↓ | 10/10 | 10/10 |
+| + *"a bare page number > 1 is decisive"* | 10/10 | 2/10 ↓ | 10/10 | 10/10 |
+| + both | 10/10 | 0/10 ↓ | 10/10 | 10/10 |
+| `contextPagesCount: 1`, rules unchanged | 10/10 | 10/10 | 10/10 | **5/10 ↓** |
+| **class-description `BOUNDARY:` sentence** | **10/10** | unaffected | unaffected | unaffected |
+
+`contextPagesCount: 1` is the right lever if your corpus contains no back-to-back
+copies of the same form — it fixes both over-split directions with the shipped
+prompt, at the cost of the over-merge direction and roughly 3× the image tokens
+per classification call.
+
+Two notes on reading that table next to the *Measured effect* numbers above:
+
+- It is **Nova 2 Lite**, the shipped default and the model on which the rules have
+  the most headroom to move. `small_narrow` at 7/10 for the shipped rules is
+  consistent with the independent 0/5 → 3/5 on the same unpaginated shape. The
+  Sonnet-5 factorial in
+  `benchmarks/results/v0.6.7/boundary-factorial/FINDINGS.md` scores 1.00 on all
+  three fixtures for **both** prompts — Sonnet 5's true effect is +0.013, which
+  three synthetic documents at n=5 cannot resolve, so that null says nothing about
+  this failure mode either way.
+- The running-header column is **not** one of the synthetic fixtures. A synthetic
+  reproduction was attempted (running header + as-of date + bare page number, at 3
+  and 12 pages) and scored 10/10 correct, i.e. it does **not** reproduce; the
+  trigger needs more of the real document than the generator emits. The 0/10 is
+  measured on `samples/Nuveen.pdf` itself, and CI Step 8 is the standing guard.
+
+⚠️ **A stored or preset `classification.task_prompt` overrides the default, so it
+does not get these rules.** If you customized the prompt, re-apply the block or
+reset to the default. The presets shipped in `config_library/` are kept in sync by
+`scripts/tests/test_classification_prompt_copies_in_sync.py`.
 
 ##### Enforcing a Valid Class Vocabulary (Validation + Retry)
 
@@ -1314,17 +1432,21 @@ be more certain than its least certain page.
 
 ### Where it shows up
 
-- **Web UI** — a **Class conf.** column in both the **Document Sections** and
-  **Document Pages** tables on the document detail page, beside `Class/Type`
-  rather than inside it. Both columns **sort**, so you can put the
-  least-confident pages first — which is how you find the ones worth a second
-  look. In **Document Pages** the percentage is a link: click it for **"Why this
+- **Web UI** — a **Class conf.** column in the **Document Pages** table on the
+  document detail page, beside `Class/Type` rather than inside it. It **sorts**,
+  so you can put the least-confident pages first — which is how you find the ones
+  worth a second look. The percentage is a link: click it for **"Why this
   class?"**, the model's own reasoning plus the ranked alternatives it considered
-  with their probabilities. In **Document Sections** it is a plain badge, because
-  a section score is an aggregate (the minimum across its pages) with no
-  reasoning of its own. An unscored page or section shows `—`, never `0%`.
-  The neighbouring **Low-conf. fields** column is a different measurement
-  entirely — per-extracted-field confidence, not the class.
+  with their probabilities. A page the model scored but did not explain shows the
+  number as plain text; an unscored page shows `—`, never `0%`.
+
+  The **Document Sections** table deliberately does not show a section's class
+  confidence. It is an aggregate (the minimum across the section's pages) of
+  numbers already listed per page in the table directly below, and two extra
+  columns squeezed that table until its own headers wrapped. `Section.Confidence`
+  is still on the API and still lands in the reporting lake as
+  `section_confidence`. The **Low-conf. fields** column there is a different
+  measurement entirely — per-extracted-field confidence, not the class.
 
   The number is deliberately shown the same way at every value. There is no
   configured classification confidence threshold (unlike extraction fields), so a

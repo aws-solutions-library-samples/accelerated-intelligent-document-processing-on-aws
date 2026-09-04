@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React from 'react';
-import { Badge, Box, Popover, SpaceBetween } from '@cloudscape-design/components';
+import { Box, Popover, SpaceBetween } from '@cloudscape-design/components';
 
 interface ClassCandidate {
   Class?: string | null;
@@ -19,11 +19,6 @@ interface ClassConfidenceProps {
    * `classification.confidence.mode: topk` (the default).
    */
   candidates?: (ClassCandidate | null)[] | null;
-  /**
-   * `badge` for a static value (sections), `link` where the number opens the
-   * model's account of the decision (pages). Defaults to `link`.
-   */
-  variant?: 'badge' | 'link';
 }
 
 /** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
@@ -65,7 +60,7 @@ const NotScored = (): React.JSX.Element => (
  * many of its errors, so banding would paint a coarse two-level flag as a
  * calibrated traffic light. See docs/benchmarking/classification-confidence.md.
  */
-const ClassConfidence = ({ confidence, reason, candidates, variant = 'link' }: ClassConfidenceProps): React.JSX.Element => {
+const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProps): React.JSX.Element => {
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
   const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
@@ -75,17 +70,11 @@ const ClassConfidence = ({ confidence, reason, candidates, variant = 'link' }: C
     return <NotScored />;
   }
 
-  // Sections: a plain neutral badge. `grey` rather than blue/green because the
-  // number is information, not a status.
-  if (variant === 'badge') {
-    return hasConfidence ? <Badge color="grey">{asPercent(confidence as number)}</Badge> : <NotScored />;
-  }
-
-  // Pages: the value opens the model's own account of the decision. When the
-  // model gave a score but no reasoning and no candidates there is nothing to
-  // open, so it stays a plain badge rather than a link that does nothing.
+  // Scored, but the model gave nothing to explain it: plain text, since there is
+  // nothing for a click to open. Deliberately not a filled badge, which would
+  // make these rows louder than their informative neighbours.
   if (!hasDetail) {
-    return <Badge color="grey">{asPercent(confidence as number)}</Badge>;
+    return <span>{asPercent(confidence as number)}</span>;
   }
 
   return (

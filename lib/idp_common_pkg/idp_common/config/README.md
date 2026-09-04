@@ -41,8 +41,19 @@ model_id = idp_config.extraction.model
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards such as rejecting OpenAI Responses models for
-agentic extraction or discovery).
+model/feature-compatibility guards). Two guards, with deliberately different
+scopes — both hard errors at config time rather than an obscure mid-processing
+failure:
+
+| Guard | Rejects | Why |
+|---|---|---|
+| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
+
+Grok is therefore rejected for **discovery** but not for agentic extraction. The
+authoritative per-model answer is
+`idp_common.bedrock.client.document_blocks_unsupported_reason()` — call it rather
+than duplicating the model list.
 
 ```python
 from idp_common.config.merge_utils import validate_config
@@ -252,6 +263,20 @@ is the pre-revision behavior.
 confidence number *means* (extraction model/sampling, assessment). It is recorded on
 every revision so confidence curves can eventually be branched per semantics rather
 than per profile; nothing keys off it yet.
+
+Both fingerprints normalize numerics (`_canonical_numbers`) before hashing, because
+a configuration arrives here by two routes that disagree about numeric type: from a
+save it is JSON (`float`), read back from DynamoDB it is `Decimal`, and `json.dumps`
+falls back to `default=str` for `Decimal`. Without normalization `temperature: 0.0`
+hashed three different ways — as `0.0`, as `"0.0"`, and as `"0"` when DynamoDB
+returned an unscaled zero — giving one configuration several fingerprints, which is
+precisely what a fingerprint exists to rule out. `bool` is special-cased because it
+is an `int` subclass and `enabled: true` must not collapse into `enabled: 1`.
+
+Fingerprints recorded by revisions cut before this normalization landed may differ
+from the value the same configuration hashes to now. That is harmless while nothing
+keys off them, but anything that starts comparing stored fingerprints must treat a
+mismatch on a pre-normalization revision as "unknown" rather than "changed".
 
 ## Rollback-safe DynamoDB serialization
 

@@ -114,13 +114,13 @@ const CreateConfigVersionModal = ({
       return 'Please enter a name for the new configuration profile.';
     }
     if (!/^[a-zA-Z0-9._-]+$/.test(newVersionName)) {
-      return 'Version name can only contain letters, numbers, periods, hyphens, and underscores.';
+      return 'Profile name can only contain letters, numbers, periods, hyphens, and underscores.';
     }
     if (newVersionName.length > 50) {
-      return 'Version name cannot exceed 50 characters.';
+      return 'Profile name cannot exceed 50 characters.';
     }
     if (newVersionName === 'default') {
-      return 'Cannot use "default" as a version name — it is reserved.';
+      return 'Cannot use "default" as a profile name — it is reserved.';
     }
     // Check if version name already exists
     if (configVersions.some((v) => v.versionName === newVersionName)) {
@@ -200,7 +200,7 @@ const CreateConfigVersionModal = ({
         (fullConfig.classification as Record<string, unknown>).model = deploymentArn;
       }
 
-      // Step 3: Save as a new version using the existing updateConfiguration mutation
+      // Step 3: Save as a new profile using the existing updateConfiguration mutation
       // with the saveAsVersion flag
       const configWithFlag = {
         ...fullConfig,
@@ -287,7 +287,7 @@ const CreateConfigVersionModal = ({
               loading={creating}
               disabled={!selectedSourceVersion || !newVersionName.trim() || !atLeastOneChecked}
             >
-              Create Version
+              Create profile
             </Button>
           </SpaceBetween>
         </Box>
@@ -307,7 +307,7 @@ const CreateConfigVersionModal = ({
 
         <FormField
           label="Source Configuration Profile"
-          description="Select the existing configuration profile to copy as the base for the new version"
+          description="Select the existing configuration profile to copy as the base for the new profile"
         >
           <Select
             selectedOption={selectedSourceVersion}

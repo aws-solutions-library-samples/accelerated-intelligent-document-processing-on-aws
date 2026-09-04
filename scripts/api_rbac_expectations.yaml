@@ -189,7 +189,14 @@ operations:
     enforced_in: *cfg
     args: {}
   getConfigVersion:
-    groups: [Admin, Author, Viewer]
+    # Annotator included deliberately: the annotate view needs the class list to
+    # correct a misclassified section, and that correction's write side
+    # (reextractTestSetDocument) already accepts Annotator. A caller with no group in
+    # {Admin, Author, Viewer} receives ONLY the class names and descriptions — the
+    # resolver reduces the payload via _class_vocabulary_only, so prompts, model ids
+    # and every other setting stay out of reach of the lowest-privilege role. The
+    # reduction is an allow-list, so a config key added later cannot leak by default.
+    groups: [Admin, Author, Viewer, Annotator]
     kind: read
     scope_checked: true
     enforced_in: *cfg
@@ -415,7 +422,13 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getDraftLabelJob:
-    groups: [Admin, Author]
+    # Annotator included: the ground-truth editor polls this for the outcome of the
+    # re-extract it just started via reextractTestSetDocument, which annotators may
+    # already run. Without it the job completed server-side while the UI reported
+    # "Could not re-extract this document" — observed on a dev stack. Per-set scope
+    # is asserted in the handler, so group membership alone does not expose another
+    # set's jobs.
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }
@@ -432,6 +445,17 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
+  updateTestSetDocumentSections:
+    # Annotator corrects a wrong packet split in their own set — the same kind of
+    # annotation work as reextractTestSetDocument, and the correction most
+    # often needed in practice. The resolver additionally enforces allowedTestSets per set,
+    # and writes only the grouping and class: field values, labelSource and edit
+    # history are preserved.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
+
   reextractTestSetDocument:
     # Annotator corrects a misclassified document in their own set; the resolver
     # additionally enforces allowedTestSets per set.
@@ -509,6 +533,16 @@ operations:
   # ==========================================================================
   # HITL review (Admin + Reviewer)
   # ==========================================================================
+  updateDocumentSections:
+    # Re-groups a document's pages without reprocessing it, so the extracted values
+    # survive. Admin/Reviewer/Annotator matches completeSectionReview, the sibling that
+    # edits a section's content — processChanges stays narrower because it destroys and
+    # regenerates extraction data. Refused while the document is in flight.
+    groups: [Admin, Reviewer, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
+    args: { objectKey: "__nonexistent__.pdf", sections: [] }
+
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation

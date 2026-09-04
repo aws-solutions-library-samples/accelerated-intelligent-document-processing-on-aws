@@ -17,12 +17,15 @@ query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Bo
       minConfidence
       confidenceThreshold
       alertCount
+      documentClasses
       fieldCount
       labelSource
       sectionCount
       sections {
         sectionId
         baselineKey
+        documentClass
+        pageIndices
       }
       claimedBy
       claimedByMe

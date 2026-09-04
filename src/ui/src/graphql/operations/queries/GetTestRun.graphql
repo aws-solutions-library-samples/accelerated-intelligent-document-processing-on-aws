@@ -17,11 +17,13 @@ query GetTestRun($testRunId: String!) {
     fieldMetrics
     splitClassificationMetrics
     gradedPacketMetrics
+    classificationErrors
     totalCost
     costBreakdown
     createdAt
     completedAt
     context
+    isDraftLabeling
     configVersion
     configRevision
     config

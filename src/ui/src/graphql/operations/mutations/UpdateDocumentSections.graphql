@@ -1,0 +1,7 @@
+mutation UpdateDocumentSections($objectKey: String!, $sections: [DocumentSectionGroupingInput!]!) {
+  updateDocumentSections(objectKey: $objectKey, sections: $sections) {
+    success
+    message
+    processingJobId
+  }
+}

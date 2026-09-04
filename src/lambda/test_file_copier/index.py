@@ -47,6 +47,10 @@ def handler(event, context):
             # "draft-labeling" runs create ground truth; anything else is scored
             # against it. Absent on messages enqueued before this field existed.
             purpose = message.get("purpose") or "scoring"
+            # Set only by a single-document re-extract after a reviewer corrected
+            # the class; stamped onto the copied object so classification honours
+            # it instead of re-deriving the class it already got wrong.
+            forced_document_class = message.get("documentClass")
             tracking_table = message["trackingTable"]
 
             # Get environment variables
@@ -143,6 +147,7 @@ def handler(event, context):
                 config_version,
                 submission_source="test-studio",
                 test_set_id=test_set_id,
+                forced_document_class=forced_document_class,
                 config_revision=config_revision,
             )
 
@@ -235,6 +240,7 @@ def _copy_files_to_bucket(
     config_version=None,
     submission_source=None,
     test_set_id=None,
+    forced_document_class=None,
     config_revision=None,
 ):
     """Copy files from source bucket to destination bucket - track failures"""
@@ -270,6 +276,12 @@ def _copy_files_to_bucket(
                 metadata["submission-source"] = submission_source
             if test_set_id:
                 metadata["test-set-id"] = test_set_id
+            if forced_document_class:
+                # Read by Document.from_s3_event and honoured by the
+                # classification step, which skips the model and uses this. Set
+                # only for a single-document re-extract after a reviewer
+                # corrected the class.
+                metadata["document-class"] = forced_document_class
             if metadata:
                 copy_args["Metadata"] = metadata
                 copy_args["MetadataDirective"] = "REPLACE"

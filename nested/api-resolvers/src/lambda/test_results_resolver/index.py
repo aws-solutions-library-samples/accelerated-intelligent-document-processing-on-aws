@@ -252,7 +252,33 @@ def _awaiting_metrics(item, status):
     was evaluating, because "terminal but no metrics" and "actually evaluating"
     render identically. Keep the rule here so the three sites cannot drift.
     """
+    if _is_draft_labeling_run(item):
+        return False
     return status in _METRICS_ELIGIBLE_STATUSES and not item.get("testRunResult")
+
+
+def _is_draft_labeling_run(item):
+    """True for a run that CREATES a baseline rather than being scored against one.
+
+    Such a run has no baseline by construction — that is what it is producing — so
+    the copier skips baseline staging and evaluation never runs. It therefore has
+    no aggregate metrics to wait for, ever.
+
+    Treating one as "awaiting metrics" cost twice: it displayed EVALUATING
+    indefinitely (observed on a dev stack: a run COMPLETE with 100/100 documents
+    processed and CompletedAt set, still badged EVALUATING three days later), and
+    every view of it enqueued a full aggregation — re-reading every document's
+    results.json from S3 — to compute extraction metrics that are structurally
+    empty.
+
+    Prefers the persisted ``Purpose``. Falls back to the Context string only for
+    runs created before Purpose was written, which is why the fallback is exact
+    rather than a substring match.
+    """
+    purpose = item.get("Purpose")
+    if purpose:
+        return purpose == "draft-labeling"
+    return item.get("Context") == "Draft labeling run"
 
 
 def _display_status(item, status):
@@ -419,6 +445,12 @@ def handle_cache_update_request(event, context):
                 ),
                 "gradedPacketMetrics": aggregated_metrics.get(
                     "graded_packet_metrics", {}
+                ),
+                # Per-section classification mismatches. Absent on the Athena
+                # fallback path, which has the accuracy percentages but not the
+                # per-document detail — hence the default rather than a KeyError.
+                "classificationErrors": aggregated_metrics.get(
+                    "classification_errors", {}
                 ),
                 # Documents whose sections all had no extractable schema were
                 # dropped from ``weighted_overall_scores`` upstream; expose the
@@ -627,6 +659,7 @@ def get_test_results(test_run_id):
             or "fieldMetrics" not in cached_metrics
             or "gradedPacketMetrics" not in cached_metrics
             or "excludedDocumentCount" not in cached_metrics
+            or "classificationErrors" not in cached_metrics
             or isinstance(cached_scores, list)
         ):
             logger.info(
@@ -697,12 +730,14 @@ def get_test_results(test_run_id):
                 "splitClassificationMetrics", {}
             ),
             "gradedPacketMetrics": cached_metrics.get("gradedPacketMetrics", {}),
+            "classificationErrors": cached_metrics.get("classificationErrors", {}),
             "excludedDocumentCount": cached_metrics.get("excludedDocumentCount", 0),
             "totalCost": cached_metrics.get("totalCost", 0),
             "costBreakdown": cached_metrics.get("costBreakdown", {}),
             "createdAt": _format_datetime(metadata.get("CreatedAt")),
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
+            "isDraftLabeling": _is_draft_labeling_run(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
@@ -747,6 +782,7 @@ def get_test_results(test_run_id):
             "createdAt": _format_datetime(metadata.get("CreatedAt")),
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
+            "isDraftLabeling": _is_draft_labeling_run(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
@@ -856,6 +892,7 @@ def _build_test_run_list(items):
                 "createdAt": _format_datetime(item.get("CreatedAt")),
                 "completedAt": _format_datetime(item.get("CompletedAt")),
                 "context": item.get("Context"),
+                "isDraftLabeling": _is_draft_labeling_run(item),
                 "configVersion": item.get("ConfigVersion"),
                 "configRevision": _as_int(item.get("ConfigRevision")),
                 "testSetVersion": item.get("TestSetVersion"),

@@ -127,6 +127,7 @@
     "BDA_InvokeDataAutomation": {
       "Type": "Task",
       "Resource": "arn:${Partition}:states:::lambda:invoke.waitForTaskToken",
+      "TimeoutSeconds": ${BDACallbackTimeoutSeconds},
       "Parameters": {
         "FunctionName": "${InvokeBDALambdaArn}",
         "Payload": {

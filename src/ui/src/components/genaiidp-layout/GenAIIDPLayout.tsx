@@ -34,7 +34,7 @@ import CapacityPlanningLayout from '../capacity-planning/CapacityPlanningLayout'
 import CustomModelsLayout from '../custom-models/CustomModelsLayout';
 import { FinetuningJobDetail } from '../custom-models';
 
-import { DOCUMENT_LIST_SHARDS_PER_DAY, PERIODS_TO_LOAD_STORAGE_KEY } from '../document-list/documents-table-config';
+import { LATEST_PERIODS, PERIODS_TO_LOAD_STORAGE_KEY, resolveInitialPeriodsToLoad } from '../document-list/documents-table-config';
 
 const logger = new ConsoleLogger('GenAIIDPLayout');
 
@@ -52,25 +52,15 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
   const [selectedItems, setSelectedItems] = useState<Document[]>([]);
 
   const getInitialPeriodsToLoad = () => {
-    // default to 2 hours - half of one (4hr) shard period
-    let periods = 0.5;
+    let periods = LATEST_PERIODS;
     try {
-      const periodsFromStorage = Math.abs(JSON.parse(localStorage.getItem(PERIODS_TO_LOAD_STORAGE_KEY) ?? '0'));
-      // prettier-ignore
-      if (
-        !Number.isFinite(periodsFromStorage)
-        // load max of to 30 days
-        || periodsFromStorage > DOCUMENT_LIST_SHARDS_PER_DAY * 30
-      ) {
-        logger.warn('invalid initialPeriodsToLoad value from local storage');
-      } else {
-        periods = (periodsFromStorage > 0) ? periodsFromStorage : periods;
-        localStorage.setItem(PERIODS_TO_LOAD_STORAGE_KEY, JSON.stringify(periods));
-      }
+      periods = resolveInitialPeriodsToLoad(JSON.parse(localStorage.getItem(PERIODS_TO_LOAD_STORAGE_KEY) ?? '0'));
     } catch {
       logger.warn('failed to parse initialPeriodsToLoad from local storage');
     }
-
+    // Written back so the resolved scope is what the next visit reads, including
+    // when an out-of-range or unparseable value was replaced by the default.
+    localStorage.setItem(PERIODS_TO_LOAD_STORAGE_KEY, JSON.stringify(periods));
     return periods;
   };
   const initialPeriodsToLoad = getInitialPeriodsToLoad();
@@ -85,6 +75,9 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
     setPeriodsToLoad,
     customDateRange,
     setCustomDateRange,
+    documentView,
+    setDocumentView,
+    latestTruncated,
     deleteDocuments,
     reprocessDocuments,
     abortWorkflows,
@@ -103,6 +96,9 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
     periodsToLoad,
     customDateRange,
     setCustomDateRange,
+    documentView,
+    setDocumentView,
+    latestTruncated,
     toolsOpen,
     deleteDocuments,
     reprocessDocuments,

@@ -89,6 +89,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
     geometry,
     onFieldFocus,
     onFieldDoubleClick,
+    // Notified with the canonical path of the clicked field ("LineItems[0].Rate"),
+    // whether or not it has geometry. Separate from onFieldFocus, which carries a
+    // bounding box and therefore cannot fire for a field the OCR did not locate —
+    // so it cannot be used to tell which field is selected.
+    onFieldPathSelect,
     path = [],
     explainabilityInfo = null,
     mergedConfig = null,
@@ -102,6 +107,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
     displayPath = [], // Separate path for collapse tracking (includes "Document Data" and display keys)
     // Change tracking props
     predictionChanges = new Map(),
+    /**
+     * Edited field paths WITH array indices preserved, for the provenance and
+     * confidence decisions.
+     *
+     * `predictionChanges` is keyed on a path with array indices stripped — a
+     * convention shared by both of its producers and by `trackingPath` below. That
+     * is tolerable for the ✏️ badge it originally drove, but not for asserting
+     * authorship: editing `LineItems[3].Rate` sets the key `LineItems.Rate`, which
+     * every row's Rate cell also computes, so all of them would claim "Your value:"
+     * and lose the model's confidence on values nobody touched.
+     *
+     * Supplied only by the ground-truth editor. Callers that do not pass it keep
+     * the collapsed-key behaviour exactly, so the modal's own tracking (and
+     * `baselineChanges`, which shares the collapsed key) is untouched.
+     */
+    editedFieldPaths = null,
     baselineChanges = new Map(),
     _onRevertPrediction = null,
     _onRevertBaseline = null,
@@ -390,19 +411,34 @@ const FormFieldRenderer = memo<Record<string, any>>(
     const label = confidence !== undefined ? `${fieldKey} (${(confidence * 100).toFixed(1)}%)` : fieldKey;
 
     // Handle field focus - pass geometry info if available
+    // Reaching a field by keyboard has to do what clicking it does. The wrapper
+    // used to be the focusable thing, so tabbing to a field both highlighted it
+    // and selected its path; now that the wrapper is no longer a control (see
+    // below), the input's own focus is the only place that can still happen.
     const handleFocus = () => {
+      if (onFieldPathSelect) {
+        const selectedPath = buildComparisonKey(path);
+        if (selectedPath) onFieldPathSelect(selectedPath);
+      }
       if (geometry && onFieldFocus) {
         onFieldFocus(geometry);
       }
     };
 
     // Handle field click - optimized version
-    const handleClick = (event: React.SyntheticEvent) => {
+    const handleClick = (event?: { stopPropagation: () => void }) => {
       const clickStart = performance.now();
       logger.debug('🖱️ FIELD CLICK START:', { fieldKey, timestamp: clickStart });
 
       if (event) {
         event.stopPropagation();
+      }
+
+      // Announce the selection before the geometry hunt below, so a field with no
+      // bounding box is still selectable (and therefore still linkable).
+      if (onFieldPathSelect) {
+        const selectedPath = buildComparisonKey(path);
+        if (selectedPath) onFieldPathSelect(selectedPath);
       }
 
       let actualGeometry = geometry;
@@ -495,7 +531,12 @@ const FormFieldRenderer = memo<Record<string, any>>(
     // So we should NOT add fieldKey again - just filter the path to exclude array indices and structural keys
     const trackingPath = path.filter((p: unknown) => typeof p !== 'number' && p !== undefined && p !== 'Document Data');
     const fieldPathStr = trackingPath.join('.');
-    const isPredictionChanged = predictionChanges.has(fieldPathStr);
+    // Same path with indices kept, so one edited table row does not speak for the
+    // whole column. See the editedFieldPaths prop.
+    const exactPathStr = path.filter((p: unknown) => p !== undefined && p !== 'Document Data').join('.');
+    const isPredictionChanged = editedFieldPaths
+      ? (editedFieldPaths as { has: (key: string) => boolean }).has(exactPathStr)
+      : predictionChanges.has(fieldPathStr);
     const isBaselineChanged = baselineChanges.has(fieldPathStr);
     const hasLocalEdit = isPredictionChanged || isBaselineChanged;
 
@@ -518,11 +559,21 @@ const FormFieldRenderer = memo<Record<string, any>>(
       case 'string':
         return (
           <div
-            onClick={handleClick}
+            /* Only a double-click, which is a mouse-only gesture by definition and
+               duplicates nothing: every value row below carries its own click
+               handler, and the locate control carries the keyboard path. */
             onDoubleClick={handleDoubleClick}
-            onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
-            role="button"
-            tabIndex={0}
+            /* Deliberately not role="button"/tabIndex: this div wraps a FormField
+               containing a text input and, in comparison mode, a copy button.
+               ARIA forbids interactive descendants of a `button`, and screen
+               readers computed the wrapper's name from its own subtree — so every
+               field announced as a button named after its label, then again as the
+               textbox with the same label. The click handler stays as a mouse
+               convenience; keyboard and AT users get the explicit locate control
+               below, which works in read-only mode too (where there is no input to
+               focus) and is only offered when the field actually has a bounding box
+               to show. */
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -557,13 +608,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       </ExtBox>
                     )}
                   </SpaceBetween>
-                  {confidenceInfo.hasConfidenceInfo && (
+                  {/* Suppressed once a human has overwritten the value: the model
+                      never produced this text, so its confidence says nothing about
+                      it. Leaving it attached decorated hand-typed ground truth with
+                      a score of, typically, 100%. */}
+                  {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
                         ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
                             (confidenceInfo.confidenceThreshold ?? 0) * 100
                           ).toFixed(1)}%`
                         : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                    </ExtBox>
+                  )}
+                  {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
+                    <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
+                      Edited — the model&apos;s confidence no longer applies
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
@@ -585,13 +645,31 @@ const FormFieldRenderer = memo<Record<string, any>>(
               <SpaceBetween size="xxs">
                 <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                   <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+                    {/* Not "Predicted" once a human has replaced it — the label is a
+                        provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      Predicted:
+                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
                         ✏️
                       </ExtBox>
+                    )}
+                    {/* The only keyboard-reachable way to ask "where did this come
+                        from?", and the only visible sign that asking is possible.
+                        The whole field was a click target before, with no
+                        affordance: invisible to sighted users, unreachable to AT
+                        ones. */}
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
                     )}
                   </SpaceBetween>
                   <div
@@ -716,16 +794,12 @@ const FormFieldRenderer = memo<Record<string, any>>(
       case 'number':
         return (
           <div
-            onClick={handleClick}
+            /* Only a double-click, which is a mouse-only gesture by definition and
+               duplicates nothing: every value row below carries its own click
+               handler, and the locate control carries the keyboard path. */
             onDoubleClick={handleDoubleClick}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleClick(e);
-              }
-            }}
-            role="button"
-            tabIndex={0}
+            /* See the note on the string case: not a button, because it contains one. */
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -760,13 +834,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       </ExtBox>
                     )}
                   </SpaceBetween>
-                  {confidenceInfo.hasConfidenceInfo && (
+                  {/* Suppressed once a human has overwritten the value: the model
+                      never produced this text, so its confidence says nothing about
+                      it. Leaving it attached decorated hand-typed ground truth with
+                      a score of, typically, 100%. */}
+                  {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
                         ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
                             (confidenceInfo.confidenceThreshold ?? 0) * 100
                           ).toFixed(1)}%`
                         : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                    </ExtBox>
+                  )}
+                  {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
+                    <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
+                      Edited — the model&apos;s confidence no longer applies
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
@@ -788,13 +871,31 @@ const FormFieldRenderer = memo<Record<string, any>>(
               <SpaceBetween size="xxs">
                 <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                   <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+                    {/* Not "Predicted" once a human has replaced it — the label is a
+                        provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      Predicted:
+                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
                         ✏️
                       </ExtBox>
+                    )}
+                    {/* The only keyboard-reachable way to ask "where did this come
+                        from?", and the only visible sign that asking is possible.
+                        The whole field was a click target before, with no
+                        affordance: invisible to sighted users, unreachable to AT
+                        ones. */}
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
                     )}
                   </SpaceBetween>
                   <div
@@ -929,16 +1030,12 @@ const FormFieldRenderer = memo<Record<string, any>>(
       case 'boolean':
         return (
           <div
-            onClick={handleClick}
+            /* Only a double-click, which is a mouse-only gesture by definition and
+               duplicates nothing: every value row below carries its own click
+               handler, and the locate control carries the keyboard path. */
             onDoubleClick={handleDoubleClick}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleClick(e);
-              }
-            }}
-            role="button"
-            tabIndex={0}
+            /* See the note on the string case: not a button, because it contains one. */
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -973,13 +1070,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       </ExtBox>
                     )}
                   </SpaceBetween>
-                  {confidenceInfo.hasConfidenceInfo && (
+                  {/* Suppressed once a human has overwritten the value: the model
+                      never produced this text, so its confidence says nothing about
+                      it. Leaving it attached decorated hand-typed ground truth with
+                      a score of, typically, 100%. */}
+                  {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
                         ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
                             (confidenceInfo.confidenceThreshold ?? 0) * 100
                           ).toFixed(1)}%`
                         : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                    </ExtBox>
+                  )}
+                  {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
+                    <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
+                      Edited — the model&apos;s confidence no longer applies
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
@@ -1001,13 +1107,31 @@ const FormFieldRenderer = memo<Record<string, any>>(
               <SpaceBetween size="xxs">
                 <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                   <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+                    {/* Not "Predicted" once a human has replaced it — the label is a
+                        provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      Predicted:
+                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
                         ✏️
                       </ExtBox>
+                    )}
+                    {/* The only keyboard-reachable way to ask "where did this come
+                        from?", and the only visible sign that asking is possible.
+                        The whole field was a click target before, with no
+                        affordance: invisible to sighted users, unreachable to AT
+                        ones. */}
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
                     )}
                   </SpaceBetween>
                   <div
@@ -1304,6 +1428,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         confidence={fieldConfidence}
                         geometry={fieldGeometry}
                         onFieldFocus={onFieldFocus}
+                        onFieldPathSelect={onFieldPathSelect}
                         onFieldDoubleClick={onFieldDoubleClick}
                         path={[...path, key]}
                         explainabilityInfo={explainabilityInfo}
@@ -1332,11 +1457,21 @@ const FormFieldRenderer = memo<Record<string, any>>(
         // Handle null values - make them editable like other field types
         return (
           <div
-            onClick={handleClick}
+            /* Only a double-click, which is a mouse-only gesture by definition and
+               duplicates nothing: every value row below carries its own click
+               handler, and the locate control carries the keyboard path. */
             onDoubleClick={handleDoubleClick}
-            onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
-            role="button"
-            tabIndex={0}
+            /* Deliberately not role="button"/tabIndex: this div wraps a FormField
+               containing a text input and, in comparison mode, a copy button.
+               ARIA forbids interactive descendants of a `button`, and screen
+               readers computed the wrapper's name from its own subtree — so every
+               field announced as a button named after its label, then again as the
+               textbox with the same label. The click handler stays as a mouse
+               convenience; keyboard and AT users get the explicit locate control
+               below, which works in read-only mode too (where there is no input to
+               focus) and is only offered when the field actually has a bounding box
+               to show. */
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{
               cursor: geometry ? 'pointer' : 'default',
               backgroundColor: hasMismatch && !hasLocalEdit ? 'rgba(255, 153, 0, 0.05)' : 'transparent',
@@ -1371,13 +1506,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       </ExtBox>
                     )}
                   </SpaceBetween>
-                  {confidenceInfo.hasConfidenceInfo && (
+                  {/* Suppressed once a human has overwritten the value: the model
+                      never produced this text, so its confidence says nothing about
+                      it. Leaving it attached decorated hand-typed ground truth with
+                      a score of, typically, 100%. */}
+                  {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
                         ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
                             (confidenceInfo.confidenceThreshold ?? 0) * 100
                           ).toFixed(1)}%`
                         : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                    </ExtBox>
+                  )}
+                  {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
+                    <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
+                      Edited — the model&apos;s confidence no longer applies
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
@@ -1399,13 +1543,31 @@ const FormFieldRenderer = memo<Record<string, any>>(
               <SpaceBetween size="xxs">
                 <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                   <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+                    {/* Not "Predicted" once a human has replaced it — the label is a
+                        provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      Predicted:
+                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
                         ✏️
                       </ExtBox>
+                    )}
+                    {/* The only keyboard-reachable way to ask "where did this come
+                        from?", and the only visible sign that asking is possible.
+                        The whole field was a click target before, with no
+                        affordance: invisible to sighted users, unreachable to AT
+                        ones. */}
+                    {geometry && (
+                      <Button
+                        variant="inline-icon"
+                        iconName="search"
+                        ariaLabel={`Show ${fieldKey} on the page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClick();
+                        }}
+                      />
                     )}
                   </SpaceBetween>
                   <div
@@ -1693,6 +1855,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         confidence={itemConfidence}
                         geometry={itemGeometry}
                         onFieldFocus={onFieldFocus}
+                        onFieldPathSelect={onFieldPathSelect}
                         onFieldDoubleClick={onFieldDoubleClick}
                         path={[...path, index]}
                         explainabilityInfo={explainabilityInfo}
@@ -1720,23 +1883,23 @@ const FormFieldRenderer = memo<Record<string, any>>(
       default:
         return (
           <div
-            onClick={handleClick}
+            /* Only a double-click, which is a mouse-only gesture by definition and
+               duplicates nothing: every value row below carries its own click
+               handler, and the locate control carries the keyboard path. */
             onDoubleClick={handleDoubleClick}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleClick(e);
-              }
-            }}
-            role="button"
-            tabIndex={0}
+            /* See the note on the string case: not a button, because it contains one. */
+            {...({ 'data-field-path': buildComparisonKey(path) || undefined } as Record<string, string | undefined>)}
             style={{ cursor: geometry ? 'pointer' : 'default' }}
           >
             <FormField
               label={
                 <ExtBox>
                   {fieldKey}:
-                  {confidenceInfo.hasConfidenceInfo && (
+                  {/* Suppressed once a human has overwritten the value: the model
+                      never produced this text, so its confidence says nothing about
+                      it. Leaving it attached decorated hand-typed ground truth with
+                      a score of, typically, 100%. */}
+                  {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
                         ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
@@ -1745,7 +1908,28 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
                     </ExtBox>
                   )}
+                  {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
+                    <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
+                      Edited — the model&apos;s confidence no longer applies
+                    </ExtBox>
+                  )}
                 </ExtBox>
+              }
+              /* Not inside `label`: a label may not contain interactive content.
+                 This is the fallback field shape, which has no value header row to
+                 hang the locate control off. */
+              secondaryControl={
+                geometry ? (
+                  <Button
+                    variant="inline-icon"
+                    iconName="search"
+                    ariaLabel={`Show ${fieldKey} on the page`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleClick();
+                    }}
+                  />
+                ) : undefined
               }
             >
               {isReadOnly ? (
