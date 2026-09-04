@@ -455,7 +455,11 @@ Two honest limits:
   sit at CV 0.51–0.63 and their ordering (`full` < `minimal` < `names`) is the *opposite*
   of the token ordering, which is what a non-deterministic agent turn count looks like.
   **The defensible figure is the per-request static saving**, from the token counts below;
-  treat measured dollars as corroboration at best.
+  treat measured dollars as corroboration at best. Note also that `config_matrix.yaml`'s
+  own rule is `repeats >= 5` for a cost CLAIM: this grid ran at 3, and the dedicated
+  `prosecost` suite (repeats 5) has **not** been run — so the cost column here is
+  reported, not claimed. The `kv_form` arm (a different class, run separately) was also
+  not run.
 
 Per request on lending `Payslip` at ~4 chars/token:
 
