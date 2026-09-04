@@ -223,6 +223,32 @@ WHERE "unit" IN ('inputTokens', 'outputTokens')
 GROUP BY "service_api"
 \`\`\`
 
+### Prefer Rollup Tables for Wide Time Ranges
+
+For questions spanning **more than 2 hours** of history, use the reporting
+rollup tables — they aggregate raw \`metering\` hourly/daily so a "cost
+this month" question scans a few hundred rows instead of millions.
+
+- **\`metering_hourly\`** / **\`metering_daily\`** — pre-summed cost per
+  \`(hour|day, config_version, service_api, unit)\`. Columns:
+  \`sum_value\` (a **quantity** — tokens/pages/seconds; check \`unit\`)
+  and \`sum_cost\` (USD). \`metering_daily\` uses \`day\` (not
+  \`hour_ts\`).
+- **\`metering_docs_hourly\`** / **\`metering_docs_daily\`** — doc-grain
+  volume per \`(hour|day, config_version)\`. Columns: \`n_docs\`,
+  \`sum_pages\`. Do NOT query these for cost or by \`service_api\` —
+  those columns aren't on these tables. ⚠️ **\`n_docs\` on
+  \`metering_docs_daily\` is a doc-HOURS count** (\`SUM\` of hourly
+  \`n_docs\`), so a doc appearing in 3 hours of a day is counted 3
+  times. For strict cross-day unique-doc counts, query raw \`metering\`
+  with \`COUNT(DISTINCT document_id)\`.
+- **\`control_plane_hourly\`** / **\`data_plane_lambda_hourly\`** —
+  Lambda compute cost per hour, split by control plane (dashboards,
+  agents, resolvers) vs data plane (OCR/Extraction/etc. pipeline).
+
+Fall back to raw \`metering\` for **per-document drilldown** or the
+**current partial hour** (before the hourly rollup fires).
+
 ---
 
 ## Evaluation Tables

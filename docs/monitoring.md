@@ -43,6 +43,26 @@ The solution automatically creates an integrated dashboard that displays:
 
 ![Error Tracking Dashboard](../images/Dashboard3.png)
 
+### Document Queue Backlog and Dead-Letter Queue Depth
+
+Two widgets cover the SQS layer between upload and execution, which is where a
+document can be lost or stuck without any Step Functions metric noticing:
+
+- **Document Queue Backlog** — messages waiting, messages in flight, and the
+  **age of the oldest message** on the right axis, with a horizontal annotation
+  at `QueueStalledAgeThresholdSeconds`.
+- **Dead-Letter Queue Depth** — the document, queue-sender, and workflow-tracker
+  DLQs on one graph. Every line has its own alarm, and any non-zero value means a
+  document that needs a human.
+
+**Reading the backlog widget:** depth on its own is not a problem. The queue
+processor gates on the workflow-concurrency counter and *refuses* a message by
+letting its 30-second visibility timeout lapse, so a bulk upload legitimately
+parks thousands of messages. Rising depth with a **flat** age line is a queue
+draining under load. A **climbing** age line while the SQS throughput widget
+shows nothing being deleted is a stall — see
+[`DocumentQueueStalledAlarm`](#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm).
+
 ### Workflow Concurrency Counter
 
 The stack limits in-flight workflows with a DynamoDB counter: the queue processor
@@ -180,6 +200,19 @@ Subscribe an email address or a chat webhook to the alarm's SNS topic to receive
 these — the alarms exist whether or not anything is subscribed, so a stack with
 no subscription raises alarms that nobody sees.
 
+> ⚠️ **On stacks deployed before release 0.6.7 with the circuit breaker disabled
+> (the default), no alarm notification was ever delivered.** `AlertsTopic` is
+> always encrypted with the stack's customer-managed key, but the key policy
+> statement granting CloudWatch permission to use it was conditional on
+> `CircuitBreakerEnabled=true`. With the default `false`, every alarm action
+> failed with *"CloudWatch Alarms does not have authorization to access the SNS
+> topic encryption key"* — visible only in each alarm's **Actions** history, since
+> the alarm itself still transitioned to `ALARM` in the console. The grant is now
+> unconditional. If you upgrade a stack that has been alarming silently, expect
+> notifications to start arriving; to confirm, check
+> `aws cloudwatch describe-alarm-history --alarm-name <name> --history-item-type Action`
+> before and after.
+
 All of them set `TreatMissingData: notBreaching`, so an idle stack reads `OK`
 rather than `INSUFFICIENT_DATA`. That is deliberate: for these signals "no
 documents processed" genuinely means "no failures", and leaving alarms parked in
@@ -191,6 +224,9 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
+| `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
+| `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
@@ -232,6 +268,102 @@ deployment that processes those should raise the parameter or the alarm will
 report normal operation as a problem. Because it is an average, one slow document
 in a busy 5-minute window will not trip it — this is a "the whole pipeline is
 slow" signal, not a per-document one.
+
+### The queue alarms — the gap both of the above leave
+
+Both alarms above read the **state machine**, so neither can see a document that
+never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):
+a dead-lettered document emits no `ExecutionsFailed`, and a document still sitting
+in the queue emits no `ExecutionTime`. Three alarms cover the queue layer.
+
+#### `DocumentQueueDLQAlarm` and `QueueSenderDLQAlarm`
+
+Both fire on the **first** message, with no threshold to tune, and both also
+notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
+`OK` notification is how you know someone actually drained the queue.
+`WorkflowTrackerDLQAlarm` now does the same, so all three DLQ lines on the
+**Dead-Letter Queue Depth** widget behave alike.
+
+| Alarm | What a message means | Recovery |
+|---|---|---|
+| `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 1000 against a 30 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
+| `QueueSenderDLQAlarm` | The upload event never reached the queue, so the document never entered the pipeline. | Read the messages for the S3 keys, check the QueueSender logs, then **re-upload**. See the note below on which state the document is left in — and note that SQS redrive does **not** apply to this queue. |
+
+> **What a `QueueSenderDLQ` message means for the document, precisely.** The
+> queue sender writes the tracking record *before* it enqueues
+> (`src/lambda/queue_sender/index.py`), so where the invocation died decides what
+> you see: a failed **enqueue** leaves a row wedged at `QUEUED` in the Web UI
+> forever, while a failed **`create_document`** leaves no record at all. Look for
+> the stuck `QUEUED` document first — that is the likelier case in a queue named
+> for the sender. Recovery is re-upload either way: `QueueSenderDLQ` is a Lambda
+> **async-invoke** DLQ, not the dead-letter queue of another SQS queue, so
+> `StartMessageMoveTask` (the console's *Redrive* button) does not apply to it and
+> is not offered. `DocumentQueueDLQ` *is* a true SQS DLQ, so redrive does work
+> there.
+
+#### `DocumentQueueStalledAlarm` — why it is not a queue-depth alarm
+
+"Not draining" cannot be alarmed on queue **depth**, because waiting is the
+design: the queue processor refuses a message by letting its visibility timeout
+lapse while workflow concurrency is saturated.
+
+It cannot be alarmed on message **age** alone either, and that is less obvious.
+Because a refused message is never deleted and re-sent,
+`ApproximateAgeOfOldestMessage` measures time since the *original* send, so it
+climbs monotonically for as long as concurrency stays saturated — a healthy stack
+draining a large batch will pass any fixed age threshold.
+
+So the alarm requires **both** conditions in one metric-math expression: the
+oldest message is older than `QueueStalledAgeThresholdSeconds` **and** not a
+single message was deleted in the period. Deep but draining stays `OK` at any
+depth; a wedged consumer fires.
+
+**Why the window is 30 minutes** (six 5-minute periods, where the other alarms
+here use one to three). A message leaves `DocumentQueue` only when a workflow
+slot frees up, so with concurrency saturated by long-running documents a
+*healthy* stack can legitimately delete nothing for as long as its slowest
+document takes. A shorter window would page on ordinary large-packet
+processing — and an alarm that cries wolf gets muted, which costs more than the
+detection latency. Thirty minutes of **zero** dequeues is where "slow" and
+"stuck" stop being distinguishable from outside, and it deserves attention
+either way: at that point it is either a wedge or a capacity shortfall.
+
+**Expect roughly an hour of detection latency at the defaults**, not 30 minutes:
+the age condition has to be met *first* (30 minutes at the default threshold) and
+the 30-minute no-progress window then runs on top of it. Lower
+`QueueStalledAgeThresholdSeconds` to shorten that, at the cost of firing during
+saturation.
+
+**A circuit-breaker pause trips this alarm too, by design.** A processor in the
+`OPEN` state pushes a message's visibility out to
+`CircuitBreakerRecoveryTimeoutSeconds` *without deleting it*, so age climbs and
+deletions stay at zero — both conditions hold. That is not suppressed, because
+muting the queue signal for the duration of a Bedrock outage would mute it
+exactly when documents pile up. If `BedrockServiceOutageAlarm` is active on the
+same topic, this alarm is reporting the same incident and clears on its own when
+the breaker closes. Only relevant when the circuit breaker is enabled, which is
+not the default.
+
+**One reporting caveat.** SQS stops publishing queue metrics for a queue that has
+been inactive for about six hours. In the specific case where the consumer is
+fully detached *and* no new documents arrive, `FILL(m1, 0)` then yields `0`, the
+condition goes false, and the alarm returns to `OK` while the queue is still
+stuck. It will have fired first, so the notification is not lost — but do not
+read a later `OK` as "resolved" without checking the queue.
+
+**Tuning.** Raise `QueueStalledAgeThresholdSeconds` (default `1800`) if bulk
+uploads against a low `MaxConcurrentWorkflows` trip it and you consider that
+normal. Because the alarm already requires zero throughput, the threshold is
+"how long is too long to wait with no progress whatsoever", not a backlog limit.
+
+**When it fires**, check in this order: the **Workflow Concurrency Counter**
+widget (a counter pinned at `MaxConcurrentWorkflows` with nothing running is a
+leaked slot — `ConcurrencyCounterDriftAlarm` covers that case), the
+circuit-breaker state, whether the QueueProcessor event-source mapping is still
+enabled, then QueueProcessor invocations, errors, and throttles. If executions
+**are** running and each simply takes longer than 30 minutes, this is a capacity
+signal rather than a fault: raise `MaxConcurrentWorkflows`, or raise the
+threshold to accept it.
 
 ### `BDACallbackTimeoutSeconds` — why a hung BDA job needs its own bound
 
@@ -281,9 +413,13 @@ deployment:
 
 1. **Error Rate Thresholds**: Alert when error rates exceed acceptable levels
 2. **Processing Time Anomalies**: Detect unusual latency spikes
-3. **Queue Depth Monitoring**: Alert on potential backlogs
-4. **Concurrency Limits**: Notify when approaching service limits
-5. **Cost Controls**: Alert on unusual model usage patterns
+3. **Concurrency Limits**: Notify when approaching service limits
+4. **Cost Controls**: Alert on unusual model usage patterns
+
+Queue backlog and DLQ depth are already covered by the built-in alarms above, and
+a plain "depth > N" alarm on `DocumentQueue` is specifically **not** worth adding
+— see [`DocumentQueueStalledAlarm`](#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
+for why depth alone is not a fault signal in this architecture.
 
 Example alarm configuration:
 

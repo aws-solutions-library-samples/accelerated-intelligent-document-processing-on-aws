@@ -14,7 +14,8 @@ import pytest
 
 from idp_common.agents.analytics.schema_provider import (
     get_database_overview,
-    get_metering_table_description,
+    get_rollup_tables_description,
+    get_table_info,
 )
 
 
@@ -36,19 +37,23 @@ class TestMeteringHourlyColumnsInPrompt:
         blocker regression pin. Round-28 update: sum_value is a
         quantity (not a cost) — see
         ``test_sum_value_labeled_as_quantity_not_cost`` for that pin."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         assert idx > -1, "metering_hourly section not found"
         section = prompt[idx : idx + 800]
         assert "sum_value" in section and "sum_cost" in section, (
             "metering_hourly bullet must name both sum_value and sum_cost "
             "as its aggregate columns."
         )
-        # The NEVER SELECT anti-pattern warning must be present
-        assert "NEVER SELECT" in section, (
-            "metering_hourly bullet must call out the n_docs/sum_pages "
-            "anti-pattern explicitly — a positive-only claim was the "
-            "round-27 blocker."
+        # The NEVER-SELECT-n_docs anti-pattern warning must be present
+        # anywhere in the description (Phase-2 refactor moved it to a
+        # shared cost-vs-docs split block ABOVE the per-table sections;
+        # phrasing is "**NEVER** `SELECT n_docs FROM metering_hourly`").
+        import re
+
+        assert re.search(r"NEVER.*SELECT.*n_docs.*metering_hourly", prompt), (
+            "prompt must call out the n_docs anti-pattern explicitly — "
+            "a positive-only claim was the round-27 blocker."
         )
 
     def test_metering_hourly_never_positively_lists_docs_columns(self):
@@ -57,8 +62,8 @@ class TestMeteringHourlyColumnsInPrompt:
         ``metering_hourly``. Guard against a future regression that
         drops the "Cost columns only" wording and re-lists them all
         together."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         section = prompt[idx : idx + 500]
         # A "Columns:" sub-phrase must not enumerate n_docs OR sum_pages
         # in the metering_hourly bullet.
@@ -81,9 +86,9 @@ class TestMeteringHourlyColumnsInPrompt:
         Omitting ``hour`` was one of the round-27 blocker fixes — a
         query with ``WHERE date = 'X'`` alone is a full-day scan
         instead of one hour partition."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
-        end = prompt.find("- **`metering_daily`**", idx)
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
+        end = prompt.find("### 2. `metering_daily`", idx)
         section = prompt[idx:end]
         # Match either "date + hour" or "date` + `hour" formatting
         assert "hour" in section, (
@@ -95,11 +100,11 @@ class TestMeteringHourlyColumnsInPrompt:
         """The doc-grain tables — ``metering_docs_hourly`` and
         ``metering_docs_daily`` — MUST still document ``n_docs`` and
         ``sum_pages`` (those are the columns that actually live there)."""
-        prompt = get_metering_table_description()
+        prompt = get_rollup_tables_description()
         # Find the metering_docs bullet
-        idx = prompt.find("**`metering_docs_hourly` / `metering_docs_daily`**")
+        idx = prompt.find("### 3. `metering_docs_hourly`")
         assert idx > -1, "metering_docs_* section not found in prompt"
-        end = prompt.find("Query patterns:", idx)
+        end = prompt.find("### 5. `control_plane_hourly`", idx)
         section = prompt[idx:end]
         assert "n_docs" in section, (
             "metering_docs_* section is missing the n_docs description"
@@ -114,13 +119,18 @@ class TestMeteringHourlyColumnsInPrompt:
         n_docs or sum_pages`` warning verbatim. This is what makes
         the LLM avoid the wrong-table pitfall, not just the absence
         of a positive claim."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
-        section = prompt[idx : idx + 800]
-        assert "NEVER SELECT" in section and "metering_docs_hourly" in section, (
-            "The metering_hourly bullet must include a NEVER SELECT "
-            "anti-pattern pointing at metering_docs_hourly as the "
-            "correct home for n_docs / sum_pages."
+        prompt = get_rollup_tables_description()
+        # Phase-2 refactor: the anti-pattern lives in a shared "Cost-vs-docs
+        # column split" block ABOVE the per-table sections rather than
+        # inside the metering_hourly bullet. Still one canonical source.
+        assert (
+            "NEVER" in prompt
+            and "SELECT" in prompt
+            and "metering_docs_hourly" in prompt
+        ), (
+            "prompt must include a NEVER SELECT anti-pattern pointing "
+            "at metering_docs_hourly as the correct home for "
+            "n_docs / sum_pages."
         )
 
     def test_sum_value_labeled_as_quantity_not_cost(self):
@@ -129,8 +139,8 @@ class TestMeteringHourlyColumnsInPrompt:
         Only `sum_cost` is USD. The round-27 fix mis-labeled the
         two together as "Cost columns only", which would have made
         the LLM sum tokens as dollars. Regression pin."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_hourly`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 1. `metering_hourly`")
         section = prompt[idx : idx + 800]
         # The docstring MUST NOT describe sum_value as a cost.
         assert "Cost columns only: `sum_value`" not in section, (
@@ -150,10 +160,10 @@ class TestMeteringHourlyColumnsInPrompt:
         ``SELECT hour_ts FROM metering_daily`` → COLUMN_NOT_FOUND.
         Regression pin — the daily bullet MUST name the correct key
         column and MUST explicitly disclaim hour_ts."""
-        prompt = get_metering_table_description()
-        idx = prompt.find("**`metering_daily`**")
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 2. `metering_daily`")
         assert idx > -1, "metering_daily bullet not found"
-        end = prompt.find("- **`metering_docs_hourly`", idx)
+        end = prompt.find("### 3. `metering_docs_hourly`", idx)
         section = prompt[idx:end]
         assert "`day`" in section, (
             "metering_daily bullet must explicitly name `day` as the key "
@@ -184,6 +194,51 @@ def stub_config():
 
 
 @pytest.mark.unit
+class TestGetTableInfoGroupDedup:
+    """Regression: ``get_table_info(['metering_hourly',
+    'metering_docs_hourly'])`` used to emit the full 6-table rollup
+    description twice because both names hit the same rollup branch.
+    Same for the evaluation and rule-validation groups. Fix: track
+    which group has already been emitted per invocation."""
+
+    def test_multi_rollup_emits_description_once(self):
+        result = get_table_info(["metering_hourly", "metering_docs_hourly"])
+        # The rollup description contains the "## Reporting Rollup Tables"
+        # H2 header — must appear exactly once regardless of how many
+        # rollup names were requested.
+        assert result.count("## Reporting Rollup Tables") == 1, (
+            "rollup description must not be duplicated per requested "
+            f"rollup name (found {result.count('## Reporting Rollup Tables')})"
+        )
+        # Sanity: still contains the description at all.
+        assert "## Reporting Rollup Tables" in result
+
+    def test_multi_evaluation_emits_description_once(self):
+        result = get_table_info(["document_evaluations", "attribute_evaluations"])
+        # The evaluation description contains "## Evaluation Tables".
+        assert result.count("## Evaluation Tables") == 1, (
+            "evaluation description must not be duplicated per requested "
+            "evaluation table name"
+        )
+
+    def test_document_sections_still_emitted_per_table(self):
+        """Sanity: document_sections_* tables are each a different table
+        (document_sections_w2 vs document_sections_invoice), NOT a
+        conceptual group. They should NOT be deduped. Without a real
+        config each falls through to the "**Error**" branch — but the
+        important property is that TWO branches run, not one collapsed
+        into one. Count section separators as proof of separate handling."""
+        result = get_table_info(["document_sections_w2", "document_sections_invoice"])
+        # Each document_sections_* name should produce its own "---"
+        # separator; if the router mistakenly deduped them, only one
+        # separator would appear.
+        assert result.count("\n---\n") >= 2, (
+            f"document_sections_* tables must be handled independently "
+            f"(found {result.count(chr(10) + '---' + chr(10))} separators)"
+        )
+
+
+@pytest.mark.unit
 class TestDatabaseOverviewMirrorsDetail:
     """Round-29 review: the DETAIL section (get_metering_table_description)
     has all the disclaimers, but the OVERVIEW blurb (get_database_overview)
@@ -210,6 +265,66 @@ class TestDatabaseOverviewMirrorsDetail:
             "overview block must explicitly mention hour_ts (and disclaim "
             "it for the daily table) — otherwise the LLM emits "
             "SELECT hour_ts FROM metering_daily → COLUMN_NOT_FOUND"
+        )
+
+    def test_get_table_info_routes_rollup_names(self):
+        """Phase-2 regression pin: when the LLM asks for a rollup table
+        by name (``metering_hourly``, ``metering_docs_daily``,
+        ``control_plane_hourly``, etc.) the second-step disclosure must
+        return the detailed rollup description, NOT the ``Unknown
+        Table`` error the pre-Phase-2 code returned. Without this the
+        LLM's tier-picker path silently degrades and it falls back to
+        raw ``metering``.
+        """
+        for name in (
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        ):
+            info = get_table_info([name])
+            assert "Unknown Table" not in info, (
+                f"get_table_info(['{name}']) returned 'Unknown Table' — "
+                f"the rollup name is not wired into the router."
+            )
+            # Rollup description must include the tier-picker table
+            assert "Tier picker" in info, (
+                f"get_table_info(['{name}']) missing tier-picker guidance"
+            )
+
+    def test_rollup_description_covers_all_six_tables(self):
+        """The rollup description must name each of the six Phase-1
+        tables (four metering-derived + two Lambda-cost). Missing any
+        of them means the LLM's second-step disclosure can't compare
+        the tier options.
+        """
+        desc = get_rollup_tables_description()
+        for table in (
+            "metering_hourly",
+            "metering_daily",
+            "metering_docs_hourly",
+            "metering_docs_daily",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        ):
+            assert table in desc, f"rollup description missing table `{table}`"
+
+    def test_rollup_description_pins_cost_vs_docs_split(self):
+        """Phase-1's cost-vs-docs column split is the class of bug most
+        likely to bite the LLM: it groups by `service_api` on the
+        docs table (COLUMN_NOT_FOUND) or selects `sum_pages` on the
+        cost table (also COLUMN_NOT_FOUND). Pin the negative rules.
+        """
+        desc = get_rollup_tables_description()
+        assert "NEVER" in desc and "sum_pages FROM metering_hourly" in desc, (
+            "rollup description must explicitly forbid selecting "
+            "sum_pages from metering_hourly"
+        )
+        assert "sum_cost FROM metering_docs_hourly" in desc, (
+            "rollup description must explicitly forbid selecting "
+            "sum_cost from the docs tables"
         )
 
     def test_overview_warns_docs_tables_omit_service_api_and_unit(self, stub_config):

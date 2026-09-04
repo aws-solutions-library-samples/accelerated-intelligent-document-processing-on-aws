@@ -233,6 +233,147 @@ def test_alarms_were_found():
     )
     assert "SlowExecutionsAlarm" in main_alarms
 
+    # GitHub #761. The queue layer had no alarm at all: a document that
+    # dead-lettered, or a queue that stopped draining, emits neither
+    # ExecutionsFailed nor ExecutionTime, so both alarms above read OK through
+    # it. Pinned by name because the failure mode is again silence -- deleting
+    # one of these restores the blind spot with no other symptom.
+    for name in (
+        "DocumentQueueDLQAlarm",
+        "QueueSenderDLQAlarm",
+        "DocumentQueueStalledAlarm",
+    ):
+        assert name in main_alarms, (
+            f"{name} not found in template.yaml. If it was renamed, update this "
+            f"guard; if it was removed, the SQS blind spot from #761 is back."
+        )
+
+
+def test_stalled_queue_alarm_fills_its_throughput_metric():
+    """The stall alarm must FILL its "messages deleted" input with 0.
+
+    ``DocumentQueueStalledAlarm`` fires on "oldest message is old AND nothing was
+    deleted". SQS publishes ``NumberOfMessagesDeleted`` only when deletions
+    actually happen, so a *completely* stalled queue -- the incident this alarm
+    exists for -- produces no datapoint for that metric at all. Without
+    ``FILL(..., 0)`` the whole expression evaluates to missing at exactly that
+    moment, and ``TreatMissingData: notBreaching`` then reads the silence as
+    healthy: an alarm guaranteed to stay ``OK`` through its own incident.
+
+    That is #746's failure mode reached by a different route, and it is invisible
+    in review (the expression looks correct) and in a deploy (CloudWatch accepts
+    it), so it is pinned here.
+    """
+    props = _alarms(_load("template.yaml"))["DocumentQueueStalledAlarm"]["Properties"]
+    metrics = {
+        entry["Id"]: entry for entry in props["Metrics"] if isinstance(entry, dict)
+    }
+
+    expression = metrics["e1"]["Expression"]
+    if isinstance(expression, dict):  # !Sub wraps it to interpolate the threshold
+        expression = expression["!Sub"]
+    assert isinstance(expression, str), f"Unexpected expression shape: {expression!r}"
+
+    deleted_ids = [
+        mid
+        for mid, entry in metrics.items()
+        if (entry.get("MetricStat") or {}).get("Metric", {}).get("MetricName")
+        == "NumberOfMessagesDeleted"
+    ]
+    assert deleted_ids, (
+        "DocumentQueueStalledAlarm no longer reads NumberOfMessagesDeleted, so it "
+        "cannot distinguish a deep-but-draining queue from a stalled one -- which "
+        "is the whole reason it is not a plain queue-depth alarm (#761)."
+    )
+    compact = expression.replace(" ", "")
+    for mid in deleted_ids:
+        assert f"FILL({mid},0)" in compact, (
+            f"DocumentQueueStalledAlarm's expression uses {mid} "
+            f"(NumberOfMessagesDeleted) without FILL({mid}, 0): "
+            f"{expression!r}. A fully stalled queue publishes no deletion "
+            f"datapoint, so the expression would go missing and the alarm would "
+            f"read OK through the outage it exists to catch."
+        )
+        assert f"FILL({mid},0)<1" in compact, (
+            f"DocumentQueueStalledAlarm must require {mid} (deletions) to be "
+            f"BELOW 1 -- the alarm fires on the absence of progress. Got "
+            f"{expression!r}; an inverted comparison would alarm on a queue that "
+            f"is draining normally and stay silent on one that is not."
+        )
+
+    # The age side needs FILL too, for the opposite reason: an idle stack
+    # publishes no age datapoint either, and without FILL the expression would go
+    # missing whenever nothing is queued -- leaving the alarm in
+    # INSUFFICIENT_DATA, the state this file exists to keep alarms out of.
+    age_ids = [
+        mid
+        for mid, entry in metrics.items()
+        if (entry.get("MetricStat") or {}).get("Metric", {}).get("MetricName")
+        == "ApproximateAgeOfOldestMessage"
+    ]
+    assert age_ids, "DocumentQueueStalledAlarm no longer reads message age."
+    for mid in age_ids:
+        assert f"FILL({mid},0)" in compact, (
+            f"DocumentQueueStalledAlarm uses {mid} (ApproximateAgeOfOldestMessage) "
+            f"without FILL({mid}, 0): {expression!r}."
+        )
+
+    # The threshold has to reach the expression. A literal here would silently
+    # ignore the QueueStalledAgeThresholdSeconds parameter, so the documented knob
+    # would do nothing -- and the alarm description, which interpolates the same
+    # parameter, would state a threshold the alarm does not use.
+    assert "${QueueStalledAgeThresholdSeconds}" in expression, (
+        f"DocumentQueueStalledAlarm's expression does not interpolate "
+        f"QueueStalledAgeThresholdSeconds: {expression!r}. The parameter is "
+        f"documented as the alarm's only knob."
+    )
+
+
+def test_cloudwatch_can_decrypt_the_alarm_topic_key_unconditionally():
+    """The CMK grant for CloudWatch->SNS must not sit behind a condition.
+
+    ``AlertsTopic`` is encrypted with the stack's customer-managed key on every
+    deployment. The key-policy statement letting CloudWatch use that key was
+    originally wrapped in ``CircuitBreakerEnabledCondition``, so on a default
+    stack (``CircuitBreakerEnabled`` defaults to ``"false"``) *every* alarm action
+    failed with "CloudWatch Alarms does not have authorization to access the SNS
+    topic encryption key" -- while the alarms themselves still went to ``ALARM``
+    in the console. Every alarm in this template was therefore console-only, and
+    the only evidence was each alarm's Action history.
+
+    That is the same report-OK-by-silence shape as #746 one layer further out: the
+    alarms are correct, and the notification path is not. Nothing else here would
+    catch it, because the alarm resources are all perfectly well-formed.
+    """
+    template = _load("template.yaml")
+    key = template["Resources"]["CustomerManagedEncryptionKey"]
+    statements = key["Properties"]["KeyPolicy"]["Statement"]
+
+    matches = [
+        stmt
+        for stmt in statements
+        if isinstance(stmt, dict) and "cloudwatch" in str(stmt.get("Principal", ""))
+    ]
+    assert matches, (
+        "No key-policy statement grants CloudWatch use of the CMK. AlertsTopic is "
+        "encrypted with it, so without this grant no alarm can publish and every "
+        "alarm in this template becomes console-only."
+    )
+    for stmt in matches:
+        assert "!If" not in stmt, (
+            "The CloudWatch CMK grant is wrapped in a condition. AlertsTopic is "
+            "encrypted unconditionally, so any condition here disables alarm "
+            "notifications for the deployments that do not meet it."
+        )
+        actions = stmt.get("Action") or []
+        actions = [actions] if isinstance(actions, str) else actions
+        assert any("Decrypt" in a for a in actions), (
+            f"CloudWatch CMK grant lacks kms:Decrypt: {actions}"
+        )
+        assert any("GenerateDataKey" in a for a in actions), (
+            f"CloudWatch CMK grant lacks kms:GenerateDataKey*: {actions}"
+        )
+
 
 @pytest.mark.parametrize(
     "rel_path,alarm_name,namespace,metric_name",
