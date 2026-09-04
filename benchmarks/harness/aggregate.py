@@ -266,6 +266,16 @@ def _meta(rm):
         "stack_version": _stack_version(rm.get("stack")),
         "suite": rm.get("suite"),
         "class": rm.get("class"),
+        # Coverage, carried through from the runmap. The runmap itself is
+        # gitignored (results/RETENTION.md), so without these the committed
+        # meta.json a release page cites records nothing about which of the
+        # suite's documents were actually measured (#766). None on a runmap
+        # written before run_matrix recorded them — that means unknown, not
+        # complete.
+        "docs_named": rm.get("docs_named"),
+        "docs_run": rm.get("docs_run"),
+        "docs_unlaunchable": rm.get("docs_unlaunchable"),
+        "docs_other_class": rm.get("docs_other_class"),
         # NOTE: `commit` is the LOCAL repo HEAD at scoring time, which is not
         # necessarily the code that ran — a run against a published template, or a
         # run scored after further local commits, will differ. `stack_version` above

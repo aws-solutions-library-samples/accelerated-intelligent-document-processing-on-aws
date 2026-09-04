@@ -106,6 +106,13 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
    uploads the config variants as `Config#bench-*` versions (it **never** mutates
    `Config#default`), launches each (cell × doc) via the stack test runner, and polls the
    tracking table to completion. `--estimate` prints projected doc-count/cost/time first.
+   ⚠️ It can only launch **synthetic** documents. A suite naming a reference corpus
+   (`realkie`, `ocr_bench` — both are in `core_docs`) does not measure it: those are
+   test *sets* on the stack, not local PDFs, and there is no launch path for them yet
+   ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).
+   The launcher says so and records `docs_unlaunchable` in the runmap and `meta.json`,
+   so check that field before reading a suite's result as covering its whole document
+   list; run reference corpora through Test Studio meanwhile.
 4. **Score & aggregate** — `aggregate.py` scores every run on the seven dimensions, rolls
    them into `results/<release>/<suite>/summary.{json,csv}` with a `meta.json` (commit,
    stack, pricing hash, date), diffs against `results/baseline.json` to flag regressions,

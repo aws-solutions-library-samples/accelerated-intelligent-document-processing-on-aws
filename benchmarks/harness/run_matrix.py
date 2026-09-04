@@ -291,11 +291,18 @@ def load_plan(suite, klass, overrides=()):
         )
     else:
         doc_ids = [dg]
+    named_docs = list(doc_ids)
     doc_ids, skipped = _docs_for_class(doc_ids, docm, klass)
-    if skipped:
+    # A reference doc's "class" is its config, so the class filter above removes it
+    # too — but "run them with --class <their class>" is advice that cannot work for
+    # one: make_configs has no config for a reference corpus, so load_plan would
+    # exit on the missing index. Those are reported by their real cause in main()
+    # (#766); this note is only for documents another --class really can run.
+    elsewhere = [d for d in skipped if d not in reference_ids(docm)]
+    if elsewhere:
         print(
-            f"note: {len(skipped)} doc(s) in suite '{suite}' belong to another "
-            f"document class and are NOT run here: {skipped}\n"
+            f"note: {len(elsewhere)} doc(s) in suite '{suite}' belong to another "
+            f"document class and are NOT run here: {elsewhere}\n"
             f"      run them with --class <their class> (configs are per class)."
         )
     if not doc_ids:
@@ -303,7 +310,36 @@ def load_plan(suite, klass, overrides=()):
             f"suite '{suite}' has no docs for class '{klass}' — every doc it names "
             f"belongs to a different class. Check --class."
         )
-    return cells, doc_ids, int(suite_spec.get("repeats", 1))
+    return cells, doc_ids, int(suite_spec.get("repeats", 1)), named_docs
+
+
+def reference_ids(docm=None):
+    """Ids of the reference corpora — real labeled test SETS living on the stack.
+
+    They have no PDF under ``corpus/docs`` and this harness launches one local PDF
+    per run, so it cannot run them at all (#766).
+    """
+    if docm is None:
+        docm = yaml.safe_load(open(DOC_MATRIX))
+    return {d["id"] for d in docm.get("reference", [])}
+
+
+def plan_coverage(named_docs, doc_ids, refs):
+    """Split a suite's named documents into measured / unlaunchable / other-class.
+
+    Kept as a pure function so the split is testable without a stack — the first
+    attempt at this fix computed the unlaunchable set *after* ``_docs_for_class``
+    had already removed reference docs by class, so it was always empty and the
+    warning could never fire. Only a behavioral test catches that.
+
+    ``named_docs`` is the suite's list before any filtering, which is what makes
+    the reference corpora visible here: they are unlaunchable whether the class
+    filter removed them (the usual path) or they survived it.
+    """
+    unlaunchable = [d for d in named_docs if d in refs]
+    runnable = [d for d in doc_ids if d not in unlaunchable]
+    other_class = [d for d in named_docs if d not in runnable and d not in unlaunchable]
+    return runnable, unlaunchable, other_class
 
 
 def _docs_for_class(doc_ids, docm, klass):
@@ -454,22 +490,65 @@ def main():
         if not v:
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
-    cells, doc_ids, repeats = load_plan(a.suite, a.klass, a.overrides)
+    cells, doc_ids, repeats, named_docs = load_plan(a.suite, a.klass, a.overrides)
     if a.repeats is not None:
         repeats = a.repeats
-    # only synthetic docs handled by this class run here; reference docs use their own config
+
+    # This harness launches one local PDF per run, so a reference corpus — a test
+    # SET on the stack, with no PDF under corpus/docs — cannot be launched at all.
+    # The launch loop used to `continue` past them under the comment "reference
+    # docs handled separately"; nothing handles them separately, there is no other
+    # launch path (#766). A suite naming `core_docs` therefore measured 7 of its 9
+    # documents, dropping the only two corpora with real pages and human-verified
+    # labels, and nothing in the run's own output said which 7 it had been.
+    #
+    # Split on `named_docs` (pre-class-filter) rather than on a missing PDF: the
+    # class filter removes reference docs first, because a reference doc's "class"
+    # is its config. Checking for the PDF here would always come up empty and the
+    # warning would never fire.
+    doc_ids, unlaunchable, other_class = plan_coverage(
+        named_docs, doc_ids, reference_ids()
+    )
+    if unlaunchable:
+        print(
+            f"\n!! {len(unlaunchable)} of the {len(named_docs)} document(s) named by "
+            f"suite '{a.suite}' CANNOT be launched by this harness and are NOT "
+            f"measured: {unlaunchable}\n"
+            "   They are reference corpora — test SETS on the stack, not PDFs under "
+            f"{os.path.relpath(DOCS, REPO)} — and run_matrix has no launch path for "
+            "them (#766).\n"
+            "   Run them through Test Studio (see benchmarks/harness/"
+            "detection_ab_teststudio.py) and treat this run as synthetic-only.\n"
+        )
+
     pairs = [(c, d, r) for c in cells for d in doc_ids for r in range(repeats)]
     print(
         f"plan: {len(cells)} cells x {len(doc_ids)} docs x {repeats} = {len(pairs)} runs"
+        + (f"  ({len(unlaunchable)} doc(s) not launchable)" if unlaunchable else "")
     )
 
     if a.estimate:
         print("(estimate) doc ids:", doc_ids)
+        if unlaunchable:
+            print("(estimate) NOT launchable, not measured:", unlaunchable)
         print("(estimate) cell ids:", [c["cell"] for c in cells])
         print(
             "Run without --estimate to execute. Large docs/advanced cells dominate cost/time."
         )
         return
+
+    # Every remaining doc is a synthetic one, so its PDF must exist. Checked here,
+    # once, rather than per (cell, doc, repeat) in the launch loop — where a
+    # missing PDF used to be skipped silently. `--estimate` deliberately returns
+    # above this: "what would this suite cost" is a fair question to ask before
+    # spending 20 minutes generating the corpus.
+    missing = [d for d in doc_ids if not os.path.exists(os.path.join(DOCS, d + ".pdf"))]
+    if missing:
+        sys.exit(
+            f"no PDF for {missing} under {os.path.relpath(DOCS, REPO)}.\n"
+            f"Run gen_corpus.py (a partial corpus from --only/--series needs the "
+            f"docs this suite names), or check the doc id for a typo."
+        )
 
     run_stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     outdir = os.path.join(RESULTS, f"run-{run_stamp}")
@@ -477,10 +556,8 @@ def main():
 
     # 1. register test sets (unique docs)
     for d in set(doc_ids):
-        pdf = os.path.join(DOCS, d + ".pdf")
-        if os.path.exists(pdf):
-            register_testset(a.stack, res, d, pdf)
-            print(f"  registered bench-{d}")
+        register_testset(a.stack, res, d, os.path.join(DOCS, d + ".pdf"))
+        print(f"  registered bench-{d}")
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
     verify_config_axes(cells)
@@ -503,9 +580,10 @@ def main():
         return st["obj_done"] + st["failed"] >= 1  # 1 doc/run
 
     for c, d, rep in pairs:
+        # No missing-PDF check here: it is done once, above, before anything is
+        # registered or uploaded. It used to live here as a bare `continue`, which
+        # is how a suite silently measured 7 of its 9 documents (#766).
         pdf = os.path.join(DOCS, d + ".pdf")
-        if not os.path.exists(pdf):
-            continue  # reference docs handled separately
         # PRUNE finished runs instead of re-polling them. This list used to grow
         # for the whole suite and every slot check polled ALL of it, so the cost of
         # deciding whether to launch was O(runs launched so far) DynamoDB queries —
@@ -539,6 +617,19 @@ def main():
                 "suite": a.suite,
                 "class": a.klass,
                 "resources": res,
+                # What the suite ASKED for vs. what this run can measure. Without
+                # these a runmap cannot be told apart from one that covered the
+                # whole suite, which is how a 7-of-9 grid got read as complete
+                # (#766). Scoring reads `runs`; these are for whoever reads the
+                # result later. Absent on a runmap written before this existed, or
+                # by another launcher — absent is "unknown", not "nothing skipped".
+                # `docs_other_class` is separate because a suite legitimately names
+                # documents of several classes and runs them under their own
+                # --class; `docs_unlaunchable` is work that CANNOT be run here.
+                "docs_named": named_docs,
+                "docs_run": doc_ids,
+                "docs_unlaunchable": unlaunchable,
+                "docs_other_class": other_class,
                 "runs": runmap,
             },
             open(os.path.join(outdir, "runmap.json"), "w"),

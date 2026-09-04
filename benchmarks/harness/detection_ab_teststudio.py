@@ -4,10 +4,11 @@
 
 """A/B a config toggle over a REAL labeled corpus, via Test Studio.
 
-``run_matrix.py`` cannot do this: it silently skips every reference corpus (it
-``continue``s on any doc with no local PDF, with a comment claiming reference docs
-are "handled separately" and nothing handling them), so a suite naming ``realkie``
-or ``ocr_bench`` runs nothing for it. This drives the **TestRunner Lambda** — the
+``run_matrix.py`` cannot do this: it launches one local PDF per run and a reference
+corpus is a test set on the stack, so a suite naming ``realkie`` or ``ocr_bench``
+runs nothing for it. (It used to skip them silently; as of #766 it reports them as
+unlaunchable and records the shortfall in the runmap, but there is still no launch
+path — that is what this script is.) This drives the **TestRunner Lambda** — the
 same entry point the Test Studio UI uses — so the runs are ordinary test
 executions, scored against each test set's committed baselines with the config
 profile and revision captured on the run.
