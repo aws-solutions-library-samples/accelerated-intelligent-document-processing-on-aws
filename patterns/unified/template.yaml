@@ -1304,6 +1304,13 @@ Resources:
                     description: "Repeat the document schema in the agent's system prompt. It is already sent as the extraction tool's input schema — the identical JSON — so this is a duplicate worth roughly 2,600 of the ~6,700 schema tokens in every request (38%). Turning it OFF reclaims that; the agent can still fetch the schema on demand. Kept ON by default because restating a schema often improves how closely the model follows it, so the duplication may be doing real work — measure completeness on your own documents before turning it off. Both copies sit inside the prompt cache, so the dollar saving is much smaller than the token count suggests. It does NOT make long documents split into fewer parts — the schema text is not counted when the pipeline decides how to split a document, so the tokens you reclaim come out of a safety margin that was already unused. Measured on the benchmark suite: turning it off costs no completeness and no accuracy, and buys nothing measurable either. Default: on."
                     default: true
                     order: 2.5
+                  prose_schema:
+                    type: string
+                    title: Schema prose in the prompt
+                    enum: ["full", "minimal", "names"]
+                    default: "full"
+                    order: 2.6
+                    description: "How much of the document schema to repeat as text in the extraction prompt. Advanced extraction always sends the schema as the extraction tool's input schema, so the copy in the prompt is largely a duplicate — about 1,485 of the ~5,700 schema tokens in every request on the lending Payslip class. 'full' (default) repeats the whole schema, as every earlier release did. 'minimal' repeats only what the tool schema loses on the way out — the class's own description and any group description, both dropped when the schema is turned into the model the tool is built from — plus the field names; that is 372 tokens instead of 1,485 on Payslip. 'names' lists just the field names (176 tokens). Kept at 'full' by default because repeating a schema in text often improves how closely the model follows it, and on a document with a long table an agent that drifts from the schema returns FEWER ROWS — judge a change on completeness, not on tokens. Both copies sit inside the prompt cache, so the dollar saving is much smaller than the token count suggests, and this does NOT make long documents split into fewer parts — the schema text is not counted when the pipeline decides how to split a document, so the tokens you reclaim come out of a safety margin that was already unused. Measured on the benchmark suite: no completeness or accuracy cost, and no benefit either. Use it to measure the question on your own documents, not as a tuning recommendation."
                   table_parsing:
                     type: object
                     sectionLabel: Table Parsing Tool (Requires OCR TABLES enabled)
@@ -1374,6 +1381,12 @@ Resources:
                     description: "If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
                     default: true
                     order: 1
+                    dependsOn: { field: "enabled", value: true }
+                  drop_prose_schema:
+                    type: boolean
+                    description: "Stop repeating the document schema as text in the extraction prompt, since the required tool already carries it. On this path the tool schema is built from your schema directly and loses nothing — every description survives it, including the class's own — so the copy in the prompt adds no information, worth about 1,485 tokens per request on the lending Payslip class (the field names stay, about 176). Applied ONLY to requests that really do carry the tool: a custom Lambda hook or the GPT-5.x route cannot, and rather than send the model no schema at all, the prompt copy is kept and the section records that it was asked for and why it was not applied. Off by default and on the same gate as the tool itself — a schema described in text also plausibly helps the model follow it, so measure completeness on your own documents first."
+                    default: false
+                    order: 2
                     dependsOn: { field: "enabled", value: true }
               multi_instance_detection:
                 type: object

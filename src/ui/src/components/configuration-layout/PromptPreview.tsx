@@ -513,11 +513,198 @@ function formatClassAndAttributeNamesAndDescriptions(classes: ClassSchema[]): st
 
 /**
  * Format a class schema as cleaned JSON for extraction/assessment prompts.
- * Mirrors the Python _format_schema_for_prompt() logic in extraction/service.py.
+ * Mirrors the Python _format_schema_for_prompt() logic in extraction/service.py
+ * at its default ``full`` mode. Non-default modes go through
+ * {@link renderProseSchema}.
  */
 function formatSchemaForPrompt(schema: ClassSchema): string {
   const cleaned = cleanSchemaForPrompt(schema as Record<string, unknown>);
   return JSON.stringify(cleaned, null, 2);
+}
+
+/** How much of the class schema the task prompt restates as prose (#710). */
+export type ProseSchemaMode = 'full' | 'minimal' | 'names';
+
+const PROSE_SCHEMA_MODES: readonly ProseSchemaMode[] = ['full', 'minimal', 'names'];
+
+/**
+ * Which prose rendering this configuration produces. Mirrors
+ * ``ExtractionService._resolve_prose_schema_mode``.
+ *
+ * Two rules here are not cosmetic:
+ *
+ * - **The confidence step is always ``full``.** Assessment builds its own
+ *   descriptions (``AssessmentService._format_property_descriptions``) and sends
+ *   no tool, so neither knob reaches it. Showing a shrunken block there would
+ *   claim a saving the backend does not make.
+ * - **``drop_prose_schema`` needs ``forced_tool.enabled`` too.** The backend drops
+ *   the prose only on a request that really carries the toolSpec, so the flag
+ *   alone changes nothing. A preview that honoured it alone would show a prompt
+ *   no deployment sends.
+ *
+ * The one thing the browser cannot know is the model ROUTE: forcing is skipped
+ * for a custom Lambda hook or GPT-5.x, and there the backend keeps the prose. So
+ * this reports the REQUESTED rendering and the alert says so — the same division
+ * of labour `schemaDivergenceFor().forcedTool` already uses.
+ */
+export const proseSchemaModeFor = (formValues: Record<string, unknown> | null | undefined, selectedStep: string): ProseSchemaMode => {
+  if (selectedStep !== 'extraction') return 'full';
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const mode = extractionModeOf(formValues);
+  if (mode === 'advanced') {
+    const agentic = (extraction.agentic as Record<string, unknown>) || {};
+    const raw = typeof agentic.prose_schema === 'string' ? agentic.prose_schema.trim().toLowerCase() : '';
+    return (PROSE_SCHEMA_MODES as readonly string[]).includes(raw) ? (raw as ProseSchemaMode) : 'full';
+  }
+  const forcedTool = (extraction.forced_tool as Record<string, unknown>) || {};
+  const forcing = boolish(forcedTool.enabled, false);
+  return forcing && boolish(forcedTool.drop_prose_schema, false) ? 'names' : 'full';
+};
+
+/** A terse type label for a property, mirroring ``prose_schema._type_hint``. */
+function proseTypeHint(prop: PropertySchema): string {
+  if (!prop || typeof prop !== 'object') return '';
+  if (prop[REF_FIELD] && !prop.type) return 'object';
+  let ptype: string | undefined;
+  if (Array.isArray(prop.type)) {
+    const parts = (prop.type as unknown[]).filter((t) => t !== 'null').map(String);
+    ptype = parts.length ? parts.join('|') : undefined;
+  } else if (typeof prop.type === 'string') {
+    ptype = prop.type;
+  }
+  if (!ptype) return '';
+  if (ptype === 'array') {
+    const items = prop.items as PropertySchema | undefined;
+    const inner = items && typeof items === 'object' ? proseTypeHint(items) : '';
+    return inner ? `array of ${inner}` : 'array';
+  }
+  const fmt = typeof prop.format === 'string' ? prop.format : '';
+  return fmt ? `${ptype} (${fmt})` : String(ptype);
+}
+
+/** ``- name (type)`` per top-level property, mirroring ``_attribute_lines``. */
+function proseAttributeLines(schema: Record<string, unknown>): string[] {
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return [];
+  return Object.entries(properties as Record<string, PropertySchema>).map(([name, prop]) => {
+    const hint = proseTypeHint(prop);
+    return hint ? `- ${name} (${hint})` : `- ${name}`;
+  });
+}
+
+/**
+ * ``(label, description)`` for every object-typed subschema, mirroring
+ * ``prose_schema._group_descriptions`` — including its second pass over ``$defs``,
+ * which is what makes ``minimal`` cover the gap it exists for. Two properties
+ * sharing one definition hide that definition's own description under
+ * sibling-wins resolution, and the definition's is precisely the one the backend's
+ * Pydantic round trip loses.
+ */
+function proseGroupDescriptions(schema: Record<string, unknown>): Array<[string, string]> {
+  const found: Array<[string, string]> = [];
+  const seenPairs = new Set<string>();
+  const emittedTexts = new Set<string>();
+  const referencedBy: Record<string, string[]> = {};
+
+  const note = (label: string, text: string): void => {
+    const key = `${label} ${text}`;
+    if (seenPairs.has(key)) return;
+    seenPairs.add(key);
+    emittedTexts.add(text);
+    found.push([label, text]);
+  };
+
+  const resolveLocalRef = (ref: string): Record<string, unknown> | null => {
+    if (!ref.startsWith('#/')) return null;
+    let node: unknown = schema;
+    for (const rawPart of ref.slice(2).split('/')) {
+      const part = rawPart.replace(/~1/g, '/').replace(/~0/g, '~');
+      if (!node || typeof node !== 'object' || !(part in (node as Record<string, unknown>))) return null;
+      node = (node as Record<string, unknown>)[part];
+    }
+    return node && typeof node === 'object' && !Array.isArray(node) ? (node as Record<string, unknown>) : null;
+  };
+
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (!node || typeof node !== 'object' || Array.isArray(node) || depth > 6) return;
+    let target = node as Record<string, unknown>;
+    const ref = target[REF_FIELD];
+    if (typeof ref === 'string') {
+      const resolved = resolveLocalRef(ref);
+      if (!resolved) return;
+      if (path) {
+        const defName = ref.split('/').pop() as string;
+        referencedBy[defName] = [...(referencedBy[defName] || []), path];
+      }
+      const siblings = Object.fromEntries(Object.entries(target).filter(([k]) => k !== REF_FIELD));
+      target = { ...resolved, ...siblings };
+    }
+    const properties = target.properties;
+    const hasProps = Boolean(properties && typeof properties === 'object' && !Array.isArray(properties));
+    const isObject = target.type === 'object' || hasProps;
+    const description = target.description;
+    if (path && isObject && typeof description === 'string' && description.trim()) {
+      note(path, description.trim());
+    }
+    if (hasProps) {
+      for (const [name, prop] of Object.entries(properties as Record<string, unknown>)) {
+        walk(prop, path ? `${path}.${name}` : name, depth + 1);
+      }
+    }
+    if (target.items && typeof target.items === 'object') {
+      walk(target.items, path ? `${path}[]` : '[]', depth + 1);
+    }
+  };
+
+  walk(schema, '', 0);
+
+  for (const container of [DEFS_FIELD, 'definitions']) {
+    const defs = schema[container];
+    if (!defs || typeof defs !== 'object' || Array.isArray(defs)) continue;
+    for (const [name, definition] of Object.entries(defs as Record<string, unknown>)) {
+      if (!definition || typeof definition !== 'object') continue;
+      const raw = (definition as Record<string, unknown>).description;
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const text = raw.trim();
+      if (emittedTexts.has(text)) continue;
+      const users = referencedBy[name];
+      note(users && users.length ? `${users.join(', ')} (shared group)` : name, text);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * The text the backend substitutes for ``{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}``.
+ * Mirrors ``idp_common.extraction.prose_schema.render``.
+ *
+ * Unlike {@link expectedSchemaBlockFor}, this one is EXACT rather than an
+ * approximation: the backend renders it from the same cleaned class schema the
+ * browser has, with no Pydantic generator in between. So the token count it feeds
+ * is a real count, and switching the knob shows a real saving.
+ */
+export function renderProseSchema(schema: ClassSchema, mode: ProseSchemaMode): string {
+  const cleaned = cleanSchemaForPrompt(schema as Record<string, unknown>);
+  if (mode === 'full') return JSON.stringify(cleaned, null, 2);
+
+  const lines = proseAttributeLines(cleaned);
+  const namesBlock = lines.length
+    ? [`Attribute names (${lines.length}). Types and descriptions are in the tool schema you must answer with:`, ...lines].join('\n')
+    : '';
+  if (mode === 'names') return namesBlock;
+
+  const parts: string[] = [];
+  const description = cleaned.description;
+  if (typeof description === 'string' && description.trim()) {
+    parts.push(`${getClassId(schema)}: ${description.trim()}`);
+  }
+  const groups = proseGroupDescriptions(cleaned);
+  if (groups.length) {
+    parts.push(['Nested groups:', ...groups.map(([label, text]) => `- ${label}: ${text}`)].join('\n'));
+  }
+  if (namesBlock) parts.push(namesBlock);
+  return parts.join('\n\n');
 }
 
 /**
@@ -891,6 +1078,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     [formValues, selectedClass, selectedStep],
   );
 
+  // How much of the class schema the task prompt restates (#710). Drives the
+  // {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} substitution below, so the previewed prompt
+  // and its token count both shrink when the config says they should.
+  const proseSchemaMode = useMemo(() => proseSchemaModeFor(formValues, selectedStep), [formValues, selectedStep]);
+
   // Build config-derived substitutions based on the selected step
   const buildSubstitutions = useCallback((): Record<string, string> => {
     const subs: Record<string, string> = {};
@@ -907,7 +1099,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
       case 'extraction':
         if (selectedClass) {
           subs.DOCUMENT_CLASS = getClassId(selectedClass);
-          subs.ATTRIBUTE_NAMES_AND_DESCRIPTIONS = formatSchemaForPrompt(selectedClass);
+          // Honours extraction.agentic.prose_schema / forced_tool.drop_prose_schema
+          // (#710). Rendering the full schema regardless would OVERSTATE the prompt
+          // for a configuration that shrank it, which is the opposite of the reason
+          // this tab counts tokens at all.
+          subs.ATTRIBUTE_NAMES_AND_DESCRIPTIONS = renderProseSchema(selectedClass, proseSchemaMode);
         } else {
           subs.DOCUMENT_CLASS = '[No class selected]';
           subs.ATTRIBUTE_NAMES_AND_DESCRIPTIONS = '[No class selected]';
@@ -930,7 +1126,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     }
 
     return subs;
-  }, [selectedStep, classes, selectedClass]);
+  }, [selectedStep, classes, selectedClass, proseSchemaMode]);
 
   // Render the prompts. In Advanced mode the agentic path appends the class
   // schema to the SYSTEM prompt, so the preview appends it too — otherwise the
@@ -1047,7 +1243,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           renamed on the wire, and the agentic system-prompt restatement, whose JSON
           comes from a generated Pydantic model rather than from the class. */}
       {['extraction', 'confidence'].includes(selectedStep) &&
-      (schemaDivergence.wrapped || schemaDivergence.probe || schemaDivergence.forcedTool || schemaDivergence.restatesSchema) ? (
+      (schemaDivergence.wrapped ||
+        schemaDivergence.probe ||
+        schemaDivergence.forcedTool ||
+        schemaDivergence.restatesSchema ||
+        proseSchemaMode !== 'full') ? (
         <Alert type="warning" header="The real prompt differs from this preview">
           <SpaceBetween size="xxs">
             {schemaDivergence.forcedTool && (
@@ -1068,6 +1268,20 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
                 <code>{'{"type": "null"}'}</code>, and object-level descriptions are dropped. The real block is therefore substantially
                 LARGER than the one shown (on the shipped lending presets, roughly 1.7–2.9x), so treat this as a floor on the cost of
                 leaving the restatement on.
+              </span>
+            )}
+            {proseSchemaMode !== 'full' && (
+              <span>
+                The schema in the task prompt is <strong>shortened</strong> to <code>{proseSchemaMode}</code>, and what is shown is exact —
+                the backend renders that block from the same class schema, with no generator in between.
+                {proseSchemaMode === 'names' && extractionModeOf(formValues) === 'simple' ? (
+                  <>
+                    {' '}
+                    One caveat the browser cannot resolve: this is only dropped on a request that really carries the tool schema. A model
+                    reached through a custom Lambda hook or the GPT-5.x route cannot carry one, and there the full schema is kept — the
+                    section&apos;s <code>metadata.prose_schema</code> records which happened.
+                  </>
+                ) : null}
               </span>
             )}
             {schemaDivergence.wrapped && (
@@ -1262,14 +1476,34 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         <Container header={<Header variant="h3">Substitution Details</Header>}>
           <SpaceBetween size="s">
             <Box variant="h4">
-              {'{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}'} → Cleaned JSON Schema for &quot;{getClassId(selectedClass)}&quot;
+              {'{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}'} →{' '}
+              {proseSchemaMode === 'full'
+                ? 'Cleaned JSON Schema'
+                : proseSchemaMode === 'minimal'
+                  ? 'Class and group descriptions + field names'
+                  : 'Field names only'}{' '}
+              for &quot;{getClassId(selectedClass)}&quot;
             </Box>
             <Box variant="small" color="text-body-secondary">
-              This is the cleaned version of the class JSON Schema (with x-aws-idp-* custom fields removed) that gets inserted into the
-              prompt. This is what the LLM sees when extracting/assessing attributes.
+              {proseSchemaMode === 'full' ? (
+                <>
+                  This is the cleaned version of the class JSON Schema (with x-aws-idp-* custom fields removed) that gets inserted into the
+                  prompt. This is what the LLM sees when extracting/assessing attributes.
+                </>
+              ) : (
+                <>
+                  Shortened because your configuration says so — the schema is already on the wire as a tool schema, so this copy is reduced
+                  to what that tool schema does not carry.{' '}
+                  {proseSchemaMode === 'minimal'
+                    ? 'Extraction mode → Advanced extraction settings → Schema prose in the prompt.'
+                    : 'Set by Schema prose in the prompt (Advanced) or Schema Enforcement → Stop repeating the schema (Simple).'}{' '}
+                  The full schema would be {estimateTokens(formatSchemaForPrompt(selectedClass)).toLocaleString()} estimated tokens; this is{' '}
+                  {estimateTokens(renderProseSchema(selectedClass, proseSchemaMode)).toLocaleString()}.
+                </>
+              )}
             </Box>
             <div className="prompt-preview-content" style={{ height: '300px', fontSize: '12px' }}>
-              {formatSchemaForPrompt(selectedClass)}
+              {renderProseSchema(selectedClass, proseSchemaMode)}
             </div>
           </SpaceBetween>
         </Container>

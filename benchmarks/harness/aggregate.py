@@ -175,9 +175,29 @@ def cell_stats(rows):
             "validation_valid_rate": _stats(
                 [r.get("validation_valid_rate") for r in succ]
             ),
+            # #710, and the same question again: a prose-schema arm whose sections
+            # all report `full` never applied. Summed over the cell's runs rather
+            # than averaged, because these are section COUNTS per rendering.
+            "prose_schema_modes": _sum_counters(
+                [r.get("prose_schema_modes") for r in succ]
+            ),
+            "prose_schema_kept": _sum_counters(
+                [r.get("prose_schema_kept") for r in succ]
+            ),
             "wall_s": _stats([r.get("wall_s") for r in succ]),
         }
     return out
+
+
+def _sum_counters(dicts):
+    """Merge a list of ``{label: count}`` dicts. None when every entry was empty,
+    matching the audit keys' convention that absent means "left no record"."""
+    total: dict[str, int] = {}
+    for d in dicts:
+        if isinstance(d, dict):
+            for k, v in d.items():
+                total[str(k)] = total.get(str(k), 0) + int(v or 0)
+    return total or None
 
 
 def write_summary(rm, rows, out):

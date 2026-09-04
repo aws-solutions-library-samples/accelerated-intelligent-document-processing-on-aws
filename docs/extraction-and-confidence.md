@@ -183,26 +183,69 @@ over 20% in accuracy on the [getomni-ai benchmark](https://getomni.ai/blog/ocr-b
 - **Reduced manual review** and correction efforts
 - **Automatic caching**: For supported models, prompt and tool caching is automatically enabled, reducing costs for repeated extractions with the same configuration
 
-##### Dropping the duplicated schema (`restate_schema_in_system_prompt`)
+##### Dropping the duplicated schema
 
-Agentic extraction sends your class schema **three times** per request: as the
-tool's input schema (required by the API), restated as JSON in the system prompt,
-and again in the schema-reminder tool. Copies 2 and 3 are byte-identical, so the
-system-prompt copy is pure duplication — measured at **2,600 of 6,680 schema
-tokens (38%)** on the lending `Payslip` class.
+Advanced extraction sends your class schema **three times per request** as shipped,
+and two of those copies are optional:
+
+| # | Where | `Payslip` | Setting that removes it |
+|---|---|---|---|
+| 1 | as text in the task prompt, at `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` | ~1,485 tok | `extraction.agentic.prose_schema` |
+| 2 | restated as JSON in the **system** prompt | ~2,600 tok | `extraction.agentic.restate_schema_in_system_prompt` |
+| 3 | the extraction tool's input schema | ~1,612 tok | required by the API |
 
 ```yaml
 extraction:
   agentic:
     restate_schema_in_system_prompt: true   # default; false removes copy 2
+    prose_schema: full                      # default; minimal | names shrink copy 1
 ```
+
+Both default to today's behaviour, so nothing changes on upgrade. Turning both off
+puts the schema on the wire exactly **once**.
+
+**Copy 2** is byte-identical to copy 3, so removing it cannot cost the model any
+information, and it measurably does not: see
+[the measured results](benchmarking/config-guidance.md). The schema-reminder tool is
+unaffected either way, so the agent can always ask for the schema again mid-run.
+
+**Copy 1 is different, and that is why `prose_schema` has three settings.** Copy 3 is
+built from a Pydantic model generated from your schema, and that conversion keeps each
+*field's* description but has nowhere to put a description belonging to an *object* —
+so your **class description** and any **group description** never reach the model at
+all. Verified on the lending `Payslip` class: 34 of 37 descriptions survive; the three
+lost are the class's own and its two shared groups. Four of that preset's six classes
+declare only a class description, so *all* of it is lost.
+
+| `prose_schema` | What stays in the prompt | `Payslip` |
+|---|---|---|
+| `full` (default) | your whole schema, as JSON | ~1,485 tok |
+| `minimal` | your class description, every group description, and the field names — i.e. exactly what the tool schema drops | ~372 tok |
+| `names` | the field names only | ~176 tok |
+
+Prefer `minimal` over `names` on Advanced extraction unless your classes carry no
+class or group descriptions at all. `names` is the arm most likely to cost you
+accuracy, and it exists mainly so the comparison can be measured.
+
+**Simple extraction** has the same duplication only when forced tool use is on, and
+there the tool schema is built from your schema directly and loses nothing — so the
+prompt copy is genuinely redundant. See
+[Forced tool use](#forced-tool-use-extractionforced_tool--experimental-off-by-default).
 
 Left **on by default** deliberately. Restating a schema in prose often improves
 adherence, so this is a token/adherence trade rather than a free saving: on a
 list-heavy document, an agent that drifts from the schema returns fewer rows. If
 you turn it off, judge the result on **completeness**, not on the token count.
-The schema-reminder tool is unaffected either way, so the agent can always ask for
-the schema again mid-run.
+
+> **One-time cost on the first request after a change.** These copies sit inside the
+> prompt cache, which is why the dollar saving is roughly a tenth of the token count
+> and it does **not** make long documents split into fewer parts — the schema text is not
+> counted when the pipeline decides how to split a document, so the reclaimed tokens come
+> out of a safety margin that was already unused ([#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775)). Measured on the benchmark
+> suite: no completeness or accuracy cost, and no benefit either. Changing the setting changes the
+> cached prefix, so the first request per document class after the change is a cache
+> miss. There is nothing to do about it and nothing to worry about — it is one
+> request.
 
 > **What to expect if you turn it off: nothing much, and that is measured.** On the
 > benchmark suite it cost no completeness and no accuracy — and it did not save
@@ -669,11 +712,38 @@ extraction:
   forced_tool:
     enabled: false             # experimental; measure before turning it on
     fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
+    drop_prose_schema: false   # true stops also describing the schema in the prompt
 ```
 
 Applies to **Simple** extraction only — Advanced (agentic) extraction already
 sends a tool schema. Configurable under **Configuration → Extraction → Schema
 Enforcement (experimental)**.
+
+**`drop_prose_schema` — stop sending the schema twice.** With forcing on, your schema
+goes to the model both as the tool's input schema and as text in the prompt. On this
+path the tool schema is built from your schema *directly* — only non-constraining
+metadata (`$id`, `$schema`) and IDP's own `x-aws-idp-*` extensions are stripped — so
+every description survives it, **including the class's own**. Verified on the lending
+`Payslip` class: 37 of 37. The prompt copy therefore carries nothing the tool does
+not, and it is worth about 1,485 tokens per request on that class. Turning this on
+leaves the field names in the prompt (~176 tokens), not nothing, because the shipped
+prompt's next sentence refers to "a list of attribute names".
+
+> **It only applies when the tool is actually sent.** Forcing is skipped
+> automatically for routes that cannot carry a tool configuration (a custom Lambda
+> hook, GPT-5.x). On those requests the prompt copy is **kept** — dropping it would
+> leave the model with no schema at all — and the section records that it was asked
+> for and why it was not applied, under `metadata.prose_schema.kept_reason`. The same
+> applies when `enabled` is false: the setting is inert, not silently harmful.
+
+Off by default, on the same evidence gate as forcing itself: a schema described in
+prose also plausibly helps a model follow it. Judge it on **completeness** first.
+
+**Visible in the Prompt Preview.** The Task Prompt tab renders the shortened block
+and its token count, so the saving is real on screen before you deploy — and unlike
+the system-prompt restatement, this preview is **exact** rather than an
+approximation, because the backend renders the same block from the same class
+schema with no Pydantic generator in between.
 
 **Why it is off by default.** Forcing constrains the *structure* of the reply, not
 the *accuracy* of the values in it. A model that would have emitted a stray key
@@ -689,8 +759,9 @@ ran", which are very different results.
 
 **What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
 `honored` (the model can accept a tool configuration and still answer in prose),
-`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
-the number to look at first: forcing that is not honored has not been tested.
+`renamed_properties`, `prose_schema` (which copies of the schema actually went on the
+wire), and `skipped` with a reason where applicable. `honored` is the number to look
+at first: forcing that is not honored has not been tested.
 
 **Visible in the Prompt Preview.** With Extraction mode **Simple** and this
 setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing

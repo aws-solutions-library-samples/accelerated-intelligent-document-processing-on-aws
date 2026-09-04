@@ -34,10 +34,16 @@ What it costs, and why the caller must handle both:
   shipped preset classes contain. Names are sanitized on the way out and restored
   on the way back (#709), so nothing downstream sees a renamed field.
 
-Deliberately NOT done here: dropping the prose schema from the task prompt. It is
-the obvious follow-on saving (#710) and it is a *separate* question — removing the
-prose changes adherence, so bundling it would confound the very A/B this exists to
-run. Measure forcing first, with the prompt unchanged.
+Dropping the prose schema from the task prompt is the obvious follow-on saving
+(#710), and it is a *separate* knob for a reason: removing the prose changes
+adherence, so bundling it with forcing would have confounded the A/B this module
+exists to run. Forcing was measured first with the prompt unchanged (result: honored
+on every run, no measurable accuracy or completeness effect). The de-duplication now
+ships as ``extraction.forced_tool.drop_prose_schema``, also off by default, and it is
+gated on :func:`should_force_tool` returning True — see
+``ExtractionService._resolve_prose_schema_mode``. Dropping the prose on a request
+where forcing was skipped would send the model no schema at all, so the two
+decisions must come from the same boolean, computed before the prompt is built.
 """
 
 from __future__ import annotations

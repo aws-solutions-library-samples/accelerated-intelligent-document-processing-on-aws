@@ -298,6 +298,38 @@ class ValidationConfig(BaseModel):
         return v_str
 
 
+#: Valid values for ``extraction.agentic.prose_schema`` — how much of the class
+#: schema the task prompt restates in prose (#710). Ordered most verbose first.
+#: Lives here, not in ``idp_common.extraction.prose_schema`` (which renders them),
+#: because importing an ``idp_common.extraction`` submodule executes that package's
+#: ``__init__``, which pulls in the whole extraction service and its optional
+#: dependencies — far too much for a config model that ``[core]`` Lambdas validate.
+PROSE_SCHEMA_MODES: tuple[str, ...] = ("full", "minimal", "names")
+
+#: The mode that reproduces pre-#710 behaviour exactly.
+DEFAULT_PROSE_SCHEMA_MODE = "full"
+
+
+def normalize_prose_schema_mode(value: Any) -> str:
+    """Coerce a configured ``prose_schema`` value to a known mode.
+
+    Blank/None resolves to the default rather than raising: the config editor has
+    persisted nulls for scalar fields before, and the safe resolution of "unknown"
+    here is "keep sending the whole schema".
+    """
+    if value is None:
+        return DEFAULT_PROSE_SCHEMA_MODE
+    text = str(value).strip().lower()
+    if not text:
+        return DEFAULT_PROSE_SCHEMA_MODE
+    if text not in PROSE_SCHEMA_MODES:
+        raise ValueError(
+            f"prose_schema must be one of {', '.join(PROSE_SCHEMA_MODES)}, "
+            f"got {value!r}"
+        )
+    return text
+
+
 class AgenticConfig(BaseModel):
     """Agentic extraction configuration"""
 
@@ -343,6 +375,29 @@ class AgenticConfig(BaseModel):
             "reserve that was already unused (#775). Measured on the benchmark "
             "suite: no completeness or accuracy cost, and no measurable benefit "
             "either. Treat it as a neutral instrument, not an optimisation."
+        ),
+    )
+    prose_schema: str = Field(
+        default="full",
+        description=(
+            "How much of the class schema to restate as PROSE in the task prompt, "
+            "where {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} is substituted (#710). "
+            "Advanced extraction always sends the schema as the extraction tool's "
+            "inputSchema, so the prose copy is largely a second copy — measured at "
+            "~1,485 of ~5,692 schema tokens per request on the lending Payslip "
+            "class. 'full' (default) is today's behaviour: the whole cleaned JSON "
+            "Schema. 'minimal' restates ONLY what the tool schema loses — the root "
+            "class description and any nested-group description, both dropped by "
+            "the generated-Pydantic-model round trip that produces the toolSpec — "
+            "and lists the attribute names. 'names' lists the attribute names and "
+            "nothing else. Not empty even at 'names': the placeholder sits inside "
+            "<attributes> in user-editable prompt text whose next sentence refers "
+            "to 'a list of attribute names'. This is an A/B knob, not a "
+            "recommendation: restating a schema in prose often improves adherence, "
+            "and on a list-heavy document an agent that drifts from the schema "
+            "returns fewer rows — judge a change on completeness, not tokens. "
+            "Ignored unless agentic extraction is active; see "
+            "extraction.forced_tool.drop_prose_schema for the Simple path."
         ),
     )
     review_agent: bool = Field(default=False, description="Enable review agent")
@@ -430,6 +485,17 @@ class AgenticConfig(BaseModel):
             )
         return v
 
+    @field_validator("prose_schema", mode="before")
+    @classmethod
+    def _validate_prose_schema(cls, v: Any) -> str:
+        """Normalize/validate how much prose schema the task prompt carries.
+
+        Blank/None resolves to ``full`` — the field default, and the safe reading of
+        "unknown" here, since ``full`` is what every release before #710 sent.
+        Unknown values are rejected loudly rather than silently degrading a prompt.
+        """
+        return normalize_prose_schema_mode(v)
+
 
 class ForcedToolConfig(BaseModel):
     """Put the class schema on the wire as a forced Converse tool (WS-05 / #710).
@@ -472,6 +538,25 @@ class ForcedToolConfig(BaseModel):
             "OFF only to make such a response a hard parse failure — useful for "
             "measuring how often forcing is actually honored, and a bad idea in "
             "production."
+        ),
+    )
+    drop_prose_schema: bool = Field(
+        default=False,
+        description=(
+            "Stop substituting the full class schema into the task prompt at "
+            "{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}, leaving just the attribute names "
+            "(#710). Only takes effect on a request that ACTUALLY carries the "
+            "forced toolSpec: forcing is skipped automatically for routes that "
+            "cannot carry a toolConfig (a custom Lambda hook, GPT-5.x), and "
+            "dropping the prose there would leave the model with no schema at all, "
+            "so the prose is kept and the downgrade is recorded in the section's "
+            "metadata.prose_schema. The toolSpec on this path is built from the "
+            "class schema directly and is lossless — verified: all 37 descriptions "
+            "on the lending Payslip class survive it, including the class's own — "
+            "so the prose copy carries nothing the tool does not, worth ~1,485 "
+            "tokens per request on that class. Still OFF by default and gated on a "
+            "measured win, because a prose schema also plausibly aids adherence; "
+            "the benchmark `proseschema` suite is where that gets settled."
         ),
     )
 

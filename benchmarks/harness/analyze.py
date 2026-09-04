@@ -150,8 +150,9 @@ def score_audit_metadata(sections):
 
     The extraction service writes an audit block into each section's
     ``result.json`` under ``metadata`` — ``forced_tool`` (WS-05), ``validation``
-    (schema enforcement) and ``coercion`` (deterministic value repair). Nothing in
-    this harness read it, which left three shipped features with no instrument:
+    (schema enforcement), ``coercion`` (deterministic value repair) and
+    ``prose_schema`` (schema de-duplication, #710). Nothing in this harness read it,
+    which left three shipped features with no instrument:
 
     * A forcing A/B could not tell "forcing changed nothing" from "forcing never
       ran" — a model that answers in prose, or a route that cannot carry a
@@ -169,10 +170,24 @@ def score_audit_metadata(sections):
     val_seen = val_valid = val_errors = 0
     coercions = refusals = 0
     coercion_seen = False
+    prose_modes: dict[str, int] = {}
+    prose_kept: dict[str, int] = {}
     for sec in sections:
         md = sec.get("metadata")
         if not isinstance(md, dict):
             continue
+        # Which copies of the schema actually went on the wire (#710). Written only
+        # when the rendering was NOT the shipped `full`, so absence means "default".
+        # `kept_reason` is the one that matters: it names a section where the drop was
+        # requested and deliberately not applied (a route that cannot carry a
+        # toolConfig), which otherwise looks exactly like "the drop had no effect".
+        ps = md.get("prose_schema")
+        if isinstance(ps, dict):
+            mode = str(ps.get("mode") or "?")
+            prose_modes[mode] = prose_modes.get(mode, 0) + 1
+            kept = ps.get("kept_reason")
+            if kept:
+                prose_kept[str(kept)] = prose_kept.get(str(kept), 0) + 1
         ft = md.get("forced_tool")
         if isinstance(ft, dict):
             # `skipped` names a route that cannot carry a toolConfig at all (a
@@ -214,6 +229,11 @@ def score_audit_metadata(sections):
         "validation_errors": val_errors if val_seen else None,
         "coercions": coercions if coercion_seen else None,
         "coercion_refusals": refusals if coercion_seen else None,
+        # #710. `prose_schema_modes` is what a prose A/B is judged on the same way
+        # forcing is judged on forced_tool_honored_rate: an arm whose sections all
+        # report `full` never applied, and is not evidence of anything.
+        "prose_schema_modes": prose_modes or None,
+        "prose_schema_kept": prose_kept or None,
     }
 
 

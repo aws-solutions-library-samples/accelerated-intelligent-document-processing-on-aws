@@ -19,6 +19,37 @@ extraction:
     # mode "always works" on big documents. Sharding engages only when a section
     # actually exceeds one shard's budget; small sections still run single-pass.
     runtime: step_functions
+    # How much of the class schema the task prompt restates as prose at
+    # {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (#710). Advanced extraction ALWAYS sends
+    # the schema as the extraction tool's inputSchema, so the prose is a second
+    # copy — ~1,485 of ~5,692 schema tokens per request on the lending Payslip
+    # class.
+    #   full    - the whole cleaned JSON Schema (pre-#710 behaviour; the default)
+    #   minimal - only what the tool schema LOSES, plus the attribute names. The
+    #             toolSpec is derived from a generated Pydantic model, and that
+    #             round trip drops the root class description on every class
+    #             measured and every nested-group description (Payslip keeps 34 of
+    #             37; four of the six lending classes declare only a root
+    #             description and so lose all of it). Per-FIELD descriptions
+    #             survive, which is why restating them is the redundant part.
+    #             Payslip: 372 tokens instead of 1,485.
+    #   names   - the attribute names only. Payslip: 176 tokens.
+    # Not empty even at `names`: the placeholder sits inside <attributes> in
+    # user-editable prompt text whose next sentence refers to "a list of attribute
+    # names", and an empty substitution would leave dangling prose.
+    # Defaults to `full` because restating a schema in prose plausibly improves
+    # adherence, and on a list-heavy document an agent that drifts from the schema
+    # returns fewer ROWS. Judge a change on completeness, not on token count.
+    #
+    # MEASURED (45 runs, benchmark `proseschema` suite): shrinking it costs no
+    # completeness and no accuracy on either path — and buys nothing measurable
+    # either. Every copy sits inside the prompt cache (~a tenth of input price), and
+    # the reclaimed tokens do NOT reduce shard count: plan_shards budgets against OCR
+    # page text only and compute_sizing_plan never subtracts prompt overhead, so they
+    # come off a blanket context_buffer reserve that was already unused (#775). This
+    # is an instrument for measuring the question on your own documents, not a tuning
+    # recommendation.
+    prose_schema: full
     max_concurrent_batches: 10            # >1 enables sharding (upper bound on parallelism & shard count)
     shard_token_budget: 0                 # 0 = auto-size from model context window (minus context_buffer)
     max_pages_per_shard: 5                # page ceiling/shard (timeout-critical; fixed, not model-derived)
@@ -47,6 +78,20 @@ extraction:
     # an error. Keep true in production; set false only to measure how often
     # forcing is actually honored.
     fallback_to_prompt: true
+    # Stop restating the class schema as prose in the task prompt when the forced
+    # toolSpec is what carries it (#710). On THIS path the toolSpec is built from
+    # the class schema directly and is lossless — verified: all 37 descriptions on
+    # the lending Payslip class survive sanitize_tool_schema, including the class's
+    # own — so the prose copy carries nothing the tool does not, worth ~1,485 tokens
+    # per request on that class (176 remain: the attribute names).
+    #
+    # Only applied to a request that ACTUALLY carries the toolSpec. Forcing is
+    # skipped for routes that cannot take a toolConfig (a custom Lambda hook,
+    # GPT-5.x) and is off entirely when forced_tool.enabled is false; dropping the
+    # prose there would leave the model with NO schema, so the prose is kept and the
+    # section's metadata.prose_schema records that it was requested and why it was
+    # not applied. Off by default, on the same gate as forcing itself.
+    drop_prose_schema: false
   # Detect a section that holds SEVERAL documents of the same class when the
   # model returned only one of them (GitHub #753 / #565). One extra integer is
   # requested in the same inference and stripped from the result; when the answer
