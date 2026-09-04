@@ -2066,12 +2066,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         exactly the declared fields.
 
         Skipped when detection is disabled, and when Advanced (agentic)
-        extraction is in use: that path validates the response through a
-        generated Pydantic model built from the class schema and shards the work
-        by field, so an auxiliary property would be dropped by validation on some
-        paths and duplicated across shards on others. Simple extraction — the
-        default, and the mode in which the silent loss was reported — is covered
-        on both its prompt and forced-tool paths.
+        extraction is in use — a documented gap, not a design decision, tracked in
+        GitHub #772. Two things make agentic more than a one-line change:
+
+        * The agentic path is driven by a generated **Pydantic model**
+          (``create_pydantic_model_from_json_schema(self._class_schema, …)`` →
+          ``structured_output_async(data_format=…)``), not by a JSON-Schema dict,
+          so a property added to the schema copy here never reaches the wire. The
+          probe would have to be generated onto the model and stripped off the
+          validated object.
+        * Agentic **shards by page range** when a section is long enough, so each
+          shard would answer the count for its own pages. Summing double-counts a
+          document that spans a shard boundary and taking the max under-counts, so
+          the reconciliation rule is a real decision rather than a detail.
+
+        Simple extraction — the default, and the mode in which the silent loss was
+        reported — is covered on both its prompt and forced-tool paths. Note the
+        #715 wrapper is unaffected either way: it lives in ``_get_class_schema``,
+        which both modes share, so a flagged class extracts every record in
+        agentic mode too. It is only the detector that is missing there.
         """
         if not self.config.extraction.multi_instance_detection.enabled:
             return class_schema, False

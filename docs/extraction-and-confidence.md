@@ -244,6 +244,17 @@ you turn it off, judge the result on **completeness**, not on the token count.
 > miss. There is nothing to do about it and nothing to worry about — it is one
 > request.
 
+**Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
+**Configuration → Prompt Preview → System Prompt** tab ends with the
+`Expected Schema:` block this setting controls, and it is included in the token
+total — so turning the setting off shows the total drop instead of leaving it
+unchanged. One caveat the preview states rather than hides: the real block is
+generated from a Pydantic model built from your class (every field gains a
+`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
+can only approximate it from the class schema. Expect the real block to be
+**larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
+which makes the previewed saving a floor, not a ceiling.
+
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
 > types) into Pydantic models internally. Improving your configuration directly
@@ -711,6 +722,12 @@ prompt's next sentence refers to "a list of attribute names".
 Off by default, on the same evidence gate as forcing itself: a schema described in
 prose also plausibly helps a model follow it. Judge it on **completeness** first.
 
+**Visible in the Prompt Preview.** The Task Prompt tab renders the shortened block
+and its token count, so the saving is real on screen before you deploy — and unlike
+the system-prompt restatement, this preview is **exact** rather than an
+approximation, because the backend renders the same block from the same class
+schema with no Pydantic generator in between.
+
 **Why it is off by default.** Forcing constrains the *structure* of the reply, not
 the *accuracy* of the values in it. A model that would have emitted a stray key
 may instead emit a worse value that fits the schema, so this is not a free
@@ -728,6 +745,15 @@ ran", which are very different results.
 `renamed_properties`, `prose_schema` (which copies of the schema actually went on the
 wire), and `skipped` with a reason where applicable. `honored` is the number to look
 at first: forcing that is not honored has not been tested.
+
+**Visible in the Prompt Preview.** With Extraction mode **Simple** and this
+setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
+the exact `toolSpec` — tool name, tool description, and input schema — and its
+tokens are added to the previewed total, so the cost of turning enforcement on is
+no longer invisible. The tab shows property names **as you authored them** and
+says so, because the wire-safe rewriting below is reversed in the stored result;
+the token estimate is taken from the compact form actually serialized onto the
+request, not from the indentation added for readability.
 
 > **Field names with spaces are handled.** Bedrock restricts top-level tool
 > property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration

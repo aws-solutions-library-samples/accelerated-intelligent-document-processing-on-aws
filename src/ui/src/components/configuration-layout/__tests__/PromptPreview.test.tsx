@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Tests for PromptPreview's schema-walking helper.
+ * Tests for PromptPreview's model of what actually goes on the wire.
  *
  * `getAttributeNamesForClass` is a deliberate port of
  * `ClassificationService._get_attribute_names_for_class`, and the preview's
@@ -11,11 +11,35 @@
  * every expectation below is the output the Python test suite asserts for the
  * same schema (see
  * `lib/idp_common_pkg/tests/unit/classification/test_class_and_attribute_names_placeholder.py`).
+ *
+ * The rest covers the schema-enforcement blocks the preview used to be blind to:
+ * the forced toolSpec (Simple + `extraction.forced_tool.enabled`) and the agentic
+ * system-prompt restatement (Advanced + `restate_schema_in_system_prompt`, which
+ * DEFAULTS ON). Two properties matter most and are asserted through a real render
+ * rather than through the helpers alone, because they are what a user reads:
+ * whether the block appears at all, and whether the token total moves when the
+ * knob does. Before this, turning Schema Enforcement on moved the previewed total
+ * by exactly 0.
  */
 
+import React from 'react';
 import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
-import { getAttributeNamesForClass, schemaDivergenceFor } from '../PromptPreview';
+import PromptPreview, {
+  EXTRACTION_TOOL_NAME,
+  expectedSchemaBlockFor,
+  extractionModeOf,
+  formatToolSpecForPreview,
+  getAttributeNamesForClass,
+  invalidToolPropertyNames,
+  proseSchemaModeFor,
+  renderProseSchema,
+  schemaDivergenceFor,
+  toolInputSchemaFor,
+  toolSpecWireText,
+} from '../PromptPreview';
 
 describe('getAttributeNamesForClass', () => {
   it('walks flat scalars, nested objects and arrays of objects', () => {
@@ -166,7 +190,7 @@ describe('schemaDivergenceFor', () => {
   const flagged = { 'x-aws-idp-multi-instance': true };
 
   it('reports neither transform when nothing is enabled', () => {
-    expect(schemaDivergenceFor(off, {}, 'extraction')).toEqual({ wrapped: false, probe: false });
+    expect(schemaDivergenceFor(off, {}, 'extraction')).toEqual({ wrapped: false, probe: false, forcedTool: false, restatesSchema: false });
   });
 
   it('reports the wrapper on BOTH extraction and confidence', () => {
@@ -194,7 +218,493 @@ describe('schemaDivergenceFor', () => {
     for (const v of [false, 0, 'false', 'no', 'off', '', undefined, null]) {
       expect(schemaDivergenceFor({ extraction: { multi_instance_detection: { enabled: v } } }, {}, 'extraction').probe).toBe(false);
     }
-    expect(schemaDivergenceFor(undefined, undefined, 'extraction')).toEqual({ wrapped: false, probe: false });
+    expect(schemaDivergenceFor(undefined, undefined, 'extraction')).toEqual({
+      wrapped: false,
+      probe: false,
+      forcedTool: false,
+      restatesSchema: false,
+    });
     expect(schemaDivergenceFor({}, {}, 'extraction').probe).toBe(false);
+  });
+
+  it('reports the probe on Simple mode only, because agentic skips it', () => {
+    // _build_wire_schema returns the schema untouched when agentic.enabled, so
+    // claiming the probe in Advanced mode warned about something never sent.
+    expect(
+      schemaDivergenceFor({ extraction: { mode: 'simple', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
+    ).toBe(true);
+    expect(
+      schemaDivergenceFor({ extraction: { mode: 'advanced', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
+    ).toBe(false);
+  });
+
+  describe('forcedTool', () => {
+    const forcing = (extra: Record<string, unknown> = {}) => ({ extraction: { forced_tool: { enabled: true }, ...extra } });
+
+    it('is on for Simple + Schema Enforcement, and off when the knob is off', () => {
+      expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'extraction').forcedTool).toBe(true);
+      expect(schemaDivergenceFor({ extraction: { mode: 'simple', forced_tool: { enabled: false } } }, {}, 'extraction').forcedTool).toBe(
+        false,
+      );
+      // Absent key defaults FALSE — ForcedToolConfig.enabled.
+      expect(schemaDivergenceFor({ extraction: { mode: 'simple' } }, {}, 'extraction').forcedTool).toBe(false);
+    });
+
+    it('is off in Advanced mode even with the knob on, because only Simple sends it', () => {
+      expect(schemaDivergenceFor(forcing({ mode: 'advanced' }), {}, 'extraction').forcedTool).toBe(false);
+      // mode is authoritative over agentic.enabled (reconcile_mode_and_agentic),
+      // so a stale agentic.enabled must not resurrect the tab.
+      expect(schemaDivergenceFor(forcing({ mode: 'simple', agentic: { enabled: true } }), {}, 'extraction').forcedTool).toBe(true);
+      // ...and a legacy config with no mode has it inferred from agentic.enabled.
+      expect(schemaDivergenceFor(forcing({ agentic: { enabled: true } }), {}, 'extraction').forcedTool).toBe(false);
+      expect(schemaDivergenceFor(forcing(), {}, 'extraction').forcedTool).toBe(true);
+    });
+
+    it('never leaks into the confidence step, which sends no forced tool', () => {
+      expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'confidence').forcedTool).toBe(false);
+    });
+  });
+
+  describe('restatesSchema', () => {
+    it('DEFAULTS TRUE in Advanced mode, so an absent key means the block is sent', () => {
+      // The mirror image of every other flag here: restate_schema_in_system_prompt
+      // defaults True server-side, so treating "absent" as off would hide ~40% of
+      // the real system prompt.
+      expect(schemaDivergenceFor({ extraction: { mode: 'advanced' } }, {}, 'extraction').restatesSchema).toBe(true);
+      expect(schemaDivergenceFor({ extraction: { mode: 'advanced', agentic: {} } }, {}, 'extraction').restatesSchema).toBe(true);
+      expect(
+        schemaDivergenceFor({ extraction: { mode: 'advanced', agentic: { restate_schema_in_system_prompt: null } } }, {}, 'extraction')
+          .restatesSchema,
+      ).toBe(true);
+    });
+
+    it('is off when explicitly disabled, in any spelling pydantic accepts', () => {
+      for (const v of [false, 0, 'false', 'no', 'off', 'N']) {
+        expect(
+          schemaDivergenceFor({ extraction: { mode: 'advanced', agentic: { restate_schema_in_system_prompt: v } } }, {}, 'extraction')
+            .restatesSchema,
+        ).toBe(false);
+      }
+    });
+
+    it('is off in Simple mode, which has no agent and no system-prompt restatement', () => {
+      expect(schemaDivergenceFor({ extraction: { mode: 'simple' } }, {}, 'extraction').restatesSchema).toBe(false);
+      expect(
+        schemaDivergenceFor(
+          { extraction: { mode: 'simple', agentic: { enabled: true, restate_schema_in_system_prompt: true } } },
+          {},
+          'extraction',
+        ).restatesSchema,
+      ).toBe(false);
+    });
+
+    it('never leaks into the confidence step', () => {
+      expect(schemaDivergenceFor({ extraction: { mode: 'advanced' } }, {}, 'confidence').restatesSchema).toBe(false);
+    });
+  });
+});
+
+describe('extractionModeOf', () => {
+  it('treats mode as authoritative and falls back to agentic.enabled', () => {
+    expect(extractionModeOf({ extraction: { mode: 'advanced', agentic: { enabled: false } } })).toBe('advanced');
+    expect(extractionModeOf({ extraction: { mode: 'simple', agentic: { enabled: true } } })).toBe('simple');
+    expect(extractionModeOf({ extraction: { agentic: { enabled: true } } })).toBe('advanced');
+    expect(extractionModeOf({ extraction: {} })).toBe('simple');
+    expect(extractionModeOf(undefined)).toBe('simple');
+  });
+});
+
+/**
+ * The forced toolSpec. These pin the transforms the browser CAN reproduce; the
+ * property-name sanitizer is deliberately not ported (see `toolInputSchemaFor`),
+ * so what is pinned about renaming is only that the UI can COUNT the names that
+ * get renamed.
+ */
+describe('toolInputSchemaFor', () => {
+  it('strips x-aws-idp-* extensions and schema-document keywords at every depth', () => {
+    const out = toolInputSchemaFor({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $id: 'Invoice',
+      $comment: 'authored by hand',
+      type: 'object',
+      'x-aws-idp-document-type': 'Invoice',
+      properties: {
+        total: { type: 'number', $id: 'nested', 'x-aws-idp-evaluation-method': 'EXACT' },
+      },
+      $defs: { Line: { $anchor: 'line', type: 'object', properties: { sku: { type: 'string' } } } },
+    });
+
+    expect(out).toEqual({
+      type: 'object',
+      properties: { total: { type: 'number' } },
+      $defs: { Line: { type: 'object', properties: { sku: { type: 'string' } } } },
+    });
+  });
+
+  it('keeps a PROPERTY legitimately named like a metadata keyword', () => {
+    // strip_non_wire_keywords never filters inside `properties`, because those
+    // keys are user-authored field names.
+    const out = toolInputSchemaFor({ type: 'object', properties: { id: { type: 'string' }, $schema: { type: 'string' } } });
+    expect(Object.keys(out.properties as Record<string, unknown>)).toEqual(['id', '$schema']);
+  });
+
+  it('forces an object root, as build_extraction_tool_config does', () => {
+    expect(toolInputSchemaFor({ properties: { a: { type: 'string' } } }).type).toBe('object');
+  });
+});
+
+describe('invalidToolPropertyNames', () => {
+  it('finds every name Bedrock would reject, at every depth', () => {
+    expect(
+      invalidToolPropertyNames({
+        properties: {
+          'Invoice Number': { type: 'string' },
+          ok_name: { type: 'string' },
+          group: { type: 'object', properties: { 'Total (USD)': { type: 'number' } } },
+          rows: { type: 'array', items: { type: 'object', properties: { 'Line Item': { type: 'string' } } } },
+        },
+        $defs: { Fee: { type: 'object', properties: { 'Fee Amount': { type: 'number' } } } },
+      }),
+    ).toEqual(['Invoice Number', 'group.Total (USD)', 'rows[].Line Item', '$defs/Fee.Fee Amount']);
+  });
+
+  it('reports nothing for a schema Bedrock already accepts', () => {
+    expect(invalidToolPropertyNames({ properties: { a_b: { type: 'string' }, 'c.d-e': { type: 'string' } } })).toEqual([]);
+  });
+
+  it('rejects a name over 64 characters, which the backend truncates', () => {
+    expect(invalidToolPropertyNames({ properties: { ['x'.repeat(65)]: { type: 'string' } } })).toHaveLength(1);
+  });
+});
+
+describe('toolSpecWireText', () => {
+  const cls = { $id: 'Invoice', type: 'object', properties: { total: { type: 'number', description: 'The total' } } };
+
+  it('carries the tool name and the verbatim description', () => {
+    const spec = JSON.parse(toolSpecWireText(cls));
+    expect(spec.name).toBe(EXTRACTION_TOOL_NAME);
+    expect(spec.description).toContain('Do NOT nest them under a wrapper key');
+    expect(spec.inputSchema.json.properties.total.description).toBe('The total');
+  });
+
+  it('is the compact form, so the token estimate is not inflated by display indentation', () => {
+    // The wire form is what the model is billed for; the pretty form is a choice
+    // of this component. Counting the pretty one overstates Schema Enforcement.
+    expect(toolSpecWireText(cls)).not.toContain('\n');
+    expect(toolSpecWireText(cls).length).toBeLessThan(formatToolSpecForPreview(cls).length);
+  });
+});
+
+describe('expectedSchemaBlockFor', () => {
+  it('reproduces the label the agentic path prepends, over the cleaned class schema', () => {
+    const block = expectedSchemaBlockFor({ $id: 'Invoice', type: 'object', properties: { a: { type: 'string' } } });
+    expect(block.startsWith('Expected Schema:\n')).toBe(true);
+    expect(JSON.parse(block.slice('Expected Schema:\n'.length))).toEqual({
+      $id: 'Invoice',
+      type: 'object',
+      properties: { a: { type: 'string' } },
+    });
+  });
+});
+
+/**
+ * The #710 prose-schema knobs, as the preview must model them.
+ *
+ * Unlike `expectedSchemaBlockFor` — which is an approximation, because the backend
+ * generates that block from a Pydantic model — this one is EXACT: the backend
+ * renders it from the same cleaned class schema the browser has. So the token
+ * count it feeds is a real count, and a preview that ignored the knobs would
+ * OVERSTATE the prompt for a configuration that shrank it, which is the opposite
+ * of the reason this page counts tokens.
+ */
+describe('proseSchemaModeFor', () => {
+  const cfg = (extraction: Record<string, unknown>) => ({ extraction });
+
+  it('defaults to full on both paths, so an untouched config previews as before', () => {
+    expect(proseSchemaModeFor(cfg({ mode: 'simple' }), 'extraction')).toBe('full');
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced' }), 'extraction')).toBe('full');
+    expect(proseSchemaModeFor(undefined, 'extraction')).toBe('full');
+  });
+
+  it('reads the agentic knob in Advanced mode', () => {
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced', agentic: { prose_schema: 'minimal' } }), 'extraction')).toBe('minimal');
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced', agentic: { prose_schema: ' NAMES ' } }), 'extraction')).toBe('names');
+  });
+
+  it('falls back to full for an unrecognised value rather than guessing', () => {
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced', agentic: { prose_schema: 'verbose' } }), 'extraction')).toBe('full');
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced', agentic: { prose_schema: '' } }), 'extraction')).toBe('full');
+  });
+
+  it('ignores the agentic knob in Simple mode, where it does not apply', () => {
+    expect(proseSchemaModeFor(cfg({ mode: 'simple', agentic: { prose_schema: 'names' } }), 'extraction')).toBe('full');
+  });
+
+  it('requires forcing to be ON before Simple mode drops the prose', () => {
+    // The backend drops it only on a request that really carries the toolSpec, so
+    // the flag alone changes nothing. Honouring it alone would show a prompt no
+    // deployment sends.
+    expect(proseSchemaModeFor(cfg({ mode: 'simple', forced_tool: { drop_prose_schema: true } }), 'extraction')).toBe('full');
+    expect(proseSchemaModeFor(cfg({ mode: 'simple', forced_tool: { enabled: true, drop_prose_schema: true } }), 'extraction')).toBe(
+      'names',
+    );
+  });
+
+  it('never applies to the confidence step, which neither knob reaches', () => {
+    // Assessment builds its own descriptions and sends no tool. Shrinking the block
+    // there would claim a saving the backend does not make.
+    expect(proseSchemaModeFor(cfg({ mode: 'advanced', agentic: { prose_schema: 'names' } }), 'confidence')).toBe('full');
+    expect(proseSchemaModeFor(cfg({ mode: 'simple', forced_tool: { enabled: true, drop_prose_schema: true } }), 'confidence')).toBe('full');
+  });
+});
+
+describe('renderProseSchema', () => {
+  const CLS = {
+    $id: 'Payslip',
+    type: 'object',
+    description: 'CLASS-DESC',
+    $defs: {
+      Address: { type: 'object', description: 'SHARED-DEF-DESC', properties: { city: { type: 'string', description: 'CITY-DESC' } } },
+    },
+    properties: {
+      pay_date: { type: 'string', format: 'date', description: 'PAY-DATE-DESC' },
+      home: { $ref: '#/$defs/Address', description: 'HOME-DESC' },
+      work: { $ref: '#/$defs/Address', description: 'WORK-DESC' },
+      lines: { type: 'array', description: 'LINES-DESC', items: { type: 'object', properties: { amount: { type: 'number' } } } },
+    },
+  };
+
+  it('full is byte-identical to the cleaned JSON schema', () => {
+    expect(renderProseSchema(CLS, 'full')).toBe(JSON.stringify(CLS, null, 2));
+  });
+
+  it('names lists every field with a type hint and no descriptions', () => {
+    const out = renderProseSchema(CLS, 'names');
+    expect(out).toContain('- pay_date (string (date))');
+    expect(out).toContain('- home (object)');
+    expect(out).toContain('- lines (array of object)');
+    expect(out).not.toContain('PAY-DATE-DESC');
+    expect(out).not.toContain('CLASS-DESC');
+    // Never empty: the placeholder sits inside <attributes> in prompt text whose
+    // next sentence refers to "a list of attribute names".
+    expect(out.trim().length).toBeGreaterThan(0);
+  });
+
+  it('minimal keeps the class and group descriptions and drops per-field ones', () => {
+    const out = renderProseSchema(CLS, 'minimal');
+    expect(out).toContain('Payslip: CLASS-DESC');
+    expect(out).toContain('HOME-DESC');
+    expect(out).toContain('WORK-DESC');
+    expect(out).not.toContain('PAY-DATE-DESC');
+    expect(out).not.toContain('CITY-DESC');
+  });
+
+  it('minimal names a SHARED definition once, listing the properties that use it', () => {
+    // Two properties $ref one definition, and sibling-wins resolution hides that
+    // definition's own description — which is precisely the one the backend's
+    // Pydantic round trip loses. Splicing it into the property lines instead would
+    // be wrong, not merely verbose: the text belongs to neither property alone.
+    const out = renderProseSchema(CLS, 'minimal');
+    expect(out).toContain('home, work (shared group): SHARED-DEF-DESC');
+  });
+
+  it('shrinks monotonically: names < minimal < full', () => {
+    const sizes = (['names', 'minimal', 'full'] as const).map((m) => renderProseSchema(CLS, m).length);
+    expect(sizes[0]).toBeLessThan(sizes[1]);
+    expect(sizes[1]).toBeLessThan(sizes[2]);
+  });
+
+  it('terminates on a self-referential definition', () => {
+    const recursive = {
+      $id: 'Node',
+      type: 'object',
+      description: 'ROOT-DESC',
+      $defs: { Node: { type: 'object', description: 'CHILD-DESC', properties: { child: { $ref: '#/$defs/Node' } } } },
+      properties: { root: { $ref: '#/$defs/Node' } },
+    };
+    const out = renderProseSchema(recursive, 'minimal');
+    expect(out).toContain('ROOT-DESC');
+    expect(out).toContain('CHILD-DESC');
+  });
+
+  it('renders an empty string for a class with no properties', () => {
+    expect(renderProseSchema({ type: 'object', properties: {} }, 'names')).toBe('');
+  });
+});
+
+/**
+ * End-to-end on the two things a user actually reads: whether a Tool Schema tab
+ * exists, and whether the token total moves when they flip the knob. Both were
+ * silently wrong before — turning Schema Enforcement on changed the previewed
+ * total by exactly 0, which told the one number people come to this page for that
+ * forcing is free.
+ */
+describe('PromptPreview token accounting', () => {
+  const CLASS = {
+    $id: 'Invoice',
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    description: 'A commercial invoice',
+    properties: {
+      'Invoice Number': { type: 'string', description: 'The invoice identifier', 'x-aws-idp-evaluation-method': 'EXACT' },
+      total: { type: 'number', description: 'Amount due' },
+    },
+  };
+
+  const configWith = (extraction: Record<string, unknown>) => ({
+    classes: [CLASS],
+    extraction: {
+      model: 'us.anthropic.claude-sonnet-5',
+      system_prompt: 'You are a document extraction expert.',
+      task_prompt: 'Extract {DOCUMENT_CLASS} using {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} from {DOCUMENT_TEXT}',
+      ...extraction,
+    },
+  });
+
+  /**
+   * Switch the Processing Step select (the preview opens on Classification).
+   * Cloudscape's Select trigger opens on a real pointer sequence, not a bare
+   * click event, so this goes through userEvent.
+   */
+  const showStep = async (label: string): Promise<void> => {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { expanded: false, name: /Processing Step/i }));
+    await user.click(await screen.findByRole('option', { name: new RegExp(`^${label}$`) }));
+  };
+  const showExtractionStep = (): Promise<void> => showStep('Extraction');
+
+  const totalTokens = (): number => {
+    const row = screen.getByText('Total (est.)').closest('.prompt-stat-item');
+    const match = /~([\d,]+) tokens/.exec(row?.textContent ?? '');
+    if (!match) throw new Error(`no total in ${row?.textContent}`);
+    return Number(match[1].replace(/,/g, ''));
+  };
+
+  /**
+   * Open a tab and return the rendered PROMPT BODY, not the page text. The
+   * warning alert also mentions "Expected Schema:", so asserting on the whole
+   * document would pass on the alert alone and never look at the prompt.
+   */
+  const promptBody = async (tabLabel: RegExp): Promise<string> => {
+    await userEvent.setup().click(screen.getByText(tabLabel));
+    const body = document.querySelector('.prompt-preview-content');
+    if (!body) throw new Error('no prompt body rendered');
+    return body.textContent ?? '';
+  };
+
+  it('Simple with forcing off is unchanged: no tab, no tool-schema stat', async () => {
+    render(<PromptPreview formValues={configWith({ mode: 'simple' })} />);
+    await showExtractionStep();
+    expect(screen.queryByText(/^Tool Schema/)).toBeNull();
+    expect(screen.queryByText('Tool schema')).toBeNull();
+    expect(totalTokens()).toBeGreaterThan(0);
+  });
+
+  it('Simple with forcing on adds the tab, the stat and real tokens to the total', async () => {
+    const { unmount } = render(<PromptPreview formValues={configWith({ mode: 'simple' })} />);
+    await showExtractionStep();
+    const baseline = totalTokens();
+    unmount();
+
+    render(<PromptPreview formValues={configWith({ mode: 'simple', forced_tool: { enabled: true } })} />);
+    await showExtractionStep();
+    expect(screen.getByText(/^Tool Schema \(~\d+ tokens\)$/)).toBeTruthy();
+    expect(screen.getByText('Tool schema')).toBeTruthy();
+    expect(totalTokens()).toBeGreaterThan(baseline);
+    // The alert explains the renaming, since this class has a name with a space.
+    expect(screen.getByText(/rewritten to a wire-safe spelling/)).toBeTruthy();
+  });
+
+  it('Advanced restates the schema by DEFAULT, growing the system prompt and the total', async () => {
+    // No restate_schema_in_system_prompt key at all — the default is ON.
+    const first = render(<PromptPreview formValues={configWith({ mode: 'advanced' })} />);
+    await showExtractionStep();
+    const withRestatement = totalTokens();
+    const restated = await promptBody(/^System Prompt \(~/);
+    expect(restated).toContain('Expected Schema:');
+    // ...and it is the class schema, cleaned, not a stub.
+    expect(restated).toContain('"Invoice Number"');
+    expect(restated).not.toContain('x-aws-idp-evaluation-method');
+    first.unmount();
+
+    render(<PromptPreview formValues={configWith({ mode: 'advanced', agentic: { restate_schema_in_system_prompt: false } })} />);
+    await showExtractionStep();
+    expect(await promptBody(/^System Prompt \(~/)).not.toContain('Expected Schema:');
+    expect(totalTokens()).toBeLessThan(withRestatement);
+  });
+
+  it('Advanced with the forced-tool knob on still shows no Tool Schema tab', async () => {
+    render(<PromptPreview formValues={configWith({ mode: 'advanced', forced_tool: { enabled: true } })} />);
+    await showExtractionStep();
+    expect(screen.queryByText(/^Tool Schema/)).toBeNull();
+  });
+
+  it('neither block reaches the Confidence Assessment step', async () => {
+    render(
+      <PromptPreview
+        formValues={{
+          ...configWith({ mode: 'simple', forced_tool: { enabled: true }, confidence: { system_prompt: 'sys', task_prompt: 'task' } }),
+        }}
+      />,
+    );
+    await showStep('Confidence Assessment');
+    expect(screen.queryByText(/^Tool Schema/)).toBeNull();
+    expect(await promptBody(/^System Prompt \(~/)).not.toContain('Expected Schema:');
+  });
+
+  it('Advanced shrinks the previewed task prompt and the total when prose_schema is set', async () => {
+    const first = render(<PromptPreview formValues={configWith({ mode: 'advanced' })} />);
+    await showExtractionStep();
+    const withFull = totalTokens();
+    expect(await promptBody(/^Task Prompt \(~/)).toContain('The invoice identifier');
+    first.unmount();
+
+    render(<PromptPreview formValues={configWith({ mode: 'advanced', agentic: { prose_schema: 'names' } })} />);
+    await showExtractionStep();
+    const body = await promptBody(/^Task Prompt \(~/);
+    // The field name survives; its description does not.
+    expect(body).toContain('Invoice Number');
+    expect(body).not.toContain('The invoice identifier');
+    expect(totalTokens()).toBeLessThan(withFull);
+  });
+
+  it('Simple drops the prose only with forcing ON, and the total reflects it', async () => {
+    // drop_prose_schema alone must be inert — the backend keeps the prose when no
+    // toolSpec is on the wire, so a preview that shrank here would be a lie.
+    const inert = render(<PromptPreview formValues={configWith({ mode: 'simple', forced_tool: { drop_prose_schema: true } })} />);
+    await showExtractionStep();
+    expect(await promptBody(/^Task Prompt \(~/)).toContain('The invoice identifier');
+    inert.unmount();
+
+    render(<PromptPreview formValues={configWith({ mode: 'simple', forced_tool: { enabled: true, drop_prose_schema: true } })} />);
+    await showExtractionStep();
+    const body = await promptBody(/^Task Prompt \(~/);
+    expect(body).not.toContain('The invoice identifier');
+    // ...and the alert states the one thing the browser cannot resolve.
+    expect(screen.getByText(/custom Lambda hook or the GPT-5.x route cannot carry one/)).toBeTruthy();
+  });
+
+  it('the Confidence Assessment step keeps the full schema even with the knobs on', async () => {
+    render(
+      <PromptPreview
+        formValues={configWith({
+          mode: 'advanced',
+          agentic: { prose_schema: 'names' },
+          confidence: { system_prompt: 'sys', task_prompt: 'assess {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}' },
+        })}
+      />,
+    );
+    await showStep('Confidence Assessment');
+    expect(await promptBody(/^Task Prompt \(~/)).toContain('The invoice identifier');
+  });
+
+  it('does not put the restatement in the RAW system template, which is the user’s text', async () => {
+    render(<PromptPreview formValues={configWith({ mode: 'advanced' })} />);
+    await showExtractionStep();
+    // The rendered System tab holds the appended block...
+    expect(await promptBody(/^System Prompt \(~/)).toContain('Expected Schema:');
+    // ...but the RAW template tab must show only what the user typed, since that
+    // is the text they edit. A block appended by the runtime is not part of it.
+    expect(await promptBody(/^Raw System Template$/)).toBe('You are a document extraction expert.');
   });
 });

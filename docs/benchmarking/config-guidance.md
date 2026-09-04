@@ -401,6 +401,84 @@ context-window headroom, not dollars. Per-document token counts cannot measure i
 (83k/54k/115k *within* one arm), because agentic turn count is non-deterministic; the
 per-*request* saving from static analysis is the defensible figure.
 
+### The schema prose in the task prompt — no completeness or accuracy cost, either path
+
+The other half of #710: the copy of the class schema substituted into the task prompt at
+`{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`, which duplicates a tool schema the request already
+carries. Measured on stack `IDPBench066` at commit `cefa28201`, extraction model
+Sonnet 4.6, 5 cells × 3 docs (`valuenoise_100`, `longdesc_100`, `small_narrow`) × 3
+repeats = 45 runs, **0 failures**.
+
+The two paths get different knobs because they are not equally safe to de-duplicate.
+On **Simple** the toolSpec is built from the class schema directly and is lossless (all
+37 descriptions on lending `Payslip` survive, including the class's own), so the prose is
+pure duplication. On **Advanced** the toolSpec comes from a generated Pydantic model,
+which drops the root class description on every class measured and every nested-group
+description — so `names` removes information the model has nowhere else, and `minimal`
+restates exactly that and nothing else. All three Advanced arms hold
+`restate_schema_in_system_prompt: off`, so they differ by ONE copy of the schema rather
+than two; that also means their costs are not comparable to `restate-on` above.
+
+| arm | n | failures | completeness recall | cell accuracy | cost | cost CV | rendering applied |
+|---|---|---|---|---|---|---|---|
+| Simple `prose-keep` (default) | 9 | 0 | **1.0** (sd 0.0) | **1.0** (sd 0.0) | $0.165 | 0.08 | forced-tool honored 1.0 |
+| Simple `prose-drop` | 9 | 0 | **1.0** (sd 0.0) | **1.0** (sd 0.0) | $0.158 | 0.06 | 15 sections `names`, 0 kept |
+| Advanced `prose-adv-full` (default) | 9 | 0 | **1.0** (sd 0.0) | **1.0** (sd 0.0) | $0.591 | 0.51 | — |
+| Advanced `prose-adv-minimal` | 9 | 0 | **1.0** (sd 0.0) | **1.0** (sd 0.0) | $0.595 | 0.63 | 13 sections `minimal` |
+| Advanced `prose-adv-names` | 9 | 0 | **1.0** (sd 0.0) | **1.0** (sd 0.0) | $0.614 | 0.53 | 14 sections `names` |
+
+**Guidance: dropping the prose costs no completeness and no accuracy on this corpus, on
+either path.** Both defaults stay as they are because a single 100-row corpus is not
+grounds for changing what every deployment sends; the knobs exist so you can measure the
+same question on your own documents.
+
+The **rendering applied** column is what makes that readable, and it is the same
+instrument as `forced_tool_honored_rate`: `prose_schema_modes` counts the sections that
+actually rendered each mode, and `prose_schema_kept` counts those where a requested drop
+was **not** applied because no toolSpec was on the wire. Both are 0-kept here, so every
+arm genuinely ran. Without them an arm that never applied would report a confident
+"no effect" — and that is not hypothetical: `drop_prose_schema` is deliberately inert
+with `forced_tool.enabled: false`, which is the shipped default.
+
+Two honest limits:
+
+- **`scalar_accuracy` deviates, in the DEFAULT arm's favour of nobody.** `prose-keep`
+  scored 0.833 against 1.0 for all four other arms — 3 of its 9 runs missed one of **two**
+  scalar fields. That denominator is the known artifact the `midetectlong` suite exists
+  for: one field wrong moves the cell mean by 0.5 on that document. It is in the direction
+  that would make dropping look *better*, and `cell_accuracy` (typed per-row truth, the
+  strong measure) is 1.0 with sd 0.0 in every arm — so this is not evidence that dropping
+  helps, and it is reported here rather than dropped from the table.
+- **The cost figures do not support a claim, and the Advanced ones especially not.** The
+  Simple pair moves −4.8% at CV 0.06–0.08, which is the tightest cost pair in this
+  section, but at n=9 that gap is still inside sampling error (t≈1.4). The Advanced arms
+  sit at CV 0.51–0.63 and their ordering (`full` < `minimal` < `names`) is the *opposite*
+  of the token ordering, which is what a non-deterministic agent turn count looks like.
+  **The defensible figure is the per-request static saving**, from the token counts below;
+  treat measured dollars as corroboration at best.
+
+Per request on lending `Payslip` at ~4 chars/token:
+
+| copy | tokens |
+|---|---|
+| prose `full` (default) | 1,485 |
+| prose `minimal` | 372 |
+| prose `names` | 176 |
+| toolSpec, Simple path | 1,173 |
+| toolSpec, Advanced path | 1,612 |
+
+All copies sit inside the prompt-cache prefix, so the dollar effect is ~a tenth of the
+token count by construction; the payoff is context-window headroom, which is what pushes
+a document into an extra shard. Changing the setting changes the cached prefix, so the
+first request per class after a change is one cache miss.
+
+⚠️ **Do not read this as "safe on any corpus".** The gate #710 names is adherence on
+list-heavy documents, and `longdesc_100` is in this grid for exactly that reason — but it
+is one synthetic 100-row document per doc type. A corpus whose classes carry heavy
+per-field prose, or whose model follows a prose schema more closely than a tool schema,
+could behave differently. Run the `proseschema` suite on your own documents before
+turning either knob on in production.
+
 ### `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
 
 Declares the class schema as a required Converse tool instead of describing it in prose.
@@ -631,6 +709,12 @@ done
 # §2.1 the integrated-confidence hazard, with repeats + same-doc control
 python3 benchmarks/harness/make_configs.py --suite intconf --class bank_statement --set extraction_model=sonnet5
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite intconf --native-upload
+
+# §7 the #710 prose-schema A/B (both paths). `prose_schema_modes` in the summary is
+# what confirms each arm applied; an arm reporting only `full` never ran.
+python3 benchmarks/harness/make_configs.py --suite proseschema --class bank_statement
+AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite proseschema --max-inflight 6
+AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/proseschema
 
 # §7 multi-instance: the transform on a same-class packet, and the detection A/B
 for s in multiinstance midetect migate; do
