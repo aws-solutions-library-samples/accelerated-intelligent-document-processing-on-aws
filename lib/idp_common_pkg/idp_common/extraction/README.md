@@ -701,10 +701,19 @@ Not limited to unflagged classes: a class in Designate or Synthesize mode whose
 array came back with fewer records than the model reports is under-extracting,
 which is the same data loss.
 
-Config: `extraction.multi_instance_detection.enabled`, default **true**. Simple
-extraction only (prompt and forced-tool paths) — Advanced (agentic) extraction
-validates through a generated Pydantic model and shards by field, so an auxiliary
-property would be dropped on some paths and duplicated on others.
+Config: `extraction.multi_instance_detection.enabled`, default **false**, gated on
+evidence — the benchmark A/B (`benchmarks` suite `midetect`, and `midetectlong` for
+the follow-up) did not clear it. Completeness was perfect and identical on both
+arms (30/30 runs, exact row counts) and cost moved −0.4%, but scalar accuracy was
+consistently worse with it on, in the same direction across three batches: 5/10
+runs lost a scalar field with it on vs 2/10 with it off on the one document that
+deviated. Not significant at that n and possibly an artifact of a two-field
+accuracy denominator — which is the reason it is off rather than the reason to
+dismiss it. Turn it on for a corpus that actually has multi-record sections.
+
+Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
+extraction validates through a generated Pydantic model and shards by field, so an
+auxiliary property would be dropped on some paths and duplicated on others.
 
 ## Synthesize mode (`x-aws-idp-multi-instance`, #715)
 

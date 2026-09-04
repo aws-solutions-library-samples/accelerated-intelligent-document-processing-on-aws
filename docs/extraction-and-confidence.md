@@ -736,15 +736,27 @@ panel says the records are *missing*, not that they were extracted.
 ```yaml
 extraction:
   multi_instance_detection:
-    enabled: true    # default. One extra integer of output; no second call.
+    enabled: true    # OFF by default — turn it on for multi-record corpora
 ```
 
 - **Detection only.** It never changes the extracted data, never fails a section,
   and never turns on a schema flag for you. Fixing the loss is
   `x-aws-idp-multi-instance` (below) or splitting the section.
-- **On by default**, because a data-loss guard that defaults off reproduces the
-  problem it exists to fix. Set `enabled: false` to keep the extraction prompt
-  byte-identical to earlier releases.
+- **OFF by default, and gated on evidence.** It adds a question to the extraction
+  request for every Simple-mode section, and the benchmark A/B did **not** clear
+  it. Completeness was perfect and identical on both arms (30/30 runs, exact row
+  counts) and cost moved −0.4% — but scalar accuracy was consistently a little
+  worse with it on, in the same direction across three independent batches: on the
+  one document that deviated, 5 of 10 runs lost a scalar field with it on against
+  2 of 10 with it off. That is not statistically significant at n=10 and may be an
+  artifact of a two-field accuracy denominator — and the ambiguity is exactly the
+  point. A diagnostic is not worth a measured-but-unexplained accuracy risk on
+  every existing extraction.
+- **Turn it on** for any corpus where one section can hold several documents of
+  the same class. That is the case it exists for, and there the trade is obviously
+  worth it: the alternative is shipping one record out of three with no signal at
+  all. Set it per configuration profile, so a multi-record corpus gets the warning
+  while the rest of your deployment is untouched.
 - **Applies to Simple extraction**, on both the prompt and the forced-tool paths.
   **Advanced (agentic) extraction is not covered yet** — it validates through a
   generated Pydantic model and shards the work by field, so an auxiliary property

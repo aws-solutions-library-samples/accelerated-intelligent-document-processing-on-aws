@@ -27,8 +27,18 @@ from idp_common.extraction.service import ExtractionService
 from idp_common.models import Document, Page, Section
 
 
-def _svc(*, agentic: bool = False) -> ExtractionService:
-    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": agentic}}})
+def _svc(*, agentic: bool = False, detection: bool = True) -> ExtractionService:
+    # Detection is OFF by default as shipped (gated on the benchmark A/B), so the
+    # tests that exercise it enable it explicitly rather than relying on the
+    # default — which is what a test should pin anyway.
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": agentic},
+                "multi_instance_detection": {"enabled": detection},
+            }
+        }
+    )
     svc = ExtractionService(config=cfg)
     svc._class_schema = {
         "type": "object",
@@ -268,7 +278,14 @@ def test_page_default_document_boundary_is_none():
 
 
 def _packet_svc(instance_array="records") -> ExtractionService:
-    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": False}}})
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {"enabled": True},
+            }
+        }
+    )
     svc = ExtractionService(config=cfg)
     svc._class_schema = {
         "type": "object",
@@ -497,15 +514,19 @@ def test_wire_schema_carries_the_probe_but_the_class_schema_does_not():
 
 
 def test_probe_is_not_requested_when_detection_is_disabled():
-    cfg = IDPConfig(
-        **{
-            "extraction": {
-                "agentic": {"enabled": False},
-                "multi_instance_detection": {"enabled": False},
-            }
-        }
-    )
-    svc = ExtractionService(config=cfg)
+    svc = _svc(detection=False)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    wire, added = svc._build_wire_schema(schema, "c")
+    assert added is False
+    assert wire is schema
+
+
+def test_detection_is_OFF_by_default():
+    """Gated on the benchmark A/B: completeness and cost were unchanged, but scalar
+    accuracy was consistently a little worse with it on. Pinning the DEFAULT here
+    so it cannot drift back on without someone re-measuring."""
+    assert IDPConfig().extraction.multi_instance_detection.enabled is False
+    svc = ExtractionService(config=IDPConfig())
     schema = {"type": "object", "properties": {"a": {"type": "string"}}}
     wire, added = svc._build_wire_schema(schema, "c")
     assert added is False
@@ -637,7 +658,14 @@ def test_reporting_undetermined_stays_zero_and_emits_nothing():
 def _wrapped_svc() -> ExtractionService:
     from idp_common.schema.multi_instance import wrap_class_schema
 
-    cfg = IDPConfig(**{"extraction": {"agentic": {"enabled": False}}})
+    cfg = IDPConfig(
+        **{
+            "extraction": {
+                "agentic": {"enabled": False},
+                "multi_instance_detection": {"enabled": True},
+            }
+        }
+    )
     svc = ExtractionService(config=cfg)
     svc._class_schema = wrap_class_schema(
         {

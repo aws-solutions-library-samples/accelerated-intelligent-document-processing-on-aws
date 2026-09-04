@@ -499,16 +499,28 @@ class MultiInstanceDetectionConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Ask the extraction model, in the same inference, how many separate "
             "documents of the section's class the pages contain, and warn when "
             "the answer is more than the result holds. Costs one extra integer "
-            "of output. ON by default: a data-loss guard that defaults off "
-            "reproduces the problem it exists to fix. Set false to leave the "
-            "extraction prompt byte-identical to earlier releases. Applies to "
-            "Simple extraction (prompt and forced-tool paths); Advanced "
-            "(agentic) extraction is not yet covered."
+            "of output and no second call. "
+            "OFF by default, and gated on evidence: it adds a property to the "
+            "extraction request for every Simple-mode section, and the A/B on the "
+            "benchmark corpus did NOT clear it. Completeness was perfect and "
+            "identical on both arms (30/30 runs, exact row counts) and cost moved "
+            "-0.4%, but scalar accuracy was consistently worse with it on, in the "
+            "same direction across three independent batches — on the one document "
+            "that deviated, 5 of 10 runs lost a scalar field with it on against 2 "
+            "of 10 with it off. Not statistically significant at that n, and "
+            "possibly an artifact of a two-field accuracy denominator, which is "
+            "exactly why it is not on by default: a guard is not worth a "
+            "measured-but-unexplained accuracy risk on every existing extraction. "
+            "Turn it ON for any corpus where a section can hold several documents "
+            "of one class — that is the case it exists for, and there the "
+            "trade is obviously worth it. "
+            "Applies to Simple extraction (prompt and forced-tool paths); "
+            "Advanced (agentic) extraction is not covered."
         ),
     )
 

@@ -54,15 +54,24 @@ extraction:
   # extraction_multi_instance_suspected warning is raised and the section's
   # instance count reflects the model's answer.
   multi_instance_detection:
-    # ON by default: this is the silent-data-loss case (SUCCESS, COMPLETED, zero
-    # issues, one record out of three), and a guard that defaults off reproduces
-    # the problem it exists to fix. Detection NEVER changes the extracted data or
-    # a class's schema flags — turning a class into a List-of-Class shape stays an
-    # explicit opt-in (x-aws-idp-multi-instance / x-aws-idp-instance-array).
-    # Set false to keep the extraction prompt byte-identical to earlier releases.
+    # OFF by default, and gated on evidence rather than on the argument that a
+    # data-loss guard should default on. It adds a property to the extraction
+    # request for every Simple-mode section, and the benchmark A/B did not clear
+    # it: completeness was perfect and identical on both arms (30/30 runs, exact
+    # row counts) and cost moved -0.4%, but scalar accuracy was consistently worse
+    # with it ON, in the same direction across three independent batches — 5 of 10
+    # runs lost a scalar field with it on vs 2 of 10 with it off, on the one
+    # document that deviated. Not significant at that n, and possibly an artifact
+    # of a two-field accuracy denominator; that ambiguity is the point.
+    #
+    # TURN IT ON for any corpus where one section can hold several documents of the
+    # same class — that is the case it exists for, and there the trade is clearly
+    # worth it. Detection NEVER changes the extracted data or a class's schema
+    # flags; turning a class into a List-of-Class shape stays an explicit opt-in
+    # (x-aws-idp-multi-instance / x-aws-idp-instance-array).
     # Applies to Simple extraction (prompt and forced-tool paths); Advanced
-    # (agentic) extraction is not yet covered.
-    enabled: true
+    # (agentic) extraction is not covered.
+    enabled: false
   # Deterministic type/format repair applied BEFORE validation, so validation
   # only reports what could not be fixed for free. No model call.
   coercion:

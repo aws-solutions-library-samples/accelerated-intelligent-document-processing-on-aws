@@ -1367,8 +1367,8 @@ Resources:
                 properties:
                   enabled:
                     type: boolean
-                    description: "Warn when a section appears to contain more documents of its class than were extracted. ON by default: this is the silent case - the section reports success with zero issues while holding one record out of three - and a guard that defaults off reproduces the problem it exists to fix. Turn OFF to keep the extraction prompt byte-identical to earlier releases."
-                    default: true
+                    description: "Warn when a section appears to contain more documents of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. OFF by default because it adds a question to every extraction request and the benchmark A/B did not clear it: completeness and cost were unchanged, but scalar accuracy was consistently a little worse with it on. TURN IT ON for any corpus where one section can hold several documents of the same class, which is the case it exists for. It never changes the extracted data."
+                    default: false
                     order: 0
               coercion:
                 type: object

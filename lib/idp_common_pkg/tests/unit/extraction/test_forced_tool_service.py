@@ -158,8 +158,10 @@ class TestTheToolReachesBedrock:
     def test_the_tool_schema_carries_the_class_fields(self):
         from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
 
+        config = _config(_SIMPLE_PROPS)
+        config["extraction"]["multi_instance_detection"] = {"enabled": True}
         _, kwargs, _ = _run(
-            _config(_SIMPLE_PROPS),
+            config,
             _tool_use_response({"invoice_number": "INV-1", "total_amount": 100.0}),
         )
         schema = kwargs["tool_config"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
@@ -174,11 +176,12 @@ class TestTheToolReachesBedrock:
             INSTANCE_PROBE_FIELD,
         }
 
-    def test_the_probe_is_absent_from_the_tool_schema_when_detection_is_off(self):
+    def test_the_probe_is_absent_from_the_tool_schema_by_default(self):
+        """Detection is OFF by default (gated on the benchmark A/B), so the shipped
+        toolSpec is byte-identical to earlier releases."""
         from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
 
         config = _config(_SIMPLE_PROPS)
-        config["extraction"]["multi_instance_detection"] = {"enabled": False}
         _, kwargs, _ = _run(
             config,
             _tool_use_response({"invoice_number": "INV-1", "total_amount": 100.0}),
@@ -192,8 +195,10 @@ class TestTheToolReachesBedrock:
         off-schema filter, assessment, reporting and evaluation ever see it."""
         from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
 
+        config = _config(_SIMPLE_PROPS)
+        config["extraction"]["multi_instance_detection"] = {"enabled": True}
         written, _, _ = _run(
-            _config(_SIMPLE_PROPS),
+            config,
             _tool_use_response(
                 {
                     "invoice_number": "INV-1",

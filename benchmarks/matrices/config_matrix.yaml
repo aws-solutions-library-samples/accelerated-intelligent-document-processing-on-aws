@@ -441,6 +441,16 @@ suites:
     cells: [detect-off, detect-on]
     docs:  [tiny_form, small_narrow, longdesc_100]
     repeats: 3
+  # Follow-up to `midetect`: at repeats 3 AND 5 exactly ONE run deviated on
+  # scalar_accuracy, always on `longdesc_100`. scalar_accuracy has a TWO-field
+  # denominator there, so one field wrong in one run moves the cell mean by 0.033 —
+  # enough to cross the -0.02 regression threshold mechanically without being a
+  # real effect. This suite hammers that one document so the question is answered
+  # with samples rather than argued.
+  midetectlong:
+    cells: [detect-off, detect-on]
+    docs:  [longdesc_100]
+    repeats: 10
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
