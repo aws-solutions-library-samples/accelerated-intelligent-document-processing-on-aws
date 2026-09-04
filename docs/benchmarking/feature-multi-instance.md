@@ -214,12 +214,13 @@ toolSpec are byte-identical to earlier releases.
   The lesson is the same one both times: an instrument that cannot see the
   phenomenon will still return a number.
 - **§2 used Test Studio rather than the benchmark harness**, because the harness
-  silently skips reference corpora: `run_matrix.py` `continue`s on any doc with
-  no local PDF, with a comment claiming reference docs are "handled separately"
-  and nothing handling them, while `analyze.score_reference` sits fully
-  implemented. So a suite naming `realkie` or `ocr_bench` — including
+  cannot run reference corpora: `run_matrix.py` launches one local PDF per run and
+  a reference corpus is a test set on the stack, while `analyze.score_reference`
+  sits fully implemented. So a suite naming `realkie` or `ocr_bench` — including
   `core_docs` — runs nothing for it. Not fixed here (out of scope for this
-  feature); filed as GitHub #766.
+  feature); filed as GitHub #766, which has since made the shortfall **visible**
+  (the launcher names it and records it in the runmap) without adding a launch
+  path — so this remains the way to get numbers on a real corpus.
 - **A harness bug was found and fixed mid-study, and it mattered.**
   `analyze.py` collected scalar fields from the **top level** of
   `inference_result`, so a wrapped result — whose only top-level key is

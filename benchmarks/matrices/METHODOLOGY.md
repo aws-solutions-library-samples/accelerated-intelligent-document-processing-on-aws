@@ -20,17 +20,25 @@ with curated evaluation baselines. Real-world messiness the synthetic set can't 
 
 > ⚠️ **`run_matrix.py` cannot launch reference corpora yet ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).**
 > It launches one local PDF per run, and a reference doc is a test *set* on the
-> stack with no PDF under `corpus/docs/`. It used to drop them silently, so a
-> suite naming `core_docs` measured **7 of its 9 documents** and reported like a
-> full sweep — losing exactly the two corpora with real documents and
-> human-verified labels. The launcher now names them, excludes them from the plan
-> count, and records `docs_named` / `docs_run` / `docs_unlaunchable` in
-> `runmap.json`; **check `docs_unlaunchable` before quoting a suite's result as
-> covering its whole document list.** The scorer for them
-> (`analyze.score_reference()`) is fully implemented and reachable — only the
-> launcher is missing. Until it exists, run reference corpora through Test Studio
-> (`harness/detection_ab_teststudio.py` invokes the same TestRunner Lambda the
-> Test Studio UI does) and report them as a separate arm.
+> stack with no PDF under `corpus/docs/`. So a suite naming `core_docs` measures
+> **7 of its 9 documents** — without the two corpora that have real documents and
+> human-verified labels. It used to drop them with no record at all; the launcher
+> now names them and records `docs_named` / `docs_run` / `docs_unlaunchable` /
+> `docs_other_class` in `runmap.json`, which `aggregate.py` copies into the
+> committed `meta.json`. **Check `docs_unlaunchable` before quoting a suite's
+> result as covering its whole document list.** Those fields are *absent* on a
+> runmap or `meta.json` produced before this existed (or by another launcher):
+> absent means **unknown**, not "nothing was skipped".
+>
+> `docs_other_class` is a different thing and not a shortfall: a suite may
+> legitimately name documents of several classes (`enforcement` and `forcing` name
+> `kv_form` beside bank-statement docs), and those are run under their own
+> `--class` in a separate invocation.
+>
+> The scorer for reference corpora (`analyze.score_reference()`) is fully
+> implemented and reachable — only the launcher is missing. Until it exists, run
+> them through Test Studio (`harness/detection_ab_teststudio.py` invokes the same
+> TestRunner Lambda the Test Studio UI does) and report them as a separate arm.
 
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and

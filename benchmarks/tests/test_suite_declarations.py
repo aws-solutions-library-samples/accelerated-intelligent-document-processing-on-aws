@@ -365,11 +365,13 @@ def test_a_suite_may_still_name_a_control_explicitly(matrix):
 
 @pytest.mark.unit
 def test_reference_docs_have_no_local_pdf_so_they_cannot_be_launched(docm):
-    """Pins the premise the loudness depends on.
+    """Pins the premise the reporting depends on.
 
-    If a reference corpus ever DOES get a local PDF, the warning below becomes
-    wrong and this test says so rather than letting the harness keep claiming a
-    doc is unlaunchable.
+    If a reference corpus ever DOES get a local PDF, run_matrix could launch it
+    and calling it unlaunchable becomes a lie. Note this can only fail on a
+    machine that has generated the corpus — ``corpus/docs/`` is gitignored, so on
+    a CI checkout the directory is empty and the assertion is trivially true.
+    That is fine: the mistake it guards against is made locally.
     """
     docs_dir = os.path.join(BENCH, "corpus", "docs")
     for d in docm.get("reference", []):
@@ -381,8 +383,10 @@ def test_reference_docs_have_no_local_pdf_so_they_cannot_be_launched(docm):
 
 @pytest.mark.unit
 def test_core_docs_still_names_the_reference_corpora(docm):
-    """The skip has to stay *reachable*, or this guard is vacuous: `core_docs` is
-    the group most suites use and it is where the 7-of-9 shortfall happens."""
+    """The shortfall has to stay *reachable*, or the guard below is vacuous:
+    ``core_docs`` is the group most suites use and it is where the 7-of-9
+    shortfall happens. If core_docs is ever pointed at synthetic-only documents
+    on purpose, delete this test — it pins a status quo, not a goal."""
     core_docs = docm["groups"]["core_docs"]
     reference = {d["id"] for d in docm.get("reference", [])}
     assert reference & set(core_docs), (
@@ -393,23 +397,54 @@ def test_core_docs_still_names_the_reference_corpora(docm):
 
 
 @pytest.mark.unit
-def test_run_matrix_reports_unlaunchable_docs_instead_of_dropping_them():
-    """The launcher must name the shortfall and record it in the manifest.
+def test_reference_corpora_are_reported_as_unlaunchable_not_dropped(docm):
+    """The behavior, not the wording.
 
-    Asserted on the source rather than by running a grid (that needs a live
-    stack): the two things that made the old behavior invisible were the bare
-    ``continue`` and the absence of any manifest field distinguishing "did not
-    run" from "scored nothing".
+    The first attempt at this fix computed the unlaunchable set from a missing
+    local PDF *after* the class filter had already removed reference docs (a
+    reference doc's "class" is its config, so it never matches ``--class``). The
+    set was therefore always empty, the warning could never fire, and
+    ``docs_unlaunchable`` recorded ``[]`` on precisely the runs that dropped two
+    documents. A source-string test passed anyway; only this catches it.
     """
-    src = open(os.path.join(HARNESS, "run_matrix.py")).read()
-    assert "continue  # reference docs handled separately" not in src, (
-        "the silent skip is back: reference docs are dropped from the launch "
-        "loop with no warning and no record (#766)."
+    import run_matrix
+
+    core_docs = docm["groups"]["core_docs"]
+    refs = run_matrix.reference_ids(docm)
+    # What load_plan's class filter leaves for a bank_statement grid.
+    kept, _ = run_matrix._docs_for_class(core_docs, docm, "bank_statement")
+
+    runnable, unlaunchable, other_class = run_matrix.plan_coverage(
+        core_docs, kept, refs
     )
-    assert "docs_unlaunchable" in src, (
-        "runmap.json no longer records which named documents were not run, so a "
-        "partial grid is indistinguishable from a complete one (#766)."
+
+    assert set(unlaunchable) == refs & set(core_docs), (
+        f"the reference corpora in core_docs must be reported as unlaunchable; "
+        f"got {unlaunchable}"
     )
-    assert "CANNOT be launched" in src, (
-        "run_matrix no longer prints the unlaunchable documents (#766)."
+    assert unlaunchable, "no reference corpus reached the report — guard is vacuous"
+    assert not set(runnable) & refs, "a reference corpus was left in the run plan"
+    assert not set(other_class) & refs, (
+        "a reference corpus was filed as 'another class', which sends the reader "
+        "to a --class that cannot run it"
     )
+    # Nothing the suite named may vanish from all three buckets.
+    assert set(runnable) | set(unlaunchable) | set(other_class) == set(core_docs)
+
+
+@pytest.mark.unit
+def test_a_document_of_another_class_is_not_called_unlaunchable(docm):
+    """The two causes are different work: another class is runnable under its own
+    ``--class``, a reference corpus is not runnable here at all. Collapsing them
+    would put ``kv_form`` in a bucket that says "use Test Studio"."""
+    import run_matrix
+
+    docs = ["small_narrow", "kv_form"] + sorted(run_matrix.reference_ids(docm))
+    kept, _ = run_matrix._docs_for_class(docs, docm, "bank_statement")
+    runnable, unlaunchable, other_class = run_matrix.plan_coverage(
+        docs, kept, run_matrix.reference_ids(docm)
+    )
+
+    assert runnable == ["small_narrow"]
+    assert other_class == ["kv_form"]
+    assert set(unlaunchable) == run_matrix.reference_ids(docm)
