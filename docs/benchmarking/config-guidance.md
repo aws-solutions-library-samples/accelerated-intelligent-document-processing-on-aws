@@ -326,8 +326,11 @@ comparisons of configurations that all did the job.
 | Documents with long free-text cells | **simple + separate**, not advanced — advanced nulled the whole list on `longdesc_100` (§2, finding 3) |
 | Confidence needed | **`separate`** assessment. **Never `integrated` with simple extraction** (§2.1) |
 | Cheapest OCR, small documents | Bedrock-LLM (**not** for >100-row lists — loses rows, §2 finding 5) |
+| Packets holding several documents of the **same** class | `x-aws-idp-multi-instance` on that class (**migrate baselines**), or `x-aws-idp-instance-array` if it already lists them (free) — §7 |
+| New corpus, shape unknown | run `extraction.multi_instance_detection` **once** as a diagnostic, act on what it names, then turn it off — §7 |
 
-**Safety notes — both failure modes are silent and both are invisible to field accuracy:**
+**Safety notes — all three failure modes are silent and all three are invisible to field
+accuracy:**
 
 1. Simple mode truncates large lists while reporting success, and a truncated run is
    *cheaper* than a complete one, so neither status nor cost will alert you. If large tables
@@ -336,6 +339,11 @@ comparisons of configurations that all did the job.
 2. **`integrated` confidence with simple extraction returned 1–10 of 100 rows in 4 of 4
    repeats at the shipped default model, with none of them matching ground truth — and
    `scalar_accuracy` 1.000 with status `COMPLETED` throughout.**
+3. **A section holding several documents of the same class returns only the first, and
+   per-field accuracy cannot see it** — the fields that came back are scored, and they can
+   all be right. A section returning 1 of 3 pay statements scores **1.000**. Nothing in
+   §2–§4 of this paper would detect it; only a record count against ground truth, or the
+   §7 detection probe, will.
 
 ---
 
@@ -442,6 +450,86 @@ packet** — it emits one all-pages section where two are correct, losing the sp
 (completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
 over-splitting.
 
+### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — the same-class packet
+
+The failure `sectionSplitting: disabled` exposes above has a second, quieter form, and it
+is the one no metric in §2–§4 can see. When one section holds several records of the
+**same** class, classification has no type change to split on; the class schema describes
+one document; the model answers with one object; records 2..N are simply absent. Section
+`SUCCESS`, document `COMPLETED`, `ProcessingIssueCount: 0`.
+
+**Why every accuracy number in this paper is blind to it.** Per-field accuracy scores the
+fields that came back. A section that returns 1 of 3 pay statements can score **1.000 on
+every field it returned**. So a corpus with this shape can look perfect at the top of a
+report while a third of its data never left the page.
+
+Two settings, and they answer different questions:
+
+| setting | scope | what it does | cost |
+|---|---|---|---|
+| `extraction.multi_instance_detection.enabled` | global, per config profile | asks the model, in the same inference, how many documents of the class the pages hold; warns when that exceeds the records extracted | input **+1.8 %**; **−1.3 accuracy points** on a corpus with nothing to find |
+| `x-aws-idp-multi-instance: true` | per class | makes the class's effective schema a **list** of that class, so all records are extracted | ⚠️ changes output shape — **evaluation baselines must be migrated** |
+| `x-aws-idp-instance-array: <prop>` | per class | names an array the class **already** has as its instance axis | none — read-only, no schema or output change |
+
+**Does the transform actually recover the records? Yes.** `twodocs_2x20` — two complete
+statements in one forced section, globally unique `SEQ` tags so completeness is exact,
+`repeats: 3`:
+
+| cell | wrapper | rows extracted | recall | scalar accuracy |
+|---|---|---|---|---|
+| `mi-silent` | off | 40 | 1.00 | 1.00 |
+| `mi-detected` | off | **20** | **0.50** | 1.00 |
+| `mi-wrapped` | **on** | 40 | **1.00** | **1.00** |
+
+⚠️ **`mi-silent`'s recall 1.00 is the trap, not the control.** It reached 40 rows by
+merging *two accounts' transactions into one statement's list* — higher recall,
+semantically wrong data, no warning. A completeness metric therefore **prefers the arm
+that is quietly wrong**, which is worth sitting with before trusting recall alone on any
+packet corpus.
+
+**Detection's cost, measured on two real labeled corpora** (Test Studio, 80 paired runs,
+identical documents per arm, only the toggle differing):
+
+| corpus | accuracy off → on | sign test | input tokens |
+|---|---|---|---|
+| `OmniAI-OCR-Benchmark` (40 docs) | 0.9380 → 0.9461 | p = **1.000** (no effect) | +1.82 % |
+| `RealKIE-FCC-Verified` (40 docs) | 0.7678 → **0.7552** | worse on 14 of 40, better on 1, p = **0.001** | −0.80 % |
+
+Detection counted correctly on every multi-record document it saw: on the bank-check
+images, 18 flagged of 18 multi-check sheets, 0 false alarms on the 22 single-check sheets,
+and the **exact** count right 18 of 18 (2 to 8 checks).
+
+⚠️ **But a warning is not evidence of data loss, and this same run is the cautionary
+example.** Counting the extracted rows on those 18 documents afterwards: **0 checks
+missing**, in both arms. `BANK_CHECK`'s schema is a single `checks` array, so the class
+already modelled several checks per sheet — nothing was collapsing. The warning fired
+because `instance_extracted_count` is **1** for a class that declares no instance axis,
+which is true whether the records are absent *or* present inside a declared array. The
+predicate cannot tell those apart. The finding was real and worth acting on — the preset
+now sets `x-aws-idp-instance-array: checks` — but it was a **configuration** finding, not
+a data-loss one. An earlier draft of the feature study claimed the latter and was wrong.
+
+**Guidance:**
+
+1. **Run detection once as a diagnostic on any new corpus**, then turn it off. That is how
+   the `BANK_CHECK` missing instance axis was found, and it costs one run.
+2. **When it fires, look at the extracted data before concluding anything was lost.** If
+   the records are inside an existing array, set `x-aws-idp-instance-array` — free. If they
+   are genuinely absent, set `x-aws-idp-multi-instance: true` **and migrate the baselines**
+   (`scripts/migrate_multi_instance_baselines.py`), or the class scores ~0 with no error
+   anywhere.
+3. **Leave detection on permanently only** where a section can hold several documents of
+   one class **and** the class schema describes only one. That conjunction is what loses
+   records; either half alone does not. On a single-record corpus it is ~1.3 accuracy
+   points for nothing.
+4. `sectionSplitting` is **not** an alternative here. `disabled` makes it worse (above),
+   and `llm_determined` cannot split what has no type change to split on — which is the
+   whole premise of the failure.
+
+Suites: `multiinstance`, `midetect`, `midetectlong`, `migate`
+(`benchmarks/matrices/config_matrix.yaml`). Full study, including two documented wrong
+conclusions and how each was caught: [`feature-multi-instance.md`](feature-multi-instance.md).
+
 ### The `<boundary-detection-rules>` prompt block (#653) — keep it
 
 **Validated by GitLab !769**, which measured the same rules on **DocSplit-Poly-Seq**:
@@ -541,7 +629,28 @@ done
 # §2.1 the integrated-confidence hazard, with repeats + same-doc control
 python3 benchmarks/harness/make_configs.py --suite intconf --class bank_statement --set extraction_model=sonnet5
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite intconf --native-upload
+
+# §7 multi-instance: the transform on a same-class packet, and the detection A/B
+for s in multiinstance midetect migate; do
+  python3 benchmarks/harness/make_configs.py --suite $s --class bank_statement
+  AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite $s --max-inflight 6
+  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/$s
+done
+
+# §7 detection on REAL labeled corpora — via Test Studio, because run_matrix.py silently
+# skips reference corpora (GitHub #766). Two profiles per corpus differing ONLY in
+# extraction.multi_instance_detection.enabled; numberOfFiles takes the same first N.
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> launch --n 40 \
+    --pair ocr-benchmark:mid-off-ocr:mid-on-ocr \
+    --pair realkie-fcc-verified:mid-off-rk:mid-on-rk
+python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> analyse
 ```
+
+⚠️ **A detection warning count is not a data-loss count**, and §7 records how that error
+was made here. To turn flags into a loss figure you must count the extracted records
+against ground truth — see
+`benchmarks/results/v0.6.7/detection-real-corpora/extracted_vs_ground_truth.txt` for the
+query that settled it.
 
 **Honesty / limits.** Costs are estimates from `pricing.yaml` (rates as of 2026-08; intro
 pricing may apply). §2 is one run per (cell, doc) — reliable for the *exact* completeness and
