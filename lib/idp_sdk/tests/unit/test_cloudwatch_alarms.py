@@ -233,6 +233,68 @@ def test_alarms_were_found():
     )
     assert "SlowExecutionsAlarm" in main_alarms
 
+    # GitHub #761. The queue layer had no alarm at all: a document that
+    # dead-lettered, or a queue that stopped draining, emits neither
+    # ExecutionsFailed nor ExecutionTime, so both alarms above read OK through
+    # it. Pinned by name because the failure mode is again silence -- deleting
+    # one of these restores the blind spot with no other symptom.
+    for name in (
+        "DocumentQueueDLQAlarm",
+        "QueueSenderDLQAlarm",
+        "DocumentQueueStalledAlarm",
+    ):
+        assert name in main_alarms, (
+            f"{name} not found in template.yaml. If it was renamed, update this "
+            f"guard; if it was removed, the SQS blind spot from #761 is back."
+        )
+
+
+def test_stalled_queue_alarm_fills_its_throughput_metric():
+    """The stall alarm must FILL its "messages deleted" input with 0.
+
+    ``DocumentQueueStalledAlarm`` fires on "oldest message is old AND nothing was
+    deleted". SQS publishes ``NumberOfMessagesDeleted`` only when deletions
+    actually happen, so a *completely* stalled queue -- the incident this alarm
+    exists for -- produces no datapoint for that metric at all. Without
+    ``FILL(..., 0)`` the whole expression evaluates to missing at exactly that
+    moment, and ``TreatMissingData: notBreaching`` then reads the silence as
+    healthy: an alarm guaranteed to stay ``OK`` through its own incident.
+
+    That is #746's failure mode reached by a different route, and it is invisible
+    in review (the expression looks correct) and in a deploy (CloudWatch accepts
+    it), so it is pinned here.
+    """
+    props = _alarms(_load("template.yaml"))["DocumentQueueStalledAlarm"]["Properties"]
+    metrics = {
+        entry["Id"]: entry for entry in props["Metrics"] if isinstance(entry, dict)
+    }
+
+    expression = metrics["e1"]["Expression"]
+    if isinstance(expression, dict):  # !Sub wraps it to interpolate the threshold
+        expression = expression["!Sub"]
+    assert isinstance(expression, str), f"Unexpected expression shape: {expression!r}"
+
+    deleted_ids = [
+        mid
+        for mid, entry in metrics.items()
+        if (entry.get("MetricStat") or {}).get("Metric", {}).get("MetricName")
+        == "NumberOfMessagesDeleted"
+    ]
+    assert deleted_ids, (
+        "DocumentQueueStalledAlarm no longer reads NumberOfMessagesDeleted, so it "
+        "cannot distinguish a deep-but-draining queue from a stalled one -- which "
+        "is the whole reason it is not a plain queue-depth alarm (#761)."
+    )
+    compact = expression.replace(" ", "")
+    for mid in deleted_ids:
+        assert f"FILL({mid},0)" in compact, (
+            f"DocumentQueueStalledAlarm's expression uses {mid} "
+            f"(NumberOfMessagesDeleted) without FILL({mid}, 0): "
+            f"{expression!r}. A fully stalled queue publishes no deletion "
+            f"datapoint, so the expression would go missing and the alarm would "
+            f"read OK through the outage it exists to catch."
+        )
+
 
 @pytest.mark.parametrize(
     "rel_path,alarm_name,namespace,metric_name",

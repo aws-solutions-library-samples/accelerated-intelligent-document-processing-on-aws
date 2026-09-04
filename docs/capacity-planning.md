@@ -155,6 +155,7 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - `DataRetentionInDays`: Data retention period (default: 365)
 - `ErrorThreshold`: Error alerting threshold (default: 1)
 - `ExecutionTimeThresholdMs`: Processing timeout (default: 300000ms)
+- `QueueStalledAgeThresholdSeconds`: Stalled-queue alarm threshold (default: 1800 s). Raise it if bulk uploads against a low `MaxConcurrentWorkflows` alarm while progressing normally
 
 **Processing Configuration**:
 - `LogLevel`: Logging verbosity (DEBUG, INFO, WARN, ERROR)

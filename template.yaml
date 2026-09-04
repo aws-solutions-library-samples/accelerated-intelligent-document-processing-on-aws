@@ -447,6 +447,19 @@ Parameters:
     Description: Maximum acceptable execution time in milliseconds before alerting (default 300000 = 300 seconds)
     MinValue: 1000
 
+  QueueStalledAgeThresholdSeconds:
+    Type: Number
+    Default: 1800
+    Description: >-
+      Age of the oldest queued document, in seconds, above which
+      DocumentQueueStalledAlarm fires -- but only while nothing at all is
+      leaving the queue (see that alarm). Because messages wait in the queue by
+      design while workflow concurrency is saturated, this is a "how long is too
+      long to wait with no progress whatsoever" bound, not a backlog-depth
+      limit. Raise it if bulk uploads against a low MaxConcurrentWorkflows
+      produce alarms you consider normal.
+    MinValue: 60
+
   BDACallbackTimeoutSeconds:
     Type: Number
     Default: 7200
@@ -1470,6 +1483,7 @@ Metadata:
           - DataRetentionInDays
           - ErrorThreshold
           - ExecutionTimeThresholdMs
+          - QueueStalledAgeThresholdSeconds
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
@@ -1532,6 +1546,8 @@ Metadata:
         default: "Error Alert Threshold"
       ExecutionTimeThresholdMs:
         default: "Execution Time Threshold (ms)"
+      QueueStalledAgeThresholdSeconds:
+        default: "Queue Stalled Threshold (seconds)"
       LogLevel:
         default: "Logging Level"
       LogRetentionDays:
@@ -7505,6 +7521,142 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # A document that reaches DocumentQueueDLQ has exhausted the redrive policy on
+  # DocumentQueue — maxReceiveCount 1000 against a 30s visibility timeout, so
+  # roughly 8 hours of retries — and no execution ever succeeded for it. Nothing
+  # else reports this: the document never completed, so ExecutionsFailed and
+  # ExecutionTime have no datapoint for it and both AWS/States alarms read OK.
+  # Threshold 0 / one period: a message here is rare and every one is a lost
+  # document, so there is nothing to tune and no reason to wait.
+  # OKActions matter as much as AlarmActions here — DLQ depth does not decay
+  # (MessageRetentionPeriod is 4 days, but the alarm is about the message, not
+  # its expiry), so the recovery notification is the signal that a human
+  # actually drained the queue rather than muting the alarm.
+  DocumentQueueDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a document lands in the ${AWS::StackName} document dead-letter queue, meaning it failed every retry (~8 hours) and was never processed. No other alarm sees this: the document never ran to completion, so it emits neither ExecutionsFailed nor ExecutionTime. Inspect the messages in DocumentQueueDLQ to identify the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive the queue or re-upload the objects. Redrive needs kms:Decrypt on the stack's CustomerManagedEncryptionKey."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DocumentQueueDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # Strictly worse than the above: QueueSenderDLQ holds S3 upload events the
+  # QueueSender could not even enqueue, so the document has no tracking row at
+  # all. It is absent from the UI rather than shown as failed, which is why an
+  # operator can otherwise only discover it by noticing an upload that never
+  # appeared.
+  QueueSenderDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when an upload event lands in the ${AWS::StackName} queue-sender dead-letter queue. The document was never enqueued and has no tracking record, so it does not appear in the UI even as a failure. Read the messages in QueueSenderDLQ for the S3 keys, check the QueueSender logs for the cause, then re-upload those objects (redriving replays the original S3 event and works too)."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt QueueSenderDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # "Queue not draining" cannot be alarmed on queue DEPTH, and it cannot be
+  # alarmed on message AGE alone either.
+  #
+  # Depth is out because waiting is the design: QueueProcessor gates on the
+  # DynamoDB concurrency counter and REFUSES a message by letting its 30s
+  # visibility timeout lapse, so a bulk upload against MaxConcurrentWorkflows
+  # legitimately parks thousands of messages in the queue.
+  #
+  # Age alone is out for the same reason, and more sharply than it first looks:
+  # because a refused message is never deleted and re-sent,
+  # ApproximateAgeOfOldestMessage measures time since the ORIGINAL send and
+  # therefore climbs monotonically for as long as concurrency stays saturated.
+  # A healthy stack draining a large batch will pass any fixed age threshold.
+  # The circuit breaker makes it worse: on a Bedrock outage the processor pushes
+  # visibility out to CircuitBreakerRecoveryTimeoutSeconds, so age climbs while
+  # BedrockServiceOutageAlarm is already reporting the real cause.
+  #
+  # So the alarm is age AND no progress: the oldest message is older than the
+  # threshold *and* not a single message was deleted in the period. Deep but
+  # draining stays OK at any depth; a wedged consumer (processor not polling, a
+  # leaked concurrency counter, a poison message re-received forever) fires.
+  #
+  # SIX periods (30 minutes), not the two or three used elsewhere in this file,
+  # because a message leaves DocumentQueue only when a workflow slot frees up:
+  # with concurrency saturated by long-running documents, a healthy stack can
+  # legitimately delete nothing for as long as its slowest document takes. A
+  # shorter window would page on ordinary large-packet processing, and an alarm
+  # that cries wolf gets muted, which costs more than the detection latency.
+  # Thirty minutes of *zero* dequeues is the point where "slow" and "stuck" stop
+  # being distinguishable from outside, and is worth an operator's attention
+  # either way: at that point it is either a wedge or a capacity shortfall.
+  #
+  # FILL(m2, 0) is load-bearing, not defensive. SQS publishes
+  # NumberOfMessagesDeleted only when deletions occur, so the totally stalled
+  # case — the one this alarm exists for — produces NO datapoint. Without FILL
+  # the expression would evaluate to missing exactly then, and
+  # TreatMissingData: notBreaching would read that silence as healthy: an alarm
+  # that is guaranteed to stay OK during the incident it was written for. See
+  # test_cloudwatch_alarms.py for the earlier, closely-related #746 bug.
+  DocumentQueueStalledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), the circuit-breaker state, whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
+      Metrics:
+        - Id: e1
+          Label: QueueStalled
+          ReturnData: true
+          Expression: !Sub "IF(FILL(m1, 0) > ${QueueStalledAgeThresholdSeconds} AND FILL(m2, 0) < 1, 1, 0)"
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateAgeOfOldestMessage
+              Dimensions:
+                - Name: QueueName
+                  Value: !GetAtt DocumentQueue.QueueName
+            Period: 300
+            Stat: Maximum
+        - Id: m2
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: NumberOfMessagesDeleted
+              Dimensions:
+                - Name: QueueName
+                  Value: !GetAtt DocumentQueue.QueueName
+            Period: 300
+            Stat: Sum
+      EvaluationPeriods: 6
+      DatapointsToAlarm: 6
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Both metrics go absent once the queue has been idle for hours, which is
+      # the emptiest possible queue rather than a stalled one.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ConcurrencyCounterDriftAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -8174,6 +8326,124 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Stale Output Purge Failures — affected keys (ingest path; for the Reprocess path see the ReprocessDocumentResolver log group)",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 42,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "AWS/SQS",
+                      "ApproximateNumberOfMessagesVisible",
+                      "QueueName",
+                      "${DocumentQueue.QueueName}",
+                      {
+                        "stat": "Maximum",
+                        "label": "Waiting to be picked up"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ApproximateNumberOfMessagesNotVisible",
+                      ".",
+                      ".",
+                      {
+                        "stat": "Maximum",
+                        "label": "In flight"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ApproximateAgeOfOldestMessage",
+                      ".",
+                      ".",
+                      {
+                        "stat": "Maximum",
+                        "label": "Age of oldest (s)",
+                        "yAxis": "right"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Document Queue Backlog (depth alone is not a problem — messages wait by design while workflow concurrency is saturated. Read it against the age line: rising depth with a FLAT age is draining; a climbing age with no throughput on the SQS widget above is a stall, which DocumentQueueStalledAlarm covers)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "yAxis": {
+                    "left": {
+                      "label": "Messages",
+                      "showUnits": false
+                    },
+                    "right": {
+                      "label": "Seconds",
+                      "showUnits": false
+                    }
+                  },
+                  "annotations": {
+                    "horizontal": [
+                      {
+                        "label": "Stalled threshold (${QueueStalledAgeThresholdSeconds}s)",
+                        "value": ${QueueStalledAgeThresholdSeconds},
+                        "yAxis": "right"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "metric",
+                "x": 12,
+                "y": 42,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "AWS/SQS",
+                      "ApproximateNumberOfMessagesVisible",
+                      "QueueName",
+                      "${DocumentQueueDLQ.QueueName}",
+                      {
+                        "stat": "Maximum",
+                        "label": "Document DLQ (failed all retries, ~8h)"
+                      }
+                    ],
+                    [
+                      "AWS/SQS",
+                      "ApproximateNumberOfMessagesVisible",
+                      "QueueName",
+                      "${QueueSenderDLQ.QueueName}",
+                      {
+                        "stat": "Maximum",
+                        "label": "Queue-sender DLQ (never enqueued, no tracking row)"
+                      }
+                    ],
+                    [
+                      "AWS/SQS",
+                      "ApproximateNumberOfMessagesVisible",
+                      "QueueName",
+                      "${WorkflowTrackerDLQ.QueueName}",
+                      {
+                        "stat": "Maximum",
+                        "label": "Workflow-tracker DLQ (unreleased concurrency slot)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Dead-Letter Queue Depth (any non-zero value is a document that needs a human — each line has its own alarm on the Workflow Alerts topic)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "stat": "Maximum",
+                  "yAxis": {
+                    "left": {
+                      "label": "Messages",
+                      "min": 0,
+                      "showUnits": false
+                    }
+                  }
                 }
               }
             ]
