@@ -87,6 +87,7 @@ export type AnnotationQueueItem = {
   claimedBy?: Maybe<Scalars['String']['output']>;
   claimedByMe: Scalars['Boolean']['output'];
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
+  documentClasses?: Maybe<Array<Scalars['String']['output']>>;
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
@@ -487,6 +488,12 @@ export type DocumentPage = {
   nextToken?: Maybe<Scalars['String']['output']>;
 };
 
+export type DocumentSectionGroupingInput = {
+  classification?: InputMaybe<Scalars['String']['input']>;
+  pageIds: Array<Scalars['String']['input']>;
+  sectionId: Scalars['String']['input'];
+};
+
 export type DocumentVersion = {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
   ConfigRevision?: Maybe<Scalars['Int']['output']>;
@@ -645,6 +652,7 @@ export type FinetuningJobStatus =
 export type GenerateDraftLabelsInput = {
   configRevision?: InputMaybe<Scalars['Int']['input']>;
   configVersion?: InputMaybe<Scalars['String']['input']>;
+  documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
 };
@@ -874,11 +882,13 @@ export type Mutation = {
   updateDiscoveryJobStatus?: Maybe<DiscoveryJob>;
   updateDocument?: Maybe<Document>;
   updateDocumentSection?: Maybe<Document>;
+  updateDocumentSections: ProcessChangesResponse;
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateTestSet?: Maybe<TestSet>;
+  updateTestSetDocumentSections?: Maybe<TestSetDocumentSections>;
   updateUser?: Maybe<User>;
   uploadDiscoveryDocument: DisPresignedUrlResponse;
   uploadDocument: PresignedUrlResponse;
@@ -1281,6 +1291,12 @@ export type MutationUpdateDocumentSectionArgs = {
 };
 
 
+export type MutationUpdateDocumentSectionsArgs = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<DocumentSectionGroupingInput>;
+};
+
+
 export type MutationUpdateDocumentStatusArgs = {
   input: UpdateDocumentStatusInput;
 };
@@ -1305,6 +1321,11 @@ export type MutationUpdatePricingArgs = {
 
 export type MutationUpdateTestSetArgs = {
   input: UpdateTestSetInput;
+};
+
+
+export type MutationUpdateTestSetDocumentSectionsArgs = {
+  input: UpdateTestSetDocumentSectionsInput;
 };
 
 
@@ -1969,6 +1990,7 @@ export type SyncBdaIdpResponse = {
 export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
+  classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;
   confidenceMetrics?: Maybe<Scalars['AWSJSON']['output']>;
@@ -1984,6 +2006,7 @@ export type TestRun = {
   fieldMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   filesCount: Scalars['Int']['output'];
   gradedPacketMetrics?: Maybe<Scalars['AWSJSON']['output']>;
+  isDraftLabeling?: Maybe<Scalars['Boolean']['output']>;
   overallAccuracy?: Maybe<Scalars['Float']['output']>;
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];
@@ -2056,19 +2079,40 @@ export type TestSetDocument = {
 
 export type TestSetDocumentSection = {
   baselineKey: Scalars['String']['output'];
+  documentClass?: Maybe<Scalars['String']['output']>;
+  pageIndices?: Maybe<Array<Scalars['Int']['output']>>;
   sectionId: Scalars['String']['output'];
+};
+
+export type TestSetDocumentSections = {
+  objectKey: Scalars['String']['output'];
+  sections: Array<TestSetSectionGrouping>;
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetDocumentsPage = {
   activeLabelJobId?: Maybe<Scalars['String']['output']>;
   documents: Array<TestSetDocument>;
   nextToken?: Maybe<Scalars['String']['output']>;
+  totalCount?: Maybe<Scalars['Int']['output']>;
 };
 
 export type TestSetDocumentsUploadInput = {
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
   testSetId: Scalars['String']['input'];
+};
+
+export type TestSetSectionGrouping = {
+  documentClass?: Maybe<Scalars['String']['output']>;
+  pageIndices: Array<Scalars['Int']['output']>;
+  sectionId: Scalars['String']['output'];
+};
+
+export type TestSetSectionGroupingInput = {
+  documentClass?: InputMaybe<Scalars['String']['input']>;
+  pageIndices: Array<Scalars['Int']['input']>;
+  sectionId: Scalars['String']['input'];
 };
 
 export type TestSetUploadInput = {
@@ -2191,6 +2235,12 @@ export type UpdatePricingResponse = {
   error?: Maybe<ConfigurationError>;
   message?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
+};
+
+export type UpdateTestSetDocumentSectionsInput = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<TestSetSectionGroupingInput>;
+  testSetId: Scalars['String']['input'];
 };
 
 export type UpdateTestSetInput = {

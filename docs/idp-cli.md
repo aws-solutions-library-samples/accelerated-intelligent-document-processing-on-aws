@@ -701,7 +701,7 @@ Proceeding with stack deletion...
 Bootstrap a configuration (and optional synthetic test set) from a plain-language
 description — the scriptable equivalent of the web UI [Quick Start](./quick-start.md)
 widget. Authors a document-class schema from your prompt (reusing a catalog match
-when one fits), creates a config version, and — when the document generator is
+when one fits), creates a config profile, and — when the document generator is
 available — generates a small labeled synthetic test set attached to it.
 
 **Usage:**
@@ -735,7 +735,7 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 - `--model-id`: Bedrock model id override for schema authoring / generation.
 - `--region`: AWS region (optional).
 
-**Note:** The created version is **not** activated automatically (unlike the web UI
+**Note:** The created profile is **not** activated automatically (unlike the web UI
 Quick Start). Activate it from **Configuration › View/Edit Configuration** in the UI
 when you're ready to process documents with it. Synthetic generation is optional and
 requires the Test Set Generator extension (deployed stack) or
@@ -831,14 +831,14 @@ idp-cli process \
     --s3-uri archive/2024/ \
     --monitor
 
-# Process with specific configuration version
+# Process with specific configuration profile
 idp-cli process \
     --stack-name my-stack \
     --dir ./documents/ \
     --config-profile v2 \
     --monitor
 
-# Process test set with configuration version
+# Process test set with configuration profile
 idp-cli process \
     --stack-name my-stack \
     --test-set fcc-example-test \
@@ -1259,7 +1259,7 @@ idp-cli list-versions \
     --document-id loan-12345/package.pdf
 ```
 
-Output is a table of `Run ID`, `Completed`, `Config Version`, `Pages`, and `Files`. See the [Document Versions guide](document-versions.md) for how versioning works and the Web UI / API surfaces.
+Output is a table of `Run ID`, `Completed`, `Config Profile`, `Pages`, and `Files`. See the [Document Versions guide](document-versions.md) for how versioning works and the Web UI / API surfaces.
 
 ---
 
@@ -2016,7 +2016,7 @@ idp-cli load-test [OPTIONS]
 - `--duration`: Duration in minutes (default: 1)
 - `--schedule`: CSV schedule file (minute,count) - overrides --rate and --duration
 - `--dest-prefix`: Destination prefix in input bucket (default: load-test)
-- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (default: active version)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (default: active profile)
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2034,7 +2034,7 @@ idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --sche
 # Use S3 source file
 idp-cli load-test --stack-name my-stack --source-file s3://my-bucket/test.pdf --rate 500
 
-# Load test with a specific config version
+# Load test with a specific config profile
 idp-cli load-test --stack-name my-stack --source-file samples/invoice.pdf --rate 100 --config-profile v2
 ```
 
@@ -2244,17 +2244,17 @@ idp-cli config-download [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
-- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads active version
+- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
 - `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained rather than silently returning the current configuration
 - `--region`: AWS region (optional)
 
 **Examples:**
 
 ```bash
-# Download full config from active version
+# Download full config from the active profile
 idp-cli config-download --stack-name my-stack --output config.yaml
 
-# Download specific version
+# Download a specific profile
 idp-cli config-download --stack-name my-stack --config-profile v2 --output config.yaml
 
 # Download minimal config (only customizations)
@@ -2293,14 +2293,14 @@ idp-cli config-upload [OPTIONS]
 **Examples:**
 
 ```bash
-# Upload config to active version
+# Upload config to the active profile
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile default
 
-# Update existing version
+# Update an existing profile
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile Production
 
-# Create new version with description
-idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile NewVersion --version-description "Test configuration for new feature"
+# Create a new profile with a description
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --config-profile NewProfile --version-description "Test configuration for new feature"
 
 # Skip validation (use with caution)
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml --no-validate
@@ -2325,7 +2325,7 @@ already current — which is still the correct one to pin.
 
 ### `config-list`
 
-List all configuration versions in a deployed IDP stack.
+List all configuration profiles in a deployed IDP stack.
 
 **Usage:**
 ```bash
@@ -2338,7 +2338,7 @@ idp-cli config-list [OPTIONS]
 
 **Examples:**
 ```bash
-# List all configuration versions
+# List all configuration profiles
 idp-cli config-list --stack-name my-stack
 ```
 
@@ -2414,9 +2414,9 @@ the profile pickers and access-control scope lists of the whole deployment.
 
 ### `config-activate`
 
-Activate a configuration version in a deployed IDP stack.
+Activate a configuration profile in a deployed IDP stack.
 
-**Automatic BDA Sync:** If the configuration version has `use_bda` enabled, this command will automatically sync the configuration to BDA (Bedrock Data Automation) before activation. This ensures BDA blueprints are up-to-date and matches the UI behavior.
+**Automatic BDA Sync:** If the configuration profile has `use_bda` enabled, this command will automatically sync the configuration to BDA (Bedrock Data Automation) before activation. This ensures BDA blueprints are up-to-date and matches the UI behavior.
 
 **Usage:**
 ```bash
@@ -2430,34 +2430,34 @@ idp-cli config-activate [OPTIONS]
 
 **Examples:**
 ```bash
-# Activate a specific version
+# Activate a specific profile
 idp-cli config-activate --stack-name my-stack --config-profile v2
 
-# Activate default version
+# Activate the default profile
 idp-cli config-activate --stack-name my-stack --config-profile default
 ```
 
 **Behavior:**
-1. Validates the configuration version exists
+1. Validates the configuration profile exists
 2. If `use_bda` is enabled in the configuration:
    - Syncs IDP document classes to BDA blueprints
    - Creates a new BDA project if none exists
    - Updates BDA sync status
-3. Activates the configuration version
+3. Activates the configuration profile
 4. All new document processing will use this configuration
 
 **Note:** If BDA sync fails (when `use_bda` is enabled), the activation will be aborted to prevent processing errors.
 ```
 
 **Notes:**
-- Sets the specified version as active for all new document processing
-- Version must exist (use `config-list` to see available versions)
+- Sets the specified profile as active for all new document processing
+- Profile must exist (use `config-list` to see available profiles)
 
 ---
 
 ### `config-delete`
 
-Delete a configuration version from a deployed IDP stack.
+Delete a configuration profile from a deployed IDP stack.
 
 **Usage:**
 ```bash
@@ -2472,30 +2472,30 @@ idp-cli config-delete [OPTIONS]
 
 **Examples:**
 ```bash
-# Delete a version with confirmation
-idp-cli config-delete --stack-name my-stack --config-profile old-version
+# Delete a profile with confirmation
+idp-cli config-delete --stack-name my-stack --config-profile old-profile
 
 # Delete without confirmation prompt
-idp-cli config-delete --stack-name my-stack --config-profile old-version --force
+idp-cli config-delete --stack-name my-stack --config-profile old-profile --force
 ```
 
 **Restrictions:**
-- Cannot delete the 'default' configuration version
-- Cannot delete currently active versions (activate another version first)
+- Cannot delete the 'default' configuration profile
+- Cannot delete the currently active profile (activate another profile first)
 - Includes confirmation prompt unless `--force` is used
 
 **What Happens:**
 1. Loads and parses your YAML or JSON config file
 2. Validates against system defaults (unless `--no-validate`)
-3. If version exists: Updates the existing version with the uploaded configuration (saved as a complete snapshot)
-4. If version doesn't exist: Creates a new version with the uploaded configuration
+3. If the profile exists: Updates it with the uploaded configuration (saved as a complete snapshot)
+4. If the profile doesn't exist: Creates a new profile with the uploaded configuration
 5. Uploads to the stack's ConfigurationTable in DynamoDB
 6. Configuration is immediately available for document processing
 
-**Configuration Versioning:**
-- **Existing version**: Saves the uploaded configuration as the full version snapshot
-- **New version**: Creates a new independent version with the uploaded configuration
-- **Version descriptions**: Can be added to new versions for better organization
+**Configuration Profiles:**
+- **Existing profile**: Saves the uploaded configuration as the full profile snapshot
+- **New profile**: Creates a new independent profile with the uploaded configuration
+- **Profile descriptions**: Can be added to new profiles for better organization
 
 `--config-revision <n>` pins an exact revision of `--config-profile` on `process`
 and `run-inference`; omit it to process under the profile's current configuration.
@@ -2810,7 +2810,7 @@ idp-cli config-sync-bda [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, or `idp-to-bda`
 - `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete)
-- `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active version)
+- `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active profile)
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2828,7 +2828,7 @@ idp-cli config-sync-bda --stack-name my-stack --direction idp-to-bda
 # Merge mode (additive — don't remove existing items)
 idp-cli config-sync-bda --stack-name my-stack --direction bda-to-idp --mode merge
 
-# Sync specific config version
+# Sync specific config profile
 idp-cli config-sync-bda --stack-name my-stack --config-profile v2
 ```
 

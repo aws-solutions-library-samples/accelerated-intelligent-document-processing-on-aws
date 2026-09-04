@@ -11,6 +11,8 @@ Covers the invariants the feature rests on:
 - retention never deletes a revision something still depends on.
 """
 
+from decimal import Decimal
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -601,6 +603,96 @@ class TestStoreInternals:
         }
         assert confidence_fingerprint(base) != confidence_fingerprint(swapped)
         assert confidence_fingerprint(base) == confidence_fingerprint(prompt_edit)
+
+    def test_confidence_fingerprint_survives_a_dynamodb_round_trip(self):
+        """
+        The same configuration must fingerprint identically whichever route it
+        arrived by.
+
+        A config reaches this function either straight from a save (JSON, so
+        ``float``) or read back from DynamoDB, whose only numeric type is
+        ``Decimal``. ``json.dumps`` cannot serialize ``Decimal`` and the
+        ``default=str`` fallback stringified it, so ``temperature: 0.0`` hashed
+        as the number on one route and as ``"0.0"`` on the other — one
+        configuration with two fingerprints, which is exactly what a fingerprint
+        exists to rule out. ``Decimal("0")`` vs ``Decimal("0.0")`` gave a third.
+        """
+        from idp_common.config.revisions import confidence_fingerprint
+
+        from_save = {
+            "extraction": {"model": "m", "temperature": 0.0, "top_k": 5, "top_p": 0.1},
+            "assessment": {"enabled": True, "max_tokens": 4096},
+        }
+        from_dynamodb = {
+            "extraction": {
+                "model": "m",
+                "temperature": Decimal("0.0"),
+                "top_k": Decimal("5"),
+                "top_p": Decimal("0.1"),
+            },
+            "assessment": {"enabled": True, "max_tokens": Decimal("4096")},
+        }
+        # DynamoDB preserves the scale it was given, so the same zero comes back
+        # as either of these depending on how it was written.
+        unscaled_zero = {
+            "extraction": {
+                "model": "m",
+                "temperature": Decimal("0"),
+                "top_k": Decimal("5"),
+                "top_p": Decimal("0.1"),
+            },
+            "assessment": {"enabled": True, "max_tokens": Decimal("4096")},
+        }
+
+        assert (
+            confidence_fingerprint(from_save)
+            == confidence_fingerprint(from_dynamodb)
+            == confidence_fingerprint(unscaled_zero)
+        )
+
+    def test_confidence_fingerprint_still_separates_real_numeric_changes(self):
+        """
+        Normalizing types must not flatten a genuine change in a sampling value.
+
+        The guard against fixing the round-trip by making the hash insensitive to
+        the numbers it exists to track.
+        """
+        from idp_common.config.revisions import confidence_fingerprint
+
+        base = {"extraction": {"model": "m", "temperature": 0.0, "top_p": 0.1}}
+        hotter = {"extraction": {"model": "m", "temperature": 0.7, "top_p": 0.1}}
+        narrower = {"extraction": {"model": "m", "temperature": 0.0, "top_p": 0.9}}
+
+        assert confidence_fingerprint(base) != confidence_fingerprint(hotter)
+        assert confidence_fingerprint(base) != confidence_fingerprint(narrower)
+
+    def test_fingerprints_do_not_conflate_booleans_with_numbers(self):
+        """
+        ``bool`` is an ``int`` subclass, so numeric normalization must special-case
+        it or ``enabled: true`` becomes indistinguishable from ``enabled: 1``.
+        """
+        from idp_common.config.revisions import confidence_fingerprint
+
+        assert confidence_fingerprint(
+            {"assessment": {"enabled": True}}
+        ) != confidence_fingerprint({"assessment": {"enabled": 1}})
+
+    def test_class_fingerprint_survives_a_dynamodb_round_trip(self):
+        """
+        Same hazard as the confidence fingerprint, same fix.
+
+        Classes carry no numerics in the shipped sample configs, so this is
+        latent rather than active today — but ``classFingerprint`` is the BDA
+        resync signal, and a fingerprint that changes on a round-trip would
+        eventually report a resync as required when nothing had changed.
+        """
+        from idp_common.config.revisions import class_fingerprint
+
+        assert class_fingerprint(
+            {"classes": [{"name": "invoice", "threshold": 0.8}]}
+        ) == class_fingerprint(
+            {"classes": [{"name": "invoice", "threshold": Decimal("0.8")}]}
+        )
 
     def test_class_fingerprint_tracks_document_classes(self, monkeypatch):
         """The BDA resync signal: same classes → same fingerprint."""

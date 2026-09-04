@@ -784,6 +784,15 @@ did. A run against a never-published test set records no version.
 
 ## Draft labeling: unlabeled documents → ground truth
 
+
+The **Generate draft labels** dialog pages through the set independently of the
+document list behind it, and a selection is kept as you page. Leaving *Extract
+labels for every document that needs them* checked covers the whole set — the
+server decides the scope, so no count from a single page is involved. Paging
+offers one page at a time rather than jumping to an arbitrary page, because the
+underlying listing is token-based and page N's position is only known once N-1
+has been read.
+
 Creating a test set normally requires ground truth up front, which is the
 expensive part. Draft labeling inverts that: upload documents **only**, run the
 active configuration over them to produce machine-generated ground-truth
@@ -843,6 +852,21 @@ Reviewing a draft label is the same **Edit Ground Truth** flow described above;
 saving flips the label to *Reviewed (human)*. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
+**A field you edit stops carrying the model's confidence.** The score describes
+the value the model produced, so once you have replaced that value it says nothing
+about what is on screen. An edited field shows *"Edited — the model's confidence no
+longer applies"* in place of the percentage, and its provenance label changes from
+*Predicted:* to *Your value:*. Suppression is per field: correcting one field does
+not hide the confidence of the others.
+
+**Leaving the editor with unsaved edits prompts first.** This covers in-app
+navigation as well as closing the tab — clicking a nav link with corrections
+pending used to discard them silently.
+
+Each field also carries a **Show &lt;field&gt; on the page** button, which highlights
+where the value was read from. That was previously available only by clicking the
+field, with no visible affordance and no keyboard equivalent.
+
 ## How much review is enough?
 
 Reviewing every document in a large set is expensive, and most of that effort is
@@ -879,16 +903,25 @@ The curve comes from three sources of increasing fidelity:
    *whole* confidence range, including the high-confidence documents review never
    opens. This is the only source that can fully validate the estimate.
 
-Curves are kept per **Configuration Profile**, because confidence means
-different things across models and prompts — a curve measured under one config is
-not reused after a change that shifts those semantics.
+Curves are stored per **Configuration Profile**, because confidence means
+different things across models and prompts.
 
-> **Revisions of a profile currently share one curve.** That is right for a prompt
-> tweak and wrong after a model swap, which changes what a confidence number means.
-> Each revision records a *confidence fingerprint* (a hash of the
-> confidence-relevant configuration) so a future release can branch curves
-> automatically; until then, reset the affected curve after changing the extraction
-> model or the assessment configuration.
+> **Known limitation: the estimate currently reads one curve per test set, not one
+> per configuration.** Observations *are* recorded per profile, but the estimate
+> reads the set's combined curve, so it blends observations from every
+> configuration the set has been labeled or scored under. Revisions of a profile
+> also share a curve, which is right for a prompt tweak and wrong after a model
+> swap. The practical consequence: **after changing a profile's extraction model or
+> assessment configuration, treat that set's review-effort estimate as unreliable
+> until fresh observations accumulate** — the number is measured, but partly under
+> configurations that no longer exist. `estimateConfidence` will not warn you about
+> this, because the curve it describes is genuinely populated.
+>
+> Every revision already records a *confidence fingerprint* (a hash of the
+> confidence-relevant configuration — extraction model and sampling parameters,
+> assessment settings), which is what a future release will key curves on. There is
+> no supported way to reset a curve in the meantime; the most reliable reset is a
+> new test set.
 
 ### Every estimate states how much to trust it
 
@@ -1026,12 +1059,46 @@ whatever class the pipeline decided each document was. When that decision is
 wrong, correcting it is two steps rather than one: the class *and* the fields
 underneath it, which were extracted against the wrong schema.
 
+Each document in the queue shows the class it was assigned. That is there so a
+reviewer can notice a wrong one while working the list — it is the only column
+that can reveal it. A document extracted against the wrong schema is often
+*confidently* wrong, so its confidence and alert count look entirely normal, and
+worst-first ordering therefore puts it last.
+
+The class is **shown, not scored.** Nothing in the queue can tell whether a class
+is wrong: the draft under review is itself the candidate ground truth, so there is
+nothing to compare it against, and classification carries no meaningful
+confidence. It is deliberately excluded from the queue ordering and from the
+review-effort estimator, whose alert counts and confidence curve are defined in
+terms of *field* confidence — folding a different kind of signal into that number
+would double-count and corrupt the calibration the estimate depends on.
+
+To find misclassifications *measured against a baseline*, use the
+[Classification errors](#finding-classification-errors) panel on a test run.
+
+
 In the editor, **Class label** is a dropdown of the classes defined by the config
 version that produced these labels — not the deployment's currently active
-configuration, which may have moved on since. Choosing a different class offers
+configuration, which may have moved on since. A badge above the fields always
+names which config the list came from, and says so explicitly when it is a
+fallback ("… (active config)", "built-in default"), because a list of classes
+from the wrong config looks exactly like a list of classes from the right one.
+
+The order is: the config stamped on the baseline; failing that the test set's own
+declared version; failing that the deployment's **active** config. Hand-uploaded
+and synthetic ground truth carries no stamp — nothing produced it through the
+pipeline — so those sets fall to the active config rather than to the built-in
+preset. Choosing a different class offers
 **Change class & re-extract**, which re-runs that one document and waits for the
 new labels before returning, so you are never left looking at fields from the
 previous class.
+
+The corrected class is sent into the re-run itself, not merely written onto the
+existing labels: the document is re-processed with classification **skipped** and
+your chosen class applied to every page, so extraction genuinely runs against that
+class's schema. (Writing it onto the labels alone does not work — the run
+classifies from the source document and would re-derive the class you just
+corrected.)
 
 Two consequences worth knowing:
 
@@ -1045,6 +1112,102 @@ Two consequences worth knowing:
 
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
+
+To find *which* documents need this, use the
+[Classification errors](#finding-classification-errors) panel on a test run
+rather than hunting through the queue — a misclassified document often raises few
+confidence alerts and so sorts low in worst-first order.
+
+### Correcting a wrong packet split
+
+A packet is split into sections before anything is extracted, and the split can be
+wrong: pages grouped into the wrong section, a section that should be two, two that
+should be one. That grouping **is** ground truth — `split_document.page_indices` is
+what the doc-split metrics score classification against — so a wrong split makes the
+classification ground truth wrong, not merely untidy.
+
+**Edit page grouping**, beside the section selector at the top of the document, opens a
+board with every section side by side and each page as a thumbnail. It sits with the
+section pills rather than down among the extracted fields because it changes the
+document's structure, not one section's values. (**Pages in this section**, in the field
+list below, stays as a read-only record of which pages the open section covers.)
+
+Drag a page from one section to another, or use its **Move to section**
+menu, which is the keyboard and screen-reader route to the same operation. Select several
+pages first — shift-click extends over document order — and they move together, which
+is usually what is wanted: a bad split normally misplaces a *run* of pages rather than
+one.
+
+#### Page order within a section
+
+A section's pages are **ordered**, and the order is ground truth in its own right, not a
+display detail. Two metrics read it: **Document Split Accuracy (With Page Order)**
+compares the page lists exactly, and the graded packet score is half a page-ordering
+score. So a packet whose pages were assembled out of reading order needs that recorded,
+or the pipeline is scored against the wrong answer.
+
+Drop a page **onto another page** to place it immediately before that one — within a
+section or coming from another. Dropping onto the column's empty space instead puts the
+page where document order says it belongs, which is what an ordinary move wants, so
+correcting a split does not silently invent a custom order. Without a pointer, use
+**Order within this section → Move earlier / Move later**.
+
+A section whose pages are not in document order is marked **Custom page order**, so it
+reads as deliberate rather than as a glitch, and that column gets a button to put it back
+into document order. Only the section you ask for is re-sorted.
+
+Saving preserves the order exactly as shown — including when you only came to change a
+section's class.
+
+**Your field values are kept.** This is the whole point of the feature. Saving a new
+grouping writes the page grouping and the class and nothing else: extracted values,
+their **Reviewed (human)** provenance and the edit history all survive. Those values
+were extracted from a different set of pages, so they may no longer match — the
+warning afterwards names the sections that moved so you know which to check, and
+**Change class & re-extract** is there if you would rather the model redo one. It is
+never done for you, because re-extraction is exactly the annotation loss this exists
+to avoid.
+
+A few rules the board enforces, all for the same reason — a packet split is a
+**partition**, and ground truth that breaks that is worse than none:
+
+- Every page must belong to exactly one section. A page in none would assert, as
+  ground truth, that the page is not part of the document.
+- A section with no pages blocks the save rather than disappearing. Deleting a section
+  discards its field values, so it stays a deliberate act: drag the pages out, then
+  delete it.
+- A page the split had dropped entirely **can** be added. That is precisely the defect
+  a reviewer is here to fix, so it is allowed in.
+
+Sections are renumbered so their ids follow page order. Several consumers take a
+section's group index from its position in a list, and nothing otherwise guarantees
+that list is in page order, so making ids agree with it removes the ambiguity.
+
+Non-contiguous sections are supported, because the pipeline can produce them.
+
+Annotators can do this within their assigned sets, scope-checked per test set like
+every other annotation operation.
+
+The same board is available on a processed document, from **Document Sections** in
+the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+for the one difference that matters there.
+
+### Asking someone about one field
+
+Some values cannot be settled by whoever is reviewing — the reviewer may not know
+what a particular reference number means on this customer's paperwork. Clicking a
+field reveals **Copy link to field**, which produces a URL that opens the same
+document with that field selected and scrolled into view. Paste it into Slack or
+a ticket to ask for a second opinion.
+
+The link is just navigation: the recipient's access is still checked on arrival,
+so sharing one with someone who has no access to that test set grants them
+nothing. Annotators see only their assigned sets either way.
+
+This is deliberately a link rather than a formal escalation queue. Routing a
+question to a designated subject-matter expert assumes an organisation structured
+that way, and adds a workflow to maintain; a URL works for any team that already
+has a chat tool, and the reviewer keeps ownership of the document.
 
 ### Edit history
 
@@ -1167,6 +1330,8 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
     - Split Accuracy With Order (average across documents)  
     - Total Pages, Total Splits (sums across documents)
     - Correctly Classified Pages, Correctly Split counts (sums across documents)
+  - **Classification errors**: which documents were misclassified and as what (see
+    [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
 - Side-by-side test comparison with all metrics including configuration versions
 - Export capabilities (JSON/CSV downloads include all metrics)
@@ -1176,8 +1341,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The Visual
-Editor's **Show Evaluation** toggle compares the section's class alongside its
-fields. Check the class before reading the extraction scores: a misclassified
+Editor ("View Data") shows the section's class comparison as soon as it opens,
+without needing the **Show Evaluation** toggle, which adds the per-field
+comparison. Check the class before reading the extraction scores: a misclassified
 page was extracted against the wrong schema, so its low score is a symptom
 rather than the cause. See
 [Seeing which pages were misclassified](evaluation.md#seeing-which-pages-were-misclassified-web-ui).
@@ -1260,6 +1426,44 @@ always includes the `gradedPacketMetrics` key — `{}` when a run legitimately
 has no graded metrics, e.g. single-section documents — a run is re-queued at
 most once and never loops.
 
+### Finding classification errors
+
+Split accuracy tells you *how often* classification was right. The
+**Classification errors** panel tells you *which documents* were wrong and what
+they were confused for, so the number is actionable without opening each
+document's evaluation report.
+
+This matters more than the percentage suggests. Extraction runs against the
+schema of the class a document was assigned, so a wrong class makes every field
+for that document unreliable — including fields that look perfectly plausible,
+because the model filled in the wrong schema competently. Worse, a misclassified
+document can be *confidently* wrong, which means it raises few confidence alerts
+and therefore ranks **low priority** in the annotation queue's worst-first order.
+Without this panel it is the failure most likely to go unnoticed.
+
+Three kinds are distinguished, because they call for different fixes:
+
+| Issue | Meaning | What to do |
+|---|---|---|
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **No matching section** | The ground truth expects a section that no predicted section matched. | A *splitting* problem, not a labelling one — look at classification granularity rather than the class list. |
+| **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
+
+Each row links into the annotation queue for that document, which is where the
+class is corrected — see
+[Correcting a misclassified document](#correcting-a-misclassified-document).
+
+**Two limits worth knowing:**
+
+- The list is **capped** (200 entries), because a run's whole result set is stored
+  as a single record. Wrong-class errors sort first so a run full of page-order
+  differences cannot crowd them out, and the panel states the true total when it
+  truncates — "Showing the first 200 of 340".
+- Runs evaluated **before this shipped** show no panel until they re-aggregate,
+  which happens automatically the first time you open their results. Runs
+  aggregated through the Athena fallback path have the percentages but not the
+  per-section detail.
+
 ### Field-Level Metrics
 
 Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
@@ -1306,6 +1510,32 @@ would suggest 76%; the interval is asymmetric near the ends, which is exactly wh
 tooltip shows the bounds.)
 Fields whose margin exceeds 10 points are rendered in a subdued colour — a statement
 about how much evidence there is, not a defect in the field.
+
+**A set can move *into* "Not rated" as you review it, and that is the estimator
+working.** With no measurements the tier is inferred from a cross-set prior, which
+can read as high as Gold. Reviewing documents produces the evidence needed to test
+whether confidence actually *ranks* correctness on this set — and if it does not,
+the estimator withdraws the number rather than keep quoting an inferred one. So
+"91.7% Bronze, 0 measurements" becoming "Not rated, 136 measurements" is a gain in
+honesty, not a loss in quality; the badge is deliberately not coloured as an error,
+and it states the reason inline. Nothing about your labels got worse.
+
+**A low figure on a set of hand-authored ground truth is a statement about the
+confidence data, not about the labels.** A tier is always returned — `quality_tier`
+yields at least Bronze even at `prior` estimate confidence, where no observation from
+this set contributed anything — so a set of uploaded ground truth can read "76.1%
+est. Bronze" purely from the cross-set prior. Those labels are the reference other
+runs are scored against; the number beside them describes how little evidence the
+estimator has, which is exactly what Bronze means.
+
+Where no estimate is returned at all, the column distinguishes the two reasons rather
+than showing a bare dash: `Ground truth` for a set whose labels are authored, and
+`Not assessed yet` for one whose drafts simply have no curve yet. While the
+per-set estimate requests are still in flight it reads `Estimating`, because a pending
+request is not a verdict.
+
+The `Est. label accuracy` column header opens a legend covering all four tiers and
+their thresholds, so a `Bronze` badge can be read without already knowing the scale.
 
 The interval is a [Wilson score
 interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval),

@@ -23,6 +23,7 @@ import {
   Badge,
   Box,
   Button,
+  CopyToClipboard,
   FormField,
   Header,
   Input,
@@ -35,16 +36,29 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getFilePresignedUrl, uploadDocument, reextractTestSetDocument, getDraftLabelJob } from '../../graphql/generated';
+import { getErrorMessage } from '../../utils/errorUtils';
+import {
+  getFilePresignedUrl,
+  uploadDocument,
+  reextractTestSetDocument,
+  getDraftLabelJob,
+  updateTestSetDocumentSections,
+} from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
+import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
+import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import { describeClassConfigSource, resolveClassConfigVersion } from './classConfigVersion';
 import { getConfigClassOptions } from '../common/config-class-options';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
 import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import useTestDocPages from '../../hooks/use-test-doc-pages';
-import { renderLabelSource } from './TestSetDetail';
+import { renderLoadedLabelSource } from './TestSetDetail';
+import PageGroupingEditor from '../common/PageGroupingEditor';
+import { pageIdsToIndices, pageIndicesToIds } from '../common/section-grouping';
+import type { GroupedSection } from '../common/section-grouping';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthVisualEditor');
@@ -57,6 +71,17 @@ const REEXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
 export interface TestSetDocumentSectionRef {
   sectionId: string;
   baselineKey: string;
+  /** This section's class, so the regrouping board can show one per section. */
+  documentClass?: string | null;
+  /**
+   * 0-based page indices this section covers, from the queue/documents payload.
+   *
+   * Lets the page-regrouping editor show every section's grouping without fetching
+   * each `result.json` again — the editor otherwise loads only the section being
+   * viewed. Optional because the resolver omits it when a section's file could not be
+   * read, which is not the same as the section having no pages.
+   */
+  pageIndices?: number[] | null;
 }
 
 interface GroundTruthVisualEditorProps {
@@ -85,6 +110,38 @@ interface GroundTruthVisualEditorProps {
    * correction, since reextractTestSetDocument is keyed on the set.
    */
   testSetId?: string;
+  /**
+   * Config version whose classes to offer when the baseline carries no stamp of
+   * its own — the test set's declared version, if the caller knows it. Without
+   * it the active config is used; see the fallback chain in the component.
+   */
+  configVersion?: string;
+  /**
+   * Whether the caller's role may change this document's CLASS, which is a
+   * different capability from editing its fields and is deliberately wider.
+   *
+   * A class correction persists through `reextractTestSetDocument`
+   * (`Admin, Author, Annotator` — schema.graphql:1333-1334), which stamps the
+   * baseline server-side and needs no review record. Field edits persist through
+   * whichever save path the caller wired, and those accept different groups. Gating
+   * the class dropdown on `isReadOnly` therefore denied the class to roles the
+   * server accepts for it.
+   *
+   * Defaults to `!isReadOnly`, so a caller that does not distinguish them keeps
+   * today's behaviour.
+   */
+  canChangeClass?: boolean;
+  /**
+   * Canonical path of a field to select on open ("LineItems[0].Rate"), from a
+   * shared deep link. Ancestors are expanded so the field is actually on screen.
+   */
+  focusFieldPath?: string | null;
+  /**
+   * Builds a shareable link to one field. Supplied by callers that have a URL to
+   * share (the annotation queue); omitted elsewhere, which hides the affordance
+   * rather than offering a link that goes nowhere.
+   */
+  buildFieldLink?: ((fieldPath: string) => string) | null;
 }
 
 const getSectionLabel = (sectionId: string, data: Record<string, unknown> | null): string => {
@@ -103,6 +160,10 @@ const GroundTruthVisualEditor = ({
   saveButtonText,
   onReextracted,
   testSetId,
+  configVersion,
+  canChangeClass,
+  focusFieldPath = null,
+  buildFieldLink = null,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
   const { user } = useAppContext();
   const { pages, isLoading: pagesLoading, error: pagesError, previewUnavailable } = useTestDocPages(bucket, inputKey);
@@ -114,6 +175,20 @@ const GroundTruthVisualEditor = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
+  // Canonical path of the field the reviewer last clicked, so it can be linked.
+  const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
+  const [isRegrouping, setIsRegrouping] = useState(false);
+  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
+  /**
+   * Sections whose pages changed in the last re-grouping.
+   *
+   * Kept so the warning names them: their field values were extracted from a different
+   * set of pages and may no longer match. Deliberately not acted on — re-extracting
+   * automatically is the annotation loss this whole feature exists to avoid.
+   */
+  const [regroupedSectionIds, setRegroupedSectionIds] = useState<string[]>([]);
+  // See the prop's doc comment: the class is a wider capability than field editing.
+  const mayChangeClass = canChangeClass ?? !isReadOnly;
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   const [filterMode, setFilterMode] = useState<SelectProps.Option>({ label: 'Show all fields', value: 'none' });
   const [activeTabId, setActiveTabId] = useState('visual');
@@ -166,7 +241,7 @@ const GroundTruthVisualEditor = ({
         setReextractNote(null);
       } catch (err) {
         logger.error('Error loading baseline:', err);
-        if (!cancelled) setError(`Failed to load ground truth: ${(err as Error).message}`);
+        if (!cancelled) setError(`Failed to load ground truth: ${getErrorMessage(err)}`);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -186,15 +261,46 @@ const GroundTruthVisualEditor = ({
     }
   }, [localData, originalJson]);
 
-  // Warn on tab close with unsaved edits.
-  useEffect(() => {
-    if (!hasChanges) return undefined;
-    const beforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
+  // Covers tab close AND in-app navigation. Only the former was handled, and the
+  // latter is how edits were actually lost: a route change is not a page unload,
+  // so clicking a nav link discarded everything with no prompt at all.
+  useUnsavedChangesGuard(hasChanges, 'You have unsaved ground truth changes. Leave this document and discard them?');
+
+  // Leaf paths whose value differs from what was loaded. The renderer uses this to
+  // relabel the field as the reviewer's own and to drop the model's confidence,
+  // which otherwise stayed attached to hand-typed text.
+  const predictionChanges = useMemo(() => {
+    // A Set, not a Map: only membership is consulted, and the renderer's prop is
+    // a set of edited paths.
+    const changes = new Set<string>();
+    if (!localData || originalJson === null) return changes;
+    let original: Record<string, unknown>;
+    try {
+      original = JSON.parse(originalJson) as Record<string, unknown>;
+    } catch {
+      return changes;
+    }
+    const walk = (now: unknown, before: unknown, trail: string[]) => {
+      if (now !== null && typeof now === 'object') {
+        const beforeObj = (before ?? {}) as Record<string, unknown>;
+        if (Array.isArray(now)) {
+          // Indices ARE kept: an edit to LineItems[3].Rate must mark that row and
+          // no other. Dropping them produced the key LineItems.Rate, which every
+          // row computes too, so a single corrected cell relabelled the entire
+          // column "Your value:" and suppressed the model's confidence on values
+          // the reviewer never touched. The renderer looks these up with a
+          // matching index-preserving key (editedFieldPaths).
+          now.forEach((item, i) => walk(item, Array.isArray(before) ? before[i] : undefined, [...trail, String(i)]));
+        } else {
+          Object.entries(now as Record<string, unknown>).forEach(([k, v]) => walk(v, beforeObj[k], [...trail, k]));
+        }
+        return;
+      }
+      if (now !== before) changes.add(trail.join('.'));
     };
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [hasChanges]);
+    walk(localData.inference_result ?? {}, original.inference_result ?? {}, []);
+    return changes;
+  }, [localData, originalJson]);
 
   const explainabilityInfo = (localData?.explainability_info as Record<string, unknown> | Record<string, unknown>[] | null) ?? null;
   const inferenceResult =
@@ -214,13 +320,45 @@ const GroundTruthVisualEditor = ({
 
   const documentClassType = (localData?.document_class as Record<string, unknown> | undefined)?.type as string | undefined;
 
-  // Classes come from the configuration profile stamped on the baseline, not the
-  // deployment's active config, which may have moved on since the labels were
-  // written.
-  const baselineConfigVersion =
-    ((localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined) || 'default';
-  const { mergedConfig } = useConfiguration(baselineConfigVersion);
+  // Which profile's classes to offer, and why. Preferring the profile stamped on the
+  // baseline over the deployment's active one is develop's point — it may have moved on
+  // since the labels were written — but a bare `|| 'default'` fallback is what #662 was:
+  // the classes on offer silently became the built-in preset's and nothing said so. The
+  // fallback order is the whole substance of that fix, so it lives in a tested function
+  // (classConfigVersion.ts) rather than inline, and `classConfig.source` is what lets the
+  // badge below name where the classes came from.
+  const stampedConfigVersion = (localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined;
+  const { versions } = useConfigurationVersions();
+  const activeConfigVersion = useMemo(() => versions.find((v) => v.isActive)?.versionName, [versions]);
+  const classConfig = useMemo(
+    () => resolveClassConfigVersion(stampedConfigVersion, configVersion, activeConfigVersion),
+    [stampedConfigVersion, configVersion, activeConfigVersion],
+  );
+  const classConfigVersion = classConfig.version;
+  const { mergedConfig, loading: configLoading, error: configError } = useConfiguration(classConfigVersion);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
+  /**
+   * True when the class list could not be read, as opposed to being genuinely empty.
+   *
+   * `getConfigVersion` now grants **Annotator** alongside `Admin, Author, Viewer`, and
+   * a caller with no other entitlement receives only the class vocabulary — the
+   * resolver reduces the payload (`_class_vocabulary_only` in
+   * `configuration_resolver/index.py`, whose `_FULL_CONFIG_GROUPS` is the boundary).
+   * Do not "tidy" either half: the grant exists *because* of that reduction, and
+   * dropping the reduction would hand prompts and model ids to the lowest-privilege
+   * role. Annotator was excluded here originally, which is what this flag was written
+   * for — an annotator's fetch was denied, `classOptions` came back empty, and the
+   * editor fell through to free text: the one role most needing a constrained
+   * vocabulary got an unconstrained box, with three words dropping out of a
+   * description as the only visible sign.
+   *
+   * The flag stays because a denied or failed fetch is still reachable — a role
+   * outside all four groups, or a config error — and it must not be mistaken for a
+   * config that genuinely defines no classes. A typed class no config defines produces
+   * a section with no schema, which extracts nothing. The resolver bounds the
+   * characters but deliberately not the membership, having no config-table grant.
+   */
+  const classListUnavailable = classOptions.length === 0 && (Boolean(configError) || configLoading);
   // A class the config no longer lists stays selectable; otherwise a document whose
   // class was since renamed would silently blank the field.
   const classOptionsWithCurrent = useMemo(() => {
@@ -247,7 +385,10 @@ const GroundTruthVisualEditor = ({
   };
 
   const updateDocumentClass = (newType: string) => {
-    if (isReadOnly || !localData) return;
+    // mayChangeClass, not isReadOnly: guarding on the narrower flag would accept the
+    // dropdown's change event and silently discard it, which is how the original
+    // class-correction bug behaved.
+    if (!mayChangeClass || !localData) return;
     const docClass = { ...((localData.document_class as Record<string, unknown>) ?? {}), type: newType };
     setLocalData({ ...localData, document_class: docClass });
   };
@@ -260,6 +401,80 @@ const GroundTruthVisualEditor = ({
    * harvested on read, so this poll loop is what drives the write-back; it is not
    * merely observing.
    */
+  /**
+   * Every section's grouping, in the board's 1-based page-id space.
+   *
+   * Comes from the queue/documents payload rather than a fetch: the editor only ever
+   * loads the section being viewed, and the board needs all of them at once. A section
+   * whose file could not be read arrives without `pageIndices` and is shown as empty,
+   * which the board's validation then blocks — correct, because saving it would drop
+   * whatever pages it held.
+   */
+  const groupingForBoard = useMemo<GroupedSection[]>(
+    () =>
+      sections.map((section) => ({
+        sectionId: section.sectionId,
+        documentClass:
+          // The open section's class may have unsaved edits, so prefer local state for
+          // it; the rest come from the payload.
+          section.sectionId === selectedSectionId ? (documentClassType ?? null) : (section.documentClass ?? null),
+        pageIds: pageIndicesToIds(section.pageIndices ?? []),
+      })),
+    [sections, selectedSectionId, documentClassType],
+  );
+
+  /** Pages for the board, in the same 1-based space. */
+  const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
+
+  /**
+   * Whether there is a grouping to edit at all.
+   *
+   * Both are what `PageGroupingEditor` renders from, so this is true exactly when the board
+   * would have something to show — rather than keying on the open section's fetched
+   * `result.json`, which says nothing about the other sections.
+   */
+  const canRegroup = boardPages.length > 0 && groupingForBoard.length > 0;
+
+  const handleSaveGrouping = async (next: GroupedSection[]) => {
+    if (!testSetId) return;
+    setIsSavingGrouping(true);
+    setError(null);
+    try {
+      const payload = next.map((section) => ({
+        sectionId: section.sectionId,
+        documentClass: section.documentClass ?? undefined,
+        // Back to the 0-based space the baseline stores. The only arithmetic in the
+        // feature, and the one thing that would corrupt data silently — hence the
+        // round-trip tests on these two helpers.
+        pageIndices: pageIdsToIndices(section.pageIds),
+      }));
+
+      const response = await client.graphql({
+        query: updateTestSetDocumentSections,
+        variables: { input: { testSetId, objectKey, sections: payload } },
+      });
+      const written = response.data?.updateTestSetDocumentSections?.sections ?? [];
+
+      // Which sections actually changed, compared BEFORE the reload replaces the refs.
+      const before = new Map(sections.map((sec) => [sec.sectionId, JSON.stringify(sec.pageIndices ?? [])]));
+      const changed = written
+        .filter((sec) => sec && before.get(sec.sectionId) !== JSON.stringify(sec.pageIndices ?? []))
+        .map((sec) => (sec as { sectionId: string }).sectionId);
+
+      setRegroupedSectionIds(changed);
+      setIsRegrouping(false);
+      setReloadToken((token) => token + 1);
+      // The caller refreshes its queue: section ids and classes have moved, so its
+      // cached refs are stale.
+      if (onReextracted) onReextracted();
+    } catch (err) {
+      logger.error('Re-grouping failed:', err);
+      setError(`Could not save the page grouping: ${getErrorMessage(err)}`);
+    } finally {
+      setIsSavingGrouping(false);
+    }
+  };
+
   const handleReextract = async () => {
     if (!documentClassType || !testSetId) return;
     setIsReextracting(true);
@@ -269,7 +484,7 @@ const GroundTruthVisualEditor = ({
       const started = await client.graphql({
         query: reextractTestSetDocument,
         variables: {
-          input: { testSetId, objectKey, documentClass: documentClassType, configVersion: baselineConfigVersion },
+          input: { testSetId, objectKey, documentClass: documentClassType, configVersion: classConfigVersion },
         },
       });
       const job = started.data?.reextractTestSetDocument;
@@ -301,7 +516,7 @@ const GroundTruthVisualEditor = ({
       if (onReextracted) onReextracted();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
-      setError(`Could not re-extract this document: ${(err as Error).message}`);
+      setError(`Could not re-extract this document: ${getErrorMessage(err)}`);
     } finally {
       setIsReextracting(false);
     }
@@ -367,7 +582,7 @@ const GroundTruthVisualEditor = ({
       if (onSaved) onSaved(fullPath);
     } catch (err) {
       logger.error('Error saving ground truth:', err);
-      setError(`Failed to save: ${(err as Error).message}`);
+      setError(`Failed to save: ${getErrorMessage(err)}`);
     } finally {
       setIsSaving(false);
     }
@@ -382,6 +597,27 @@ const GroundTruthVisualEditor = ({
   const handleFieldFocus = (geometry: Record<string, unknown> | null) => {
     setActiveFieldGeometry(geometry ?? null);
   };
+
+  /**
+   * Bring a deep-linked field on screen and select it.
+   *
+   * Runs after the section's data has rendered, hence the dependency on
+   * `localData` rather than on mount. Nothing collapses fields by default here,
+   * so no ancestor expansion is needed — if that ever changes, this is where the
+   * expansion belongs, because a link to a field inside a collapsed object would
+   * otherwise scroll to nothing.
+   */
+  useEffect(() => {
+    if (!focusFieldPath || !localData) return;
+    setSelectedFieldPath(focusFieldPath);
+    // Defer to the paint that renders the fields; the node does not exist yet on
+    // the tick that localData lands.
+    const timer = window.setTimeout(() => {
+      const node = document.querySelector(`[data-field-path="${CSS.escape(focusFieldPath)}"]`);
+      if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [focusFieldPath, localData]);
 
   const handleToggleCollapse = (pathKey: string) => {
     setCollapsedPaths((prev) => {
@@ -427,8 +663,14 @@ const GroundTruthVisualEditor = ({
           be mistaken on screen for confirmed work. */}
       {localData && (
         <SpaceBetween direction="horizontal" size="xs">
-          {renderLabelSource(localData.labelSource as string | undefined)}
-          {baselineConfigVersion !== 'default' && <Badge color="grey">Config: {baselineConfigVersion}</Badge>}
+          {/* localData is only ever set from a baseline that loaded and parsed, so
+              a missing labelSource here means uploaded ground truth — not the
+              absence of labels. */}
+          {renderLoadedLabelSource(localData.labelSource as string | undefined)}
+          {/* Always shown, including the fallback cases. Hiding it whenever the
+              version resolved to 'default' is exactly what let #662 go unnoticed:
+              the classes on offer were the built-in preset's and nothing said so. */}
+          <Badge color={classConfig.source === 'baseline' ? 'grey' : 'blue'}>Classes from: {describeClassConfigSource(classConfig)}</Badge>
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
               {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see Edit history
@@ -437,15 +679,73 @@ const GroundTruthVisualEditor = ({
         </SpaceBetween>
       )}
 
-      {sections.length > 1 && (
-        <SegmentedControl
-          selectedId={selectedSectionId}
-          onChange={({ detail }) => handleSectionChange(detail.selectedId)}
-          options={sections.map((s) => ({
-            id: s.sectionId,
-            text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
-          }))}
+      {/* Named sections rather than a count: after a re-group the reviewer needs to
+          know WHICH sections to look at. Not acted on automatically — re-extracting
+          would regenerate exactly the field values this feature exists to preserve. */}
+      {regroupedSectionIds.length > 0 && (
+        <Alert
+          type="warning"
+          header={`Pages moved in section${regroupedSectionIds.length > 1 ? 's' : ''} ${regroupedSectionIds.join(', ')}`}
+          dismissible
+          onDismiss={() => setRegroupedSectionIds([])}
+        >
+          The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
+          their values may no longer match. Check them, and use <b>Change class &amp; re-extract</b> on a section if you would rather the
+          model redo it.
+        </Alert>
+      )}
+
+      {isRegrouping && (
+        <PageGroupingEditor
+          pages={boardPages}
+          sections={groupingForBoard}
+          classOptions={classOptions}
+          canChangeClass={mayChangeClass}
+          consequence={
+            <>
+              Moving pages rewrites this document&apos;s <b>section grouping</b> — the ground truth for how the packet splits. Your
+              extracted field values, their <b>Reviewed (human)</b> provenance and the edit history are all kept. Sections are renumbered so
+              their ids follow page order.
+            </>
+          }
+          saveLabel="Save page grouping"
+          isSaving={isSavingGrouping}
+          onSave={handleSaveGrouping}
+          onCancel={() => setIsRegrouping(false)}
         />
+      )}
+
+      {/* The section selector and the control that changes the sections themselves, on one
+          row. Re-grouping alters the document's structure, so it belongs beside the section
+          pills rather than down among one section's extracted values, where it read as if
+          it were part of that section's field data. Wraps rather than holding one line: a
+          six-section packet already fills this row, and the pills must not be pushed into
+          an overflow to make space for a button. */}
+      {!isRegrouping && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          {sections.length > 1 ? (
+            <SegmentedControl
+              selectedId={selectedSectionId}
+              onChange={({ detail }) => handleSectionChange(detail.selectedId)}
+              options={sections.map((s) => ({
+                id: s.sectionId,
+                text: s.sectionId === selectedSectionId ? getSectionLabel(s.sectionId, localData) : `Section ${s.sectionId}`,
+              }))}
+            />
+          ) : (
+            <span />
+          )}
+          {/* Gated on what the board itself consumes, not on the open section's fetched
+              baseline: the button should exist exactly when the board it opens would work.
+              Deliberately NOT gated on `sections.length > 1` — splitting a single section
+              into two is a legitimate fix, and pairing this with the pills' own condition
+              would have removed the only route to it. */}
+          {canRegroup && (
+            <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
+              Edit page grouping
+            </Button>
+          )}
+        </div>
       )}
 
       {error && <Alert type="error">{error}</Alert>}
@@ -493,7 +793,18 @@ const GroundTruthVisualEditor = ({
                           description={
                             classOptions.length > 0
                               ? 'What this section is classified as, from this configuration profile. Distinct from the extraction labels below.'
-                              : 'What this section is classified as. Distinct from the extraction labels below.'
+                              : classListUnavailable
+                                ? 'What this section is classified as. The list of valid classes could not be loaded, so it cannot be changed here.'
+                                : 'What this section is classified as. Distinct from the extraction labels below.'
+                          }
+                          constraintText={
+                            isReextracting
+                              ? 'Locked while the re-extraction runs.'
+                              : classListUnavailable
+                                ? 'Your role cannot read the configuration profile this set was labelled with, so the valid classes are unknown. An Admin or Author can change the class.'
+                                : !mayChangeClass
+                                  ? 'You do not have permission to change this class.'
+                                  : undefined
                           }
                         >
                           <SpaceBetween size="xs">
@@ -501,7 +812,9 @@ const GroundTruthVisualEditor = ({
                                 schema cannot be extracted against, so the correction
                                 could never take effect. Free text only when no
                                 config resolves. */}
-                            {classOptions.length > 0 ? (
+                            {classListUnavailable ? (
+                              <Input value={documentClassType ?? ''} disabled />
+                            ) : classOptions.length > 0 ? (
                               <Select
                                 selectedOption={
                                   documentClassType
@@ -513,14 +826,14 @@ const GroundTruthVisualEditor = ({
                                 }
                                 onChange={({ detail }) => updateDocumentClass(detail.selectedOption.value ?? '')}
                                 options={classOptionsWithCurrent}
-                                disabled={isReadOnly || isReextracting}
+                                disabled={!mayChangeClass || isReextracting}
                                 placeholder="Choose a document class"
                               />
                             ) : (
                               <Input
                                 value={documentClassType ?? ''}
                                 onChange={({ detail }) => updateDocumentClass(detail.value)}
-                                disabled={isReadOnly}
+                                disabled={!mayChangeClass}
                               />
                             )}
                             {/* Correcting the class is only half the fix: the fields
@@ -531,13 +844,14 @@ const GroundTruthVisualEditor = ({
                                 type="info"
                                 header="Fields still reflect the previous class"
                                 action={
-                                  <Button onClick={handleReextract} loading={isReextracting} disabled={isReadOnly}>
-                                    Change class &amp; re-extract
+                                  <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
+                                    {isReextracting ? 'Re-extracting…' : 'Change class & re-extract'}
                                   </Button>
                                 }
                               >
                                 These fields were extracted as <b>{savedClassType}</b>. Re-extract to replace them with ones the{' '}
-                                <b>{documentClassType}</b> schema produces.
+                                <b>{documentClassType}</b> schema produces. This re-runs the document through the pipeline and usually takes
+                                under a minute; you can leave this page and come back.
                                 {localData?.labelSource === 'reviewed-human'
                                   ? ' This document was already marked reviewed; re-extracting discards those confirmed values.'
                                   : localData?.labelSource === 'draft-machine'
@@ -556,8 +870,15 @@ const GroundTruthVisualEditor = ({
                         </FormField>
                       )}
                       {splitPageIndices !== undefined && (
-                        <FormField label="Page indices" description="0-based pages of this section within the document (read-only)">
-                          <Input value={JSON.stringify(splitPageIndices)} disabled />
+                        <FormField
+                          label="Pages in this section"
+                          /* Informational now. The control that changes it lives up beside
+                             the section pills, because it rewrites the document's structure
+                             rather than this section's field data — so the description says
+                             where to find it instead of implying it is here. */
+                          description="Which pages of the document this section covers, in reading order. Use Edit page grouping, above, to move or reorder pages."
+                        >
+                          <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
                         </FormField>
                       )}
                       {inferenceResult ? (
@@ -572,6 +893,29 @@ const GroundTruthVisualEditor = ({
                               ]}
                             />
                           </FormField>
+                          {/* One affordance for the selected field rather than a button on
+                              every one of them: a bank statement section runs to hundreds of
+                              fields, and the reviewer has already clicked the one they mean
+                              in order to look at it. */}
+                          {buildFieldLink && selectedFieldPath && (
+                            <FormField
+                              label="Ask someone about this field"
+                              description={
+                                <>
+                                  Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Paste it in Slack when
+                                  you need a second opinion on a value.
+                                </>
+                              }
+                            >
+                              <CopyToClipboard
+                                variant="button"
+                                copyButtonText="Copy link to field"
+                                textToCopy={buildFieldLink(selectedFieldPath)}
+                                copySuccessText="Field link copied"
+                                copyErrorText="Could not copy the field link"
+                              />
+                            </FormField>
+                          )}
                           <FormFieldRenderer
                             fieldKey="Document Data"
                             value={inferenceResult}
@@ -579,6 +923,8 @@ const GroundTruthVisualEditor = ({
                             isReadOnly={isReadOnly}
                             onFieldFocus={handleFieldFocus}
                             onFieldDoubleClick={handleFieldFocus}
+                            onFieldPathSelect={setSelectedFieldPath}
+                            editedFieldPaths={predictionChanges}
                             path={[]}
                             explainabilityInfo={explainabilityInfo}
                             collapsedPaths={collapsedPaths}

@@ -351,9 +351,15 @@ def test_fresh_cache_does_not_requeue_when_graded_metrics_legitimately_empty():
     """
     test_run_id = "run-post-graded-empty"
     # A "fresh" post-release cache: adds every key the guard now checks for
-    # (gradedPacketMetrics + excludedDocumentCount as of this release).
+    # (gradedPacketMetrics + excludedDocumentCount + classificationErrors as of
+    # this release). Add the new key here whenever one joins metrics_to_cache,
+    # otherwise this test fails for the right reason — the guard would re-queue
+    # a cache that is in fact complete.
     fresh_cache = dict(
-        _PRE_GRADED_CACHE, gradedPacketMetrics={}, excludedDocumentCount=0
+        _PRE_GRADED_CACHE,
+        gradedPacketMetrics={},
+        excludedDocumentCount=0,
+        classificationErrors={},
     )
     mock_table = Mock()
     mock_table.get_item.return_value = {
@@ -709,6 +715,104 @@ def test_stickler_metrics_survive_athena_failure():
     assert result["split_classification_metrics"] == {}
     assert result["total_cost"] == 0
     assert result["cost_breakdown"] == {}
+
+
+@pytest.mark.unit
+def test_classification_errors_are_cached_and_served():
+    """The aggregator's per-section class detail must survive the cache round-trip.
+
+    Three hops have to agree for this to reach the UI — the aggregation Lambda's
+    snake_case key, the camelCase key written to testRunResult, and the read path
+    — and each is in a different file, so a rename in one is invisible until the
+    panel is silently empty.
+    """
+    test_run_id = "run-with-class-errors"
+    payload = {
+        "errors": [
+            {
+                "doc_key": "d1.pdf",
+                "section_id": "section_1",
+                "kind": "class",
+                "expected_class": "Invoice",
+                "predicted_class": "Receipt",
+                "expected_pages": [0],
+                "predicted_pages": [0],
+            }
+        ],
+        "total": 1,
+        "documents_affected": 1,
+        "truncated": False,
+    }
+    mock_table = Mock()
+    mock_sqs = Mock()
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", mock_sqs),
+        patch.object(
+            index,
+            "_aggregate_test_run_metrics",
+            return_value={"classification_errors": payload},
+        ),
+    ):
+        index.handle_cache_update_request(
+            {"Records": [{"body": json.dumps({"testRunId": test_run_id})}]}, None
+        )
+
+    cached = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+        ":metrics"
+    ]
+    assert cached["classificationErrors"] == payload
+
+    # And the read path serves it rather than dropping it on the floor.
+    mock_read_table = Mock()
+    mock_read_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(
+            test_run_id,
+            dict(
+                _PRE_GRADED_CACHE,
+                gradedPacketMetrics={},
+                excludedDocumentCount=0,
+                classificationErrors=payload,
+            ),
+        )
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_read_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == payload
+
+
+@pytest.mark.unit
+def test_a_cache_written_before_this_release_serves_an_empty_panel():
+    """An older cache must render as "nothing to show", not crash the query."""
+    test_run_id = "run-pre-class-errors"
+    mock_table = Mock()
+    mock_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(test_run_id, dict(_PRE_GRADED_CACHE))
+    }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["classificationErrors"] == {}
 
 
 @pytest.mark.unit
@@ -1122,3 +1226,82 @@ def test_status_poll_retries_once_throttle_window_expires():
 
     assert result["status"] == "EVALUATING"
     mock_sqs.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+class TestDraftLabelingRunsAreNotAwaitingMetrics:
+    """A draft-labeling run CREATES the baseline, so it can never have metrics.
+
+    Treating one as "awaiting" cost twice: it badged EVALUATING indefinitely
+    (observed live — a run COMPLETE with 100/100 documents processed and
+    CompletedAt set, still EVALUATING three days later), and every view enqueued a
+    full aggregation, re-reading every document's results.json from S3, to compute
+    extraction metrics that are structurally empty because there is nothing to
+    score against.
+    """
+
+    def test_a_draft_labeling_run_is_never_awaiting_metrics(self):
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "draft-labeling",
+            "FilesCount": 100,
+            "CompletedFiles": 100,
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+        # And therefore does not render the EVALUATING badge.
+        assert index._display_status(item, "COMPLETE") == "COMPLETE"
+
+    def test_a_scoring_run_with_no_metrics_still_awaits(self):
+        """The behaviour this must not break: a real scored run genuinely is
+        pending its aggregation, and the badge is how that is communicated."""
+        item = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True
+        assert index._display_status(item, "COMPLETE") == "EVALUATING"
+
+    def test_a_scoring_run_with_metrics_does_not_await(self):
+        item = {"Status": "COMPLETE", "Purpose": "scoring", "testRunResult": {"x": 1}}
+
+        assert index._awaiting_metrics(item, "COMPLETE") is False
+
+    def test_a_run_predating_Purpose_falls_back_to_its_context(self):
+        """Records created before Purpose was persisted carry only the free-text
+        Context. Matched exactly, not as a substring: a user-typed context that
+        merely mentions labeling must not silently suppress a real run's badge."""
+        legacy = {"Status": "COMPLETE", "Context": "Draft labeling run"}
+        assert index._awaiting_metrics(legacy, "COMPLETE") is False
+
+        lookalike = {"Status": "COMPLETE", "Context": "Draft labeling run for Q3"}
+        assert index._awaiting_metrics(lookalike, "COMPLETE") is True
+
+    def test_purpose_wins_over_a_misleading_context(self):
+        """A persisted Purpose is authoritative; Context is user-supplied text."""
+        item = {
+            "Status": "COMPLETE",
+            "Purpose": "scoring",
+            "Context": "Draft labeling run",
+        }
+
+        assert index._awaiting_metrics(item, "COMPLETE") is True
+
+    def test_the_purpose_is_reported_to_the_ui_not_just_used_internally(self):
+        """The rule has one home, and the UI has to be able to reach the verdict.
+
+        Without this the UI can only guess from the free-text Context, which is the
+        very thing the exact-match fallback exists to distrust — and it warned that
+        accuracy metrics "are not available" on a run that can never have them,
+        describing the expected outcome as a fault.
+        """
+        draft = {"Status": "COMPLETE", "Purpose": "draft-labeling"}
+        scoring = {"Status": "COMPLETE", "Purpose": "scoring"}
+
+        assert index._is_draft_labeling_run(draft) is True
+        assert index._is_draft_labeling_run(scoring) is False
+
+        # The same distrust of Context that _awaiting_metrics applies.
+        assert index._is_draft_labeling_run({"Context": "Draft labeling run"}) is True
+        assert (
+            index._is_draft_labeling_run({"Context": "Draft labeling run for Q3"})
+            is False
+        )
