@@ -1,0 +1,11 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+prose-keep,valuenoise_100.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,1,1,1.0,1.0,0,,,0.9985,0.0,,,,,164.609095,0.1647
+prose-keep,valuenoise_100.pdf,1,COMPLETED,True,3.0,1.0,100,0.5,,1.0,0.0,,,2,2,1.0,1.0,0,,,0.9906,0.6,,,,,125.876675,0.1575
+prose-keep,valuenoise_100.pdf,2,COMPLETED,True,3.0,1.0,100,0.5,,1.0,0.0,,,2,2,1.0,1.0,0,,,0.9923,0.6,,,,,136.897818,0.1573
+prose-keep,valuenoise_100.pdf,3,COMPLETED,True,3.0,1.0,100,0.5,,1.0,0.0,,,2,2,1.0,1.0,0,,,0.9912,0.6,,,,,135.656374,0.1581
+prose-keep,valuenoise_100.pdf,4,COMPLETED,True,3.0,1.0,100,0.5,,1.0,0.0,,,2,2,1.0,1.0,0,,,0.9916,0.6,,,,,121.891101,0.1564
+prose-drop,valuenoise_100.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,0.0,,,2,2,1.0,0.5,1,0,1,0.9891,1.0,,,,,118.217708,0.1604
+prose-drop,valuenoise_100.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,0.0,,,2,2,1.0,0.5,1,0,1,0.9891,1.0,,,,,124.249389,0.1565
+prose-drop,valuenoise_100.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,0.0,,,2,2,1.0,0.5,1,0,1,0.9894,1.0,,,,,135.210195,0.1566
+prose-drop,valuenoise_100.pdf,3,COMPLETED,True,3.0,1.0,100,1.0,,1.0,0.0,,,2,2,1.0,0.5,1,0,1,0.9892,1.0,,,,,132.601324,0.1578
+prose-drop,valuenoise_100.pdf,4,COMPLETED,True,3.0,1.0,100,1.0,,1.0,0.0,,,2,2,1.0,0.5,1,0,1,0.9889,1.0,,,,,127.647356,0.1567

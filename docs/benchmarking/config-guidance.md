@@ -469,11 +469,30 @@ Two honest limits:
   sit at CV 0.51–0.63 and their ordering (`full` < `minimal` < `names`) is the *opposite*
   of the token ordering, which is what a non-deterministic agent turn count looks like.
   **The defensible figure is the per-request static saving**, from the token counts below;
-  treat measured dollars as corroboration at best. Note also that `config_matrix.yaml`'s
-  own rule is `repeats >= 5` for a cost CLAIM: this grid ran at 3, and the dedicated
-  `prosecost` suite (repeats 5) has **not** been run — so the cost column here is
-  reported, not claimed. The `kv_form` arm (a different class, run separately) was also
-  not run.
+  treat measured dollars as corroboration at best. The `kv_form` arm (a different class,
+  run separately) was not run.
+
+**Follow-up (`prosecost`, sequential): the cost and latency gaps were queueing artifacts.**
+The grid above ran at `--max-inflight 6`, so arms interleaved on a shared stack. Re-running
+the Simple pair at `--max-inflight 1` with `repeats: 5` — which satisfies
+`config_matrix.yaml`'s own `repeats >= 5` rule for a cost claim — removes that confound, and
+both apparent gaps collapse:
+
+| arm | n | fail | recall | cell acc | wall_s | wall CV | cost | cost CV |
+|---|---|---|---|---|---|---|---|---|
+| `prose-keep` | 5 | 0 | 1.0 | 1.0 | 137.0 | 0.12 | $0.1588 | 0.021 |
+| `prose-drop` | 5 | 0 | 1.0 | 1.0 | 127.6 | 0.05 | $0.1576 | 0.011 |
+
+Wall-clock **−6.9% (t=1.17)** and cost **−0.8% (t=0.72)** — neither resolvable at n=5+5.
+Compare the interleaved grid, which showed −32% wall-clock and −4.8% cost: those were
+scheduling noise, not the feature. Note the CVs here are 3–8× tighter than in any other
+measurement in this section (cost CV 0.011–0.021 against 0.25–0.63 elsewhere), so this is a
+**strong** null rather than an underpowered one — a real effect of the size the first grid
+suggested would have been unmissable.
+
+**Conclusion: neither knob has a measurable cost, latency or completeness effect.** With
+`plan_shards` ignoring prompt overhead (above), that is the expected result rather than a
+surprising one, and it is why both ship defaulting to current behaviour.
 
 Per request on lending `Payslip` at ~4 chars/token:
 
@@ -737,6 +756,11 @@ AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --s
 python3 benchmarks/harness/make_configs.py --suite proseschema --class bank_statement
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite proseschema --max-inflight 6
 AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/proseschema
+# ...and the cost/latency follow-up SEQUENTIALLY. --max-inflight 1 is the point: at 6 the
+# arms interleave on a shared stack and the queueing shows up as a 32% wall-clock "effect".
+python3 benchmarks/harness/make_configs.py --suite prosecost --class bank_statement
+AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite prosecost --max-inflight 1
+AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/prosecost
 
 # §7 multi-instance: the transform on a same-class packet, and the detection A/B
 for s in multiinstance midetect migate; do
