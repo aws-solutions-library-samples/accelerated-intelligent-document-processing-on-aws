@@ -294,6 +294,85 @@ def test_stalled_queue_alarm_fills_its_throughput_metric():
             f"datapoint, so the expression would go missing and the alarm would "
             f"read OK through the outage it exists to catch."
         )
+        assert f"FILL({mid},0)<1" in compact, (
+            f"DocumentQueueStalledAlarm must require {mid} (deletions) to be "
+            f"BELOW 1 -- the alarm fires on the absence of progress. Got "
+            f"{expression!r}; an inverted comparison would alarm on a queue that "
+            f"is draining normally and stay silent on one that is not."
+        )
+
+    # The age side needs FILL too, for the opposite reason: an idle stack
+    # publishes no age datapoint either, and without FILL the expression would go
+    # missing whenever nothing is queued -- leaving the alarm in
+    # INSUFFICIENT_DATA, the state this file exists to keep alarms out of.
+    age_ids = [
+        mid
+        for mid, entry in metrics.items()
+        if (entry.get("MetricStat") or {}).get("Metric", {}).get("MetricName")
+        == "ApproximateAgeOfOldestMessage"
+    ]
+    assert age_ids, "DocumentQueueStalledAlarm no longer reads message age."
+    for mid in age_ids:
+        assert f"FILL({mid},0)" in compact, (
+            f"DocumentQueueStalledAlarm uses {mid} (ApproximateAgeOfOldestMessage) "
+            f"without FILL({mid}, 0): {expression!r}."
+        )
+
+    # The threshold has to reach the expression. A literal here would silently
+    # ignore the QueueStalledAgeThresholdSeconds parameter, so the documented knob
+    # would do nothing -- and the alarm description, which interpolates the same
+    # parameter, would state a threshold the alarm does not use.
+    assert "${QueueStalledAgeThresholdSeconds}" in expression, (
+        f"DocumentQueueStalledAlarm's expression does not interpolate "
+        f"QueueStalledAgeThresholdSeconds: {expression!r}. The parameter is "
+        f"documented as the alarm's only knob."
+    )
+
+
+def test_cloudwatch_can_decrypt_the_alarm_topic_key_unconditionally():
+    """The CMK grant for CloudWatch->SNS must not sit behind a condition.
+
+    ``AlertsTopic`` is encrypted with the stack's customer-managed key on every
+    deployment. The key-policy statement letting CloudWatch use that key was
+    originally wrapped in ``CircuitBreakerEnabledCondition``, so on a default
+    stack (``CircuitBreakerEnabled`` defaults to ``"false"``) *every* alarm action
+    failed with "CloudWatch Alarms does not have authorization to access the SNS
+    topic encryption key" -- while the alarms themselves still went to ``ALARM``
+    in the console. Every alarm in this template was therefore console-only, and
+    the only evidence was each alarm's Action history.
+
+    That is the same report-OK-by-silence shape as #746 one layer further out: the
+    alarms are correct, and the notification path is not. Nothing else here would
+    catch it, because the alarm resources are all perfectly well-formed.
+    """
+    template = _load("template.yaml")
+    key = template["Resources"]["CustomerManagedEncryptionKey"]
+    statements = key["Properties"]["KeyPolicy"]["Statement"]
+
+    matches = [
+        stmt
+        for stmt in statements
+        if isinstance(stmt, dict) and "cloudwatch" in str(stmt.get("Principal", ""))
+    ]
+    assert matches, (
+        "No key-policy statement grants CloudWatch use of the CMK. AlertsTopic is "
+        "encrypted with it, so without this grant no alarm can publish and every "
+        "alarm in this template becomes console-only."
+    )
+    for stmt in matches:
+        assert "!If" not in stmt, (
+            "The CloudWatch CMK grant is wrapped in a condition. AlertsTopic is "
+            "encrypted unconditionally, so any condition here disables alarm "
+            "notifications for the deployments that do not meet it."
+        )
+        actions = stmt.get("Action") or []
+        actions = [actions] if isinstance(actions, str) else actions
+        assert any("Decrypt" in a for a in actions), (
+            f"CloudWatch CMK grant lacks kms:Decrypt: {actions}"
+        )
+        assert any("GenerateDataKey" in a for a in actions), (
+            f"CloudWatch CMK grant lacks kms:GenerateDataKey*: {actions}"
+        )
 
 
 @pytest.mark.parametrize(

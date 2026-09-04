@@ -3157,17 +3157,26 @@ Resources:
               - kms:GenerateDataKey*
               - kms:DescribeKey
             Resource: "*"
-          - !If
-            - CircuitBreakerEnabledCondition
-            - Sid: Allow CloudWatch Alarms to use the key for SNS
-              Effect: Allow
-              Principal:
-                Service: !Sub "cloudwatch.${AWS::URLSuffix}"
-              Action:
-                - kms:Decrypt
-                - kms:GenerateDataKey*
-              Resource: "*"
-            - !Ref AWS::NoValue
+          # UNCONDITIONAL, and it has to be. AlertsTopic is encrypted with this
+          # key whatever the circuit-breaker setting, so gating this statement on
+          # CircuitBreakerEnabledCondition meant that on a DEFAULT deployment
+          # (CircuitBreakerEnabled defaults to "false") CloudWatch could not
+          # decrypt to publish, and EVERY alarm action on AlertsTopic failed with
+          # "CloudWatch Alarms does not have authorization to access the SNS topic
+          # encryption key". The alarms still transitioned to ALARM in the
+          # console, so the only visible difference was that no notification ever
+          # arrived — the same report-OK-by-silence failure as #746, one layer
+          # further out. Do not re-add a condition here: the grant is only usable
+          # by CloudWatch acting on this account's alarms, and any alarm in this
+          # template may target AlertsTopic.
+          - Sid: Allow CloudWatch Alarms to use the key for SNS
+            Effect: Allow
+            Principal:
+              Service: !Sub "cloudwatch.${AWS::URLSuffix}"
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: "*"
           - !If
             - IsS3VectorsVectorStore
             - Sid: Allow S3 Vectors indexing service to use the key
@@ -7520,6 +7529,11 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
+      # Same reasoning as the other DLQ alarms: depth does not decay on its own,
+      # so the OK is the only signal that distinguishes a drained queue from a
+      # muted alarm.
+      OKActions:
+        - !Ref AlertsTopic
 
   # A document that reaches DocumentQueueDLQ has exhausted the redrive policy on
   # DocumentQueue — maxReceiveCount 1000 against a 30s visibility timeout, so
@@ -7552,15 +7566,23 @@ Resources:
       OKActions:
         - !Ref AlertsTopic
 
-  # Strictly worse than the above: QueueSenderDLQ holds S3 upload events the
-  # QueueSender could not even enqueue, so the document has no tracking row at
-  # all. It is absent from the UI rather than shown as failed, which is why an
-  # operator can otherwise only discover it by noticing an upload that never
-  # appeared.
+  # QueueSenderDLQ holds S3 upload events the QueueSender could not process at
+  # all, so the document never entered the pipeline. Which of two states it is
+  # left in depends on where the invocation died, because create_document runs
+  # BEFORE send_message (src/lambda/queue_sender/index.py): a failed enqueue
+  # leaves a tracking row wedged at QUEUED forever, while a failed
+  # create_document leaves no row at all. The first is the likelier case in a
+  # queue named for the sender, so the description names it first — telling an
+  # operator to look for an absent document when it is actually sitting in the
+  # list at QUEUED is worse than saying nothing.
+  # This is a Lambda ASYNC-INVOKE DLQ, not an SQS redrive DLQ, so
+  # StartMessageMoveTask does NOT apply to it (that API supports only DLQs that
+  # are configured as the dead-letter queue of another SQS queue) — re-upload is
+  # the only recovery, and the console offers no redrive button here.
   QueueSenderDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when an upload event lands in the ${AWS::StackName} queue-sender dead-letter queue. The document was never enqueued and has no tracking record, so it does not appear in the UI even as a failure. Read the messages in QueueSenderDLQ for the S3 keys, check the QueueSender logs for the cause, then re-upload those objects (redriving replays the original S3 event and works too)."
+      AlarmDescription: !Sub "Alert when an upload event lands in the ${AWS::StackName} queue-sender dead-letter queue. The document never entered the pipeline, and nothing else reports it: no execution ever started, so no workflow metric has a datapoint for it. Read the messages in QueueSenderDLQ for the S3 keys and check the QueueSender logs for the cause. The tracking row is written BEFORE the enqueue, so look for the document stuck at QUEUED in the Web UI; if it has no record at all, the DynamoDB write is what failed. Recovery is to re-upload the object — this is a Lambda async-invoke DLQ, so SQS redrive (StartMessageMoveTask) does not apply to it."
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions:
@@ -7590,9 +7612,6 @@ Resources:
   # ApproximateAgeOfOldestMessage measures time since the ORIGINAL send and
   # therefore climbs monotonically for as long as concurrency stays saturated.
   # A healthy stack draining a large batch will pass any fixed age threshold.
-  # The circuit breaker makes it worse: on a Bedrock outage the processor pushes
-  # visibility out to CircuitBreakerRecoveryTimeoutSeconds, so age climbs while
-  # BedrockServiceOutageAlarm is already reporting the real cause.
   #
   # So the alarm is age AND no progress: the oldest message is older than the
   # threshold *and* not a single message was deleted in the period. Deep but
@@ -7609,6 +7628,16 @@ Resources:
   # being distinguishable from outside, and is worth an operator's attention
   # either way: at that point it is either a wedge or a capacity shortfall.
   #
+  # NOT designed out, and deliberately so: a circuit-breaker pause trips this
+  # too. A processor in the OPEN state pushes visibility out to
+  # CircuitBreakerRecoveryTimeoutSeconds WITHOUT deleting the message
+  # (queue_processor/index.py extend_visibility_for_outage), so age climbs and
+  # deletions stay at zero — both conditions hold. Suppressing that would mean
+  # muting the queue signal for the duration of a Bedrock outage, which is
+  # exactly when documents pile up; correlating with BedrockServiceOutageAlarm on
+  # the same topic is the cheaper answer, and only applies at all when the
+  # circuit breaker is enabled (it defaults to off).
+  #
   # FILL(m2, 0) is load-bearing, not defensive. SQS publishes
   # NumberOfMessagesDeleted only when deletions occur, so the totally stalled
   # case — the one this alarm exists for — produces NO datapoint. Without FILL
@@ -7619,7 +7648,7 @@ Resources:
   DocumentQueueStalledAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), the circuit-breaker state, whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
+      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If BedrockServiceOutageAlarm is also active this is a circuit-breaker pause, not a wedge: the paused processor holds messages without deleting them, so this alarm fires too and clears on its own when the breaker closes. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
       Metrics:
         - Id: e1
           Label: QueueStalled
