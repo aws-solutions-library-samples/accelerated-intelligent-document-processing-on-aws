@@ -57,10 +57,20 @@ extraction:
     # OFF by default — but not because it works badly. Measured on two real
     # labeled corpora (80 paired Test Studio runs):
     #
-    #   * It is EXCELLENT at the job. On 40 bank-check images with committed
-    #     ground truth it found all 18 multi-check images, raised 0 false alarms
-    #     on the 22 single-check images, and got the count exactly right on all
-    #     18 (2 to 8 checks). Precision and recall both 1.000.
+    #   * It COUNTS accurately. On 40 bank-check images with committed ground
+    #     truth it found all 18 multi-check images, raised 0 false alarms on the
+    #     22 single-check images, and got the count exactly right on all 18 (2 to
+    #     8 checks). Precision and recall both 1.000.
+    #   * But a WARNING IS NOT EVIDENCE OF LOSS, and that same run is the
+    #     cautionary example. Counting the extracted rows afterwards: 0 checks
+    #     missing, in both arms. BANK_CHECK's schema is a single `checks` array,
+    #     so the class already modelled several checks per sheet and nothing was
+    #     collapsing. The warning fired because instance_extracted_count is 1 for
+    #     a class that declares no instance axis — true whether the records are
+    #     ABSENT or PRESENT INSIDE A DECLARED ARRAY. The predicate cannot tell
+    #     those apart, so when this fires, look at the extracted data before
+    #     concluding anything was dropped. (There it was a real configuration
+    #     finding: the fix was x-aws-idp-instance-array: checks.)
     #   * Token cost is negligible: input +1.8%, output -0.5%.
     #   * On a corpus with NO multi-record documents to find, it is pure cost:
     #     RealKIE-FCC-Verified lost ~1.3 accuracy points (0.7678 -> 0.7552, worse
@@ -68,9 +78,22 @@ extraction:
     #     across four attributes rather than any one failure mode.
     #
     # A default has to be safe for the corpus that gets no benefit, so it ships
-    # off. TURN IT ON, per configuration profile, whenever one section can hold
-    # several documents of the same class — there the measurement says it will be
-    # right, and the alternative is shipping one record out of N with no signal.
+    # off.
+    #
+    # TURN IT ON, per configuration profile, when one section can hold several
+    # documents of the same class AND THE CLASS SCHEMA DESCRIBES ONLY ONE. That
+    # conjunction is what loses records; either half alone does not. A class that
+    # already declares a record array (see x-aws-idp-instance-array) is not
+    # losing anything — it just is not reporting its count.
+    #
+    # Also worth running ONCE as a pure diagnostic on any new corpus, then
+    # turning off: that is how a missing instance axis was found in the shipped
+    # ocr-benchmark preset. Two distinct uses, and only the second is a setting
+    # you leave on:
+    #   * diagnostic  — run once, act on what it names, turn off.
+    #   * standing guard — a corpus that keeps producing merged same-class
+    #     sections, where you want a warning on every affected section.
+    #
     # Detection NEVER changes the extracted data or a class's schema flags.
     # Simple extraction only (prompt and forced-tool paths).
     enabled: false
