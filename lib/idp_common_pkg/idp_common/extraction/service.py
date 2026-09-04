@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.bedrock import format_prompt, is_openai_responses_model
-from idp_common.config.models import IDPConfig
+from idp_common.config.models import DEFAULT_PROSE_SCHEMA_MODE, IDPConfig
 from idp_common.config.schema_constants import (
     ID_FIELD,
     SCHEMA_ITEMS,
@@ -38,6 +38,8 @@ from idp_common.extraction.page_type_resolver import (
     PageTypePresence,
     resolve_page_types,
 )
+from idp_common.extraction.prose_schema import describe_saving
+from idp_common.extraction.prose_schema import render as render_prose_schema
 from idp_common.extraction.sharding import (
     DEFAULT_MAX_PAGES_PER_SHARD,
     DEFAULT_SHARD_TOKEN_BUDGET,
@@ -197,6 +199,15 @@ class ExtractionService:
         # section so a prior section's result can never leak into the next.
         self._pending_validation_metadata: dict[str, Any] | None = None
         self._pending_forced_tool_metadata: dict[str, Any] | None = None
+        # (force, skip_reason) for the current section, decided ONCE in
+        # _initialize_extraction_context — before the prompt is built — because the
+        # prose-schema decision depends on it. See _resolve_forced_tool_decision.
+        self._forced_tool_decision: tuple[bool, str | None] = (False, None)
+        # Effective prose-schema rendering for the current section, and the audit
+        # record of how it was resolved (None when the shipped default was used, so
+        # an unmodified deployment writes byte-identical metadata). Reset per section.
+        self._prose_schema_mode: str = DEFAULT_PROSE_SCHEMA_MODE
+        self._pending_prose_schema_metadata: dict[str, Any] | None = None
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
         self._pending_coercion_metadata: dict[str, Any] | None = None
@@ -336,21 +347,26 @@ class ExtractionService:
 
         return cleaned
 
-    def _format_schema_for_prompt(self, schema: dict[str, Any]) -> str:
+    def _format_schema_for_prompt(
+        self, schema: dict[str, Any], mode: str = DEFAULT_PROSE_SCHEMA_MODE
+    ) -> str:
         """
         Format JSON Schema for inclusion in the extraction prompt.
 
         Args:
             schema: JSON Schema definition
+            mode: how much of it to restate as prose — ``full`` (the whole cleaned
+                schema, the pre-#710 behaviour and the default), ``minimal`` (only
+                the descriptions a generated tool schema loses) or ``names`` (the
+                attribute names). See ``idp_common.extraction.prose_schema``.
 
         Returns:
-            Formatted JSON Schema as a string with IDP custom fields removed
+            The text substituted for ``{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}``
         """
         # Clean the schema to remove IDP custom fields
         cleaned_schema = self._clean_schema_for_prompt(schema)
 
-        # Return the cleaned JSON Schema with nice formatting
-        return json.dumps(cleaned_schema, indent=2)
+        return render_prose_schema(cleaned_schema, mode)
 
     def _prepare_prompt_from_template(
         self,
@@ -873,6 +889,13 @@ class ExtractionService:
         self._class_schema = {}
         self._wire_class_schema = {}
         self._instance_probe_requested = False
+        # Back to the shipped rendering and "not forcing", so a section that somehow
+        # reaches the model without going through _initialize_extraction_context
+        # sends the FULL schema rather than inheriting the previous section's
+        # de-duplicated prompt (#710).
+        self._forced_tool_decision = (False, None)
+        self._prose_schema_mode = DEFAULT_PROSE_SCHEMA_MODE
+        self._pending_prose_schema_metadata = None
         self._page_images = []
         self._image_uris = []
         self._grounded_assessment = None
@@ -1160,16 +1183,41 @@ class ExtractionService:
         # validator, the generated Pydantic model and every downstream stage
         # still see only the declared fields.
         wire_schema, probe_added = self._build_wire_schema(class_schema, class_label)
-        attribute_descriptions = self._format_schema_for_prompt(wire_schema)
 
-        # Store context in instance variables
+        # Store context in instance variables. The schema fields are set BEFORE the
+        # prose/forcing decisions below, which read them (a per-class model override
+        # lives on the class schema and decides whether the route can carry a tool).
         self._document_text = document_text
         self._class_label = class_label
-        self._attribute_descriptions = attribute_descriptions
         self._class_schema = class_schema
         self._wire_class_schema = wire_schema
         self._instance_probe_requested = probe_added
         self._page_images = page_images
+
+        # Decide forcing and the prose-schema rendering HERE, not at invocation
+        # time: the prose is substituted into the prompt a few lines below, and
+        # dropping it on a request that turns out NOT to carry the toolSpec would
+        # leave the model with no schema at all. Both decisions therefore come from
+        # the same `force` boolean, computed once. See #710.
+        self._forced_tool_decision = self._resolve_forced_tool_decision(wire_schema)
+        mode, prose_metadata = self._resolve_prose_schema_mode()
+        self._prose_schema_mode = mode
+        self._pending_prose_schema_metadata = prose_metadata
+
+        attribute_descriptions = self._format_schema_for_prompt(wire_schema, mode)
+        self._attribute_descriptions = attribute_descriptions
+        if mode != DEFAULT_PROSE_SCHEMA_MODE:
+            logger.info(
+                "Prose schema for '%s' rendered as %s, reclaiming %s",
+                class_label,
+                mode,
+                describe_saving(
+                    self._format_schema_for_prompt(
+                        wire_schema, DEFAULT_PROSE_SCHEMA_MODE
+                    ),
+                    attribute_descriptions,
+                ),
+            )
 
         # Prepare image URIs for Lambda
         image_uris = []
@@ -1181,6 +1229,91 @@ class ExtractionService:
         self._image_uris = image_uris
 
         return class_schema, attribute_descriptions
+
+    def _resolve_extraction_model(self) -> tuple[str, bool]:
+        """``(model_id, came_from_a_per_class_override)`` for the current section.
+
+        Extracted from ``_invoke_extraction_model`` because the forced-tool decision
+        now has to be made earlier — before the prompt is built — and it needs the
+        same model id the request will actually use. Two call sites resolving this
+        independently is exactly the divergence #710's ordering fix exists to
+        prevent: forcing skipped for a Lambda-hook model while the prose was dropped
+        for a Converse one would send no schema at all.
+        """
+        override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
+        return (override or self.config.extraction.model), bool(override)
+
+    def _resolve_forced_tool_decision(
+        self, wire_schema: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        """``(force, skip_reason)`` for this section's simple-mode request.
+
+        Always ``(False, None)`` on the agentic path: Advanced extraction puts the
+        schema on the wire through Strands' structured output, not through this
+        feature, so ``forced_tool`` does not apply there.
+        """
+        if self.config.extraction.agentic.enabled:
+            return False, None
+
+        from idp_common.extraction.forced_tool import should_force_tool
+
+        model_id, _ = self._resolve_extraction_model()
+        return should_force_tool(
+            model_id, self.config.extraction.forced_tool.enabled, wire_schema
+        )
+
+    def _resolve_prose_schema_mode(self) -> tuple[str, dict[str, Any] | None]:
+        """How much schema prose the task prompt should carry (#710).
+
+        Returns ``(mode, audit_metadata)``. ``audit_metadata`` is None whenever the
+        shipped default was used, so an unmodified deployment writes byte-identical
+        section metadata; otherwise it records what was requested, what was applied
+        and why they differ. Recording the *outcome* matters for the same reason
+        ``forced_tool.skip_reason`` does: in an A/B, "the knob had no effect" and
+        "the knob was never applied" are otherwise indistinguishable.
+        """
+        agentic = self.config.extraction.agentic
+
+        if agentic.enabled:
+            # Advanced always sends a toolSpec (Strands derives it from the
+            # generated Pydantic model), so there is no "the tool was skipped"
+            # case here and the configured mode is applied as-is. The model DOES
+            # lose object-level descriptions in that round trip, which is why
+            # `minimal` exists and `names` is not the only alternative to `full`.
+            mode = agentic.prose_schema
+            if mode == DEFAULT_PROSE_SCHEMA_MODE:
+                return mode, None
+            return mode, {"requested": mode, "mode": mode, "path": "agentic"}
+
+        requested = (
+            "names" if self.config.extraction.forced_tool.drop_prose_schema else "full"
+        )
+        if requested == DEFAULT_PROSE_SCHEMA_MODE:
+            return requested, None
+
+        force, skip_reason = self._forced_tool_decision
+        if not force:
+            # THE correctness case. Forcing is skipped automatically for routes that
+            # cannot carry a toolConfig (a custom Lambda hook, GPT-5.x) and is simply
+            # off when the feature is disabled. Dropping the prose on such a request
+            # would leave the model with NO description of the fields, and the
+            # section would degrade silently — a schema that reaches neither copy is
+            # not a token saving, it is a data-loss bug.
+            reason = skip_reason or (
+                "extraction.forced_tool.enabled is off, so no tool schema is sent"
+            )
+            logger.info(
+                "Keeping the full prose schema: drop_prose_schema was requested but "
+                "the forced toolSpec is not on this request — %s",
+                reason,
+            )
+            return DEFAULT_PROSE_SCHEMA_MODE, {
+                "requested": requested,
+                "mode": DEFAULT_PROSE_SCHEMA_MODE,
+                "kept_reason": reason,
+                "path": "simple",
+            }
+        return requested, {"requested": requested, "mode": requested, "path": "simple"}
 
     def _handle_empty_schema(
         self,
@@ -3421,6 +3554,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             failed_fields,
         )
 
+        # The subset schema is spelled out in FULL here regardless of
+        # extraction.forced_tool.drop_prose_schema (#710): this call carries no
+        # toolConfig at all, and it is the recovery path for a result that already
+        # failed validation. Do not thread the prose-schema mode through it.
         corrective = (
             "\n\nA previous extraction attempt produced data that violated the "
             "schema. Re-extract ONLY the following fields and correct these "
@@ -3643,6 +3780,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             + full_report.agent_feedback()
         )
 
+        # Escalation KEEPS the full prose schema even when the ordinary request
+        # dropped it (#710). It reuses `message_prompt` verbatim — the prompt the
+        # first attempt was built from — while swapping in a SUBSET data model, so an
+        # agent asked to repair three fields would otherwise see only those three
+        # field names and no description of them. This arm is the recovery path for a
+        # result that already failed validation; it is the wrong place to economize,
+        # and the subset schema is a fraction of the class either way.
+        if self._prose_schema_mode != DEFAULT_PROSE_SCHEMA_MODE:
+            subset_prose = self._format_schema_for_prompt(
+                subset_schema, DEFAULT_PROSE_SCHEMA_MODE
+            )
+            instruction += (
+                "\n\nThe schema for the fields you are correcting:\n" + subset_prose
+            )
+
         try:
             if scope == "field-subset":
                 subset_model = create_pydantic_model_from_json_schema(
@@ -3813,8 +3965,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Get extraction config — use per-class model override if specified,
         # otherwise fall back to the global extraction model.
-        class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
-        model_id = class_model_override or self.config.extraction.model
+        model_id, class_model_override = self._resolve_extraction_model()
         # Record the resolved model for audit metadata (set here so it is
         # captured even on the non-agentic/standard path).
         self._pending_extraction_model = model_id
@@ -4220,15 +4371,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Optionally put the class schema on the wire as a FORCED tool instead
             # of relying on the prompt's description of it (WS-05). Off by default
             # and gated on a measured win — forcing constrains the response shape,
-            # not the values in it. The prompt is deliberately left unchanged so
-            # the A/B measures forcing alone; dropping the prose schema is #710's
-            # separate question, and bundling the two would confound both.
+            # not the values in it. Whether the prompt ALSO describes the schema is
+            # now a separate knob (extraction.forced_tool.drop_prose_schema, #710),
+            # decided from this same `force` boolean back in
+            # _initialize_extraction_context — before the prompt was built, which is
+            # why the decision is read here rather than made here.
             from idp_common.extraction.forced_tool import (
                 EXTRACTION_TOOL_NAME,
                 build_extraction_tool_config,
                 forced_tool_choice,
                 restore_extracted_fields,
-                should_force_tool,
                 unwrap_tool_payload,
             )
 
@@ -4239,9 +4391,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # regression #753 warns about for forced tool use generally.
             ft_cfg = self.config.extraction.forced_tool
             wire_schema = self._wire_class_schema or self._class_schema
-            force, skip_reason = should_force_tool(
-                model_id, ft_cfg.enabled, wire_schema
-            )
+            force, skip_reason = self._forced_tool_decision
             tool_config = tool_choice = None
             tool_name_map = None
             if force:
@@ -4294,6 +4444,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "renamed_properties": len(tool_name_map.renamed)
                     if tool_name_map
                     else 0,
+                    # Which schema copies actually went on the wire (#710). Kept
+                    # alongside requested/honored/skipped so the forced-tool audit
+                    # is self-contained: "tool only" and "tool + prose" are
+                    # different experiments and must not read the same.
+                    "prose_schema": self._prose_schema_mode,
                 }
                 if forced_tool_input is None:
                     logger.warning(
@@ -4308,6 +4463,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "requested": True,
                     "honored": False,
                     "skipped": skip_reason,
+                    "prose_schema": self._prose_schema_mode,
                 }
 
             extracted_text = bedrock.extract_text_from_response(
@@ -5165,6 +5321,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # never ran" — a skipped route or an unhonored force are both normal
             # and both invisible without this.
             metadata["forced_tool"] = self._pending_forced_tool_metadata
+        if self._pending_prose_schema_metadata is not None:
+            # Present only when the prompt's schema prose was NOT the shipped
+            # `full` rendering, so a default deployment's metadata is unchanged.
+            # `kept_reason` is the one that matters: it says the drop was asked for
+            # and deliberately not applied, which is the difference between "the
+            # saving did nothing" and "the saving never happened" (#710).
+            metadata["prose_schema"] = self._pending_prose_schema_metadata
 
         # Deterministic type/format repairs. Recorded so a human can audit exactly
         # what was rewritten and what was refused — coercion must never silently

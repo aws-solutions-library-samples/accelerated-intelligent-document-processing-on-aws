@@ -1035,37 +1035,122 @@ end-to-end demo: [`notebooks/misc/e2e-example-with-1s-topk.ipynb`](../../../../n
 
 The extraction service supports an optional **agentic extraction mode** powered by the Strands agent framework with tool-based structured output. When enabled, the extraction agent gains intelligent tools including a deterministic table parser for robust tabular data extraction.
 
-### Schema token budget: the schema is sent three times (#710)
+### Schema token budget: the schema is sent three times by default (#710)
 
-Advanced extraction transmits the class schema **three times per request**. Measured
-on `config_library/unified/lending-package-sample` -> `Payslip` at ~4 chars/token:
+Advanced extraction transmits the class schema **three times per request** as
+shipped. Measured on `config_library/unified/lending-package-sample` -> `Payslip` at
+~4 chars/token:
 
-| # | Where | Tokens |
-|---|---|---|
-| 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 |
-| 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 |
-| 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~2,595 |
-| | **total ~6,680, of which copy 2 is 38%** | |
+| # | Where | Tokens | Knob that removes it |
+|---|---|---|---|
+| 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 | `extraction.agentic.prose_schema` |
+| 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 | `extraction.agentic.restate_schema_in_system_prompt` |
+| 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~1,612 | required by the API — this is the copy the others duplicate |
+| | **total ~5,700, of which copies 1+2 are ~72%** | | |
+
+Both knobs default to today's behaviour, so an unmodified deployment still sends all
+three. Turning both off leaves the schema on the wire exactly **once**.
+
+Simple (traditional) extraction sends the schema once as prose, and twice when
+`extraction.forced_tool.enabled` puts it on the wire as a required tool — that second
+duplicate is removed by `extraction.forced_tool.drop_prose_schema`.
+
+#### Copy 2 — `restate_schema_in_system_prompt`
 
 Copies 2 and 3 are **the same JSON string** — not merely equivalent; a test asserts
 the substring match. So copy 2 carries no information copy 3 does not, and
 `extraction.agentic.restate_schema_in_system_prompt: false` removes it. The agent
 can still fetch the schema on demand via `get_extraction_schema_reminder`, which is
-unaffected.
+unaffected. Measured: no completeness or accuracy cost
+([config-guidance.md §7](../../../../docs/benchmarking/config-guidance.md)).
 
-**It defaults to `true`, and that is deliberate.** Restating a schema in prose often
-improves how closely a model follows it, so the duplication may be doing real work.
-Treat this as an A/B knob: the benchmark `restatement` suite runs both arms on one
-stack with identical code, and the gate is **completeness**, not token count — a
-token saving that loses list rows is a loss.
+#### Copy 1 — `prose_schema`, and why it is not a plain on/off
 
-Two things that make the payoff smaller and larger than it looks:
+Copy 1 is **not** byte-identical to copy 3, and the difference decides what is safe
+to drop. Copy 3 is derived from a generated Pydantic model, and that round trip has
+nowhere to put a description belonging to an *object*:
 
-- **Smaller in dollars.** All three copies sit inside the prompt-cache prefix, so on
-  a repeated-class workload they are cache reads at roughly a tenth of input price.
-- **Larger in capability.** ~2,600 redundant tokens per request consume the same
-  context budget that `context_buffer` / `shard_token_budget` manage, so removing
-  them can keep a document out of an extra shard.
+| | Simple path (`forced_tool`) | Advanced path (agentic) |
+|---|---|---|
+| tool schema built from | the class schema, via `sanitize_tool_schema` | a generated Pydantic model |
+| per-field descriptions | kept | kept |
+| class (root) description | kept | **lost, on every class measured** |
+| nested-group descriptions | kept | **lost** |
+| verified on lending `Payslip` | 37/37 descriptions survive | 34/37 survive |
+
+So on the Simple path the prose copy is genuinely redundant and dropping it is a
+clean deletion. On the Advanced path dropping it *removes information the model has
+nowhere else* — which is why `prose_schema` has three settings rather than two:
+
+| `extraction.agentic.prose_schema` | What the prompt carries | `Payslip` |
+|---|---|---|
+| `full` (default) | the whole cleaned JSON Schema | ~1,485 tok |
+| `minimal` | only what the tool schema loses — the class description and every nested-group description — plus the attribute names | ~372 tok |
+| `names` | the attribute names only | ~176 tok |
+
+`names` is deliberately **not** the empty string: the placeholder sits inside
+`<attributes> … </attributes>` in user-editable prompt text whose next sentence
+refers to "a list of attribute names and descriptions", so an empty substitution
+would leave dangling prose and make that sentence false.
+
+Renderers live in `prose_schema.py`; the mode is resolved once per section in
+`ExtractionService._resolve_prose_schema_mode`.
+
+#### The ordering constraint (this is correctness, not style)
+
+On the Simple path the prose may only be dropped when the toolSpec **actually goes on
+the wire**. Forcing is skipped automatically for routes that cannot carry a
+`toolConfig` — a custom Lambda hook, the GPT-5.x Responses API — and is off entirely
+when `forced_tool.enabled` is false. Dropping the prose on such a request would leave
+the model with *no schema at all*, and the section would degrade silently.
+
+So both decisions come from **one** `force` boolean, computed in
+`_initialize_extraction_context` *before* the prompt is built rather than in
+`_invoke_extraction_model` after it. When a drop is requested but not applied, the
+section records why:
+
+```json
+"prose_schema": {
+  "requested": "names",
+  "mode": "full",
+  "kept_reason": "model does not reach the Converse API: the LambdaHook route ...",
+  "path": "simple"
+}
+```
+
+The applied mode is also mirrored into `metadata.forced_tool.prose_schema`, so a
+forcing A/B can tell "tool only" from "tool + prose" without a second lookup. The
+block is **absent** when the shipped `full` rendering was used.
+
+Two related behaviours worth knowing:
+
+- **The multi-instance detection probe** (#753) is injected into the wire schema and
+  therefore into the prose today. Dropping the prose is safe only because the probe
+  also rides the toolSpec, including its question; a probe that reached neither copy
+  would make the count structurally impossible while everything still reported
+  success. Asserted in `tests/unit/extraction/test_prose_schema_service.py`.
+- **Escalation keeps the prose.** A `field-subset` escalation reuses the original
+  prompt with a *subset* data model, so the escalating agent would otherwise see only
+  field names. The subset schema is appended in full to its instruction. It is the
+  recovery path for a result that already failed validation — the wrong place to
+  economize.
+
+#### What the saving is, and is not
+
+- **Smaller in dollars than it looks.** All copies sit inside the prompt-cache
+  prefix, so on a repeated-class workload they are cache reads at roughly a tenth of
+  input price.
+- **Larger in capability.** The redundant tokens consume the same context budget that
+  `context_buffer` / `shard_token_budget` manage, so removing them can keep a
+  document out of an extra shard.
+- **One-time cache invalidation.** The prose precedes `<<CACHEPOINT>>` and tools
+  render before the system prompt, so changing the rendering invalidates the cached
+  prefix once per class, on the first request after the change.
+- **Not free in quality, until measured.** Restating a schema in prose often improves
+  how closely a model follows it. Both knobs are A/B knobs, and the gate is
+  **completeness**, not token count — a token saving that loses list rows is a loss.
+  The benchmark `proseschema` and `restatement` suites run the arms on one stack with
+  identical code.
 
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.

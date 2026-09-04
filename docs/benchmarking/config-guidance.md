@@ -103,6 +103,8 @@ metric each is judged on). Advice for the ones that have been measured is in §7
 | Enforcement | `extraction.coercion.enabled`, `extraction.validation.{enabled,fail_action}` | partially — see §7 |
 | Forcing | `extraction.forced_tool.enabled` | yes — §7 |
 | Schema restatement | `extraction.agentic.restate_schema_in_system_prompt` | yes — §7 |
+| Prompt schema prose (Simple) | `extraction.forced_tool.drop_prose_schema` | yes — §7 |
+| Prompt schema prose (Advanced) | `extraction.agentic.prose_schema` | yes — §7 |
 | Section splitting | `classification.sectionSplitting` | yes — §7 |
 | Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes, but underpowered here — !769 is the authority, §7 |
 | Classification confidence | `classification.confidence.mode` | not yet (cost unmeasured) |

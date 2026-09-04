@@ -68,10 +68,38 @@ axes:
   # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
   # Converse tool instead of describing it in the prompt. The task prompt is
   # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
-  # are separate questions, and varying both at once would confound each.
+  # are separate questions, and varying both at once would confound each. The
+  # `prose_drop` axis below is where the second question gets asked, holding
+  # forcing ON in both of its arms for exactly the same reason.
   forcing:
     'off': {extraction.forced_tool.enabled: false}
     'on':  {extraction.forced_tool.enabled: true}
+  # extraction.forced_tool.drop_prose_schema (#710), SIMPLE path. Whether the task
+  # prompt ALSO restates the schema as prose when the forced toolSpec already
+  # carries it. One knob per axis, as everywhere else here — which means a cell
+  # using it MUST also set `forcing: 'on'` (the prose-drop cells below do). The knob
+  # is deliberately inert with forcing off: dropping the prose on a request that
+  # carries no toolSpec would send the model no schema at all, so the service keeps
+  # the prose and records `prose_schema.kept_reason`. An arm that forgot to force
+  # would therefore measure nothing while LOOKING like it measured "no effect" —
+  # read `forced_tool.prose_schema` in the section metadata to confirm which
+  # rendering each run actually used.
+  prose_drop:
+    'off': {extraction.forced_tool.drop_prose_schema: false}
+    'on':  {extraction.forced_tool.drop_prose_schema: true}
+  # extraction.agentic.prose_schema (#710), ADVANCED path. Three renderings of the
+  # prose copy, which on this path duplicates a toolSpec Strands derives from the
+  # generated Pydantic model. That round trip is NOT lossless: it drops the root
+  # class description on every class measured and every nested-group description
+  # (lending `Payslip` keeps 34 of 37; four of its six classes declare only a root
+  # description and lose all of it). `names` is therefore the arm that can actually
+  # hurt, and `minimal` is the compensating middle — it restates exactly what the
+  # round trip loses and nothing else. Measured per-request on `Payslip`:
+  # full 1,485 tok, minimal 372, names 176.
+  prose_schema:
+    full:    {extraction.agentic.prose_schema: full}
+    minimal: {extraction.agentic.prose_schema: minimal}
+    names:   {extraction.agentic.prose_schema: names}
   # extraction.agentic.restate_schema_in_system_prompt (#710). Advanced extraction
   # sends the class schema THREE times per request; copies 2 and 3 are the same
   # JSON string, so copy 2 (the system-prompt restatement) is pure duplication —
@@ -185,6 +213,12 @@ default_cell:
   enforcement: warn
   forcing: 'off'             # shipped default; the sweep varies it
   schema_restatement: 'on'   # current behaviour; the sweep varies it
+  # Both #710 prose axes at their shipped defaults, which are also no-ops: with
+  # `forcing: 'off'` above, drop_prose_schema cannot apply anyway, and `full` is what
+  # every release before #710 rendered. Order matters in this mapping — each axis is
+  # applied in turn — so an axis here must never write a knob another axis owns.
+  prose_drop: 'off'
+  prose_schema: full
   section_splitting: llm_determined   # the shipped default; the sweep varies it
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
   class_confidence: topk              # the shipped default since #731
@@ -257,6 +291,31 @@ multi_instance_cells:
   - {id: mi-wrapped,  ocr: textract_tables, extraction_mode: simple, assessment: separate, section_splitting: disabled, multi_instance: 'on',  multi_instance_detection: 'on'}
 
 # -----------------------------------------------------------------------------
+# PROSE-SCHEMA cells (#710). Kept OUT of `core_cells` deliberately: five more cells
+# would grow the release gate (`corefast` = cells x 3 docs x 3 repeats) by half for a
+# knob that ships OFF, and `prose-adv-names` is the arm most likely to be WORSE — it
+# is the control that shows whether the compensating `minimal` preamble is needed, not
+# a configuration to recommend. `restate-on`/`restate-off` and `force-off`/`force-on`
+# are in `core_cells` because they were the release's headline A/Bs; this study is the
+# follow-up and gets its own suite.
+# -----------------------------------------------------------------------------
+prose_schema_cells:
+  # SIMPLE pair. Both FORCE the tool and differ ONLY in the prose copy, so the delta
+  # is de-duplication alone rather than de-duplication plus forcing. `prose-keep` is
+  # byte-identical to `force-on`, restated under its own id so the pair reads as one
+  # experiment and a doc list can be chosen for this question.
+  - {id: prose-keep,        ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on', prose_drop: 'off'}
+  - {id: prose-drop,        ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'on', prose_drop: 'on'}
+  # ADVANCED trio. The toolSpec is always sent on this path, so the prose copy is the
+  # only variable. All three hold `schema_restatement: 'off'` so the arms differ by ONE
+  # copy of the schema rather than two: with the system-prompt restatement left on, a
+  # full schema would still reach the model in every arm and no prose difference could
+  # show up. (That also means these numbers are not comparable to `restate-on`.)
+  - {id: prose-adv-full,    ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off', prose_schema: full}
+  - {id: prose-adv-minimal, ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off', prose_schema: minimal}
+  - {id: prose-adv-names,   ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off', prose_schema: names}
+
+# -----------------------------------------------------------------------------
 # CONTROL cells — deliberately WRONG or historical configurations that exist only
 # as the control arm of a specific study. They are referenceable by name from a
 # suite, but they are NOT part of `core_cells`, because every suite that says
@@ -277,6 +336,14 @@ control_cells:
 sweeps:
   forcing: ['off', 'on']
   schema_restatement: ['on', 'off']
+  # NEITHER #710 prose axis is swept here, and that is deliberate. A one-axis sweep
+  # holds every other axis at `default_cell`, which is `extraction_mode: simple` and
+  # `forcing: 'off'` — so `prose_drop` arms would behave identically (the service
+  # keeps the prose when no toolSpec is on the wire) and `prose_schema` arms would be
+  # ignored entirely (it is an agentic-only knob). Both would report a confident
+  # "no effect" for a knob that never applied, which is the exact failure the
+  # `forced_tool.prose_schema` metadata exists to make visible. Use the `proseschema`
+  # suite: its cells force the tool in both simple arms and run advanced for the rest.
   enforcement:
   - 'off'
   - warn
@@ -411,6 +478,45 @@ suites:
     - valuenoise_100
     - longdesc_100
     repeats: 3
+  # #710 part two: the PROSE copy, the one the issue proposes dropping second. The
+  # `restatement` suite above removed the system-prompt copy; this removes the task-
+  # prompt copy on both paths. Same gate, same reason: COMPLETENESS first, accuracy
+  # second, cost last and only as corroboration.
+  #
+  # Docs are chosen so the failure mode is visible rather than assumed:
+  #   valuenoise_100 — typed per-row truth -> cell_accuracy (value fidelity)
+  #   longdesc_100   — list-heavy -> completeness_recall. THE doc for this question:
+  #                    if dropping the prose costs adherence, it shows up as MISSING
+  #                    ROWS, which is the explicit warning in #710.
+  #   small_narrow   — the near-unaffected control; a delta here would mean something
+  #                    other than the prose copy moved.
+  # `kv_form` is a DIFFERENT class and must be run separately with --class kv_form.
+  #
+  # repeats: 3 — the agentic arms are non-deterministic (turn counts have varied ~4x
+  # run to run), so one sample cannot separate an effect from a draw.
+  proseschema:
+    cells: "prose_schema_cells"
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    - small_narrow
+    repeats: 3
+  # The cost arm, separated so it is never run by accident and so this file's own
+  # rule for cost CLAIMS (repeats >= 5) is satisfied. Two cells only — the SIMPLE
+  # pair, where the saving is a clean deletion and per-request token counts are
+  # deterministic. The advanced arms are deliberately excluded: agentic turn count is
+  # non-deterministic, and prior art (docs/benchmarking/config-guidance.md §7) is that
+  # at cost CV 0.25-0.43 a 12% gap was not resolvable at n=6 and per-document token
+  # counts could not measure it either (83k/54k/115k WITHIN one arm). The defensible
+  # cost figure for this feature is the per-REQUEST static saving; measured dollars
+  # are corroboration only.
+  prosecost:
+    cells:
+    - prose-keep
+    - prose-drop
+    docs:
+    - valuenoise_100
+    repeats: 5
   # #715 / #753 three-arm study: silent loss -> visible loss -> fixed. Runs on
   # `twodocs_2x20` (two complete statements, distinct account numbers, globally
   # unique SEQ tags across copies, so completeness is exact) plus `small_narrow` as
