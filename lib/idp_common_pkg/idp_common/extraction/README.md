@@ -707,18 +707,32 @@ Measured on two real labeled corpora via Test Studio, 80 paired runs (identical
 documents per pair, only the toggle differing) — see
 `docs/benchmarking/feature-multi-instance.md`:
 
-* **It works.** On 40 bank-check images from the OmniAI OCR benchmark, scored
-  against their committed baselines: 18 true positives, **0 false positives**, 0
-  false negatives, 22 correct silences. Precision and recall **1.000**, and the
-  reported count was **exactly** right on all 18 (2 to 8 checks per image).
+* **The counting works.** On 40 bank-check images from the OmniAI OCR benchmark,
+  scored against their committed baselines: 18 true positives, **0 false
+  positives**, 0 false negatives, 22 correct silences. Precision and recall
+  **1.000**, and the reported count was **exactly** right on all 18 (2 to 8 checks
+  per image).
+* **⚠ A warning is not by itself evidence of loss, and the same benchmark proves
+  it.** Counting the extracted rows on those 18 documents afterwards: **0 checks
+  missing**, in both arms. `BANK_CHECK`'s schema is a single `checks` array, so the
+  class already models several checks per sheet. The warning fired because
+  `instance_count` is **1** for a class that declares no instance axis — which is
+  true whether the records are absent *or* sitting inside a declared array. The
+  predicate `probe_count > instance_extracted_count` cannot distinguish the two.
+  Correct and useful (the fix is `x-aws-idp-instance-array: checks`), but it is a
+  configuration finding, not a data-loss finding. Say so wherever this warning is
+  surfaced.
 * **Tokens are negligible:** input +1.8%, output −0.5%.
 * **On a corpus with nothing to find it is pure cost.** RealKIE-FCC-Verified:
   0.7678 → 0.7552 weighted score, worse on 14 of 40 documents and better on 1,
   sign test **p = 0.001**. The loss is diffuse (four attributes, one or two
   documents each), not a single failure mode.
 
-Hence off by default and a strong recommendation to turn it on per configuration
-profile for any corpus whose sections can hold several documents of one class.
+Hence off by default, and turn it on per configuration profile where a section can
+hold several documents of one class **and the class schema describes only one** —
+that conjunction is what loses records. It is also worth running once as a pure
+diagnostic on any corpus, then turning off: that is how the `BANK_CHECK` missing
+instance axis above was found.
 
 The question itself is `extraction.multi_instance_detection.question`, sent as the
 auxiliary property's description and supporting `{DOCUMENT_CLASS}`. The shipped text

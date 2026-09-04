@@ -1,0 +1,45 @@
+Did detection AVERT data loss on the 18 flagged bank-check images? No — nothing was
+lost in either arm. Measured by counting `inference_result.checks` per document in
+both runs and comparing against the committed baseline's check count.
+
+  detection ON : OmniAI-OCR-Benchmark-20260904-113203  (profile mid-on-ocr)
+  detection OFF: OmniAI-OCR-Benchmark-20260904-113156  (profile mid-off-ocr)
+
+document                    GT  probe  extracted(on)  extracted(off)  verdict
+BANK_CHECK_102.png           6      6              6               6  complete
+BANK_CHECK_159.png           8      8              8               8  complete
+BANK_CHECK_201.png           3      3              3               3  complete
+BANK_CHECK_292.png           2      2              2               2  complete
+BANK_CHECK_355.png           7      7              7               7  complete
+BANK_CHECK_369.png           2      2              2               2  complete
+BANK_CHECK_404.png           5      5              5               5  complete
+BANK_CHECK_442.png           4      4              4               4  complete
+BANK_CHECK_508.png           4      4              4               4  complete
+BANK_CHECK_553.png           8      8              8               8  complete
+BANK_CHECK_577.png           6      6              6               6  complete
+BANK_CHECK_606.png           3      3              3               3  complete
+BANK_CHECK_618.png           2      2              2               2  complete
+BANK_CHECK_691.png           2      2              2               2  complete
+BANK_CHECK_706.png           3      3              3               3  complete
+BANK_CHECK_707.png           4      4              4               4  complete
+BANK_CHECK_751.png           8      8              8               8  complete
+BANK_CHECK_763.png           2      2              2               2  complete
+
+total checks missing vs GT — detection ON: 0, detection OFF: 0
+
+WHY: BANK_CHECK's schema has exactly ONE property, an array named `checks`, so the
+class already models several checks per sheet. Nothing was collapsing to a single
+record, so there was no loss to avert.
+
+WHAT THE 18 FLAGS ACTUALLY ARE: `extraction_multi_instance_suspected` fires when
+probe_count > instance_extracted_count. `instance_extracted_count` is 1 for a class
+that declares no instance axis — TRUE WHETHER THE RECORDS ARE MISSING OR SITTING
+INSIDE A DECLARED ARRAY. So the predicate cannot distinguish the two, and the
+detection numbers alone can never establish data loss. Here it correctly identified
+that BANK_CHECK never declares `x-aws-idp-instance-array: checks` — a real
+configuration finding in a shipped preset, and free to fix.
+
+An earlier version of docs/benchmarking/feature-multi-instance.md asserted "each of
+those 18 documents silently ships 1 to 7 checks fewer than it contains" from the
+detection numbers alone, without counting extracted rows. That was false. This file
+is the measurement that settles it.

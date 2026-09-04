@@ -319,3 +319,44 @@ def test_string_true_from_a_config_round_trip_is_still_honoured():
     the stringified form too or they silently stop applying after a save."""
     with pytest.raises(ValidationError):
         IDPConfig(classes=[_klass(**{MULTI: "true", KEY: "records"})])
+
+
+# ---------------------------------------------------------------------------
+# The shipped ocr-benchmark preset declares BANK_CHECK's instance axis.
+# ---------------------------------------------------------------------------
+
+
+def test_ocr_benchmark_presets_declare_bank_check_instance_axis():
+    """`BANK_CHECK` is a packet class: its ONLY property is a `checks` array whose
+    elements are separate check documents. Without the declaration the section
+    reports ``instance_count`` 1 for a sheet holding 8 checks — and running
+    detection over this corpus flags 18 of the first 40 sheets for exactly that
+    reason (a real finding: the count was never declared; no data was lost).
+
+    Pinned because Designate mode is free — no schema transform, no output change,
+    no baseline migration — so there is no reason for this to regress, and if it
+    does the only symptom is a number quietly reading 1 again.
+
+    Also asserts the two modes are not BOTH set: `BANK_CHECK`'s top level is
+    nothing but one record array, which is precisely the shape
+    `x-aws-idp-multi-instance` would double-wrap into ``instances[i].checks[j]``.
+    """
+    import pathlib
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[5]
+    for rel in (
+        "config_library/managed_config/ocr-benchmark/config.yaml",
+        "config_library/unified/ocr-benchmark/config.yaml",
+    ):
+        path = root / rel
+        assert path.exists(), f"missing preset: {rel}"
+        classes = yaml.safe_load(path.read_text())["classes"]
+        bank_check = next(c for c in classes if (c.get("$id") or "") == "BANK_CHECK")
+        assert bank_check.get("x-aws-idp-instance-array") == "checks", rel
+        assert "x-aws-idp-multi-instance" not in bank_check, (
+            f"{rel}: BANK_CHECK's top level is one record array, so the synthesized "
+            "wrapper would produce instances[i].checks[j] — one level too many"
+        )
+        assert "checks" in (bank_check.get("properties") or {}), rel

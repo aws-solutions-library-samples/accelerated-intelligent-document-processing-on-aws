@@ -8,6 +8,15 @@ classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
   $id: BANK_CHECK
   x-aws-idp-document-type: BANK_CHECK
+  # Each element of `checks` is a separate CHECK DOCUMENT, not a line item, so
+  # this names the class's existing instance axis. Designate mode: no schema
+  # transform, no output change, no baseline migration -- it only lets the
+  # pipeline report how many documents a sheet held instead of always 1.
+  # Found by running extraction.multi_instance_detection once over this corpus:
+  # it counted 2-8 checks on 18 of the first 40 sheets while the section
+  # reported instance_count 1. No data was being lost (the checks were all in
+  # the array); the count was simply never declared.
+  x-aws-idp-instance-array: checks
   description: A bank check or cheque document with payee, amount, date, bank info, and account details.
   type: object
   properties:

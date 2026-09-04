@@ -762,8 +762,20 @@ does not treat the field as something to extract from the page).
   | count reported *exactly* right | **18 of 18** (2 to 8 checks) |
   | token cost | input **+1.8%**, output **−0.5%** |
 
-  Without it, those 18 documents each silently lose between 1 and 7 checks. That is
-  #565, on a real corpus, and detection catches every one of them.
+  It found every multi-check sheet and counted it correctly. **But be precise about
+  what those 18 flags mean** — they are a *configuration* finding on this corpus, not
+  averted data loss. The extracted rows were counted afterwards: **0 checks missing
+  in either arm**. `BANK_CHECK`'s schema is a single `checks` array, so the class
+  already models several checks per sheet and nothing was collapsing. What detection
+  correctly spotted is that the class never declares its instance axis, so the
+  section reports 1 instance for a sheet holding 6 documents — fixed for free with
+  `x-aws-idp-instance-array: checks`, no schema change and no baseline migration.
+
+  The distinction matters, because "probe says 6, section says 1" **cannot by itself
+  tell you whether records were lost**: `instance_count` is 1 for any class with no
+  declared instance axis, whether the records are missing or sitting inside a
+  declared array. When detection fires, check the extracted data before concluding
+  anything was dropped.
 
 - **Why it is off anyway.** On a corpus with *no* multi-record documents to find, it
   is pure cost: `RealKIE-FCC-Verified` lost about **1.3 accuracy points** with it on
@@ -772,9 +784,15 @@ does not treat the field as something to extract from the page).
   failure mode. A default has to be safe for the deployment that gets no benefit,
   so the default is off.
 
-- **So: turn it on when your documents can contain several records of one class**,
-  and leave it off when they cannot. It is per configuration profile, so a
+- **So: turn it on when a section can hold several records of one class *and the
+  class schema describes only one*.** That combination is what loses records; either
+  half alone does not. Leave it off otherwise. It is per configuration profile, so a
   multi-record corpus can have it while the rest of your deployment does not.
+
+- **Two uses, and only one is a setting.** As a **diagnostic**, turn it on once, act
+  on what it names, turn it off — that is how the `BANK_CHECK` misconfiguration
+  above was found. As a **standing guard**, leave it on where a corpus genuinely
+  keeps producing merged same-class sections and you want a warning on each one.
 
 ### Multi-instance sections (`x-aws-idp-multi-instance`)
 
