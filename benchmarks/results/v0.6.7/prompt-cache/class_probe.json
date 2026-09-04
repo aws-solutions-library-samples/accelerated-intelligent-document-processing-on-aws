@@ -1,0 +1,172 @@
+{
+  "ocrb/BANK_CHECK": {
+    "est": 1443,
+    "off": {
+      "total": 1383,
+      "uncached": 8,
+      "write": 1375,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2492,
+      "uncached": 325,
+      "write": 2167,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/COMMERCIAL_LEASE_AGREEMENT": {
+    "est": 1266,
+    "off": {
+      "total": 1335,
+      "uncached": 8,
+      "write": 1327,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2398,
+      "uncached": 325,
+      "write": 2073,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/CREDIT_CARD_STATEMENT": {
+    "est": 1194,
+    "off": {
+      "total": 1176,
+      "uncached": 8,
+      "write": 1168,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2176,
+      "uncached": 325,
+      "write": 1851,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/DELIVERY_NOTE": {
+    "est": 1747,
+    "off": {
+      "total": 1710,
+      "uncached": 8,
+      "write": 1702,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2980,
+      "uncached": 325,
+      "write": 2655,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/EQUIPMENT_INSPECTION": {
+    "est": 1324,
+    "off": {
+      "total": 1305,
+      "uncached": 8,
+      "write": 1297,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2364,
+      "uncached": 325,
+      "write": 2039,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/GLOSSARY": {
+    "est": 963,
+    "off": {
+      "total": 947,
+      "uncached": 947,
+      "write": 0,
+      "read": 0,
+      "cached": false
+    },
+    "on": {
+      "total": 1767,
+      "uncached": 325,
+      "write": 1442,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/PETITION_FORM": {
+    "est": 1158,
+    "off": {
+      "total": 1187,
+      "uncached": 8,
+      "write": 1179,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2138,
+      "uncached": 325,
+      "write": 1813,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/REAL_ESTATE": {
+    "est": 1279,
+    "off": {
+      "total": 1246,
+      "uncached": 8,
+      "write": 1238,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2331,
+      "uncached": 325,
+      "write": 2006,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "ocrb/SHIFT_SCHEDULE": {
+    "est": 1014,
+    "off": {
+      "total": 998,
+      "uncached": 998,
+      "write": 0,
+      "read": 0,
+      "cached": false
+    },
+    "on": {
+      "total": 1829,
+      "uncached": 325,
+      "write": 1504,
+      "read": 0,
+      "cached": true
+    }
+  },
+  "rk/Invoice": {
+    "est": 1270,
+    "off": {
+      "total": 1687,
+      "uncached": 9,
+      "write": 1678,
+      "read": 0,
+      "cached": true
+    },
+    "on": {
+      "total": 2795,
+      "uncached": 79,
+      "write": 2716,
+      "read": 0,
+      "cached": true
+    }
+  }
+}
