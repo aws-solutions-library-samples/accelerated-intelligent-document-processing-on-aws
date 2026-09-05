@@ -35,7 +35,7 @@ docs:
   truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/longdesc_100.pdf.truth.json
   out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/longdesc_100.pdf
   rows: 100
-  pages: 3
+  pages: 4
   documents: 1
   tag: shape=longtext
   series: null

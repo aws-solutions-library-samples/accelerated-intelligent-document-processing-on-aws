@@ -101,6 +101,50 @@ What changes is the output *shape* — 3 result files, 3 evaluation sections, 3
 reporting rows, 3 UI sections for one statement, with `Account Number: null` on
 the continuations, which reads as extraction failure rather than continuation.
 
+### Correction: it is NOT free. In ADVANCED mode it costs 22–25%
+
+The "cost is unchanged" above is measured with `split-disabled` vs `split-llm`, and
+**both of those cells are SIMPLE extraction.** The conclusion does not generalize,
+and the release `cost` A/B found the other half of it — see
+[the v0.6.7 release audit](../../../docs/benchmarking/releases/v0.6.7.md).
+
+On `med_narrow` (one statement, 400 rows, 9 pages), `repeats: 5`, one stack upgraded
+in place from published v0.6.6 to published v0.6.7:
+
+| cell | v0.6.6 (1 section) | v0.6.7 (2–4 sections) | v0.6.7, splitting `disabled` |
+|---|---|---|---|
+| `core-tt-simple-sep` | $0.5356 | $0.5326 (−0.6%) | $0.5289 (−1.3%) |
+| `core-tt-adv-sep` | $1.4005 | **$1.7119 (+22.2%)** | **$1.2969 (−7.4%)** |
+
+`Extraction/lambda/requests` goes 1 → 4, and Extraction input tokens rise **+58%** at
+flat output. Every section is a full agentic loop — system prompt, schema restatement,
+tool schemas, pre-flight table parse, multi-turn conversation — so the per-section
+fixed overhead is paid once per spurious section. A simple extraction has almost none
+of that overhead, which is exactly why the simple-mode arms above showed nothing.
+
+**v0.6.6's 1 section was not a correct decision.** Its metering carries **no
+`Classification/bedrock/*` meter at all** — zero classification inference calls, in all
+5 runs. That is #686/#705: splitting was skipped outright for a single-class config, so
+it would equally have returned one section for a real two-statement packet. v0.6.7 fixes
+that, classification starts running, and #726 is what it then does. The +22% is the
+**price of fixing #686 while #726 is open**.
+
+Three consequences for how #726 should be prioritized:
+
+* It is a **cost** defect on the agentic path, not only a shape defect.
+* With `extraction.validation.enabled` now defaulting to `true`, each spurious
+  continuation section also emits a real `'Account Number' is a required property`
+  issue — so over-splitting now manufactures ProcessingIssues as well.
+* **It is model-dependent.** Holding everything else fixed and only changing
+  `classification.model` to Sonnet 5 gives 1 section in **5 of 5** runs (Nova 2 Lite, the
+  shipped default: 1 in **0 of 5**). Classification is charged per page, so that fix costs
+  a simple-mode user **+45%** ($0.533 → $0.776) and returns only 9% of advanced mode's
+  premium.
+
+`sectionSplitting: disabled` removes all of it for a **single-class** corpus and is the
+correct setting there — but it is measured wrong by construction on a packet
+(`sections_correct` 0.00 on a two-statement file), so it is not a general workaround.
+
 ---
 
 ## 3. The #686 cost increase, measured: real but small **here**

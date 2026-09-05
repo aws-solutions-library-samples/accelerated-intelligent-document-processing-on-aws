@@ -404,17 +404,31 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         phase = k.split("/")[0]
         c, _ = lib.price_metering({k: units})
         by_phase[phase] = round(by_phase.get(phase, 0.0) + c, 5)
+    # Token counts, both summed across the whole document and split by phase.
+    #
+    # The doc-level sum mixes every model the pipeline called (Sonnet for
+    # extraction, Nova for classification/confidence), so it cannot answer "which
+    # call got bigger" — a +31% doc-level inputTokens can be entirely Nova, which
+    # moves cost by a rounding error. `tokens_by_phase` and `cost_by_key` split
+    # it: the phase says WHERE, the pricing key (model id) says WHICH MODEL.
+    # Both were added while localizing the v0.6.6 -> v0.6.7 advanced-mode cost
+    # rise, which `cost_by_phase` alone could only narrow to "Extraction".
+    _TOK_UNITS = (
+        "inputTokens",
+        "outputTokens",
+        "cacheReadInputTokens",
+        "cacheWriteInputTokens",
+    )
     tok = {}
+    tok_by_phase = {}
     for k, units in (metering or {}).items():
         if isinstance(units, dict):
-            for u in (
-                "inputTokens",
-                "outputTokens",
-                "cacheReadInputTokens",
-                "cacheWriteInputTokens",
-            ):
+            phase = k.split("/")[0]
+            for u in _TOK_UNITS:
                 if u in units:
                     tok[u] = tok.get(u, 0) + int(units[u])
+                    ph = tok_by_phase.setdefault(phase, {})
+                    ph[u] = ph.get(u, 0) + int(units[u])
     out = {
         "doc": doc_name,
         "status": status,
@@ -423,7 +437,9 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         "wall_s": _wall(row),
         "cost": round(cost, 4),
         "cost_by_phase": by_phase,
+        "cost_by_key": {k: round(v, 5) for k, v in (by or {}).items()},
         "tokens": tok,
+        "tokens_by_phase": tok_by_phase,
     }
     if truth:
         out.update(score_synthetic(bucket, doc_prefix, truth))

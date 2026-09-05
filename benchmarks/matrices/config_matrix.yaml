@@ -509,3 +509,22 @@ suites:
   # A representative mid-size list doc, the cost-decision-relevant cells, repeated
   # enough that per-cell cost mean±stdev separates real gaps from agentic noise.
   cost:    {cells: [core-tt-simple-sep, core-tt-adv-sep, core-tt-adv-int, core-tl-adv-sep, core-bda-adv-sep], docs: [med_narrow], repeats: 5}
+  # advsplitcost: is the advanced-mode cost rise CAUSED by over-splitting?
+  #
+  # The v0.6.6 -> v0.6.7 `cost` A/B measured +22..25% on every ADVANCED cell and
+  # -0.6% on the simple control, and the raw metering localized it: `sections` went
+  # 1 -> 2..4 on a one-statement document, and `Extraction/lambda/requests` went
+  # 1 -> 4. Each section is its own agentic loop (system prompt + schema + tool
+  # schemas + pre-flight table parse + multi-turn conversation), so the per-section
+  # fixed overhead is multiplied while the extracted rows — and therefore the
+  # OUTPUT tokens — stay the same. That is a mechanism, not yet a cause.
+  #
+  # This suite closes it WITHIN one release: same stack, same code, the only
+  # difference being `section_splitting`. Run the `disabled` arm with
+  # `--set section_splitting=disabled` and compare against the `cost` suite's
+  # `llm_determined` numbers for the same two cells. If the advanced cell falls
+  # back to its v0.6.6 level with splitting off, over-splitting is the cause.
+  # Both arms are needed because splitting also changes what the SIMPLE cell pays,
+  # which is the control that says "this is about the agentic path, not about
+  # section count in general".
+  advsplitcost: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [med_narrow], repeats: 5}
