@@ -230,18 +230,21 @@ is the total across the 7 documents, where the ground truth is **7** (one per do
    property` on continuation sections that legitimately do not carry it. Advanced mode
    escapes it because its sharding rejoins the section before validation. **Read a
    simple-mode validation warning as a possible splitting problem first.**
-8. **🚨 `force-on` (forced tool use) produces schema-invalid output on every section.**
-   `valid rate` **0.000**, 19 errors in 19 sections, and the cause is the same one every
-   time: the nested object field `Account Holder Address` comes back as a **JSON string**
-   rather than an object —
-   `'{"Street_Number":"100",...}' is not of type 'object'`. `forced_tool.honored` is `true`
-   and `renamed_properties: 3`, so the toolSpec path is working as designed and the
-   *serialization* of nested groups is what is broken. Coercion sees it and refuses
-   (`type_family_mismatch`: "string value in a object field"), which is defensible in
-   general but leaves an obviously-recoverable value unrepaired. The list field is
-   untouched (recall and cell accuracy both 1.000), which is exactly why the earlier WS-05
-   study concluded "no measurable effect" — neither metric covers a nested group. **Leave
-   `extraction.forced_tool.enabled` off.**
+8. **🚨 `force-on` (forced tool use) produces schema-invalid output on every section —
+   root-caused, and it is our bug ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).**
+   `valid rate` **0.000**, 19 errors in 19 sections, all the same: the group attribute
+   `Account Holder Address` comes back as a **JSON string** rather than an object —
+   `'{"Street_Number":"100",...}' is not of type 'object'`.
+   `sanitize_tool_schema` renames *property* names for Bedrock's
+   `^[a-zA-Z0-9_.-]{1,64}$` rule but deliberately leaves **`$defs` definition names**
+   alone, so that attribute ships as a `$ref` whose JSON pointer contains spaces
+   (`#/$defs/Account Holder Address`). **Sonnet 5 does not resolve that pointer and
+   serializes the object instead; Sonnet 4.6 resolves it fine** — isolated to four
+   Converse calls in the issue, where only the spaced-pointer arm returns a string.
+   Coercion then refuses the value (`type_family_mismatch`), declining a lossless repair.
+   The list attribute is untouched (recall and cell accuracy both 1.000), which is exactly
+   why the earlier WS-05 study concluded "no measurable effect" — **neither metric covers a
+   nested group.** **Leave `extraction.forced_tool.enabled` off** until #783 lands.
 9. **`enforce-escalate` costs +35% over `warn`** ($0.792 vs $0.589) — the first measurement
    of the escalate arm's price, which `FINDINGS.md` recorded as unmeasured. `warn` remains
    free (−2% vs `off`, within spread, and free by construction: zero extra inference).
@@ -492,7 +495,8 @@ these are like-for-like cost comparisons of configurations that all did the job.
 | Cheapest OCR, small documents | Bedrock-LLM, **only if identifiers do not matter** — it is the one backend that returns wrong per-row *values* (§2 finding 4) |
 | Packets holding several documents of the **same** class | `x-aws-idp-multi-instance` on that class (**migrate baselines**), or `x-aws-idp-instance-array` if it already lists them (free) — §7 |
 | New corpus, shape unknown | run `extraction.multi_instance_detection` **once** as a diagnostic, act on what it names, then turn it off — §7 |
-| Nested object (group) fields in the schema | leave **`extraction.forced_tool.enabled` off** — forcing returns groups as JSON strings, invalid against the schema on every section (§2 finding 8) |
+| Nested object (group) attributes in the schema | leave **`extraction.forced_tool.enabled` off** — on Sonnet 5 forcing returns groups as JSON strings, making every section schema-invalid ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783), §2 finding 8) |
+| A numeric/boolean attribute that may be unreadable in the source | do **not** rely on advanced mode to tell you — a `required` attribute cannot be returned as `null` on the agentic path, so an unreadable cell becomes a fabricated `0` ([#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782)). Simple mode reports it |
 
 **Safety notes — every failure mode below is silent, and each one is invisible to at least
 one metric you would expect to catch it:**
@@ -515,13 +519,18 @@ one metric you would expect to catch it:**
    per-row **cell accuracy** for exactly this. If you build your own quality gate, gate on a
    per-column non-null rate, not a row count.
 5. **The two extraction modes disagree about what to do with an unreadable column, and one
-   of them is worse.** Given a column OCR could not read at all, simple extraction returned
-   `null` for every row — which the new default validation reports as 100 required-property
-   issues — while advanced returned a fabricated **`0.0`** for every row, which is
-   schema-valid and passes silently. Abstention is recoverable; a plausible zero in a
-   financial field is not. (Observed on a corpus document whose amounts were physically
-   overprinted — see the header note — so treat it as a characterization of behaviour on
-   unreadable input, not a rate.)
+   of them is worse — [#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782).**
+   Given a column OCR could not read at all, simple extraction returned `null` for every row
+   — which the new default validation reports as 100 required-property issues — while
+   advanced returned a fabricated **`0.0`** for every row, schema-valid and silent. This is
+   structural, not a model quirk: a `required` attribute becomes a **non-nullable** Pydantic
+   field on the agentic path, so `null`, `""` and *omitted* are all rejected and the retry
+   loop asks the agent to "fix" it. Abstention is *unexpressible*, and a fabricated value is
+   the only accepted answer. It bites `number`/`integer`/`boolean` hardest, because a
+   plausible `0`/`false` is unverifiable; a `string` can at least carry the garbled literal.
+   (Observed on a corpus document whose amounts were physically overprinted — see the header
+   note — so treat 100/100 as a characterization of behaviour on unreadable input, not a
+   field rate. The contract problem is independent of that document.)
 
 ---
 
@@ -535,12 +544,14 @@ one metric you would expect to catch it:**
    it is a large part of what makes agentic cost look unpredictable. The over-split is
    model-dependent (Sonnet 5 classification gets it right 5/5, Nova 2 Lite 0/5), so a
    better default prompt for the small classifier — not a bigger model — is the fix.
-2. **🚨 Forced tool use serializes nested object fields to JSON strings (P0 for the
-   feature).** `extraction.forced_tool.enabled: true` makes **every** section
-   schema-invalid where the class has a group field (§2 finding 8). Coercion sees the value
-   and refuses it as a type-family mismatch; parsing a string that is valid JSON for an
-   object-typed field is a safe, obvious repair. Until both are fixed the flag cannot be
-   recommended, and "experimental / off by default" is the right status.
+2. **🚨 Forced tool use serializes group attributes to JSON strings on Sonnet 5 —
+   [#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783) (P0 for the feature).**
+   `sanitize_tool_schema` leaves `$defs` *definition* names unsanitized, so a group named
+   `Account Holder Address` ships a `$ref` pointer containing spaces, which Sonnet 5 does
+   not resolve. **Every** section with a group attribute is then schema-invalid (§2 finding
+   8). Fix: sanitize `$defs` names and rewrite the pointers (adding `"type": "object"` or
+   inlining single-use defs also works). Separately, coercion should JSON-parse a string
+   that is valid JSON for an object-typed field — it currently refuses a lossless repair.
 3. **⚠️ Integrated confidence + simple extraction still truncates lists (P1, improved).**
    0.552 recall on one of seven documents at v0.6.7, versus a 0.294 grid mean at v0.6.5.
    Refuse the `integrated` + simple combination for list-bearing schemas (route to a
@@ -549,11 +560,17 @@ one metric you would expect to catch it:**
    above return `COMPLETED`. Compare extracted row count against schema `minItems` (or an
    OCR-derived row estimate) and surface a completeness warning/metric. Note the recovered
    prefix *shrinks* with document size and cost *falls*, so no existing signal catches it.
-5. **⚠️ Advanced mode fabricates a value where simple mode abstains.** On an unreadable
-   column advanced returned `0.0` for all 100 rows — schema-valid, silent — where simple
-   returned `null` and the new default validation raised 100 issues. A model that cannot read
-   a cell should emit `null`, and the agent prompt should say so explicitly; a plausible
-   zero in a financial field is the worse of the two failures.
+5. **🚨 The agentic path cannot express "I could not read this" —
+   [#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782) (P0).**
+   A `required` attribute is rendered as a **non-nullable** Pydantic field, so `null`, `""`
+   and *omitted* are all rejected and the retry loop then tells the agent to "fix the
+   extraction" — leaving a fabricated value as the only accepted answer. On an unreadable
+   column that is `0.0` for all 100 rows: schema-valid, silent, indistinguishable from a
+   real zero. This directly contradicts the table-tool prompt, which instructs the agent to
+   "set that single cell to null". Simple mode is unaffected (it emits `null`, which
+   validation reports loudly). Fix: hand the agent a nullable *transport* model and enforce
+   `required` in the JSON-Schema validation that already knows how to report and escalate a
+   missing required field — the same relaxation #438 already applies on the evaluation path.
 6. **🚨 Two recovery ladders that outlive their Lambda (P0/P1).** Both are loops with no
    bound on total elapsed time running inside a fixed-duration function, and both were
    observed failing in this study:
