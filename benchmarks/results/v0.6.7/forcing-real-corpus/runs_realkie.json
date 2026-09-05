@@ -1,0 +1,16 @@
+[
+  {
+    "corpus": "realkie-fcc-verified",
+    "profile": "rk-force-off",
+    "run_id": "RealKIE-FCC-Verified-20260904-223051",
+    "n": 40,
+    "arm": "A"
+  },
+  {
+    "corpus": "realkie-fcc-verified",
+    "profile": "rk-force-on",
+    "run_id": "RealKIE-FCC-Verified-20260904-223052",
+    "n": 40,
+    "arm": "B"
+  }
+]

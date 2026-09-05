@@ -413,7 +413,75 @@ measured prompt overhead is
 [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775);
 until that lands, treat both #710 knobs as neutral instruments rather than optimisations.
 
-### `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
+### `extraction.forced_tool.enabled` (#744) — re-measured on real corpora; the earlier "buys nothing" verdict does not hold
+
+⚠️ **Supersedes the paragraph below**, which was measured on **6 synthetic runs**. This is
+322 paired documents from two real labeled corpora, on stack `IDPBench` at the **v0.6.7
+tag**, arms differing in **exactly one stored config key** (verified by decompressing
+`Config#<profile>` from DynamoDB and diffing).
+
+| | `ocr-benchmark` (9 classes, Sonnet 4.6) | `realkie-fcc-verified` (1 class, Sonnet 5) |
+|---|---|---|
+| documents paired | 293 launched / **282 scored** | **40 / 40** |
+| accuracy Δ (on − off) | **−0.0003** (t=−0.34) | **+0.0039** (t=+0.27) |
+| sign test | 24 better / 31 worse / 227 identical, **p=0.42** | **p=0.17** |
+| cost/doc | $0.0286 → **$0.0279** (**−2.3%**, t=**−4.06**) | +$0.007 (t=+0.78, ns) |
+| forced tool honored | **282/282 sections** | **108/108 sections** |
+| skipped routes | 0 | 0 |
+| new failures | **0** (failure set byte-identical across arms) | 0 |
+
+**Guidance: forcing is accuracy-neutral and cost-neutral-to-slightly-cheaper. There is no
+longer a measured reason to avoid it** — but nor is there a strong reason to default it on,
+because the cost win is small and corpus-specific. Enable it if you want the structural
+guarantee (a malformed-JSON parse failure becomes impossible for the declared fields); the
+old "it buys nothing" framing was an artifact of a 6-run synthetic grid.
+
+#### Where the −2.3% actually comes from — and it is not caching
+
+Per-document token deltas (on − off), the four classes kept separate:
+
+| token class | Δ/doc | Δ% | $/MTok | Δ$ | share of win |
+|---|---:|---:|---:|---:|---:|
+| `outputTokens` | −34 | −3.3% | 16.50 | −0.000561 | **87%** |
+| `inputTokens` (uncached) | −113 | −3.3% | 3.30 | −0.000373 | 58% |
+| `cacheReadInputTokens` | **+1,221** | **+51.9%** | 0.33 | +0.000403 | −63% |
+| `cacheWriteInputTokens` | −27 | −33.4% | 4.12 | −0.000111 | 17% |
+| | | | | **−0.000642** | |
+
+**87% of the saving is fewer output tokens** — a tool call is terser than prose JSON with a
+preamble and fences. The entire input-plus-cache shift nets only **13%** of it: the +1,221
+cache reads at 0.33/MTok very nearly cancel the −113 uncached input at 3.30/MTok. So the
+cache mechanism below is real and mechanically confirmed, but it is **not what pays**.
+
+#### The cache mechanism it did confirm, live
+
+A forced toolSpec renders at position 0 and lengthens the cached prefix, which pushes
+short-prefix classes over Claude's 1,024-token minimum cacheable prefix. Predicted from
+static prefix measurement **before** the run, then confirmed on 293 documents:
+
+| class | forcing off: cacheRead/doc | forcing on: cacheRead/doc |
+|---|---:|---:|
+| `GLOSSARY` (23 docs) | **0 — never cached** | **1,839 — caching active** |
+| `SHIFT_SCHEDULE` (18 docs) | **0 — never cached** | **1,901 — caching active** |
+| 7 other classes | 1,000–1,706 | 1,839–2,670 |
+
+Extraction-phase cache read share went **28.4% → 48.1%**. 41 of 293 documents (14%) belong
+to the two classes that never cache at all without forcing. Full mechanism, including the
+measured 1,024-token boundary and the +24.9% penalty a one-off document pays for a cache it
+never reuses, is in **[prompt-caching.md](prompt-caching.md)**.
+
+> ⚠️ **A separate bug surfaced in this run and is not a forcing effect.** 11 of 293
+> documents (3.8%) failed **identically in both arms** with
+> `ValidationException: image exceeds 5 MB maximum`. Bedrock enforces that limit on the
+> **base64** payload, so the real budget is 3.75 MiB of raw image, and nothing in the
+> pipeline checks it. The threshold predicts pass/fail across all 293 documents with no
+> exceptions. See
+> [#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778).
+> Those 11 are excluded from both arms symmetrically, so the pairing is unaffected.
+
+#### Superseded: the original synthetic measurement
+
+##### (historical) `extraction.forced_tool.enabled` — leave off; measured, buys nothing here
 
 Declares the class schema as a required Converse tool instead of describing it in prose.
 Measured on a quiesced stack at Sonnet 5, 3 repeats:

@@ -1,0 +1,102 @@
+{
+  "ocr-benchmark": {
+    "arm_a": {
+      "corpus": "ocr-benchmark",
+      "profile": "ocrb-force-off",
+      "run_id": "OmniAI-OCR-Benchmark-20260904-223034",
+      "n": 293,
+      "arm": "A"
+    },
+    "arm_b": {
+      "corpus": "ocr-benchmark",
+      "profile": "ocrb-force-on",
+      "run_id": "OmniAI-OCR-Benchmark-20260904-223041",
+      "n": 293,
+      "arm": "B"
+    },
+    "paired": 293,
+    "accuracy": {
+      "metric": "accuracy",
+      "n_pairs": 282,
+      "mean_delta": -0.00027225639839059896,
+      "sd": 0.013403334403426162,
+      "se": 0.0007981569486295467,
+      "t": -0.34110634363087267
+    },
+    "cost": {
+      "metric": "cost",
+      "n_pairs": 293,
+      "mean_delta": -0.000653219481126281,
+      "sd": 0.002751755473799352,
+      "se": 0.00016075927127956523,
+      "t": -4.063339401373079
+    },
+    "tokens": {
+      "inputTokens": {
+        "metric": "inputTokens",
+        "n_pairs": 293,
+        "mean_delta": -112.95221843003414,
+        "sd": 335.2961956315538,
+        "se": 19.588212901096412,
+        "t": -5.766336061403123
+      },
+      "outputTokens": {
+        "metric": "outputTokens",
+        "n_pairs": 293,
+        "mean_delta": -34.48122866894198,
+        "sd": 135.88287093001765,
+        "se": 7.9383620812514355,
+        "t": -4.343620046051895
+      },
+      "cacheReadInputTokens": {
+        "metric": "cacheReadInputTokens",
+        "n_pairs": 293,
+        "mean_delta": 1220.6006825938566,
+        "sd": 608.4545893160856,
+        "se": 35.54629665189987,
+        "t": 34.33833612955622
+      },
+      "cacheWriteInputTokens": {
+        "metric": "cacheWriteInputTokens",
+        "n_pairs": 293,
+        "mean_delta": -26.67235494880546,
+        "sd": 498.5872525902188,
+        "se": 29.127778306921076,
+        "t": -0.9157016600359053
+      }
+    },
+    "sign_test_p": 0.41875418826901556,
+    "counters": {
+      "forced_tool.honored": {
+        "A": [
+          0,
+          282
+        ],
+        "B": [
+          282,
+          282
+        ]
+      },
+      "forced_tool.requested": {
+        "A": [
+          0,
+          282
+        ],
+        "B": [
+          282,
+          282
+        ]
+      },
+      "forced_tool.skipped": {
+        "A": [
+          0,
+          282
+        ],
+        "B": [
+          0,
+          282
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,130 @@
+[
+  {
+    "target": 400,
+    "call": 1,
+    "inputTokens": 585,
+    "cacheWrite": 0,
+    "cacheRead": 0,
+    "total_in": 585
+  },
+  {
+    "target": 400,
+    "call": 2,
+    "inputTokens": 585,
+    "cacheWrite": 0,
+    "cacheRead": 0,
+    "total_in": 585
+  },
+  {
+    "target": 800,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1101,
+    "cacheRead": 0,
+    "total_in": 1114
+  },
+  {
+    "target": 800,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1101,
+    "total_in": 1114
+  },
+  {
+    "target": 950,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1299,
+    "cacheRead": 0,
+    "total_in": 1312
+  },
+  {
+    "target": 950,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1299,
+    "total_in": 1312
+  },
+  {
+    "target": 1000,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1366,
+    "cacheRead": 0,
+    "total_in": 1379
+  },
+  {
+    "target": 1000,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1366,
+    "total_in": 1379
+  },
+  {
+    "target": 1050,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1430,
+    "cacheRead": 0,
+    "total_in": 1443
+  },
+  {
+    "target": 1050,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1430,
+    "total_in": 1443
+  },
+  {
+    "target": 1100,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1501,
+    "cacheRead": 0,
+    "total_in": 1514
+  },
+  {
+    "target": 1100,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1501,
+    "total_in": 1514
+  },
+  {
+    "target": 1300,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 1762,
+    "cacheRead": 0,
+    "total_in": 1775
+  },
+  {
+    "target": 1300,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 1762,
+    "total_in": 1775
+  },
+  {
+    "target": 2000,
+    "call": 1,
+    "inputTokens": 13,
+    "cacheWrite": 2693,
+    "cacheRead": 0,
+    "total_in": 2706
+  },
+  {
+    "target": 2000,
+    "call": 2,
+    "inputTokens": 13,
+    "cacheWrite": 0,
+    "cacheRead": 2693,
+    "total_in": 2706
+  }
+]

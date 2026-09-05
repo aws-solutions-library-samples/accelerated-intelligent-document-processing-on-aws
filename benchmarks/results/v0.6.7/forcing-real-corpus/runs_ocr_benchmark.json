@@ -1,0 +1,16 @@
+[
+  {
+    "corpus": "ocr-benchmark",
+    "profile": "ocrb-force-off",
+    "run_id": "OmniAI-OCR-Benchmark-20260904-223034",
+    "n": 293,
+    "arm": "A"
+  },
+  {
+    "corpus": "ocr-benchmark",
+    "profile": "ocrb-force-on",
+    "run_id": "OmniAI-OCR-Benchmark-20260904-223041",
+    "n": 293,
+    "arm": "B"
+  }
+]
