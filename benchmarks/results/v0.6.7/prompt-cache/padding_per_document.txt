@@ -1,0 +1,8 @@
+doc                         baseline   padded     delta
+GLOSSARY_185.png              1.0000   0.6667   -0.3333
+SHIFT_SCHEDULE_241.png        0.9543   0.9539   -0.0004
+SHIFT_SCHEDULE_913.png        0.9646   0.9643   -0.0003
+GLOSSARY_722.png              0.9999   1.0000   +0.0001
+SHIFT_SCHEDULE_819.png        0.9632   0.9652   +0.0019
+
+36 of 41 treated documents scored IDENTICALLY

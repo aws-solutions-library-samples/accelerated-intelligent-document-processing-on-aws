@@ -1,0 +1,185 @@
+{
+  "model_counter": "us.anthropic.claude-sonnet-4-6",
+  "forced_tool": false,
+  "pad_chars": 0,
+  "rows": [
+    {
+      "preset": "ocr-benchmark",
+      "class": "BANK_CHECK",
+      "prefix_tokens": 1385
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "COMMERCIAL_LEASE_AGREEMENT",
+      "prefix_tokens": 1337
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "CREDIT_CARD_STATEMENT",
+      "prefix_tokens": 1178
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "DELIVERY_NOTE",
+      "prefix_tokens": 1712
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "EQUIPMENT_INSPECTION",
+      "prefix_tokens": 1307
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "GLOSSARY",
+      "prefix_tokens": 949
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "PETITION_FORM",
+      "prefix_tokens": 1189
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "REAL_ESTATE",
+      "prefix_tokens": 1248
+    },
+    {
+      "preset": "ocr-benchmark",
+      "class": "SHIFT_SCHEDULE",
+      "prefix_tokens": 1000
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "Payslip",
+      "prefix_tokens": 2331
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "US-drivers-licenses",
+      "prefix_tokens": 1466
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "Bank-checks",
+      "prefix_tokens": 941
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "Bank-Statement",
+      "prefix_tokens": 1291
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "W2",
+      "prefix_tokens": 1694
+    },
+    {
+      "preset": "lending-package-sample",
+      "class": "Homeowners-Insurance-Application",
+      "prefix_tokens": 1770
+    },
+    {
+      "preset": "realkie-fcc-verified",
+      "class": "Invoice",
+      "prefix_tokens": 1296
+    },
+    {
+      "preset": "bank-statement-sample",
+      "class": "Bank Statement",
+      "prefix_tokens": 1293
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "letter",
+      "prefix_tokens": 1070
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "form",
+      "prefix_tokens": 1068
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "invoice",
+      "prefix_tokens": 1207
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "resume",
+      "prefix_tokens": 1026
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "scientific_publication",
+      "prefix_tokens": 1104
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "memo",
+      "prefix_tokens": 1040
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "advertisement",
+      "prefix_tokens": 1040
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "email",
+      "prefix_tokens": 1031
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "questionnaire",
+      "prefix_tokens": 1251
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "specification",
+      "prefix_tokens": 1021
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "generic",
+      "prefix_tokens": 877
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "budget",
+      "prefix_tokens": 1302
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "language",
+      "prefix_tokens": 874
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "news_article",
+      "prefix_tokens": 967
+    },
+    {
+      "preset": "rvl-cdip",
+      "class": "handwritten",
+      "prefix_tokens": 888
+    }
+  ],
+  "tiers": [
+    [
+      512,
+      "Opus 5, Fable 5"
+    ],
+    [
+      1024,
+      "Sonnet 5, Sonnet 4.6, Opus 4.8"
+    ],
+    [
+      2048,
+      "Opus 4.7"
+    ],
+    [
+      4096,
+      "Opus 4.6, Opus 4.5, Haiku 4.5"
+    ]
+  ]
+}
