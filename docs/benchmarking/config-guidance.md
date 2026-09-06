@@ -8,21 +8,31 @@ title: "Configuration Guidance"
 
 # GenAIIDP Configuration Guidance — Empirical Guidance for Document Extraction at Scale
 
-**Release:** v0.6.5 · **Region:** us-west-2 · **Stack:** `IDPBench065`
-**Models:** extraction Claude Sonnet 5 (the shipped default) · confidence Nova Lite ·
-summarization disabled (unscored)
-**Pricing:** `config_library/pricing.yaml` (sha256 `bc68d49e…`; rates as of 2026-08; intro
+**Release:** v0.6.7 · **Region:** us-west-2 · **Stack:** `IDPRel067` (deployed from the
+published v0.6.7 template)
+**Models:** extraction Claude Sonnet 5 (the shipped default) · classification Nova 2 Lite
+(the shipped default) · confidence Nova Lite · summarization disabled (unscored)
+**Pricing:** `config_library/pricing.yaml` (sha256 `aa52446a…`; rates as of 2026-09; intro
 pricing may apply)
 
 > Reproducible via the `benchmarks/` harness (run the `run-benchmarks` skill). Every number
 > here is produced by `benchmarks/harness/aggregate.py` from live runs; none are recalled
-> from memory. Supporting data: the `coresynth` grid (§2), `scaling` (§3), `cost` (§4), and
-> two `intconf` runs on Sonnet 5 and Sonnet 4.6 (§2.1). Per
+> from memory. Supporting data for §2–§4 was re-measured at v0.6.7 and is in the working
+> tree under `benchmarks/results/v0.6.7/` — see Appendix A for the exact directory per
+> section. Per
 > [`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
-> only one complete set is retained per release, so these slices are no longer in the working
-> tree; recover them from git with
+> only one complete set is retained per release, so the v0.6.5 slices are no longer in the
+> working tree; recover them from git with
 > `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-config-core/` (likewise
 > `-config-scaling`, `-config-cost`, `-intconf-sonnet5`, `-intconf-sonnet46`).
+>
+> ⚠️ **`longdesc_100` was regenerated between the v0.6.5 and v0.6.7 editions.** Its long
+> descriptions were drawn as unwrapped table cells that overprinted the Amount column, so
+> every amount on that document was physically absent from OCR — see
+> [METHODOLOGY §1.A](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/matrices/METHODOLOGY.md).
+> **v0.6.5's `longdesc_100` results are not comparable with v0.6.7's**, and several of that
+> edition's findings about that document were measuring the defect. Every other document is
+> unchanged.
 
 ---
 
@@ -34,30 +44,56 @@ options** (OCR backend, extraction mode, assessment mode, geometry, model, escal
 seven dimensions per configuration: success/failure, list completeness, field accuracy,
 confidence calibration, latency, token use, and cost.
 
-Headline results at v0.6.5:
+Headline results at v0.6.7:
 
-1. **Extraction mode is primarily a cost/robustness decision, not an accuracy one, until
-   documents get large.** On list documents up to **800 rows / 17 pages**, simple mode is
-   complete (recall 1.000) and **~4× cheaper** than advanced (mean $0.476 vs $1.967 per
-   document over 70 runs).
-2. **Simple mode has a hard completeness cliff between 800 and 1,200 rows.** Recall is
-   1.000 through 800 rows, then collapses: **0.199 @1,200 · 0.088 @1,600 · 0.009 @3,200** —
-   and it is *silent* (status `COMPLETED`, valid-looking partial output, no error).
-3. **Advanced (agentic) mode holds perfect completeness (recall 1.000) through 3,200 rows /
-   66 pages**, at a steeply growing cost premium ($0.17 → $20.93 per document; **~11×
-   simple** at 3,200 rows).
-4. **🚨 Do not use `assessment: integrated` with simple extraction on list documents.** At
-   the shipped default extraction model it returned **1–10 of 100 rows across 4 of 4
-   repeats**, and **none of the returned rows matched ground truth**, while reporting
-   `COMPLETED` **and scalar accuracy 1.000**. Across the 7-document grid its mean recall is
-   **0.294**; the 800-row document came back with the transaction list **absent entirely**.
-   This is the single most dangerous configuration in the matrix (§2.1).
-5. **Advanced mode can null an entire list** on a long-free-text document (recall 0.000 on
-   `longdesc_100` where simple mode got 1.000) — the agent's tool-decline path, unchanged
-   since v0.6.0 (§2, finding 3).
-6. **Scalar-field accuracy is 1.000 in every one of the 70 core runs**, and there were
-   **0 failures**. Every completeness problem above is a *silent list* problem, invisible to
-   field accuracy.
+1. **Extraction mode is primarily a cost decision, not an accuracy one, at these sizes.**
+   Across 7 documents spanning 5 → 800 rows, **every Textract and BDA cell — simple and
+   advanced — is at recall 1.000 and per-row cell accuracy 1.000**, and simple mode is
+   **~2.9× cheaper** (mean $0.603 vs $1.726 per document). 133 runs, **0 failures**.
+2. **The completeness picture improved substantially since v0.6.5, including the scaling
+   cliff — but read §3 for what "complete" means.** That edition reported
+   simple/`integrated` at recall 0.294, advanced nulling a whole list, and a hard silent
+   cliff for simple mode between 800 and 1,200 rows (0.199 @1,200 → 0.009 @3,200). None
+   reproduce: simple mode is complete at **1,200 rows** (2 of 2 runs) and recovers ~0.72–0.79
+   at 3,200 instead of 0.009. **1,600 rows is unreliable, not complete** — the same config
+   scored 1.000 on one stack and 0.541 on another. **And the reason for the improvement is
+   uncomfortable:** the over-splitting in item 3 is what bounds each extraction call's
+   output. Confirmed causally — turn splitting off and 25+ page documents either **fail
+   outright** (`Input is too long`) or truncate to 0.6–3.6% recall. It also means the rows
+   arrive as **N per-section lists, not one list** (§3).
+3. **🚨 Over-splitting is why advanced mode costs what it does, and the fix is a better
+   classifier — not turning splitting off.** Every cell in the grid is **over-split 2–3×**
+   (13–23 sections where the truth is 7), and on the agentic path each spurious section is a
+   whole agent loop: worth **+22%** (§4, [release audit](releases/v0.6.7.md)). The boundary
+   decision is **classification-model-dependent**, and switching only
+   `classification.model` to **Claude Haiku 4.5** gets the section count right 5 of 5 and
+   takes advanced mode **5.6% below v0.6.6** while costing simple mode only +9% — against
+   Sonnet 5's +45% (§5). The most expensive configuration in the grid is advanced +
+   `integrated` at $2.32/doc.
+4. **Two narrow completeness risks remain, both invisible to field accuracy.**
+   `integrated` confidence with simple extraction still lost **45% of the rows** on one of
+   seven documents (`manylists_400`, recall 0.552) while reporting `COMPLETED` and scalar
+   accuracy 1.000 — much better than v0.6.5's 0.294 mean but not fixed (§2.1). And
+   **Bedrock-LLM OCR** is the only backend that loses rows on ordinary documents (recall
+   0.620 on a 100-row document) *and* the only one that gets per-row values wrong (cell
+   accuracy 0.935–0.990 where every other backend is 1.000).
+5. **`extraction.validation` now on by default is earning its keep, and simple mode fails
+   it far more than advanced.** Simple-mode sections validate at **0.54–0.71**, advanced at
+   **1.000**. Most of the simple-mode failures are a *consequence* of the over-splitting in
+   item 3 — a continuation section legitimately has no `Account Number`, which the schema
+   marks required (§2, finding 7).
+6. **Per-row cell accuracy is reported here for the first time**, and it is the metric that
+   matters: `completeness_recall` counts rows, and a run can return every row with an entire
+   **column** empty and still score 1.000. That is not hypothetical — it is how the previous
+   edition of this paper missed a corpus defect (see the ⚠️ note above). It is **1.000 in
+   every completed run at every size in §2 and §3** except Bedrock-LLM.
+7. **🚨 The confidence pass, not extraction, is what fails at scale.** The one run in this
+   whole study that did not complete (`simple` @800 rows, §3) extracted all 800 rows and
+   then lost the document in the confidence step: Nova Lite truncates a 25-row batch, the
+   recovery halves the batch and retries, and the ladder does not converge inside the 900 s
+   Assessment Lambda — 5 consecutive timeouts, 6,205 s, paying Bedrock every attempt. A
+   second unbounded recovery ladder (the agentic one) is documented in the
+   [release audit](releases/v0.6.7.md). Neither is bounded by remaining Lambda time.
 
 > **What changed between releases** is tracked separately in the
 > [Release Audit Trail](releases/) — this paper focuses on *choosing a configuration at the
@@ -71,8 +107,12 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 - **Synthetic corpus (exact GT):** generated bank statements whose every transaction row
   carries a unique `SEQnnnnn` tag, so completeness and accuracy are measured exactly, and
   size, row width, list count, text length and OCR noise are controlled variables.
-- **Config matrix:** 10 curated *core* cells (the OCR × mode × assessment decision space),
-  a two-cell scaling series, and a repeated-measures cost suite.
+- **Config matrix:** 19 curated *core* cells — the OCR × mode × assessment decision space
+  plus the v0.7 feature arms (enforcement, forcing, schema restatement, section splitting) —
+  a two-cell scaling series, and a repeated-measures cost suite. Control arms (deliberately
+  wrong or historical configurations) live in a separate `control_cells:` block and are
+  excluded from the `core_cells` expansions, so a known-defective configuration cannot end
+  up in the release grid.
 - **Scoring is resolver-free** (reads S3 + DynamoDB metering directly); costs priced from
   `pricing.yaml`; calibration from `explainability_info` confidence leaves.
 - **Reference (real, labeled) corpora were not run for this release** — the numbers below
@@ -86,108 +126,174 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 | OCR | Textract LAYOUT, Textract TABLES, BDA, Bedrock-LLM |
 | Extraction mode | simple (1 call) · advanced (agentic sharding + table tool) |
 | Assessment | off · separate (Nova Lite pass) · integrated (inline) |
+| Enforcement | `off` · `warn` (shipped default) · `escalate` |
+| Forcing | off (shipped default) · on |
+| Schema restatement | on (shipped default) · off |
+| Section splitting | `llm_determined` (shipped default) · `disabled` |
 | Geometry | ocr_only (all cells below) |
 | Extraction model | Sonnet 5 (all cells below; the shipped default) |
+| Classification model | Nova 2 Lite (all cells below; the shipped default) |
 | Confidence model | Nova Lite (all cells below) |
 | Reasoning effort | low (all cells below) |
 
 The one-axis sweeps over geometry / escalation / extraction model / confidence model /
-reasoning effort (the `full` suite) were **not** run for this release; §2–§4 vary OCR,
-extraction mode and assessment only.
+reasoning effort (the `full` suite) were **not** run for this release.
 
-**Axes added since this grid was run** (all have suites; see [index.md](index.md) for which
-metric each is judged on). Advice for the ones that have been measured is in §7.
+**Axes not varied in §2–§4** (all have suites; see [index.md](index.md) for which metric
+each is judged on). Advice for the ones that have been measured is in §7.
 
 | Axis | Config path | Measured? |
 |------|-------------|-----------|
-| Enforcement | `extraction.coercion.enabled`, `extraction.validation.{enabled,fail_action}` | partially — see §7 |
-| Forcing | `extraction.forced_tool.enabled` | yes — §7 |
-| Schema restatement | `extraction.agentic.restate_schema_in_system_prompt` | yes — §7 |
-| Section splitting | `classification.sectionSplitting` | yes — §7 |
 | Boundary prompt | `classification.task_prompt` (frozen variants, control only) | yes, but underpowered here — !769 is the authority, §7 |
-| Classification confidence | `classification.confidence.mode` | not yet (cost unmeasured) |
-| Classification model | `classification.model` | held at Sonnet 5 for §7 only |
-| OCR DPI | `ocr.image.dpi` | as a control only — §7 |
+| Classification confidence | `classification.confidence.mode` | held `topk` (the shipped default) in every cell below; its cost is measured in §7 |
+| Classification model | `classification.model` | held at Nova 2 Lite (shipped default) in §2–§4; §7's splitting measurement used Sonnet 5, which is why it disagrees — see §4 |
+| Multi-instance | `x-aws-idp-multi-instance`, `extraction.multi_instance_detection` | off / on-by-default respectively; measured separately in §7 |
+| OCR DPI | `ocr.image.dpi` | held 300 (the shipped default since #740) — §7 |
 
 ---
 
-## 2. Configuration matrix (10 cells × 7 synthetic list docs, exact GT)
-
-> **Cell count has since grown.** `core_cells` held 10 entries when this grid was run and
-> now holds 19 — the v0.7 feature A/B cells (enforcement, forcing, schema restatement,
-> section splitting) were added to it, so `coresynth`/`corefast` are no longer the 70/90-run
-> grids described here. Control arms live in a separate `control_cells:` block and are
-> excluded from those expansions.
+## 2. Configuration matrix (19 cells × 7 synthetic list docs, exact GT)
 
 Mean over 7 bank-statement (transaction-list) documents spanning 5 → 800 rows and varying
 row width, list count and description length (`tiny_form`, `small_narrow`, `med_narrow`,
 `large_narrow`, `wide_400`, `manylists_400`, `longdesc_100`). `recall` = distinct
-ground-truth rows recovered ÷ total (exact, via SEQ tags). **70 runs, 0 failures.**
+ground-truth rows recovered ÷ total (exact, via SEQ tags); `cell acc` = per-row typed value
+match, keyed by SEQ tag. **133 runs, 0 failures.**
 
-| OCR / mode / assessment | recall | cost/doc | cost CV | mean conf | alert % | wall_s | fails |
-|-------------------------|-------:|---------:|--------:|----------:|--------:|-------:|------:|
-| Textract TABLES / simple / separate | 1.000 | $0.608 | 0.97 | 0.952 | 4.7 | 268 | 0 |
-| Textract TABLES / simple / off | 1.000 | $0.457 | 0.78 | n/a | n/a | 108 | 0 |
-| **🚨 Textract TABLES / simple / integrated** | **0.294** | $0.247 | 0.53 | 0.947 | 5.7 | 35 | 0 |
-| Textract TABLES / advanced / separate | **0.857** | $1.904 | 1.05 | 0.977 | 1.8 | 252 | 0 |
-| Textract TABLES / advanced / integrated | 1.000 | $2.436 | 0.96 | 0.944 | 5.7 | 410 | 0 |
-| Textract LAYOUT / simple / separate | 1.000 | $0.514 | 1.02 | 0.996 | 0.0 | 266 | 0 |
-| Textract LAYOUT / advanced / separate | 1.000 | $1.745 | 0.75 | 0.986 | 0.0 | 317 | 0 |
-| BDA / simple / separate | 1.000 | $0.603 | 0.98 | 0.951 | 4.7 | 263 | 0 |
-| BDA / advanced / separate | 1.000 | $1.784 | 0.66 | 0.983 | 0.1 | 290 | 0 |
-| Bedrock-LLM / simple / separate | **0.860** | $0.430 | 0.82 | 0.951 | 4.7 | 388 | 0 |
+### 2a. The decision space: OCR × mode × assessment
 
-`scalar_accuracy` is **1.000 for every cell and every document**, so it is not shown — and
-that is itself the most important caveat in this table: **a cell that lost an entire
-transaction list still scores perfect field accuracy.** Cost CV is high across the board
-(0.53–1.05) because the 7 documents differ ~160× in row count; §4 measures cost variance
-properly, with repeats on a single document.
+| OCR / mode / assessment | recall | cell acc | cost/doc | mean conf | alert % | valid rate | wall_s | fails |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Textract TABLES / simple / separate | 1.000 | 1.000 | $0.603 | 0.994 | 0.4 | 0.588 | 217 | 0 |
+| Textract TABLES / simple / off | 1.000 | 1.000 | $0.554 | n/a | n/a | 0.597 | 83 | 0 |
+| **⚠️ Textract TABLES / simple / integrated** | **0.936** | 1.000 | $0.768 | **0.901** | **2.4** | 0.629 | 135 | 0 |
+| Textract TABLES / advanced / separate | 1.000 | 1.000 | $1.726 | 0.984 | 0.2 | **1.000** | 286 | 0 |
+| Textract TABLES / advanced / integrated | 1.000 | 1.000 | **$2.315** | 0.987 | 1.0 | **1.000** | 388 | 0 |
+| Textract LAYOUT / simple / separate | 1.000 | 1.000 | **$0.516** | 0.996 | 0.2 | 0.714 | 229 | 0 |
+| Textract LAYOUT / advanced / separate | 1.000 | 1.000 | **$1.354** | 0.979 | 0.3 | **1.000** | 259 | 0 |
+| BDA / simple / separate | 1.000 | 1.000 | $0.590 | 0.995 | 0.3 | 0.671 | 196 | 0 |
+| BDA / advanced / separate | 1.000 | 1.000 | $1.793 | 0.982 | 0.4 | **1.000** | 290 | 0 |
+| **⚠️ Bedrock-LLM / simple / separate** | **0.919** | **0.982** | $0.496 | 0.987 | 0.3 | 0.604 | 194 | 0 |
+
+Cost CV is 0.75–0.92 for every cell because the 7 documents differ 160× in row count; that
+is *between-document* spread, not run-to-run noise. §4 measures cost variance properly,
+with repeats on one document.
+
+### 2b. The v0.7 feature arms
+
+All are Textract TABLES + `separate`; `restate-*` are advanced, the rest simple. `sections`
+is the total across the 7 documents, where the ground truth is **7** (one per document).
+
+| cell | recall | cell acc | cost/doc | sections (truth 7) | valid rate | val errors |
+|---|---:|---:|---:|---:|---:|---:|
+| `enforce-off` | 1.000 | 1.000 | $0.601 | 13 | not measured | 0 |
+| `enforce-warn` *(shipped default)* | 1.000 | 1.000 | $0.589 | 21 | 0.544 | 18 |
+| `enforce-escalate` | 1.000 | 1.000 | **$0.792** | 16 | 0.636 | 9 |
+| `force-off` *(shipped default)* | 1.000 | 1.000 | $0.597 | 18 | 0.664 | 11 |
+| **🚨 `force-on`** | 1.000 | 1.000 | $0.578 | 19 | **0.000** | 19 |
+| `restate-on` *(shipped default)* | 1.000 | 1.000 | $1.686 | 16 | 1.000 | 0 |
+| `restate-off` | 1.000 | 1.000 | $1.948 | 23 | 1.000 | 0 |
+| `split-llm` *(shipped default)* | 1.000 | 1.000 | $0.608 | 19 | 0.593 | 12 |
+| **`split-disabled`** | 1.000 | 1.000 | $0.703 | **7** | **1.000** | **0** |
 
 **Findings**
 
-1. **Simple mode is complete and cheapest at these sizes.** Every simple cell except
-   `integrated` and Bedrock-LLM OCR is at recall 1.000 through 800 rows, for $0.43–0.61 per
-   document, versus $1.74–2.44 for advanced. Simple is the right default up to the cliff in
-   §3.
-2. **🚨 Integrated confidence + simple extraction loses lists catastrophically (recall
-   0.294).** Per document: on the 800-row document the transaction list is **absent from the
-   response entirely**; 400-row documents return 5–10 rows of 400; `longdesc_100` returns 10
-   rows of 100 and **none of them match** (§2.1 separates the truncation from the value
-   corruption). Only the ≤100-row narrow documents survive. It is also the *cheapest* and
-   *fastest* cell ($0.247, 35 s) — because it is doing far less work — which is exactly how
-   it can look attractive. Corroborated with repeats in §2.1. Advanced + integrated recovers
-   to 1.000 because sharding keeps each call small.
-3. **⚠️ Advanced mode nulled an entire list** on `longdesc_100` (recall 0.000, 0/100 rows,
-   $0.143 and 33 s — it gave up early), while simple mode returned all 100. That single
-   document is the whole 0.857 for `tt-adv-sep`; the other six are 1.000. Same tool-decline
-   failure path reported at v0.6.0. **Fixed since**: #668 shipped a retry when the agent
-   declines the recommended table tool, and the post-fix `advverify` runs no longer
-   reproduce the null (see `docs/benchmarking/releases/`). BDA + advanced did **not**
-   reproduce it here either (1.000 across all 7).
-4. **LAYOUT-only is the cheapest complete option** (simple $0.514, advanced $1.745) and has
-   the best-behaved confidence (mean 0.996, **0%** alert rate). Textract TABLES adds cost
-   with no completeness benefit at this scale; enable TABLES for very large multi-page
-   tables where it aids recovery, not by default.
-5. **BDA is a fully viable OCR alternative** (simple $0.603 / advanced $1.784, both
-   complete). **Bedrock-LLM is the cheapest ($0.430) but loses rows** on the larger
-   documents — recall 0.403 on `wide_400` and 0.830 on `large_narrow` — and is slow
-   (1,123 s on the 800-row document). Pick it for small documents and cost, not for
-   completeness.
-6. **Separate assessment is the safe confidence default.** It is dense (≈6,650 confidence
-   leaves per cell across the grid), well-behaved, and costs ~$0.15/doc over `off`. Note
-   `tt-simple-int` produced only **392** confidence leaves — another visible symptom of the
-   missing rows.
-7. **Advanced mode reports higher confidence and raises far fewer alerts** (`tt-adv-sep`
-   0.977 / 1.8%, `bda-adv-sep` 0.983 / 0.1%) than the simple cells (≈0.95 / 4.7%), at
-   equal (perfect) scalar accuracy on this corpus.
+1. **Completeness and per-row accuracy are solved for Textract and BDA, in both modes.**
+   Eight of the ten cells in 2a are at recall 1.000 *and* cell accuracy 1.000 across all
+   7 documents including the 800-row / 17-page one. So mode is a **cost** decision at these
+   sizes: simple $0.52–0.60, advanced $1.35–2.32, a **2.6–2.9× premium**.
+2. **v0.6.5's two headline completeness failures did not reproduce.** `simple/integrated`
+   was 0.294 then and 0.936 now; advanced nulling an entire list on `longdesc_100` (recall
+   0.000) is now 1.000. The first improved for real (see §2.1 for what remains); the second
+   was partly an artifact — the fixes in #668 landed, *and* `longdesc_100` itself was
+   defective in the v0.6.5 corpus (see the ⚠️ note in the header).
+3. **⚠️ `integrated` + simple is still the riskiest cell, just narrower.** Mean recall 0.936
+   comes from **0.552 on `manylists_400`** with the other six at 1.000 — 45% of the rows
+   gone, `COMPLETED`, scalar accuracy 1.000. It is also the worst-calibrated cell by a wide
+   margin (mean confidence **0.901** and alert rate **2.4%** against 0.98–0.996 / 0.2–0.4%
+   everywhere else) and, unlike at v0.6.5, it is no longer the cheapest cell — at $0.768 it
+   costs **27% more** than `simple/separate`. There is now no reason to choose it. See §2.1.
+4. **⚠️ Bedrock-LLM OCR is the only backend that gets *values* wrong.** It is the cheapest
+   ($0.496) but it is alone in the table on two counts: recall below 1.000 (0.919, with
+   **0.620 on a 100-row document** — not a size effect) and **cell accuracy 0.982**, i.e.
+   per-row values corrupted. Every Textract and BDA cell is 1.000/1.000. This is the
+   fixed-width-identifier corruption root-caused in the
+   [v0.6.6 audit](releases/v0.6.6.md): the backend inserts a digit into an identifier and
+   nothing flags it. **Do not use it where identifiers matter.**
+5. **LAYOUT-only is the cheapest complete option in both modes** ($0.516 simple / $1.354
+   advanced) with the best confidence (0.996 / 0.2%). Textract TABLES buys no completeness
+   at this scale and costs 17% (simple) to 28% (advanced) more. Turn TABLES on for very
+   large multi-page tables where it aids recovery, not by default.
+6. **🚨 Every cell but `split-disabled` is over-split 2–3×.** 13–23 sections where the truth
+   is 7. Recall is unaffected — the rows all come back — but the *shape* is wrong, and on the
+   agentic path it is **the dominant cost driver** (§4). `split-disabled` is the only cell
+   that gets 7, and it is **wrong by construction on packets** (§7), so it is a fix for
+   single-class corpora only.
+7. **Simple mode's validation failures are almost entirely a consequence of over-splitting,
+   not an extraction problem.** Simple cells validate at 0.54–0.71; advanced at 1.000. But
+   `split-disabled` — same schema, same simple extraction, one section per document —
+   validates at **1.000 with 0 errors**. The failures are `'Account Number' is a required
+   property` on continuation sections that legitimately do not carry it. Advanced mode
+   escapes it because its sharding rejoins the section before validation. **Read a
+   simple-mode validation warning as a possible splitting problem first.**
+8. **🚨 `force-on` (forced tool use) produces schema-invalid output on every section —
+   root-caused, and it is our bug ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).**
+   `valid rate` **0.000**, 19 errors in 19 sections, all the same: the group attribute
+   `Account Holder Address` comes back as a **JSON string** rather than an object —
+   `'{"Street_Number":"100",...}' is not of type 'object'`.
+   `sanitize_tool_schema` renames *property* names for Bedrock's
+   `^[a-zA-Z0-9_.-]{1,64}$` rule but deliberately leaves **`$defs` definition names**
+   alone, so that attribute ships as a `$ref` whose JSON pointer contains spaces
+   (`#/$defs/Account Holder Address`). **Sonnet 5 does not resolve that pointer and
+   serializes the object instead; Sonnet 4.6 resolves it fine** — isolated to four
+   Converse calls in the issue, where only the spaced-pointer arm returns a string.
+   Coercion then refuses the value (`type_family_mismatch`), declining a lossless repair.
+   The list attribute is untouched (recall and cell accuracy both 1.000), which is exactly
+   why the earlier WS-05 study concluded "no measurable effect" — **neither metric covers a
+   nested group.** **Leave `extraction.forced_tool.enabled` off** until #783 lands.
+9. **`enforce-escalate` costs +35% over `warn`** ($0.792 vs $0.589) — the first measurement
+   of the escalate arm's price, which `FINDINGS.md` recorded as unmeasured. `warn` remains
+   free (−2% vs `off`, within spread, and free by construction: zero extra inference).
+10. **Do not read the `restate-off` cost as a regression.** $1.948 vs $1.686 looks like
+    turning the de-duplication *off* being more expensive, which is backwards; at one repeat
+    per document on an agentic cell this is noise. #710's own A/B (recall 1.000 both arms)
+    is the authority, and it found the switch safe, not cheaper.
 
 ---
 
-## 2.1 The `integrated` + simple hazard, with repeats
+## 2.1 The `integrated` + simple hazard — much reduced at v0.6.7, not gone
+
+**What v0.6.7 measures.** On the 7-document grid, `simple/integrated` recall is **0.936**:
+six documents at 1.000 and **`manylists_400` at 0.552** — 179 of 400 rows returned, status
+`COMPLETED`, scalar accuracy 1.000, per-row cell accuracy 1.000 on the rows that came back.
+So the failure mode is unchanged in kind (silent truncation of a list, invisible to field
+accuracy) but its incidence has dropped sharply from the v0.6.5 measurement below.
+
+Two things also changed the *decision*:
+
+- **It is no longer the cheap option.** At v0.6.5 `simple/integrated` was the cheapest cell
+  in the grid ($0.247) — precisely because it was doing less work. At v0.6.7 it costs
+  **$0.768**, i.e. **27% more** than `simple/separate` ($0.603), which is complete.
+- **Its confidence is the worst in the grid.** Mean 0.901 with a 2.4% alert rate, against
+  0.98–0.996 / 0.2–0.4% for every other cell.
+
+So the recommendation is unchanged and now easier to justify: **use `separate`.** It is
+cheaper, complete, and better calibrated. `advanced/integrated` is complete (1.000 on all
+7) but is the most expensive cell in the grid at $2.315.
+
+> **This is a single draw per document** (`coresynth` runs `repeats: 1`). The 0.552 is one
+> observation, and the six 1.000s are one observation each — the cell is known to be
+> **bimodal**, so neither the failure nor the successes should be read as a rate. The
+> repeated-measures evidence below is what establishes the hazard; run
+> `--suite intconf` to re-establish it at v0.6.7 on a document where it fires.
+
+### The v0.6.5 repeated-measures study (retained — this is the evidence for the hazard)
 
 Because the failure is a *partial or empty list* rather than an error, a single run cannot
 establish it. The `intconf` suite runs the integrated cell **and** a `separate` control on
-the same document (`longdesc_100`, 100 rows) 4× each:
+the same document (`longdesc_100`, 100 rows) 4× each. **These are v0.6.5 numbers on the
+pre-fix `longdesc_100`** (see the corpus note in the header) and are kept because the
+mechanism they identify is what still produces the 0.552 above:
 
 | extraction model | cell | recall per repeat | rows **returned** | rows **matching ground truth** | scalar accuracy |
 |---|---|---|---|---|---|
@@ -232,39 +338,148 @@ integrated cell's cost. **Use `separate`.**
 
 ## 3. Scaling: where extraction hits limits (synthetic, exact GT)
 
-![Completeness and cost vs document size](../../images/benchmark-scaling.png)
-
 Simple vs advanced, Textract TABLES + separate confidence, one transaction list of N rows
-(~48 rows/page). All 14 runs returned `COMPLETED`.
+(~48 rows/page). **13 of 14 runs returned `COMPLETED`** — see the failure below.
+`sec` is the number of sections the classifier produced (the truth is 1 in every row).
 
-| rows | pages | SIMPLE recall | simple $ | simple wall | ADVANCED recall | adv $ | adv wall |
-|-----:|------:|--------------:|---------:|------------:|----------------:|------:|---------:|
-| 25 | 1 | 1.000 | $0.055 | 52s | 1.000 | $0.166 | 48s |
-| 100 | 3 | 1.000 | $0.169 | 73s | 1.000 | $0.438 | 177s |
-| 400 | 9 | 1.000 | $0.614 | 290s | 1.000 | $1.777 | 389s |
-| 800 | 17 | **1.000** | $1.782 | 602s | 1.000 | $3.335 | 407s |
-| 1200 | 25 | **0.199** | $1.038 | 312s | 1.000 | $4.974 | 416s |
-| 1600 | 33 | **0.088** | $1.169 | 389s | 1.000 | $9.026 | 584s |
-| 3200 | 66 | **0.009** | $1.917 | 481s | 1.000 | $20.929 | 1120s |
+| rows | pages | SIMPLE recall | simple $ | wall | sec | ADV recall | adv $ | wall | sec |
+|-----:|------:|--------------:|---------:|-----:|----:|-----------:|------:|-----:|----:|
+| 25 | 1 | 1.000 | $0.067 | 58s | 1 | 1.000 | $0.142 | 38s | 1 |
+| 100 | 3 | 1.000 | $0.215 | 88s | 2 | 1.000 | $0.549 | 237s | 2 |
+| 400 | 9 | 1.000 | $0.694 | 148s | 3 | 1.000 | $1.558 | 385s | 1 |
+| 800 | 17 | 1.000 **(run ABORTED — see below)** | — | 6205s | 7 | 1.000 | $4.362 | 391s | 4 |
+| 1200 | 25 | **1.000** | $2.106 | 715s | 6 | 1.000 | $5.218 | 400s | 6 |
+| 1600 | 33 | **1.000** | $2.768 | 550s | 12 | 1.000 | $9.918 | 491s | 8 |
+| 3200 | 66 | **0.724** | $4.871 | 775s | 18 | 1.000 | $22.394 | 647s | 17 |
 
-### Simple mode: a silent completeness cliff between 800 and 1,200 rows
+Per-row **cell accuracy is 1.000 in every completed run of both modes** — at no size does
+either mode return a row with a wrong value. Every loss here is a *missing* row.
 
-Recall is 1.000 through 800 rows (~17 pages), then collapses — 0.199 @1,200, 0.088 @1,600,
-0.009 @3,200. The failure is **silent**: the run reports success and returns a
-valid-looking but truncated list. Two properties make it worse than a simple token cap:
+### 🔄 The cliff has moved out — and over-splitting is why, now confirmed causally
 
-- **The recovered prefix *shrinks* as the document grows** — 239 rows recovered at 1,200,
-  but only 141 at 1,600 and 30 at 3,200. The call abandons the list *earlier* on bigger
-  input, so this is **not fixable by raising `max_tokens`**.
-- **Cost goes down, not up, past the cliff** ($1.78 at 800 rows → $1.04 at 1,200). A
-  truncated run is *cheaper*, so cost monitoring will not flag it either.
+At v0.6.5 this table showed a hard silent cliff between 800 and 1,200 rows — recall 0.199
+@1,200, 0.088 @1,600, **0.009** @3,200, all with **1 section** (splitting was skipped
+entirely for a single-class config before #686 was fixed). At v0.6.7 the same documents
+arrive as 6–18 sections and recover far more.
+
+**Confirmed by turning the knob, on one release.** `sectionSplitting` is the only variable:
+
+| rows | pages | `llm_determined` (default) | `disabled`, dpi 300 *(shipped dpi)* | `disabled`, dpi 150 |
+|---:|---:|---|---|---|
+| 1,200 | 25 | **1.000** (6–8 sections) | **FAILED** — `Input is too long for requested model` | 1 section, recall **0.036** |
+| 1,600 | 33 | 1.000 / 0.541 (see below) | **FAILED** | 1 section, recall **0.006** |
+| 3,200 | 66 | 0.724 / 0.786 | **FAILED** | **FAILED** |
+
+So the mechanism is no longer a hypothesis: **over-splitting is what keeps simple mode
+complete on a large list**, by bounding each extraction call's output. Remove it and one of
+two things happens — at the shipped DPI the request exceeds the model's input window and the
+document **fails outright**, and at dpi 150 it fits but silently truncates to 0.6–3.6%
+recall, i.e. the v0.6.5 cliff returns.
+
+That the *shipped* DPI turns this from silent truncation into a hard failure is worth noting
+on its own: `base-ocr.yaml` records higher dpi as "nearly free (measured … 1.4% of total
+input tokens)", which holds per page but not for a 25-page single section, where the page
+images are what push the request over the limit.
+
+> ⚠️ **This makes `sectionSplitting: disabled` unsafe as a general cost fix.** It is correct
+> and cheapest for a single-class corpus of *small* documents (§4), and it is measured to
+> **fail or lose 96–99% of rows** on 25+ page documents. See §5 for the size-conditional
+> recommendation, and prefer fixing the classifier (below) over disabling splitting.
+
+#### ⚠️ Correction: "complete through 1,600 rows" does not replicate
+
+The same configuration run on two stacks disagrees at the top of the range:
+
+| rows | stack A | stack B |
+|---:|---|---|
+| 1,200 | 1.000 (6 sections) | 1.000 (8 sections) |
+| 1,600 | **1.000** (12 sections) | **0.541** (6 sections) |
+| 3,200 | 0.724 (18 sections) | 0.786 (14 sections) |
+
+So the honest reading is: **complete at 1,200 rows (2 of 2), unreliable at 1,600 (1 of 2),
+consistently incomplete at 3,200 (~0.72–0.79).** The cliff has moved from ~1,000 rows to
+somewhere around 1,200–1,600 — not "above 1,600". Both grids run `repeats: 1`, which is why
+a single draw looked like a clean result; treat any single sub-1.000 or exactly-1.000 value
+here as one sample of a non-deterministic outcome.
+
+#### What "complete" actually means here: N lists, not one
+
+This is the part the recall number does not tell you. Extraction results are stored **per
+section** (`Section.extraction_result_uri`) — there is **no document-level merged
+`Transactions`**. `completeness_recall` is the union of row tags across all sections, so
+recall 1.000 means *no row was lost*, **not** *you get one complete list*.
+
+The actual shape of the 1,200-row document at recall 1.000, 8 sections:
+
+```
+section  1: Transactions= 43   SEQ 0000-0042    Account Number='000123456789'
+section  2: Transactions=539   SEQ 0043-0581    Account Number=None
+section  3: Transactions=147   SEQ 0582-0728    Account Number=None
+section  4: Transactions=147   SEQ 0729-0875    Account Number=None
+section  5: Transactions=147   SEQ 0876-1022    Account Number=None
+section  6: Transactions= 49   SEQ 1023-1071    Account Number=None
+section  7: Transactions= 98   SEQ 1072-1169    Account Number=None
+section  8: Transactions= 30   SEQ 1170-1199    Account Number=None
+                                total 1200 rows across 8 lists
+```
+
+Three consequences a consumer has to handle:
+
+1. **Reassembly is the consumer's job.** When it works the sections *do* partition the list
+   cleanly — contiguous, non-overlapping, in order — so concatenation reconstructs the
+   original 1,200 rows exactly. But nothing in the pipeline does it for you.
+2. **Section order is not guaranteed to be document order.** On the 3,200-row document
+   section 2 covered rows 2150–2296 while section 7 covered 141–189, so concatenating by
+   section id yields a scrambled list. Sort by a row key, not by section.
+3. **Only section 1 carries `Account Number`; sections 2..N have it `null`.** A fragment is
+   therefore not independently identifiable — and this is the same null that raises the
+   spurious `'Account Number' is a required property` validation issue (§2 finding 7).
+
+So "the cliff moved out" is a real improvement — **no rows are lost** where v0.6.5 lost
+80–99% of them — but it buys *recoverable fragmentation* in place of *silent truncation*,
+not one clean list. Losing data is strictly worse than having to reassemble it; both are
+worse than getting one list.
+
+### 🚨 The confidence pass can fail to converge inside its Lambda
+
+**`simple` @800 rows did not complete.** Extraction finished and recovered all 800 rows
+(recall 1.000), then the **Assessment step timed out at 900 s and Step Functions retried it
+five times** — 6,205 s of wall clock — before the harness deadline stopped it. The document
+is recorded as `ABORTED`.
+
+The Assessment log names the mechanism:
+
+```
+Assessment output TRUNCATED at max output tokens; salvaged 3 top-level field(s)
+  from the valid prefix (method=truncated_to_last_complete_element).
+  Unrecovered rows will be retried over a smaller batch.
+Assessment truncated for 'Transactions' over 25 rows; splitting into 12 + 13
+  and retrying with smaller batches.
+```
+
+Nova Lite hits its 10,000-token output cap on a 25-row confidence batch (the prompt asks for
+a confidence, an explanation *and* a bounding box per cell), so the recovery **halves the
+batch and retries**. Each retry is a fresh Bedrock call at ~77 s. On this document the
+ladder does not converge inside the 900-second Assessment Lambda, so the Lambda dies, Step
+Functions restarts the whole section, and it dies again — paying the Bedrock spend every
+time.
+
+This is the same defect class as the agentic retry ladder described in the
+[v0.6.7 release audit](releases/v0.6.7.md): **a recovery loop with no bound on total elapsed
+time, running inside a fixed-duration Lambda.** Both should be bounded by remaining
+execution time, and this one should additionally derive its starting `list_batch_size` from
+the model's output cap rather than defaulting to 25 and discovering the cap by truncating.
+
+It is a *confidence* failure, not an extraction failure — the rows were all extracted. But
+the document ends `ABORTED`, so from the outside it is indistinguishable from losing
+everything.
 
 ### Advanced mode: completeness holds; cost and wall-clock are the limits
 
 Advanced (agentic sharding) holds **recall 1.000 through 3,200 rows / 66 pages** — sharding
 keeps each call small, so neither the truncation nor an input-context limit is hit. The
-practical limits are **cost** (up to ~$21/doc at 3,200 rows, ~11× simple) and **wall-clock**
-(~19 min at 3,200 rows). Cost grows super-linearly in rows above ~800.
+practical limits are **cost** (up to ~$22/doc at 3,200 rows, ~4.6× simple) and **wall-clock**
+(~11 min at 3,200 rows). Cost grows super-linearly in rows above ~800.
 
 ---
 
@@ -275,42 +490,58 @@ non-deterministic), so a single sample cannot resolve a cost difference between 
 suite measures cost with repeats and reports mean ± stdev + coefficient of variation (CV); a
 cost difference is only trustworthy when it exceeds the sampling spread.
 
-Same document (`med_narrow`, 400 rows / 9 pages), 5 repeats per cell, 25 runs. All returned
-`COMPLETED` with **recall 1.000 and scalar accuracy 1.000** — so these are like-for-like cost
-comparisons of configurations that all did the job.
+Same document (`med_narrow`, 400 rows / 9 pages), 5 repeats per cell, 25 runs, extraction
+model Sonnet 5 (the shipped default). All returned `COMPLETED` with **recall 1.000** — so
+these are like-for-like cost comparisons of configurations that all did the job.
 
-| config (OCR / mode / assessment) | cost mean ± stdev | CV | min–max | note |
-|----------------------------------|-------------------|---:|---------|------|
-| Textract TABLES / **simple** / separate | **$0.618 ± $0.006** | **0.9%** | $0.608–0.621 | deterministic |
-| Textract LAYOUT / advanced / separate | $1.776 ± $0.121 | 6.8% | $1.677–1.944 | stable |
-| BDA / advanced / separate | $1.835 ± $0.432 | 23.6% | $1.211–2.250 | moderate |
-| Textract TABLES / advanced / integrated | $2.785 ± $1.131 | 40.6% | $1.879–4.665 | **high variance** |
-| Textract TABLES / advanced / separate | $2.193 ± $1.504 | **68.6%** | $1.159–**4.723** | **high variance** |
+| config (OCR / mode / assessment) | cost mean ± stdev | CV | min–max | sections/run |
+|----------------------------------|-------------------|---:|---------|---|
+| Textract TABLES / **simple** / separate | **$0.723 ± $0.006** | **0.8%** | $0.717–0.730 | 2,2,2,3,3 |
+| Textract LAYOUT / advanced / separate | $1.856 ± $0.529 | 28.5% | $1.053–2.533 | 1,2,2,5,5 |
+| BDA / advanced / separate | $1.871 ± $0.103 | **5.5%** | $1.738–2.013 | 2,2,2,3,3 |
+| Textract TABLES / advanced / separate | $2.216 ± $1.048 | 47.3% | $1.586–**4.076** | 1,2,3,3,4 |
+| Textract TABLES / advanced / integrated | $2.962 ± $0.630 | 21.3% | $2.460–4.007 | 2,3,3,3,4 |
 
 **Findings**
 
-- **Simple mode is ~2.9–4.5× cheaper than advanced *and* essentially deterministic** (cost CV
-  0.9% vs 6.8–68.6%). For budgeting, simple is both cheaper and predictable; agentic cost must
+- **Simple mode is ~2.6–4.1× cheaper than advanced *and* essentially deterministic** (cost CV
+  0.8% vs 5.5–47.3%). For budgeting, simple is both cheaper and predictable; agentic cost must
   be planned as a *range*, not a point.
-- **The worst case matters more than the mean.** `tt-adv-sep` ranged **$1.16 → $4.72 on the
-  same document, same config** — a 4.1× spread. A capacity or cost model built on one sample
+- **The worst case matters more than the mean.** `tt-adv-sep` ranged **$1.59 → $4.08 on the
+  same document, same config** — a 2.6× spread. A capacity or cost model built on one sample
   of an agentic cell will be wrong.
-- **LAYOUT / advanced is the cheapest and by far the most stable advanced option**
-  ($1.776, CV 6.8%) — clean LAYOUT OCR lets the agent finish in fewer turns than TABLES or
-  BDA, which is visible in the variance as well as the level.
+- **Part of that variance is the *classifier*, not the agent.** The `sections/run` column is
+  the same one-statement document classified 1 to 5 different ways across five identical
+  runs. Centred within cell, `r(sections, cost) = 0.37` on the 20 advanced runs, ≈$0.21 per
+  extra section — and the two extremes are exactly what that predicts (`tl-adv-sep`: 1
+  section → $1.05, 5 sections → $2.53). The simple cell's sections also vary (2–3) and its
+  cost does **not** move at all (CV 0.8%), which is the control: a spurious section is nearly
+  free for a single call and expensive for an agent loop. **Some of the "agentic cost is
+  unpredictable" reputation is over-splitting non-determinism, and it is fixable.**
+- **BDA / advanced is the most stable advanced option** (CV 5.5%) and LAYOUT / advanced the
+  cheapest at the low end ($1.05 when it gets the section count right). LAYOUT's high CV
+  (28.5%) is entirely its two 5-section runs.
 - **Why advanced costs more even with the deterministic table tool:** advanced is a multi-turn
-  agent loop, and each turn re-sends the growing conversation as *input* tokens. The residual
-  premium is the irreducible multi-turn overhead, and its variance is inherent to the loop
-  (the turn count is not deterministic).
+  agent loop, and each turn re-sends the growing conversation as *input* tokens — and that
+  whole loop is paid **per section**. The v0.6.7 release A/B measures the per-section
+  component directly: forcing the section count back to 1 takes `tt-adv-sep` from $1.71 to
+  $1.30 (−24%) at a fixed extraction model
+  ([release audit](releases/v0.6.7.md)).
+
+> **Model note.** §4 is measured at Sonnet 5, the shipped default, so it is directly
+> comparable with §2. The v0.6.6→v0.6.7 cost A/B in the
+> [release audit](releases/v0.6.7.md) is measured at **Sonnet 4.6** instead, because that is
+> the extraction model both releases can run — do not compare its absolute dollars with this
+> table, only its deltas.
 
 > Methodology note: run these cells with `--suite cost` (or `--repeats ≥5`); the harness
 > flags any cell with cost CV > 0.25 as unreliable-at-current-n, and
 > `aggregate.py --compare` only reports a cost regression when the mean shift exceeds the
 > combined sampling spread — so agentic noise never masquerades as a regression. That
-> That treatment now covers **accuracy and completeness too**, not only cost: `--compare`
+> treatment now covers **accuracy and completeness too**, not only cost: `--compare`
 > reasons about failure *rates* and mean-vs-spread rather than a single draw
-> ([index.md](index.md)). It was cost-only for this edition, which is how a
-> non-deterministic completeness swing got reported as an improvement in
+> ([index.md](index.md)). It was cost-only at v0.6.5, which is how a non-deterministic
+> completeness swing got reported as an improvement in
 > [releases/v0.6.5.md §4](releases/v0.6.5.md).
 
 ---
@@ -319,49 +550,111 @@ comparisons of configurations that all did the job.
 
 | Situation | Recommended configuration |
 |-----------|---------------------------|
-| Typical documents ≤ ~800 rows / ≤ ~17 pages | **simple mode** (complete, ~4× cheaper) |
-| Table-free / forms corpora | **LAYOUT-only OCR** (cheapest complete option; best-behaved confidence) |
-| Large multi-page tables (> ~800 rows) | **advanced mode** (guaranteed completeness through 3,200 rows; budget cost as a *range*) |
-| Very large docs (> ~3,000 rows / 60 pages) | advanced **and split the document** if feasible (~$21 and ~19 min per document at 3,200 rows) |
-| Documents with long free-text cells | **simple + separate**, not advanced — advanced nulled the whole list on `longdesc_100` (§2, finding 3) |
-| Confidence needed | **`separate`** assessment. **Never `integrated` with simple extraction** (§2.1) |
-| Cheapest OCR, small documents | Bedrock-LLM (**not** for >100-row lists — loses rows, §2 finding 5) |
+| Typical documents ≤ ~1,600 rows / ≤ ~33 pages | **simple mode** (complete, per-row-accurate, ~2.6–2.9× cheaper) |
+| Table-free / forms corpora | **LAYOUT-only OCR** (cheapest complete option in both modes; best-behaved confidence) |
+| Large multi-page tables (> ~1,200 rows) | **advanced mode** (recall 1.000 through 3,200 rows, §3; budget cost as a *range*). Simple mode is unreliable from ~1,600 rows and fragments the list either way |
+| Very large docs (> ~3,000 rows / 60 pages) | advanced **and split the document** if feasible (~$22 and ~11 min per document at 3,200 rows, §3) |
+| **Paying the +22% agentic over-split premium** | **set `classification.model` to Claude Haiku 4.5.** It gets the section count right 5 of 5 where the default Nova 2 Lite gets 0 of 5, taking advanced mode to **−5.6% vs v0.6.6** and costing simple mode only **+9%** (Sonnet 5 also fixes it but costs simple mode **+45%**). This is the recommended fix — it corrects the boundary decision rather than switching it off, so it is safe for packets *and* for large documents |
+| **`sectionSplitting: disabled`** | Only for a single-class corpus of **small** documents (≤ ~9 pages measured), where it is the cheapest correct setting. ⚠️ **Never** if input can be a packet (§7). ⚠️ **Never** above ~1,000 rows / ~25 pages: measured to **FAIL outright** (`Input is too long for requested model`) at the shipped dpi, and to silently truncate to **0.6–3.6% recall** at dpi 150 (§3) |
+| Very large lists **+ confidence** | expect the confidence pass to be the fragile part, not extraction — it failed to converge inside its Lambda on an 800-row list (§3). Lower `extraction.confidence.list_batch_size` from 25, or use `confidence.mode: off` and reconcile separately |
+| Confidence needed | **`separate`** assessment. Do not use `integrated` with simple extraction (§2.1) — it is now more expensive *and* less complete *and* worse calibrated than `separate` |
+| Cheapest OCR, small documents | Bedrock-LLM, **only if identifiers do not matter** — it is the one backend that returns wrong per-row *values* (§2 finding 4) |
 | Packets holding several documents of the **same** class | `x-aws-idp-multi-instance` on that class (**migrate baselines**), or `x-aws-idp-instance-array` if it already lists them (free) — §7 |
 | New corpus, shape unknown | run `extraction.multi_instance_detection` **once** as a diagnostic, act on what it names, then turn it off — §7 |
+| Nested object (group) attributes in the schema | leave **`extraction.forced_tool.enabled` off** — on Sonnet 5 forcing returns groups as JSON strings, making every section schema-invalid ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783), §2 finding 8) |
+| A numeric/boolean attribute that may be unreadable in the source | do **not** rely on advanced mode to tell you — a `required` attribute cannot be returned as `null` on the agentic path, so an unreadable cell becomes a fabricated `0` ([#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782)). Simple mode reports it |
 
-**Safety notes — all three failure modes are silent and all three are invisible to field
-accuracy:**
+**Safety notes — every failure mode below is silent, and each one is invisible to at least
+one metric you would expect to catch it:**
 
 1. Simple mode truncates large lists while reporting success, and a truncated run is
    *cheaper* than a complete one, so neither status nor cost will alert you. If large tables
    are possible, use advanced mode, or add a schema `minItems` constraint, or reconcile row
    counts downstream.
-2. **`integrated` confidence with simple extraction returned 1–10 of 100 rows in 4 of 4
-   repeats at the shipped default model, with none of them matching ground truth — and
-   `scalar_accuracy` 1.000 with status `COMPLETED` throughout.**
+2. **`integrated` confidence with simple extraction returned 179 of 400 rows on one of seven
+   documents at v0.6.7** (and 1–10 of 100, none matching, in 4 of 4 repeats at v0.6.5) — with
+   `scalar_accuracy` 1.000 and status `COMPLETED` throughout.
 3. **A section holding several documents of the same class returns only the first, and
    per-field accuracy cannot see it** — the fields that came back are scored, and they can
    all be right. A section returning 1 of 3 pay statements scores **1.000**. Nothing in
    §2–§4 of this paper would detect it; only a record count against ground truth, or the
    §7 detection probe, will.
+4. **A whole *column* can be empty at recall 1.000.** `completeness_recall` counts rows, and
+   the row tag lives in one field; return every row with every `Amount` null and it still
+   scores 1.000, as does `scalar_accuracy` (which only reads document-level fields). §2 adds
+   per-row **cell accuracy** for exactly this. If you build your own quality gate, gate on a
+   per-column non-null rate, not a row count.
+5. **The two extraction modes disagree about what to do with an unreadable column, and one
+   of them is worse — [#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782).**
+   Given a column OCR could not read at all, simple extraction returned `null` for every row
+   — which the new default validation reports as 100 required-property issues — while
+   advanced returned a fabricated **`0.0`** for every row, schema-valid and silent. This is
+   structural, not a model quirk: a `required` attribute becomes a **non-nullable** Pydantic
+   field on the agentic path, so `null`, `""` and *omitted* are all rejected and the retry
+   loop asks the agent to "fix" it. Abstention is *unexpressible*, and a fabricated value is
+   the only accepted answer. It bites `number`/`integer`/`boolean` hardest, because a
+   plausible `0`/`false` is unverifiable; a `string` can at least carry the garbled literal.
+   (Observed on a corpus document whose amounts were physically overprinted — see the header
+   note — so treat 100/100 as a characterization of behaviour on unreadable input, not a
+   field rate. The contract problem is independent of that document.)
 
 ---
 
 ## 6. Product improvement backlog (surfaced by this study)
 
-1. **🚨 Integrated confidence + simple extraction returns empty/partial lists (P0).** At the
-   default extraction model this is a total loss of list data with no error and perfect
-   scalar accuracy. Refuse the `integrated` + simple combination for list-bearing schemas
-   (route to a separate confidence pass or sharded advanced), or fail the section loudly.
-2. **Silent truncation needs detection, not just documentation (P0).** Both failure modes
+1. **🚨 `sectionSplitting: llm_determined` over-splits, and on the agentic path it is a
+   ~22% bill increase (P0).** #726. Every cell in §2 is over-split 2–3×; §4 shows the same
+   document classified 1 to 5 ways across five identical runs. It also manufactures spurious
+   `required property` validation issues on continuation sections, fragments a large list
+   into N per-section lists (§3), and is a large part of what makes agentic cost look
+   unpredictable.
+   **The default classifier is the problem, not the splitting logic:** Nova 2 Lite gets the
+   boundary decision right 0 of 5 runs, Haiku 4.5 and Sonnet 5 both 5 of 5 (§7). Two
+   candidate fixes, in order: (a) improve the boundary prompt for the small classifier —
+   still the cheapest outcome and untried; (b) change the default `classification.model` to
+   **Haiku 4.5**, which is measured to remove the whole premium (advanced −5.6% vs v0.6.6)
+   at +9% on simple mode. Note `sectionSplitting: disabled` is **not** an acceptable general
+   workaround — it fails outright above ~25 pages (§3).
+2. **🚨 Forced tool use serializes group attributes to JSON strings on Sonnet 5 —
+   [#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783) (P0 for the feature).**
+   `sanitize_tool_schema` leaves `$defs` *definition* names unsanitized, so a group named
+   `Account Holder Address` ships a `$ref` pointer containing spaces, which Sonnet 5 does
+   not resolve. **Every** section with a group attribute is then schema-invalid (§2 finding
+   8). Fix: sanitize `$defs` names and rewrite the pointers (adding `"type": "object"` or
+   inlining single-use defs also works). Separately, coercion should JSON-parse a string
+   that is valid JSON for an object-typed field — it currently refuses a lossless repair.
+3. **⚠️ Integrated confidence + simple extraction still truncates lists (P1, improved).**
+   0.552 recall on one of seven documents at v0.6.7, versus a 0.294 grid mean at v0.6.5.
+   Refuse the `integrated` + simple combination for list-bearing schemas (route to a
+   separate confidence pass or sharded advanced), or fail the section loudly.
+4. **Silent truncation needs detection, not just documentation (P0).** Both failure modes
    above return `COMPLETED`. Compare extracted row count against schema `minItems` (or an
    OCR-derived row estimate) and surface a completeness warning/metric. Note the recovered
    prefix *shrinks* with document size and cost *falls*, so no existing signal catches it.
-3. **⚠️ Advanced list-null on long-free-text tables.** When the agent declines the table
-   tool it can return the whole list as `null` (recall 0.000 on `longdesc_100`, and it
-   finished in 33 s for $0.14 — visibly less work than a real extraction). Fall back to
-   direct row extraction rather than nulling, and treat "list null but OCR shows a table" as
-   an error.
+5. **🚨 The agentic path cannot express "I could not read this" —
+   [#782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/782) (P0).**
+   A `required` attribute is rendered as a **non-nullable** Pydantic field, so `null`, `""`
+   and *omitted* are all rejected and the retry loop then tells the agent to "fix the
+   extraction" — leaving a fabricated value as the only accepted answer. On an unreadable
+   column that is `0.0` for all 100 rows: schema-valid, silent, indistinguishable from a
+   real zero. This directly contradicts the table-tool prompt, which instructs the agent to
+   "set that single cell to null". Simple mode is unaffected (it emits `null`, which
+   validation reports loudly). Fix: hand the agent a nullable *transport* model and enforce
+   `required` in the JSON-Schema validation that already knows how to report and escalate a
+   missing required field — the same relaxation #438 already applies on the evaluation path.
+6. **🚨 Two recovery ladders that outlive their Lambda (P0/P1).** Both are loops with no
+   bound on total elapsed time running inside a fixed-duration function, and both were
+   observed failing in this study:
+   - **Confidence batch-splitting (P0, observed to lose a document).** A truncated
+     confidence batch is halved and retried; on an 800-row list the ladder never converges
+     inside the 900 s Assessment Lambda, so the document ends `ABORTED` after 5 timeouts and
+     6,205 s (§3). Bound it by remaining execution time, **and** derive the initial
+     `list_batch_size` from the confidence model's output cap instead of defaulting to 25
+     and discovering the cap by truncating.
+   - **Agentic network retry (P1).** `invoke_agent_with_retry` is `max_retries=50,
+     max_delay=1800` inside a 900-second Extraction Lambda, so one transient Bedrock
+     read-timeout loses the whole invocation and Step Functions repeats the extraction from
+     scratch. Unchanged since v0.6.6 — see the [release audit](releases/v0.6.7.md).
 4. ~~**Variance-aware comparison for accuracy/recall, not just cost**~~ — **done.**
    `--compare` now uses failure rates and mean-vs-spread for accuracy and completeness, not
    just cost.
@@ -377,9 +670,18 @@ accuracy:**
 ## 7. v0.7 configuration options (measured 2026-09-03)
 
 Measured on stack `IDP1` (us-west-2), develop at v0.6.7.dev5 plus PR #744. These are
-**separate measurements from §2–§4** above, which remain v0.6.5 numbers on a different
-stack and are not restated here. Costs are estimates from `config_library/pricing.yaml`,
-rates as of 2026-09-02.
+**separate measurements from §2–§4** above — a different stack, a different build, and in
+one case a different classification model — and they are not restated here. Costs are
+estimates from `config_library/pricing.yaml`, rates as of 2026-09-02.
+
+> ⚠️ **Where §7 and §2–§4 disagree, the difference is usually the classification model.**
+> §7's `sectionSplitting` measurement reports `llm_determined` at `sections_correct` **1.00**;
+> §2 finds every cell over-split 2–3× and §4 finds the same document classified 1 to 5 ways
+> across five identical runs. Both are right: §7 held `classification.model` at **Sonnet 5**,
+> while §2–§4 use the **shipped default Nova 2 Lite**. Holding everything else fixed and
+> changing only that knob gives 1 correct section in 5 of 5 runs on Sonnet 5 and 0 of 5 on
+> Nova 2 Lite (see the [release audit](releases/v0.6.7.md)). Read §7's splitting result as
+> "the prompt works on a strong classifier", not "splitting is correct by default".
 
 ### `extraction.agentic.restate_schema_in_system_prompt` — safe to turn off
 
@@ -462,7 +764,50 @@ repeats is the pass rate), classification model Sonnet 5.
 `disabled` is correct by construction on a single document and **wrong by construction on a
 packet** — it emits one all-pages section where two are correct, losing the split silently
 (completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
-over-splitting.
+over-splitting. §3 adds a second reason not to: on a 25+ page document `disabled` makes the
+whole document one section, and simple extraction then **fails** with `Input is too long for
+requested model`.
+
+#### The boundary decision is model-dependent — and Haiku 4.5 is the cheap fix
+
+The 1.00 above was measured with `classification.model` at **Sonnet 5**. §2–§4 use the
+shipped default, **Nova 2 Lite**, and over-split every document 2–3×. Holding everything
+else fixed and varying only the classifier, on `med_narrow` (one statement, 9 pages, truth =
+1 section):
+
+| classification model | boundary decision (9 pages, 3 repeats) | sections | classification $/doc |
+|---|---|---|---|
+| Nova Lite | 3.0 / 9 correct | 4, 5, 6 | $0.0027 |
+| **Nova 2 Lite** *(shipped default)* | 7.3 / 9 correct | **2, 4, 2** | $0.0097 |
+| **Claude Haiku 4.5** | **9 / 9 correct** | **1, 1, 1** | $0.0534 |
+| Claude Sonnet 5 | 9 / 9 correct | 1, 1, 1 | $0.2683 |
+
+*(Prompt-level probe: the shipped classification prompt including the `topk` block, page
+image + page text, per page, 3 repeats. Its cost estimate validates against the pipeline —
+it predicted Sonnet 5 classification at +$0.259/doc against the +$0.244 measured end to
+end.)*
+
+End to end on the same stack, `repeats: 5`, varying only `classification.model`:
+
+| arm | sections | ADVANCED $/doc | vs v0.6.6 | SIMPLE $/doc | vs v0.6.6 |
+|---|---|---|---|---|---|
+| v0.6.6 baseline *(classification skipped, #686)* | 1×5 | $1.4005 | — | $0.5356 | — |
+| v0.6.7, cls Nova 2 Lite *(shipped default)* | 4,4,2,4,4 | $1.7119 | **+22.2%** | $0.5326 | −0.6% |
+| **v0.6.7, cls Haiku 4.5** | **1×5** | **$1.3215** | **−5.6%** | $0.5854 | **+9.3%** |
+| v0.6.7, cls Sonnet 5 | 1×5 | $1.5521 | +10.8% | $0.7764 | +45.0% |
+| v0.6.7, `sectionSplitting: disabled` | 1×5 | $1.2969 | −7.4% | $0.5289 | −1.3% |
+
+**Haiku 4.5 is the recommended fix for #726.** It is as correct as Sonnet 5 on this decision
+at **a fifth of the price**, it more than pays for itself on the agentic path (−5.6% against
+v0.6.6, i.e. it removes the whole premium), and it costs a simple-mode user only +9% — where
+Sonnet 5 costs them +45%, because classification is billed per **page** and simple extraction
+gains nothing from a lower section count. Unlike `sectionSplitting: disabled` it is safe for
+packets and for large documents, because it *corrects* the boundary decision instead of
+switching it off.
+
+This also converges with the independent #673 result below: Haiku 4.5's classification
+**calibration separation is 0.207 against Nova 2 Lite's 0.044**. The same model that gets the
+boundary right is the one whose confidence score is worth acting on.
 
 ### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — the same-class packet
 
@@ -611,21 +956,32 @@ leave on. `mode: off` returns the previous behaviour. Full analysis:
 
 ## Appendix A — Data & reproduction
 
-- Per-(cell,doc) scores — `summary.{json,csv}` for the `coresynth` (§2), `scaling` (§3),
-  `cost` (§4) and two `intconf` (§2.1) runs. Pruned per
+- Per-(cell,doc) scores for **this** edition are in the working tree:
+  - §2 / §2.1 — `benchmarks/results/v0.6.7/coresynth__extraction-model-sonnet5/`
+  - §3 — `benchmarks/results/v0.6.7/scaling__extraction-model-sonnet5/`
+  - §4 — `benchmarks/results/v0.6.7/cost__extraction-model-sonnet5/`
+  (`benchmarks/results/v0.6.7/cost/` is a **different** measurement: the Sonnet 4.6
+  cross-version arm of the release A/B. Do not mix it with §4.)
+- The v0.6.5 slices this edition replaces are pruned per
   [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
-  (one complete set per release); restore all five from git with:
+  (one complete set per release); restore them from git with:
   ```bash
   git checkout ec3eb05ae -- benchmarks/results/v0.6.5-config-core/ \
       benchmarks/results/v0.6.5-config-scaling/ benchmarks/results/v0.6.5-config-cost/ \
       benchmarks/results/v0.6.5-intconf-sonnet5/ benchmarks/results/v0.6.5-intconf-sonnet46/
   ```
-- Figures: `images/benchmark-scaling.png`
+- Figures: `images/benchmark-scaling.png` — **the committed figure plots the v0.6.5
+  curve** (the cliff at 1,200 rows). §3's table supersedes it; the figure was not
+  regenerated, so read the table, not the picture.
 - Corpus manifest + generators: `benchmarks/corpus/` (regenerable; PDFs/configs gitignored)
 - Matrices + methodology: `benchmarks/matrices/`
-- Measured spend for this edition: **$75.08** (§2, 70 runs) + **$47.39** (§3, 14 runs) +
-  **$46.03** (§4, 25 runs) + **$3.37** (§2.1, 16 runs) = **$171.87** over 125 document runs,
-  priced from `pricing.yaml`.
+- Measured spend for this edition: **$131.72** (§2, 133 runs) + **$55.13** (§3, 14 runs) +
+  **$48.14** (§4, 25 runs) = **$234.99** over 172 document runs, priced from `pricing.yaml`.
+  The supporting release-A/B and mitigation runs cited in §4 add **$81.17** over 70 runs
+  (`v0.6.6/cost`, `v0.6.7/cost`, `v0.6.7/advsplitcost__section-splitting-disabled`,
+  `v0.6.7/advsplitcost__classification-model-sonnet5`). The `__<slug>` suffix is the
+  `--set` override the grid ran with — see
+  [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md).
 
 ```bash
 source .venv/bin/activate && export PYTHONPATH=$PWD/lib/idp_common_pkg
@@ -636,9 +992,12 @@ python3 benchmarks/harness/gen_corpus.py
 #  so a single-release study overrides it explicitly)
 for s in coresynth scaling cost; do
   python3 benchmarks/harness/make_configs.py --suite $s --class bank_statement --set extraction_model=sonnet5
-  AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite $s --native-upload --max-inflight 5
-  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/v0.6.5/$s
+  AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite $s \
+      --set extraction_model=sonnet5 --max-inflight 20
+  AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/v0.6.7/$s
 done
+# NOTE: --set must be repeated on run_matrix.py, not only make_configs.py — the two are
+# namespaced by the override set, so omitting it there reads a DIFFERENT variant's plan.
 
 # §2.1 the integrated-confidence hazard, with repeats + same-doc control
 python3 benchmarks/harness/make_configs.py --suite intconf --class bank_statement --set extraction_model=sonnet5
@@ -666,11 +1025,14 @@ against ground truth — see
 `benchmarks/results/v0.6.7/detection-real-corpora/extracted_vs_ground_truth.txt` for the
 query that settled it.
 
-**Honesty / limits.** Costs are estimates from `pricing.yaml` (rates as of 2026-08; intro
+**Honesty / limits.** Costs are estimates from `pricing.yaml` (rates as of 2026-09; intro
 pricing may apply). §2 is one run per (cell, doc) — reliable for the *exact* completeness and
-accuracy measures, not for per-cell cost, which is what §4 is for. No reference (real,
+accuracy measures, not for per-cell cost, which is what §4 is for, and not for a single
+sub-1.000 observation, which is one draw from a known-bimodal cell. No reference (real,
 labeled) corpus and no one-axis sweeps (geometry, escalation, models, reasoning effort) were
 run for this release; those sections are omitted rather than carried forward from v0.6.0.
+`longdesc_100` was regenerated for this edition after a rendering defect was found in it —
+see the header note; its v0.6.5 numbers are not comparable.
 
 ---
 > See the [Benchmarking Guide](./index.md) for how this suite is designed and run,

@@ -695,6 +695,11 @@ srt-clean: ## Remove gitignored build/temp dirs that pollute local SRT scans
 	find . -name node_modules -prune -o -name .venv -prune -o \
 		-type d \( -name .aws-sam -o -path '*/layer/python' \) -prune -print \
 		| xargs -r rm -rf
+# Also drop SRT scan dirs whose template no longer exists. They outlive the
+# template — `srt assess` never removes a scan dir — so scanner_health.py keeps
+# reporting them as "checkov did not complete" and prints "this scan cannot prove
+# the tree is clean" on a run that is clean. See the module docstring.
+	@$(PYTHON) scripts/srt/prune_stale_scans.py
 	@echo -e "$(GREEN)✅ Scan-polluting artifacts removed (CI checkouts are already clean)$(NC)"
 
 srt: ## Run full SRT workflow (clean → setup → scan → optional fix)

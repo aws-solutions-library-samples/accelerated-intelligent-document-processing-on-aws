@@ -266,6 +266,13 @@ def _meta(rm):
         "stack_version": _stack_version(rm.get("stack")),
         "suite": rm.get("suite"),
         "class": rm.get("class"),
+        # The `--set` axis overrides the grid ran with. (suite, class) does not
+        # identify a measurement on its own: one release legitimately runs the same
+        # suite twice with different overrides — `cost` at the cross-version control
+        # model for the release A/B and at the shipped default for the config paper.
+        # Absent (None) on a runmap written before run_matrix recorded them; an
+        # empty list means "ran with the committed default_cell", which is different.
+        "overrides": rm.get("overrides"),
         # Coverage, carried through from the runmap. The runmap itself is
         # gitignored (results/RETENTION.md), so without these the committed
         # meta.json a release page cites records nothing about which of the

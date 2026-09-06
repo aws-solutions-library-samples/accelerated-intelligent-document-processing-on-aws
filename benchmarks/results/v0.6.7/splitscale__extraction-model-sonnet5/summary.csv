@@ -1,0 +1,4 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-tt-simple-sep,scale_1200.pdf,0,COMPLETED,True,25.0,1.0,1200,1.0,,1.0,0.0,,,,,,0.125,7,0,7,0.976,0.4,,,,,788.614956,2.1452
+core-tt-simple-sep,scale_1600.pdf,0,COMPLETED,True,33.0,0.5406,533,1.0,,1.0,0.0,,,,,,0.1667,9,0,3,0.9892,0.5,,,,,407.455616,2.1294
+core-tt-simple-sep,scale_3200.pdf,0,COMPLETED,True,66.0,0.7856,190,1.0,,1.0,0.0,,,,,,0.0714,13,0,13,0.9894,0.4,,,,,671.627167,4.9434
