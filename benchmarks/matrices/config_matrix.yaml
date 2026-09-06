@@ -156,6 +156,12 @@ axes:
     nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
     sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
     sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
+    # Haiku 4.5 is here because #726's over-split is classification-model-dependent and
+    # Sonnet 5 is an expensive way to fix it (classification is billed per PAGE, so it
+    # costs a simple-mode user +45%). A prompt-level probe on the shipped boundary prompt
+    # scored Haiku 9/9 on the boundary decision in 3 of 3 repeats — same as Sonnet 5 — at
+    # a fifth of the price. This axis is how that gets confirmed end to end.
+    haiku45:     {classification.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
@@ -528,3 +534,16 @@ suites:
   # which is the control that says "this is about the agentic path, not about
   # section count in general".
   advsplitcost: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [med_narrow], repeats: 5}
+  # splitscale: does `sectionSplitting: disabled` cost COMPLETENESS on a large list?
+  #
+  # This is the question the §3 scaling result raised and could not answer. At v0.6.5 a
+  # 1,200+ row list arrived as ONE section and simple mode truncated it (recall 0.199);
+  # at v0.6.7 the same document is split into 6-18 sections and comes back complete. If
+  # the section count is what buys that, then `disabled` — recommended elsewhere as the
+  # fix for #726's agentic cost premium — reintroduces the truncation for large
+  # single-document lists, and the recommendation has to be size-conditional.
+  #
+  # SIMPLE only, on purpose: the concern is single-response truncation, which is a
+  # simple-mode failure. Run it twice, once with `--set section_splitting=disabled`, and
+  # compare against the `scaling` suite's default arm on the same documents.
+  splitscale: {cells: [core-tt-simple-sep], docs: [scale_1200, scale_1600, scale_3200], repeats: 1}

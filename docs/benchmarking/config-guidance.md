@@ -51,19 +51,25 @@ Headline results at v0.6.7:
    advanced — is at recall 1.000 and per-row cell accuracy 1.000**, and simple mode is
    **~2.9× cheaper** (mean $0.603 vs $1.726 per document). 133 runs, **0 failures**.
 2. **The completeness picture improved substantially since v0.6.5, including the scaling
-   cliff.** That edition reported simple/`integrated` at recall 0.294, advanced nulling a
-   whole list, and a hard silent cliff for simple mode between 800 and 1,200 rows
-   (0.199 @1,200 → 0.009 @3,200). None of the three reproduce: simple mode is now complete
-   through **1,600 rows / 33 pages** and recovers 0.724 at 3,200 (§3). **The reason is
-   uncomfortable** — the over-splitting in item 3 is shortening each extraction call's
-   output and thereby defeating the truncation that caused the cliff, which makes
-   "turn splitting off to save money" a size-dependent trade rather than a free win.
-3. **🚨 The most expensive configuration is now advanced + `integrated` ($2.32/doc), and
-   the shipped default `sectionSplitting: llm_determined` is why advanced costs what it
-   does.** Every cell in the grid is **over-split 2–3×** — 13–23 sections where the truth
-   is 7 — and on the agentic path each spurious section is a whole agent loop. This is
-   worth **+22%** on advanced mode, measured separately (§4 and the
-   [v0.6.7 release audit](releases/v0.6.7.md)).
+   cliff — but read §3 for what "complete" means.** That edition reported
+   simple/`integrated` at recall 0.294, advanced nulling a whole list, and a hard silent
+   cliff for simple mode between 800 and 1,200 rows (0.199 @1,200 → 0.009 @3,200). None
+   reproduce: simple mode is complete at **1,200 rows** (2 of 2 runs) and recovers ~0.72–0.79
+   at 3,200 instead of 0.009. **1,600 rows is unreliable, not complete** — the same config
+   scored 1.000 on one stack and 0.541 on another. **And the reason for the improvement is
+   uncomfortable:** the over-splitting in item 3 is what bounds each extraction call's
+   output. Confirmed causally — turn splitting off and 25+ page documents either **fail
+   outright** (`Input is too long`) or truncate to 0.6–3.6% recall. It also means the rows
+   arrive as **N per-section lists, not one list** (§3).
+3. **🚨 Over-splitting is why advanced mode costs what it does, and the fix is a better
+   classifier — not turning splitting off.** Every cell in the grid is **over-split 2–3×**
+   (13–23 sections where the truth is 7), and on the agentic path each spurious section is a
+   whole agent loop: worth **+22%** (§4, [release audit](releases/v0.6.7.md)). The boundary
+   decision is **classification-model-dependent**, and switching only
+   `classification.model` to **Claude Haiku 4.5** gets the section count right 5 of 5 and
+   takes advanced mode **5.6% below v0.6.6** while costing simple mode only +9% — against
+   Sonnet 5's +45% (§5). The most expensive configuration in the grid is advanced +
+   `integrated` at $2.32/doc.
 4. **Two narrow completeness risks remain, both invisible to field accuracy.**
    `integrated` confidence with simple extraction still lost **45% of the rows** on one of
    seven documents (`manylists_400`, recall 0.552) while reporting `COMPLETED` and scalar
@@ -349,31 +355,90 @@ Simple vs advanced, Textract TABLES + separate confidence, one transaction list 
 Per-row **cell accuracy is 1.000 in every completed run of both modes** — at no size does
 either mode return a row with a wrong value. Every loss here is a *missing* row.
 
-### 🔄 The simple-mode cliff has moved out, and over-splitting is why
+### 🔄 The cliff has moved out — and over-splitting is why, now confirmed causally
 
 At v0.6.5 this table showed a hard silent cliff between 800 and 1,200 rows — recall 0.199
-@1,200, 0.088 @1,600, **0.009** @3,200. At v0.6.7 simple mode is **complete through 1,600
-rows / 33 pages** and recovers **0.724** at 3,200 rows instead of 0.009.
+@1,200, 0.088 @1,600, **0.009** @3,200, all with **1 section** (splitting was skipped
+entirely for a single-class config before #686 was fixed). At v0.6.7 the same documents
+arrive as 6–18 sections and recover far more.
 
-The `sec` column is the explanation, and it is an uncomfortable one: the same
-`sectionSplitting: llm_determined` over-splitting that costs advanced mode 22% (§4) is
-**shortening simple mode's per-call output** and thereby defeating the truncation that
-caused the cliff. 1,200 rows arrive as 6 sections, 1,600 as 12, 3,200 as 18. v0.6.5's cliff
-was measured with **1 section**, because splitting was skipped entirely for a single-class
-configuration before #686 was fixed.
+**Confirmed by turning the knob, on one release.** `sectionSplitting` is the only variable:
 
-> ⚠️ **This is a mechanism, not a proven cause** — it needs a
-> `sectionSplitting: disabled` × row-count A/B on one release, which was not run. But it is
-> enough to make the §5 recommendation of `sectionSplitting: disabled` **conditional on
-> document size**: turning splitting off to save agentic cost may put simple mode back on
-> the cliff for very large single-document lists. Do not apply that setting to a corpus with
-> >1,000-row tables without measuring completeness first.
+| rows | pages | `llm_determined` (default) | `disabled`, dpi 300 *(shipped dpi)* | `disabled`, dpi 150 |
+|---:|---:|---|---|---|
+| 1,200 | 25 | **1.000** (6–8 sections) | **FAILED** — `Input is too long for requested model` | 1 section, recall **0.036** |
+| 1,600 | 33 | 1.000 / 0.541 (see below) | **FAILED** | 1 section, recall **0.006** |
+| 3,200 | 66 | 0.724 / 0.786 | **FAILED** | **FAILED** |
 
-The cliff itself has not been *removed*, only pushed out: 0.724 at 3,200 rows is still 883
-missing rows reported as `COMPLETED`. And the "a truncated run is cheaper" property that
-makes it invisible to cost monitoring is weaker but intact ($4.87 at 3,200 rows is the
-highest simple cost in the table, but only 1.8× the complete 1,600-row run despite 2× the
-rows).
+So the mechanism is no longer a hypothesis: **over-splitting is what keeps simple mode
+complete on a large list**, by bounding each extraction call's output. Remove it and one of
+two things happens — at the shipped DPI the request exceeds the model's input window and the
+document **fails outright**, and at dpi 150 it fits but silently truncates to 0.6–3.6%
+recall, i.e. the v0.6.5 cliff returns.
+
+That the *shipped* DPI turns this from silent truncation into a hard failure is worth noting
+on its own: `base-ocr.yaml` records higher dpi as "nearly free (measured … 1.4% of total
+input tokens)", which holds per page but not for a 25-page single section, where the page
+images are what push the request over the limit.
+
+> ⚠️ **This makes `sectionSplitting: disabled` unsafe as a general cost fix.** It is correct
+> and cheapest for a single-class corpus of *small* documents (§4), and it is measured to
+> **fail or lose 96–99% of rows** on 25+ page documents. See §5 for the size-conditional
+> recommendation, and prefer fixing the classifier (below) over disabling splitting.
+
+#### ⚠️ Correction: "complete through 1,600 rows" does not replicate
+
+The same configuration run on two stacks disagrees at the top of the range:
+
+| rows | stack A | stack B |
+|---:|---|---|
+| 1,200 | 1.000 (6 sections) | 1.000 (8 sections) |
+| 1,600 | **1.000** (12 sections) | **0.541** (6 sections) |
+| 3,200 | 0.724 (18 sections) | 0.786 (14 sections) |
+
+So the honest reading is: **complete at 1,200 rows (2 of 2), unreliable at 1,600 (1 of 2),
+consistently incomplete at 3,200 (~0.72–0.79).** The cliff has moved from ~1,000 rows to
+somewhere around 1,200–1,600 — not "above 1,600". Both grids run `repeats: 1`, which is why
+a single draw looked like a clean result; treat any single sub-1.000 or exactly-1.000 value
+here as one sample of a non-deterministic outcome.
+
+#### What "complete" actually means here: N lists, not one
+
+This is the part the recall number does not tell you. Extraction results are stored **per
+section** (`Section.extraction_result_uri`) — there is **no document-level merged
+`Transactions`**. `completeness_recall` is the union of row tags across all sections, so
+recall 1.000 means *no row was lost*, **not** *you get one complete list*.
+
+The actual shape of the 1,200-row document at recall 1.000, 8 sections:
+
+```
+section  1: Transactions= 43   SEQ 0000-0042    Account Number='000123456789'
+section  2: Transactions=539   SEQ 0043-0581    Account Number=None
+section  3: Transactions=147   SEQ 0582-0728    Account Number=None
+section  4: Transactions=147   SEQ 0729-0875    Account Number=None
+section  5: Transactions=147   SEQ 0876-1022    Account Number=None
+section  6: Transactions= 49   SEQ 1023-1071    Account Number=None
+section  7: Transactions= 98   SEQ 1072-1169    Account Number=None
+section  8: Transactions= 30   SEQ 1170-1199    Account Number=None
+                                total 1200 rows across 8 lists
+```
+
+Three consequences a consumer has to handle:
+
+1. **Reassembly is the consumer's job.** When it works the sections *do* partition the list
+   cleanly — contiguous, non-overlapping, in order — so concatenation reconstructs the
+   original 1,200 rows exactly. But nothing in the pipeline does it for you.
+2. **Section order is not guaranteed to be document order.** On the 3,200-row document
+   section 2 covered rows 2150–2296 while section 7 covered 141–189, so concatenating by
+   section id yields a scrambled list. Sort by a row key, not by section.
+3. **Only section 1 carries `Account Number`; sections 2..N have it `null`.** A fragment is
+   therefore not independently identifiable — and this is the same null that raises the
+   spurious `'Account Number' is a required property` validation issue (§2 finding 7).
+
+So "the cliff moved out" is a real improvement — **no rows are lost** where v0.6.5 lost
+80–99% of them — but it buys *recoverable fragmentation* in place of *silent truncation*,
+not one clean list. Losing data is strictly worse than having to reassemble it; both are
+worse than getting one list.
 
 ### 🚨 The confidence pass can fail to converge inside its Lambda
 
@@ -487,9 +552,10 @@ these are like-for-like cost comparisons of configurations that all did the job.
 |-----------|---------------------------|
 | Typical documents ≤ ~1,600 rows / ≤ ~33 pages | **simple mode** (complete, per-row-accurate, ~2.6–2.9× cheaper) |
 | Table-free / forms corpora | **LAYOUT-only OCR** (cheapest complete option in both modes; best-behaved confidence) |
-| Large multi-page tables (> ~1,600 rows) | **advanced mode** (recall 1.000 through 3,200 rows, §3; budget cost as a *range*) |
+| Large multi-page tables (> ~1,200 rows) | **advanced mode** (recall 1.000 through 3,200 rows, §3; budget cost as a *range*). Simple mode is unreliable from ~1,600 rows and fragments the list either way |
 | Very large docs (> ~3,000 rows / 60 pages) | advanced **and split the document** if feasible (~$22 and ~11 min per document at 3,200 rows, §3) |
-| **Single-class configuration, documents under ~1,000 rows** | **`sectionSplitting: disabled`** — the default over-splits 2–3×, which costs advanced mode ~22% and manufactures spurious validation warnings (§2 findings 6–7, §4). ⚠️ **Not** if input can be a packet (§7), and ⚠️ **not** for >1,000-row tables — over-splitting is what currently keeps simple mode complete at that size (§3) |
+| **Paying the +22% agentic over-split premium** | **set `classification.model` to Claude Haiku 4.5.** It gets the section count right 5 of 5 where the default Nova 2 Lite gets 0 of 5, taking advanced mode to **−5.6% vs v0.6.6** and costing simple mode only **+9%** (Sonnet 5 also fixes it but costs simple mode **+45%**). This is the recommended fix — it corrects the boundary decision rather than switching it off, so it is safe for packets *and* for large documents |
+| **`sectionSplitting: disabled`** | Only for a single-class corpus of **small** documents (≤ ~9 pages measured), where it is the cheapest correct setting. ⚠️ **Never** if input can be a packet (§7). ⚠️ **Never** above ~1,000 rows / ~25 pages: measured to **FAIL outright** (`Input is too long for requested model`) at the shipped dpi, and to silently truncate to **0.6–3.6% recall** at dpi 150 (§3) |
 | Very large lists **+ confidence** | expect the confidence pass to be the fragile part, not extraction — it failed to converge inside its Lambda on an 800-row list (§3). Lower `extraction.confidence.list_batch_size` from 25, or use `confidence.mode: off` and reconcile separately |
 | Confidence needed | **`separate`** assessment. Do not use `integrated` with simple extraction (§2.1) — it is now more expensive *and* less complete *and* worse calibrated than `separate` |
 | Cheapest OCR, small documents | Bedrock-LLM, **only if identifiers do not matter** — it is the one backend that returns wrong per-row *values* (§2 finding 4) |
@@ -538,12 +604,17 @@ one metric you would expect to catch it:**
 
 1. **🚨 `sectionSplitting: llm_determined` over-splits, and on the agentic path it is a
    ~22% bill increase (P0).** #726. Every cell in §2 is over-split 2–3×; §4 shows the same
-   document classified 1 to 5 ways across five identical runs, and the
-   [release audit](releases/v0.6.7.md) prices the fix at −24% for `tt-adv-sep`. It also
-   manufactures spurious `required property` validation issues on continuation sections, and
-   it is a large part of what makes agentic cost look unpredictable. The over-split is
-   model-dependent (Sonnet 5 classification gets it right 5/5, Nova 2 Lite 0/5), so a
-   better default prompt for the small classifier — not a bigger model — is the fix.
+   document classified 1 to 5 ways across five identical runs. It also manufactures spurious
+   `required property` validation issues on continuation sections, fragments a large list
+   into N per-section lists (§3), and is a large part of what makes agentic cost look
+   unpredictable.
+   **The default classifier is the problem, not the splitting logic:** Nova 2 Lite gets the
+   boundary decision right 0 of 5 runs, Haiku 4.5 and Sonnet 5 both 5 of 5 (§7). Two
+   candidate fixes, in order: (a) improve the boundary prompt for the small classifier —
+   still the cheapest outcome and untried; (b) change the default `classification.model` to
+   **Haiku 4.5**, which is measured to remove the whole premium (advanced −5.6% vs v0.6.6)
+   at +9% on simple mode. Note `sectionSplitting: disabled` is **not** an acceptable general
+   workaround — it fails outright above ~25 pages (§3).
 2. **🚨 Forced tool use serializes group attributes to JSON strings on Sonnet 5 —
    [#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783) (P0 for the feature).**
    `sanitize_tool_schema` leaves `$defs` *definition* names unsanitized, so a group named
@@ -693,7 +764,50 @@ repeats is the pass rate), classification model Sonnet 5.
 `disabled` is correct by construction on a single document and **wrong by construction on a
 packet** — it emits one all-pages section where two are correct, losing the split silently
 (completeness recall stays 1.0, so nothing else reports it). Do not recommend it to avoid
-over-splitting.
+over-splitting. §3 adds a second reason not to: on a 25+ page document `disabled` makes the
+whole document one section, and simple extraction then **fails** with `Input is too long for
+requested model`.
+
+#### The boundary decision is model-dependent — and Haiku 4.5 is the cheap fix
+
+The 1.00 above was measured with `classification.model` at **Sonnet 5**. §2–§4 use the
+shipped default, **Nova 2 Lite**, and over-split every document 2–3×. Holding everything
+else fixed and varying only the classifier, on `med_narrow` (one statement, 9 pages, truth =
+1 section):
+
+| classification model | boundary decision (9 pages, 3 repeats) | sections | classification $/doc |
+|---|---|---|---|
+| Nova Lite | 3.0 / 9 correct | 4, 5, 6 | $0.0027 |
+| **Nova 2 Lite** *(shipped default)* | 7.3 / 9 correct | **2, 4, 2** | $0.0097 |
+| **Claude Haiku 4.5** | **9 / 9 correct** | **1, 1, 1** | $0.0534 |
+| Claude Sonnet 5 | 9 / 9 correct | 1, 1, 1 | $0.2683 |
+
+*(Prompt-level probe: the shipped classification prompt including the `topk` block, page
+image + page text, per page, 3 repeats. Its cost estimate validates against the pipeline —
+it predicted Sonnet 5 classification at +$0.259/doc against the +$0.244 measured end to
+end.)*
+
+End to end on the same stack, `repeats: 5`, varying only `classification.model`:
+
+| arm | sections | ADVANCED $/doc | vs v0.6.6 | SIMPLE $/doc | vs v0.6.6 |
+|---|---|---|---|---|---|
+| v0.6.6 baseline *(classification skipped, #686)* | 1×5 | $1.4005 | — | $0.5356 | — |
+| v0.6.7, cls Nova 2 Lite *(shipped default)* | 4,4,2,4,4 | $1.7119 | **+22.2%** | $0.5326 | −0.6% |
+| **v0.6.7, cls Haiku 4.5** | **1×5** | **$1.3215** | **−5.6%** | $0.5854 | **+9.3%** |
+| v0.6.7, cls Sonnet 5 | 1×5 | $1.5521 | +10.8% | $0.7764 | +45.0% |
+| v0.6.7, `sectionSplitting: disabled` | 1×5 | $1.2969 | −7.4% | $0.5289 | −1.3% |
+
+**Haiku 4.5 is the recommended fix for #726.** It is as correct as Sonnet 5 on this decision
+at **a fifth of the price**, it more than pays for itself on the agentic path (−5.6% against
+v0.6.6, i.e. it removes the whole premium), and it costs a simple-mode user only +9% — where
+Sonnet 5 costs them +45%, because classification is billed per **page** and simple extraction
+gains nothing from a lower section count. Unlike `sectionSplitting: disabled` it is safe for
+packets and for large documents, because it *corrects* the boundary decision instead of
+switching it off.
+
+This also converges with the independent #673 result below: Haiku 4.5's classification
+**calibration separation is 0.207 against Nova 2 Lite's 0.044**. The same model that gets the
+boundary right is the one whose confidence score is worth acting on.
 
 ### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — the same-class packet
 
