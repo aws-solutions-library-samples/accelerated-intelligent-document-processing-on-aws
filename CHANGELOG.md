@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The Test Sets table no longer prints a four-line explanation in the label-accuracy cell of every unrated set.** An unrated verdict showed "Not rated", an "Unrated" badge, and the full reason inline, which made each such row as tall as a paragraph. It now shows "Not rated" as a clickable text trigger with the reason in its popover, the same place a rated tier already kept its reason.
+
 ## [0.6.7]
 
 ### Added

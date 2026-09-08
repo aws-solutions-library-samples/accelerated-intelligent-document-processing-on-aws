@@ -258,11 +258,23 @@ export const renderQualityTier = (
       <Box variant="span">{reason || ''}</Box>
     </SpaceBetween>
   );
+  // Unrated: one compact, clickable verdict. The reason is the whole content of
+  // that verdict and used to be printed inline beside a redundant "Unrated" badge,
+  // which made a status cell four lines tall on every unrated row of the Test Sets
+  // table. The dotted text trigger says there is more; one click shows it.
+  if (tier === 'unrated') {
+    return (
+      <Popover dismissButton={false} position="top" size="medium" triggerType="text" content={detail}>
+        <Box variant="span" color="text-body-secondary">
+          Not rated
+        </Box>
+      </Popover>
+    );
+  }
   return (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
-        {/* Unrated means no accuracy claim is defensible, so don't print one. */}
-        {accuracy !== null && accuracy !== undefined && tier !== 'unrated' ? (
+        {accuracy !== null && accuracy !== undefined ? (
           <Box variant="span">{(accuracy * 100).toFixed(decimals)}% est.</Box>
         ) : (
           <Box variant="span" color="text-body-secondary">
@@ -270,13 +282,6 @@ export const renderQualityTier = (
           </Box>
         )}
         <Badge color={QUALITY_TIER_COLORS[tier] ?? 'severity-neutral'}>{label}</Badge>
-        {/* The reason is the whole content of an unrated verdict, and it is the one
-            case where the user cannot guess it — so it is not left to a hover. */}
-        {tier === 'unrated' && reason ? (
-          <Box variant="span" fontSize="body-s" color="text-body-secondary">
-            — {reason}
-          </Box>
-        ) : null}
       </SpaceBetween>
     </Popover>
   );
