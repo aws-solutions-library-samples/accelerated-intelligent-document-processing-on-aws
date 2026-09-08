@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -442,6 +443,219 @@ def test_extract_one_shard_passes_the_schema_validator_to_the_runner():
         )
     )
     assert seen.get("schema_validator") is validator
+
+
+# ---------------------------------------------------------------------------
+# The fix is applied where it matters: at the service's transport-model sites
+# ---------------------------------------------------------------------------
+
+
+def _capturing_model_builder(captured: dict):
+    from idp_common.schema import create_pydantic_model_from_json_schema as real
+
+    def _build(*, schema, class_label, clean_schema=False, **kw):
+        captured[class_label] = schema
+        return real(schema=schema, class_label=class_label, clean_schema=clean_schema)
+
+    return _build
+
+
+@pytest.mark.unit
+def test_the_shard_plan_builds_its_model_from_the_nullable_transport_schema():
+    """Reverting the transform at ``_build_agentic_shard_plan`` must fail a test —
+    previously nothing asserted the SERVICE used it."""
+    from unittest.mock import patch
+
+    from idp_common.config.models import IDPConfig
+    from idp_common.extraction.service import ExtractionService
+
+    svc = ExtractionService(
+        config=IDPConfig(
+            **{"extraction": {"mode": "advanced", "agentic": {"enabled": True}}}
+        )
+    )
+    svc._reset_context()
+    svc._class_schema = _statement_schema()
+    svc._class_label = "BankStatement"
+    svc._document_text = "no tables here"
+    captured: dict = {}
+    with (
+        patch(
+            "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+            side_effect=_capturing_model_builder(captured),
+        ),
+        patch.object(ExtractionService, "_build_shard_payloads", return_value=[]),
+    ):
+        svc._build_agentic_shard_plan(SimpleNamespace(class_label="BankStatement"))
+    schema = captured["BankStatement"]
+    assert schema["required"] == ["AccountNumber", "Transactions"]  # kept
+    row = schema["properties"]["Transactions"]["items"]
+    assert row["required"] == ROW_REQUIRED  # kept
+    assert row["properties"]["Amount"]["type"] == ["number", "null"]  # widened
+
+
+@pytest.mark.unit
+def test_run_shard_agent_forwards_the_schema_validator():
+    """The last hop of the threading — the one that makes the validator DO anything.
+    The first hop (extract_one_shard -> runner) was already pinned; this one was not."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from idp_common.extraction import agentic_idp
+
+    class M(BaseModel):
+        a: str | None = None
+
+    def validator(_d):
+        return True, ""
+
+    fake = AsyncMock(return_value=(M(), {}))
+    with patch.object(agentic_idp, "structured_output_async", fake):
+        asyncio.run(
+            agentic_idp._run_shard_agent(
+                shard_index=0,
+                total_shards=2,
+                page_start=0,
+                page_end=1,
+                total_pages=2,
+                model_id="m",
+                data_format=M,
+                shard_prompt="p",
+                config=None,  # type: ignore[arg-type]
+                context="Extraction",
+                max_retries=1,
+                connect_timeout=1.0,
+                read_timeout=1.0,
+                max_tokens=None,
+                checkpoint_callback=None,
+                schema_validator=validator,
+            )
+        )
+    assert fake.await_args.kwargs["schema_validator"] is validator
+
+
+# ---------------------------------------------------------------------------
+# Shard-scoped validation: presence is not a shard's job
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_shard_validation_schema_drops_required_and_minitems_everywhere():
+    from idp_common.extraction.validation import shard_validation_schema
+
+    s = shard_validation_schema(_statement_schema())
+    assert "required" not in s
+    assert "required" not in s["properties"]["Transactions"]["items"]
+    assert "minItems" not in s["properties"]["Transactions"]
+    # Everything a shard CAN fix survives.
+    assert (
+        s["properties"]["Transactions"]["items"]["properties"]["Date"]["format"]
+        == "date"
+    )
+    assert s["properties"]["Transactions"]["items"]["properties"]["Kind"]["enum"] == [
+        "debit",
+        "credit",
+    ]
+
+
+@pytest.mark.unit
+def test_shard_scoped_validator_accepts_a_correct_partial_shard():
+    """Shard 3 of 5 carries rows but not the document-level scalars; a cover-page
+    shard carries no rows at all. Both are CORRECT shards and must pass, or each
+    costs up to three extra agent turns and the cover page is told to invent rows."""
+    from idp_common.config.models import IDPConfig
+    from idp_common.extraction.service import ExtractionService
+
+    svc = ExtractionService(
+        config=IDPConfig(
+            **{"extraction": {"mode": "advanced", "agentic": {"enabled": True}}}
+        )
+    )
+    svc._reset_context()
+    svc._class_schema = _statement_schema()
+    full = svc._build_schema_validator()
+    shard = svc._build_schema_validator(shard_scoped=True)
+    assert full is not None and shard is not None
+
+    rows_only = {
+        "AccountNumber": None,
+        "Transactions": [_row(), _row(Description="SEQ00002")],
+    }
+    cover_page = {"AccountNumber": "123", "Transactions": []}
+    assert full(rows_only)[0] is False  # the full validator demands AccountNumber
+    assert shard(rows_only) == (
+        True,
+        "All extracted fields satisfy the schema constraints.",
+    )
+    assert shard(cover_page)[0] is True  # minItems not enforced per shard
+    # A shard can still be corrected on what it CAN fix.
+    bad_date = {"AccountNumber": None, "Transactions": [_row(Date="not-a-date")]}
+    ok, feedback = shard(bad_date)
+    assert ok is False and "not a 'date'" in feedback and "required" not in feedback
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_abstention_accounting_counts_scalar_cells_only():
+    """A nulled LIST is the #666 loss, not an abstention; it must not be filed
+    under the benign label — that is the whole point of ``FieldError.leaf``."""
+    assert required_null_paths(
+        {"AccountNumber": "1", "Transactions": None}, _statement_schema()
+    ) == ([], 0)
+    assert required_null_paths(
+        {"AccountNumber": None, "Transactions": [_row()]}, _statement_schema()
+    ) == (
+        ["AccountNumber"],
+        1,
+    )
+    wrapper = {
+        "type": "object",
+        "properties": {"instances": {"type": "array", "items": {"type": "object"}}},
+        "required": ["instances"],
+    }
+    assert required_null_paths({"instances": None}, wrapper) == ([], 0)
+
+
+@pytest.mark.unit
+def test_const_leaves_are_not_widened():
+    t = nullable_leaves_for_transport(
+        {
+            "type": "object",
+            "properties": {"Currency": {"type": "string", "const": "USD"}},
+        }
+    )
+    assert t["properties"]["Currency"] == {"type": "string", "const": "USD"}
+
+
+@pytest.mark.unit
+def test_leaf_attribution_resolves_a_ref_to_a_scalar_definition():
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {"Amt": {"type": "number"}},
+        "properties": {"X": {"$ref": "#/$defs/Amt"}},
+        "required": ["X"],
+    }
+    report = validate_extraction({}, schema)
+    assert report.errors[0].leaf is True
+    assert "do NOT guess" in report.agent_feedback()
+
+
+@pytest.mark.unit
+def test_feedback_appends_the_required_error_rather_than_displacing_one():
+    """25 format errors, a unique minItems-style error at index 24, and the required
+    error beyond the cut: the unique error must still be shown."""
+    rows = [_row(Date="bad-date", Description=f"SEQ{i:05d}") for i in range(24)]
+    rows.append(_row(Kind="neither", Description="SEQ00024"))  # unique enum error
+    rows += [_row(Amount=None, Description=f"SEQ{i:05d}") for i in range(25, 30)]
+    fb = validate_extraction(_doc(rows), _statement_schema()).agent_feedback()
+    assert "'neither' is not one of" in fb
+    assert "'Amount' is a required property" in fb
+    assert "do NOT guess" in fb
 
 
 if __name__ == "__main__":

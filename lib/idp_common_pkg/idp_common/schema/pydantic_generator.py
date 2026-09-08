@@ -126,7 +126,7 @@ def nullable_leaves_for_transport(schema: Dict[str, Any]) -> Dict[str, Any]:
     round and the escalation path.
 
     Scope, deliberately narrow: only nodes whose ``type`` is a scalar (or a list of
-    scalars) are widened; arrays, objects, ``$ref`` leaves and combinator branches
+    scalars) are widened — a type-less ``enum`` leaf or a ``const`` leaf is not; arrays, objects, ``$ref`` leaves and combinator branches
     are recursed into but never themselves made nullable. An ``enum`` on a widened
     leaf gains ``None`` so the transport model's own JSON-Schema validator (used
     for classes with advanced constraints) agrees with the Pydantic type. The
@@ -163,6 +163,11 @@ def _widen_scalar_leaves(schema: Any) -> Any:
         and all(x in _SCALAR_TYPES for x in types)
         and "properties" not in schema
         and "items" not in schema
+        # A `const` leaf IS its value; widening `type` would contradict `const`
+        # (the generated Literal still rejects None) and make the transport schema
+        # internally inconsistent for the advanced-constraints validator. It is
+        # left alone — a fixed value is not something to abstain on.
+        and "const" not in schema
     )
     if is_scalar_leaf:
         assert types is not None

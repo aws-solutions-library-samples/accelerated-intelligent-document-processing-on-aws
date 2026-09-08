@@ -154,6 +154,10 @@ interface ProcessingMetadata {
   table_parsing_tool_used?: boolean;
   table_parsing_stats?: TableParsingStats;
   validation?: ValidationInfo;
+  // Scalar cells the extraction agent left null because it could not read them
+  // (#782). Recorded regardless of validation.enabled; a nulled LIST is not
+  // counted here — that is a defect, surfaced as extraction_incomplete.
+  abstained_fields?: { count?: number; paths?: string[] };
   population_check?: PopulationCheck;
   sizing_plan?: SizingPlan;
   assessment_batch_split_stats?: AssessmentBatchSplitStats;
@@ -344,6 +348,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   const issues: { label: string; detail: string }[] = [];
   if (!succeeded) {
     issues.push({ label: 'Extraction failed', detail: 'The model output could not be parsed into the expected structure.' });
+  }
+  const abstained = metadata.abstained_fields;
+  if (abstained && (abstained.count || 0) > 0) {
+    const sample = (abstained.paths || []).slice(0, 5).join(', ');
+    issues.push({
+      label: 'Unreadable cells left blank',
+      detail: `The model could not read ${abstained.count} required value(s) and left them null rather than guessing${
+        sample ? `: ${sample}${(abstained.paths || []).length > 5 ? ', …' : ''}` : ''
+      }.`,
+    });
   }
   if (validation && validation.valid === false) {
     const fields = (validation.failed_fields || []).join(', ');

@@ -55,6 +55,7 @@ from idp_common.extraction.validation import (
     find_empty_declared_lists,
     required_null_paths,
     select_escalated_fields,
+    shard_validation_schema,
     validate_extraction,
 )
 from idp_common.models import Document, Section
@@ -3201,9 +3202,22 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             or self.config.extraction.validation.escalation_model
         )
 
-    def _build_schema_validator(self, ocr_analysis: dict[str, Any] | None = None):
+    def _build_schema_validator(
+        self,
+        ocr_analysis: dict[str, Any] | None = None,
+        *,
+        shard_scoped: bool = False,
+    ):
         """Return an in-loop validation callback for the agent's self-correction
         round, or None when there is nothing to check.
+
+        ``shard_scoped=True`` builds the variant for ONE shard of a sharded
+        section: it validates against ``validation.shard_validation_schema`` (no
+        ``required``, no ``minItems``) and never applies the OCR table-evidence
+        check. A shard is told to leave out-of-shard fields null, so presence must
+        not be enforced on it — that produced up to three extra agent turns per
+        shard and told a cover-page shard to invent rows. Presence is enforced once
+        on the merged section against the real schema.
 
         Two independent checks, with **independent enablement**:
 
@@ -3251,10 +3265,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         accuracy 1.000.
         """
         vcfg = self.config.extraction.validation
-        class_schema = self._class_schema
+        class_schema = (
+            shard_validation_schema(self._class_schema)
+            if shard_scoped
+            else self._class_schema
+        )
         check_formats = vcfg.check_formats
         schema_checks = bool(vcfg.enabled)
-        ocr = ocr_analysis or {}
+        ocr = {} if shard_scoped else (ocr_analysis or {})
         table_evidence = bool(ocr.get("tool_usage_recommended")) and bool(
             ocr.get("tables_detected")
         )
@@ -4257,9 +4275,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
 
             # Build the in-loop schema validator (None unless validation enabled).
-            # Used only on the single-agent path: per-batch validation would
-            # falsely fail minItems before the batches are merged, so batch
-            # output is validated once after merge below.
+            # This FULL validator is for the single-agent path. Shards get the
+            # shard-scoped variant (no required/minItems): per-shard presence
+            # checks would falsely fail before the shards are merged, so presence
+            # is validated once after merge below.
             #
             # ocr_analysis is the whole-document pre-flight, which is exactly the
             # right scope here for the same reason: the single agent sees the
@@ -4316,12 +4335,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         assess_runner=self._build_assess_runner(
                             section_info, self._document
                         ),
-                        # Full-schema self-correction per shard. WITHOUT the OCR
-                        # table evidence: that check demands rows from every
-                        # declared list, and a shard whose pages hold no table
-                        # legitimately has none — it would cost one wasted agent
-                        # turn per such shard.
-                        schema_validator=self._build_schema_validator(),
+                        # Shard-scoped self-correction: types/formats/enums only.
+                        # No presence checks — a shard legitimately leaves out-of-
+                        # shard fields null and a cover-page shard has no rows.
+                        schema_validator=self._build_schema_validator(
+                            shard_scoped=True
+                        ),
                     )
                 )
             else:
@@ -6135,8 +6154,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 persistence=persistence,
                 shard_runner=default_shard_runner,
                 assess_runner=self._build_assess_runner(section_info, self._document),
-                # See the in-process fan-out: schema checks only, no table evidence.
-                schema_validator=self._build_schema_validator(),
+                # Shard-scoped, as in the in-process fan-out.
+                schema_validator=self._build_schema_validator(shard_scoped=True),
             )
         )
         return {

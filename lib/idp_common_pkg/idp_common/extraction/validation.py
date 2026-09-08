@@ -101,8 +101,10 @@ class ValidationReport:
         ]
         shown = list(self.errors[:_MAX_FEEDBACK_ERRORS])
         if abstainable and not any(e is err for err in shown for e in abstainable):
-            # The note must never refer to an error the agent cannot see.
-            shown[-1] = abstainable[0]
+            # The note must never refer to an error the agent cannot see. APPEND
+            # rather than displace: the 25th shown error may be the only instance
+            # of its kind.
+            shown.append(abstainable[0])
         lines = [
             "The extraction violates the following schema constraints. "
             "Fix each one using the available tools and keep all other data:",
@@ -241,7 +243,9 @@ def _format_path(absolute_path: Any) -> str:
 _SCALAR_JSON_TYPES = frozenset({"string", "number", "integer", "boolean"})
 
 
-def _required_error_is_scalar(error: jsonschema.ValidationError) -> bool | None:
+def _required_error_is_scalar(
+    error: jsonschema.ValidationError, root: dict[str, Any] | None = None
+) -> bool | None:
     """For a ``required`` error, is the missing property declared as a scalar?
 
     ``error.schema`` is the object subschema whose ``required`` list failed, so the
@@ -257,6 +261,11 @@ def _required_error_is_scalar(error: jsonschema.ValidationError) -> bool | None:
     # group(2) is the name; group(1) is the quote character (jsonschema uses
     # repr(), which switches to double quotes for a name with an apostrophe).
     prop = (error.schema.get("properties") or {}).get(match.group(2))
+    if isinstance(prop, dict) and "$ref" in prop and isinstance(root, dict):
+        # One level of local $ref via the root $defs, so a scalar declared as
+        # `{"$ref": "#/$defs/Amount"}` still counts as a leaf.
+        target = str(prop["$ref"]).split("/")[-1]
+        prop = (root.get("$defs") or {}).get(target, prop)
     if not isinstance(prop, dict):
         return None
     declared = prop.get("type")
@@ -334,7 +343,7 @@ def validate_extraction(
                 message=err.message,
                 validator=str(err.validator),
                 field=top,
-                leaf=_required_error_is_scalar(err),
+                leaf=_required_error_is_scalar(err, cleaned),
             )
         )
         if top is not None:
@@ -347,6 +356,30 @@ def validate_extraction(
     )
 
 
+def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """The class schema with every ``required`` list and ``minItems`` removed.
+
+    For validating ONE SHARD of a sharded agentic section. A shard sees only its
+    pages and is told "if a field does not appear in your pages, leave it null —
+    another shard will provide it", so a document-level required scalar is
+    legitimately null on most shards and a declared list legitimately empty on a
+    cover page. Validating a shard against the full schema turned that correct
+    behaviour into up to three extra agent turns per shard and told a cover-page
+    shard to produce rows its pages do not contain (the #666 fabrication pressure).
+    What remains — type, format, enum, pattern, bounds — is what a shard CAN fix.
+    Presence is enforced once, on the merged section, against the real schema.
+    """
+    if isinstance(schema, list):
+        return [shard_validation_schema(s) for s in schema]  # type: ignore[return-value]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        k: shard_validation_schema(v)
+        for k, v in schema.items()
+        if not (k == "required" and isinstance(v, list)) and k != "minItems"
+    }
+
+
 def required_null_paths(
     data: Any, schema: dict[str, Any], *, limit: int = 200
 ) -> tuple[list[str], int]:
@@ -356,7 +389,13 @@ def required_null_paths(
     transport model an abstention no longer trips the Pydantic guard, so this is
     the record that survives when validation is switched off (v0.6-migrated
     stacks carry ``enabled: false``). Recorded as ``metadata.abstained_fields``.
-    Walks objects and array items; ``$ref`` is resolved one level via ``$defs``.
+
+    Counts SCALAR leaves only. A null list or group is not an abstention — it is
+    the whole-list loss this codebase treats as a defect (#666) — and must not be
+    filed under the benign label. Walks objects and array items; ``$ref`` is
+    resolved one level via ``$defs``; ``anyOf``/``oneOf`` branches,
+    ``additionalProperties`` and ``prefixItems`` are not walked (a known
+    under-count, never an over-count).
     """
     defs = (schema or {}).get("$defs") or {}
 
@@ -368,6 +407,17 @@ def required_null_paths(
     found: list[str] = []
     total = 0
 
+    def _declares_scalar(prop: Any) -> bool:
+        if not isinstance(prop, dict):
+            return False
+        if "properties" in prop or "items" in prop:
+            return False
+        declared = prop.get("type")
+        types = [declared] if isinstance(declared, str) else declared
+        if not isinstance(types, list) or not types:
+            return False
+        return all(x in _SCALAR_JSON_TYPES for x in types if x != "null")
+
     def _walk(value: Any, node: Any, path: str) -> None:
         nonlocal total
         node = _deref(node)
@@ -376,7 +426,9 @@ def required_null_paths(
         if isinstance(value, dict):
             props = node.get("properties") or {}
             for name in node.get("required") or []:
-                if value.get(name) is None:
+                if value.get(name) is None and _declares_scalar(
+                    _deref(props.get(name))
+                ):
                     total += 1
                     if len(found) < limit:
                         found.append(f"{path}.{name}" if path else name)

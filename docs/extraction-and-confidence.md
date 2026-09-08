@@ -227,7 +227,10 @@ generated from a Pydantic model built from your class (every field gains a
 `title`, and every optional field — plus, in Advanced mode, every required
 *scalar*, so the agent can leave an unreadable cell `null` rather than invent a
 value — an `anyOf` with `{"type": "null"}`), so the browser can only approximate
-it from the class schema. Expect the real block to be
+it from the class schema. Cells the agent left `null` because it could not read them
+are counted under `metadata.abstained_fields` (scalar cells only — a whole list
+returned as null is a defect, not an abstention) and shown in the **Processing
+Report**, regardless of whether schema validation is enabled. Expect the real block to be
 **larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
 which makes the previewed saving a floor, not a ceiling.
 
