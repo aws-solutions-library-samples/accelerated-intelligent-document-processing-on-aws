@@ -962,3 +962,32 @@ class TestSerializedContainerIsParsed:
             assert CODE_JSON_PARSED_FROM_STRING not in {
                 c.code for c in report.coercions
             }
+
+
+class TestSerializedContainerParseIsLossless:
+    SCHEMA = {
+        "type": "object",
+        "properties": {"G": {"type": "object", "properties": {"a": NUMBER}}},
+    }
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"a": NaN}',
+            '{"a": Infinity}',
+            '{"a": -Infinity}',
+            '{"a": 1e400}',  # finite literal, overflows to inf
+            '{"a": 1, "a": 2}',  # a later value would silently replace the earlier
+        ],
+    )
+    def test_lossy_json_is_refused_and_the_string_survives(self, raw):
+        report = coerce_extraction({"G": raw}, self.SCHEMA)
+        assert report.data["G"] == raw
+        assert CODE_JSON_PARSED_FROM_STRING not in {c.code for c in report.coercions}
+        assert report.refusals and report.refusals[0].code == CODE_TYPE_FAMILY_MISMATCH
+
+    def test_pathologically_deep_nesting_does_not_abort_coercion(self):
+        deep = "[" * 20000 + "]" * 20000
+        schema = {"type": "object", "properties": {"L": {"type": "array"}}}
+        report = coerce_extraction({"L": deep}, schema)  # must not raise
+        assert report.data["L"] == deep

@@ -644,3 +644,201 @@ class TestEveryShippedPresetProducesAWireValidSchema:
                 assert not leaks, f"{path} :: {cls.get('$id')} leaks {leaks}"
                 checked += 1
         assert checked > 5, f"expected to check many preset classes, checked {checked}"
+
+
+class TestDefsPointerRewriteEdges:
+    """Every rewritten pointer must RESOLVE, so each case validates a sample with
+    jsonschema — a dangling pointer surfaces as an exception rather than passing."""
+
+    @staticmethod
+    def _resolves(clean, sample):
+        import jsonschema
+
+        jsonschema.Draft202012Validator.check_schema(clean)
+        return sorted(
+            e.message
+            for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+        )
+
+    def test_a_pointer_into_a_renamed_definition_is_rewritten_segment_wise(self):
+        """``#/$defs/Account Holder Address/properties/City`` reuses one field of a
+        group — legal, human-authored, and previously left dangling."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Account Holder Address": {
+                    "type": "object",
+                    "properties": {"City": {"type": "string"}},
+                }
+            },
+            "properties": {
+                "C": {"$ref": "#/$defs/Account Holder Address/properties/City"}
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert (
+            clean["properties"]["C"]["$ref"]
+            == "#/$defs/Account_Holder_Address/properties/City"
+        )
+        assert self._resolves(clean, {"C": 123}) == ["123 is not of type 'string'"]
+
+    def test_a_defs_block_nested_under_a_property_is_renamed_and_its_pointer_rewritten(
+        self,
+    ):
+        schema = {
+            "type": "object",
+            "properties": {
+                "G": {
+                    "type": "object",
+                    "$defs": {"Inner Def": {"type": "string"}},
+                    "properties": {"S": {"$ref": "#/properties/G/$defs/Inner Def"}},
+                }
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        assert "Inner_Def" in clean["properties"]["G"]["$defs"]
+        assert clean["properties"]["G"]["properties"]["S"]["$ref"] == (
+            "#/properties/G/$defs/Inner_Def"
+        )
+        assert name_map.defs_renamed == {"Inner_Def": "Inner Def"}
+        assert name_map.is_empty() is False
+        assert self._resolves(clean, {"G": {"S": 5}}) == ["5 is not of type 'string'"]
+
+    def test_rfc6901_escapes_and_percent_encoding_round_trip(self):
+        schema = {
+            "type": "object",
+            "$defs": {"a/b~c": {"type": "string"}, "A%20B": {"type": "integer"}},
+            "properties": {
+                "X": {"$ref": "#/$defs/a~1b~0c"},
+                "Y": {"$ref": "#/$defs/a%7E1b%7E0c"},
+                "Z": {"$ref": "#/$defs/A%20B"},  # literal '%' in the NAME, not encoding
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert set(clean["$defs"]) == {"a_b_c", "A_20B"}
+        assert clean["properties"]["X"]["$ref"] == "#/$defs/a_b_c"
+        assert clean["properties"]["Y"]["$ref"] == "#/$defs/a_b_c"
+        assert clean["properties"]["Z"]["$ref"] == "#/$defs/A_20B"
+        # Each wrong value is reported twice — once via the pointer, once via the
+        # `type` the annotation pass adds beside it — so compare the SET.
+        assert set(self._resolves(clean, {"X": 1, "Y": 2, "Z": "s"})) == {
+            "'s' is not of type 'integer'",
+            "1 is not of type 'string'",
+            "2 is not of type 'string'",
+        }
+
+    def test_type_annotation_happens_after_the_rewrite_for_a_renamed_definition(self):
+        """The two passes are order-dependent: annotation looks the definition up by
+        its SANITIZED key. A spaced name is the case that exposes a wrong order."""
+        schema = {
+            "type": "object",
+            "$defs": {"Account Holder Address": {"type": "object", "properties": {}}},
+            "properties": {"A": {"$ref": "#/$defs/Account Holder Address"}},
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["A"] == {
+            "$ref": "#/$defs/Account_Holder_Address",
+            "type": "object",
+        }
+
+    def test_list_typed_definition_is_not_annotated_and_existing_type_is_kept(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Maybe": {"type": ["object", "null"], "properties": {}},
+                "Obj": {"type": "object", "properties": {}},
+            },
+            "properties": {
+                "M": {"$ref": "#/$defs/Maybe"},
+                "O": {"$ref": "#/$defs/Obj", "type": "string"},  # contradictory, kept
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert "type" not in clean["properties"]["M"]
+        assert clean["properties"]["O"]["type"] == "string"
+
+    def test_a_definition_named_like_a_metadata_keyword_is_kept(self):
+        """``id`` is a plausible group name. It used to be deleted from ``$defs`` by
+        the metadata strip while its ``$ref`` stayed — a pointer to nothing."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "id": {"type": "object", "properties": {"n": {"type": "string"}}}
+            },
+            "properties": {"I": {"$ref": "#/$defs/id"}},
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert "id" in clean["$defs"]
+        assert self._resolves(clean, {"I": {"n": 1}}) == ["1 is not of type 'string'"]
+
+    def test_every_shipped_class_still_resolves_after_sanitizing(self):
+        import jsonschema
+
+        for _preset, _label, schema in _shipped_class_schemas():
+            clean, _ = sanitize_tool_schema(schema)
+            jsonschema.Draft202012Validator.check_schema(clean)
+            # Force pointer resolution on every $ref by validating an empty object.
+            list(jsonschema.Draft202012Validator(clean).iter_errors({}))
+
+
+class TestRestoreNamesParsesSerializedGroups:
+    def test_a_group_returned_as_a_json_string_is_parsed_and_its_inner_names_restored(
+        self,
+    ):
+        """The #783 payload, end to end: the model serialized the group and used the
+        SANITIZED inner names. Leaving it as text for coercion to parse later would
+        put wire spellings into inference_result."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Account Holder Address": {
+                    "type": "object",
+                    "properties": {
+                        "Street Number": {"type": "string"},
+                        "Street Name": {"type": "string"},
+                        "ZIP Code": {"type": "string"},
+                    },
+                    "required": ["Street Name"],
+                }
+            },
+            "properties": {
+                "Account Number": {"type": "string"},
+                "Account Holder Address": {"$ref": "#/$defs/Account Holder Address"},
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        wire = {
+            "Account_Number": "123",
+            "Account_Holder_Address": (
+                '{"Street_Number": "100", "Street_Name": "Main Street", "ZIP_Code": "90210"}'
+            ),
+        }
+        restored = restore_names(wire, name_map)
+        assert restored == {
+            "Account Number": "123",
+            "Account Holder Address": {
+                "Street Number": "100",
+                "Street Name": "Main Street",
+                "ZIP Code": "90210",
+            },
+        }
+
+    def test_a_string_that_is_not_json_is_left_as_is(self):
+        schema = {
+            "type": "object",
+            "$defs": {"G": {"type": "object", "properties": {"A B": {}}}},
+            "properties": {"X": {"$ref": "#/$defs/G"}, "Note Text": {"type": "string"}},
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names({"X": "just text", "Note_Text": "{not json"}, name_map)
+        assert restored == {"X": "just text", "Note Text": "{not json"}
+
+    def test_a_lossy_json_string_is_not_parsed(self):
+        schema = {
+            "type": "object",
+            "$defs": {"G": {"type": "object", "properties": {"A B": {}}}},
+            "properties": {"X": {"$ref": "#/$defs/G"}},
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        for raw in ('{"A_B": NaN}', '{"A_B": 1, "A_B": 2}', '{"A_B": 1e400}'):
+            assert restore_names({"X": raw}, name_map) == {"X": raw}

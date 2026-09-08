@@ -220,7 +220,54 @@ function stripToolDocumentMetadata(node: unknown): unknown {
  */
 export function toolInputSchemaFor(schema: ClassSchema): Record<string, unknown> {
   const cleaned = stripToolDocumentMetadata(cleanSchemaForPrompt(schema as Record<string, unknown>)) as Record<string, unknown>;
-  return cleaned.type === 'object' ? cleaned : { ...cleaned, type: 'object' };
+  const rooted = cleaned.type === 'object' ? cleaned : { ...cleaned, type: 'object' };
+  return annotateRefTypes(rooted);
+}
+
+/**
+ * Mirror of ``tool_schema._annotate_ref_types``: every ``$ref`` node without a
+ * ``type`` gains the referenced definition's ``type`` (string-typed definitions
+ * only). The backend adds these on the wire as belt-and-braces for #783, so the
+ * Tool Schema tab and its token total must show them too. Definition names are
+ * matched as authored here because this mirror does not rename them (see the
+ * note above) — the annotation is the same either way.
+ */
+function annotateRefTypes(schema: Record<string, unknown>): Record<string, unknown> {
+  const defs = schema[DEFS_FIELD];
+  if (!defs || typeof defs !== 'object' || Array.isArray(defs)) return schema;
+  const defsRec = defs as Record<string, unknown>;
+  const targetOf = (ref: unknown): string | null => {
+    if (typeof ref !== 'string' || !ref.startsWith(`#/${DEFS_FIELD}/`)) return null;
+    const rest = ref.slice(`#/${DEFS_FIELD}/`.length);
+    if (rest.includes('/')) return null;
+    try {
+      return decodeURIComponent(rest).replace(/~1/g, '/').replace(/~0/g, '~');
+    } catch {
+      return rest;
+    }
+  };
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (!node || typeof node !== 'object') return node;
+    const rec = node as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(rec)) {
+      if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+        out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, walk(v)]));
+      } else {
+        out[key] = walk(value);
+      }
+    }
+    const target = targetOf(rec.$ref);
+    if (target !== null && !('type' in rec)) {
+      const def = defsRec[target];
+      if (def && typeof def === 'object' && !Array.isArray(def) && typeof (def as Record<string, unknown>).type === 'string') {
+        out.type = (def as Record<string, unknown>).type;
+      }
+    }
+    return out;
+  };
+  return walk(schema) as Record<string, unknown>;
 }
 
 /**
@@ -247,7 +294,12 @@ export function invalidToolPropertyNames(schema: unknown, path = ''): string[] {
       bad.push(...invalidToolPropertyNames(value, `${path}[]`));
     } else if (key === DEFS_FIELD && value && typeof value === 'object' && !Array.isArray(value)) {
       for (const [defName, defSchema] of Object.entries(value as Record<string, unknown>)) {
-        bad.push(...invalidToolPropertyNames(defSchema, `${DEFS_FIELD}/${defName}`));
+        const here = `${DEFS_FIELD}/${defName}`;
+        // A definition NAME is rewritten too: Bedrock accepts any spelling, but
+        // Sonnet 5 does not resolve a `$ref` pointer containing a space (#783),
+        // so the backend renames it and the count must include it.
+        if (!TOOL_PROPERTY_NAME_PATTERN.test(defName)) bad.push(here);
+        bad.push(...invalidToolPropertyNames(defSchema, here));
       }
     } else if (['anyOf', 'allOf', 'oneOf', 'prefixItems'].includes(key) && Array.isArray(value)) {
       for (const branch of value) bad.push(...invalidToolPropertyNames(branch, path));

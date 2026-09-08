@@ -273,7 +273,7 @@ DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
     ),
     "xai-grok": (
         "xAI Grok models reject Converse document blocks (\"This model doesn't "
-        "support documents\"); their input modalities are text and image only"
+        'support documents"); their input modalities are text and image only'
     ),
 }
 
@@ -800,8 +800,11 @@ class BedrockClient:
             shown = ", ".join(offenders[:8])
             more = f" (+{len(offenders) - 8} more)" if len(offenders) > 8 else ""
             raise ValueError(
-                f"tool_config contains {len(offenders)} property name(s) Bedrock "
-                f"will reject (must match ^[a-zA-Z0-9_.-]{{1,64}}$): {shown}{more}. "
+                f"tool_config contains {len(offenders)} name(s) that cannot go on "
+                f"the wire as-is (must match ^[a-zA-Z0-9_.-]{{1,64}}$): {shown}{more}. "
+                f"Property names Bedrock rejects outright; a $defs definition name "
+                f"Bedrock accepts but Claude Sonnet 5 will not resolve the $ref to "
+                f"(#783). "
                 f"Run idp_common.bedrock.tool_schema.sanitize_tool_schema() on the "
                 f"class schema and idp_common.bedrock.tool_schema.restore_names() "
                 f"on the response — refusing to rename fields silently, which "

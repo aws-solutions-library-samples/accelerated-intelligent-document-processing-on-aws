@@ -694,8 +694,9 @@ including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as
 JSON **string** rather than an object, so every section carrying it failed
 validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
 resolve the `$ref` pointer to it. Definition names are now made wire-safe like
-property names, the pointers are rewritten, and coercion will parse a string that
-is the JSON of the object the field expects. If you measured forcing before and
+property names, the pointers are rewritten, and a group the model still returns as
+a JSON string is parsed while its field names are restored — so the stored result
+carries the names you authored, not the wire spellings. If you measured forcing before and
 saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
 
 **What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,

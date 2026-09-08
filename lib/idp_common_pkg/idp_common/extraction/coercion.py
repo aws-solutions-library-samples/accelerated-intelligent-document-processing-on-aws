@@ -920,16 +920,59 @@ def _render_types(types: set[str]) -> str:
 # -----------------------------------------------------------------------------
 
 
+class _NotLossless(ValueError):
+    """The text is JSON, but parsing it would lose or invent information."""
+
+
+def _reject_constant(_name: str) -> Any:
+    # json.loads accepts the JSON5-style constants NaN / Infinity / -Infinity by
+    # default. Downstream consumers of a JSON Schema `number` (the UI's JSON.parse,
+    # Athena) do not, and a value the text did not carry as a finite number is
+    # not a lossless re-encoding.
+    raise _NotLossless("non-finite constant")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _NotLossless(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
+def _has_non_finite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_has_non_finite(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_non_finite(v) for v in value)
+    return False
+
+
 def _parse_json_container(
     raw: str, types: set[str]
 ) -> dict[str, Any] | list[Any] | None:
-    """``raw`` parsed as JSON if it is a container of a kind ``types`` allows."""
+    """``raw`` parsed as JSON if it is a container of a kind ``types`` allows AND
+    the parse is lossless: no NaN/Infinity constants, no overflow to inf
+    (``1e400``), no duplicate keys (a later value silently replacing an earlier
+    one). Anything else is left as the string it was, for the refusal path."""
     text = raw.strip()
     if not text or text[0] not in "[{":
         return None
     try:
-        parsed = json.loads(text)
-    except ValueError:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (ValueError, RecursionError):
+        # RecursionError: json's C scanner raises it (a RuntimeError, not a
+        # ValueError) at ~10,000 nesting levels; a model coaxed into "[[[[..."
+        # must not abort coercion for the whole section.
+        return None
+    if _has_non_finite(parsed):
         return None
     if isinstance(parsed, dict) and "object" in types:
         return parsed
