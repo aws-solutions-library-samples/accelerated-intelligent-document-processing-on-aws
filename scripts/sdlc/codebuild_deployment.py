@@ -24,6 +24,15 @@ from textwrap import dedent
 import boto3
 from botocore.config import Config as _BotoConfig
 
+# Sibling module — CodeBuild runs this as `python3 scripts/sdlc/...`, so the
+# script's own directory is not necessarily on sys.path for a plain import.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from failure_agent import (  # noqa: E402
+    build_evidence_brief,
+    fetch_full_build_log,
+    run_failure_agent,
+)
+
 # Cap test/monitor commands so a hung inference run cannot consume the
 # CodeBuild job timeout and prevent stack cleanup from running (leaks ~116
 # IAM roles). Known-slow commands (publish, deploy --wait, delete --wait)
@@ -3530,13 +3539,6 @@ def generate_deployment_summary(result, stack_name, template_url):
             return _invoke_bedrock(cf_prompt)
 
         # Case A: smoke test failure — deploy succeeded, a test step failed.
-        # Attach a bounded log tail: several tests report only a one-line
-        # error, and the actual mismatch (expected string, missing file,
-        # CLI stderr) is in the build log.
-        log_tail = "\n".join(get_codebuild_logs().split("\n")[-150:])
-        suite_reference = "\n".join(
-            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
-        )
 
         # When a document failed to process, the test's own error is a generic
         # "Unknown error" (the tracking table flattens the real cause). Pull the
@@ -3549,6 +3551,30 @@ def generate_deployment_summary(result, stack_name, template_url):
             workflow_failures = get_workflow_failure_details(stack_name)
         if workflow_failures:
             print(f"✅ Captured {len(workflow_failures)} workflow failure(s)")
+
+        # Tier 1: agentic root-cause analysis. Gated on IDP_FAILURE_AGENT=1;
+        # returns None (never raises) when disabled or unable to finish, in which
+        # case we fall through to the single-shot summary below. The agent can
+        # follow evidence the single-shot path cannot reach — Lambda logs, Step
+        # Functions histories, git history — because it runs while the stack is
+        # still alive. It is strictly advisory: pass/fail was decided in Python.
+        agent_report = run_failure_agent(stack_name, error_text, workflow_failures)
+        if agent_report:
+            return agent_report
+
+        # Tier 2 (fallback): one Bedrock call over the deterministic evidence
+        # bundle. The bundle replaces what used to be a blind `[-150:]` log tail —
+        # in job 28666687 that tail held only the concurrent teardown's bucket
+        # inventory while the real traceback sat ~1,090 lines earlier, so the
+        # model correctly but uselessly reported "root cause not captured".
+        # build_evidence_brief greps the FULL (paginated) log for failure signals
+        # and filters the known noise classes instead.
+        log_tail = build_evidence_brief(
+            stack_name, error_text, workflow_failures, fetch_full_build_log()
+        )
+        suite_reference = "\n".join(
+            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
+        )
 
         test_prompt = dedent(f"""
         An IDP deployment succeeded but a post-deployment smoke test failed.
@@ -3567,9 +3593,13 @@ def generate_deployment_summary(result, stack_name, template_url):
         exception behind a generic "Unknown error"):
         {json.dumps(workflow_failures, indent=2)}
 
-        Last build log lines (context only — note that "exit code -9" / SIGKILL
-        lines are fail-fast collateral from OTHER parallel tests being killed
-        after the first failure, NOT independent failures; do not report them):
+        Evidence brief — failure excerpts grepped from the FULL build log with
+        surrounding context, noise classes (pip output, teardown inventory, table
+        borders) removed. Note that "exit code -9" / SIGKILL lines are fail-fast
+        collateral from OTHER parallel tests being killed after the first
+        failure, NOT independent failures; do not report them. Steps 3-10/13-14
+        run concurrently against one shared stack and share one log stream, so
+        their output interleaves — correlate by timestamp, not adjacency:
         {log_tail}
 
         GROUNDING RULES — follow strictly:
