@@ -3,6 +3,14 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Confidence scoring: three ways the rows-per-inference batch could be sized too large.** Long list fields are confidence-scored in batches, and the batch is derived from the confidence model's output cap, the row's column count and whether the geometry mode asks for a bounding box per cell — `extraction.confidence.list_batch_size` (default 25) is the ceiling on that derivation, not the batch itself. Three inputs to it were wrong. The column count was measured from the list's **first row alone**, so a first row that happened to be missing a key made a wide list look narrow and inflated the batch; it is now the widest row in the list. A confidence model whose output cap could not be resolved fell back to **trusting the configured ceiling** rather than sizing down; it now sizes from a conservative cap and logs a warning. And the "Auto confidence list-batch size" shown in the processing report and the Web UI's **Processing Report** tab was derived from the **extraction** model's output cap instead of the confidence model's, so a stack extracting with Sonnet 5 and scoring with Amazon Nova Lite displayed 50 rows while the code used 13.
+
+  Over-sizing matters because a batch that overruns the model's output cap truncates, the recovery ladder halves it and retries, and every retry is a fresh paid inference — on an 800-row statement that ladder ran the Assessment Lambda into its 900-second limit five times, about 6,200 seconds, before the document ended `ABORTED`. The per-row estimate was also duplicated between `bedrock/sizing.py` and `assessment/batching.py` and the two copies disagreed by a factor of the column count, because the flat per-row figure in the first was the per-cell formula evaluated at exactly one column; there is now a single estimator. Every change here can only make a batch **smaller**: across 151 (model × column count × geometry × ceiling) combinations, 148 are byte-identical to v0.6.7 and the 3 that differ are the two defects above ([#784](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/784)).
+
 ## [0.6.7]
 
 ### Added

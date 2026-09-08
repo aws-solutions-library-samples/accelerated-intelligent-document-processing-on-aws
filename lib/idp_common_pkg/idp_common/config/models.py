@@ -833,15 +833,17 @@ class ConfidenceConfig(BaseModel):
         default=25,
         gt=0,
         description=(
-            "Max list rows assessed per inference in the in-shard assessment path "
-            "(agentic extraction). A single assessment call over a large list (e.g. "
-            "75 transaction rows) is unreliable — the model under-enumerates or omits "
-            "the list, leaving rows unassessed. When a shard's extracted list exceeds "
-            "this size, the assessment is run in batches of this many rows and "
-            "concatenated, so every row gets a confidence. Lower = more reliable "
-            "enumeration but more inferences; raise for capable models. NOTE: this is "
-            "an UPPER bound — the self-healing ladder derives a smaller token-aware "
-            "first-pass size when the confidence model's output cap would truncate it."
+            "UPPER BOUND on list rows assessed per inference. A single assessment call "
+            "over a large list (e.g. 75 transaction rows) is unreliable — the model "
+            "under-enumerates or omits the list, leaving rows unassessed — so the list "
+            "is scored in batches and the results concatenated, giving every row a "
+            "confidence. This is a CEILING, not a target: the batch actually used is "
+            "derived per list from the confidence model's output cap, the row's column "
+            "count and whether the geometry mode adds a bounding box per cell, and is "
+            "only ever smaller than this. On Nova Lite (10,000-token output cap) with "
+            "bounding boxes the derived size is 13 rows for a 3-column list and 5 for "
+            "8 columns. Lower this to force smaller batches than the derivation; "
+            "raising it above the derived size has no effect."
         ),
     )
     escalation_enabled: bool = Field(
