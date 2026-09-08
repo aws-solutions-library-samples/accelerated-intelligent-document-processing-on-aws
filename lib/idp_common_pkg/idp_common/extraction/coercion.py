@@ -967,12 +967,14 @@ def _parse_json_container(
             parse_constant=_reject_constant,
             object_pairs_hook=_reject_duplicate_keys,
         )
+        # Inside the try on purpose: _has_non_finite is Python recursion and trips
+        # RecursionError at ~500 levels, long before json's C scanner (~10,000).
+        non_finite = _has_non_finite(parsed)
     except (ValueError, RecursionError):
-        # RecursionError: json's C scanner raises it (a RuntimeError, not a
-        # ValueError) at ~10,000 nesting levels; a model coaxed into "[[[[..."
-        # must not abort coercion for the whole section.
+        # RecursionError: a model coaxed into "[[[[..." must not abort coercion
+        # for the whole section.
         return None
-    if _has_non_finite(parsed):
+    if non_finite:
         return None
     if isinstance(parsed, dict) and "object" in types:
         return parsed

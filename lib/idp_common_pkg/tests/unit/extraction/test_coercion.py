@@ -991,3 +991,12 @@ class TestSerializedContainerParseIsLossless:
         schema = {"type": "object", "properties": {"L": {"type": "array"}}}
         report = coerce_extraction({"L": deep}, schema)  # must not raise
         assert report.data["L"] == deep
+
+    def test_moderately_deep_nesting_below_the_json_limit_does_not_crash(self):
+        """1,200 levels parses fine in json but the finiteness walk is Python
+        recursion; it must be inside the guard, or a garbage string aborts coercion
+        for the whole section."""
+        deep = "[" * 1200 + "]" * 1200
+        schema = {"type": "object", "properties": {"L": {"type": "array"}}}
+        report = coerce_extraction({"L": deep}, schema)  # must not raise
+        assert report.data["L"] == deep

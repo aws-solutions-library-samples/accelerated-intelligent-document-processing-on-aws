@@ -4463,7 +4463,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Definition names are rewritten too (#783); the audit count
                     # must say so, or a class with one renamed group reports
                     # fewer rewrites than actually happened.
-                    "renamed_definitions": len(tool_name_map.defs_renamed)
+                    "renamed_definitions": tool_name_map.total_definition_renames()
                     if tool_name_map
                     else 0,
                 }

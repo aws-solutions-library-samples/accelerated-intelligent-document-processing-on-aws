@@ -44,8 +44,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from urllib.parse import unquote
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +133,27 @@ class NameMap:
     children: Dict[str, "NameMap"] = field(default_factory=dict)
     #: the map for ``items`` (arrays), when the item schema has properties
     items: Optional["NameMap"] = None
-    #: sanitized ``$defs`` definition name -> original definition name (root only).
-    #: Not consulted by ``restore_names`` — a definition name never appears in a
-    #: model response — but recorded so the rename is auditable.
+    #: sanitized property names whose schema is a CONTAINER (object/array/$ref).
+    #: ``restore_names`` may JSON-parse a string under one of these keys — a group
+    #: the model serialized (#783) — and must never do so for a genuine string
+    #: field that happens to hold JSON text.
+    container_keys: set[str] = field(default_factory=set)
+    #: sanitized ``$defs`` definition name -> original definition name, for the
+    #: ``$defs`` block AT THIS LEVEL only (a nested block lives on its property's
+    #: child map). Per level because sanitization is per block: the same original
+    #: name can legitimately map to different safe names in different blocks, so
+    #: one flat map would cross-wire pointers. Not consulted by ``restore_names``
+    #: — a definition name never appears in a model response.
     defs_renamed: Dict[str, str] = field(default_factory=dict)
+
+    def total_definition_renames(self) -> int:
+        """Definition renames at this level and every level beneath (audit count)."""
+        n = len(self.defs_renamed) + sum(
+            c.total_definition_renames() for c in self.children.values()
+        )
+        if self.items is not None:
+            n += self.items.total_definition_renames()
+        return n
 
     def is_empty(self) -> bool:
         """True when nothing anywhere beneath this level was renamed — property
@@ -178,6 +195,39 @@ def sanitize_property_name(name: str, taken: set[str]) -> str:
     )
 
 
+def _is_container_schema(node: Any) -> bool:
+    """True when a property's schema describes an object/array (incl. via $ref or
+    a combinator branch) and does NOT also permit a plain string.
+
+    The string exclusion mirrors coercion's rule for the same repair: a field
+    declared ``["object", "string"]`` legitimately holds text, so a JSON-looking
+    string under it must stay a string. Without the exclusion the two layers
+    disagreed and ``restore_names`` (which runs first) won.
+    """
+    if not isinstance(node, dict):
+        return False
+    declared = node.get("type")
+    types = [declared] if isinstance(declared, str) else declared
+    if isinstance(types, list) and "string" in types:
+        return False
+    if "$ref" in node or "properties" in node or "items" in node:
+        return True
+    if isinstance(types, list) and any(x in ("object", "array") for x in types):
+        return True
+    for key in _SUBSCHEMA_LISTS:
+        branches = node.get(key)
+        if isinstance(branches, list):
+            if any(
+                isinstance(b, dict) and _is_container_schema(b) for b in branches
+            ) and not any(
+                isinstance(b, dict)
+                and (b.get("type") == "string" or "string" in (b.get("type") or []))
+                for b in branches
+            ):
+                return True
+    return False
+
+
 def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
     """Recursively sanitize one subschema. Returns (clean node, its NameMap)."""
     name_map = NameMap()
@@ -198,10 +248,11 @@ def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
                 clean_props[safe] = child_clean
                 if not child_map.is_empty():
                     name_map.children[safe] = child_map
+                if _is_container_schema(prop_schema):
+                    name_map.container_keys.add(safe)
                 # A `$defs` block nested under a property is renamed by the same
                 # rules; its map must reach the root so the pointer rewrite (which
                 # runs once, at the root) sees it.
-                name_map.defs_renamed.update(child_map.defs_renamed)
             out[key] = clean_props
             continue
 
@@ -210,7 +261,6 @@ def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
             out[key] = child_clean
             if not child_map.is_empty():
                 name_map.items = child_map
-            name_map.defs_renamed.update(child_map.defs_renamed)
             continue
 
         if key in _SUBSCHEMA_LISTS and isinstance(value, list):
@@ -222,7 +272,7 @@ def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
                 cleaned.append(branch_clean)
                 name_map.renamed.update(branch_map.renamed)
                 name_map.children.update(branch_map.children)
-                name_map.defs_renamed.update(branch_map.defs_renamed)
+                name_map.container_keys.update(branch_map.container_keys)
                 if branch_map.items is not None:
                     name_map.items = branch_map.items
             out[key] = cleaned
@@ -249,7 +299,6 @@ def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
                     name_map.defs_renamed[safe_def] = str(def_name)
                 def_clean, def_map = _sanitize_node(def_schema)
                 clean_defs[safe_def] = def_clean
-                name_map.defs_renamed.update(def_map.defs_renamed)
                 if not def_map.is_empty():
                     # Keyed by the (sanitized) definition name; merged in at use
                     # sites by restore_names via the $ref-resolved child map below.
@@ -275,21 +324,23 @@ def sanitize_tool_schema(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], NameMa
     """Return ``(schema safe to send as a toolSpec, map to restore names)``.
 
     The input is not mutated. When nothing needed renaming the returned map is
-    empty (``NameMap.is_empty()``), and ``restore_names`` is then a no-op — so a
-    schema Bedrock already accepts costs nothing and is sent unchanged.
+    empty (``NameMap.is_empty()``) and ``restore_names`` is a no-op. The wire
+    schema is then unchanged except that each ``$ref`` node gains its
+    definition's ``type`` (see ``_annotate_ref_types``); property and definition
+    NAMES are byte-identical.
     """
     # Strip first: metadata keys can never be property names, and removing them
     # before the rename walk keeps the two concerns separate.
     clean, name_map = _sanitize_node(strip_non_wire_keywords(schema))
-    if name_map.defs_renamed:
-        clean = _rewrite_refs(clean, name_map.defs_renamed)
+    if not name_map.is_empty():
+        clean = _rewrite_refs(clean, name_map)
     clean = _annotate_ref_types(clean)
-    if name_map.renamed or name_map.children or name_map.items or name_map.defs_renamed:
+    if not name_map.is_empty():
         logger.debug(
             "Sanitized %d top-level tool-schema property name(s) and %d $defs "
             "definition name(s) for Bedrock",
             len(name_map.renamed),
-            len(name_map.defs_renamed),
+            name_map.total_definition_renames(),
         )
     return clean, name_map
 
@@ -335,48 +386,87 @@ def _ref_target(ref: Any) -> Optional[str]:
     return _decode_segment(segs[1])
 
 
-def _rewrite_refs(node: Any, defs_renamed: Dict[str, str]) -> Any:
-    """Point every local ``$ref`` at the sanitized definition name.
+def _rewrite_refs(node: Any, root_map: NameMap) -> Any:
+    """Rewrite every local ``$ref`` so each pointer segment names the SANITIZED key
+    at that exact location.
 
-    Works segment by segment, so a pointer INTO a renamed definition
-    (``#/$defs/Account Holder Address/properties/City``) is rewritten too, and a
-    ``$defs`` block nested under a property (``#/properties/G/$defs/Inner Def``)
-    is handled the same way. The segment after any ``$defs`` segment is matched
-    against the rename map RAW first — a definition whose name literally contains
-    ``%`` must not be percent-decoded into something else — and decoded second.
+    The pointer is walked against the ``NameMap`` tree the sanitizer built, so a
+    ``properties`` segment is mapped through that level's property renames, a
+    ``$defs`` segment through THAT block's definition renames (per block — two
+    blocks may sanitize the same original name differently), ``items`` descends
+    into the item map, and a combinator index passes through. Segments are matched
+    RAW first and percent-decoded second, so a name that literally contains ``%``
+    still resolves; the result is RFC 6901-escaped.
+
+    Pointers this cannot follow (unknown keywords, non-local URIs) are returned
+    unchanged rather than guessed at.
     """
-    reverse = {orig: safe for safe, orig in defs_renamed.items()}
+    EMPTY = NameMap()
+
+    def _map_name(level: NameMap, lookup: Dict[str, str], raw: str) -> Optional[str]:
+        # ``lookup`` is safe -> original; invert once per call (small maps).
+        reverse = {orig: safe for safe, orig in lookup.items()}
+        if raw in reverse:
+            return reverse[raw]
+        decoded = _decode_segment(raw)
+        if decoded in reverse:
+            return reverse[decoded]
+        # Not renamed at this level: the segment is already its own safe spelling
+        # (or unknown to us); keep it verbatim.
+        return None
 
     def _rewrite_pointer(ref: str) -> str:
         segs = _pointer_segments(ref)
         if not segs:
             return ref
-        out_segs = list(segs)
-        for i in range(len(segs) - 1):
-            if segs[i] != _DEF_SEGMENT:
-                continue
-            raw = segs[i + 1]
-            target = raw if raw in reverse else _decode_segment(raw)
-            if target in reverse:
-                out_segs[i + 1] = _encode_segment(reverse[target])
-        return "#/" + "/".join(out_segs)
+        out = list(segs)
+        level: NameMap = root_map
+        i = 0
+        while i < len(segs):
+            seg = segs[i]
+            if seg == "properties" and i + 1 < len(segs):
+                safe = _map_name(level, level.renamed, segs[i + 1])
+                if safe is not None:
+                    out[i + 1] = _encode_segment(safe)
+                key = safe if safe is not None else _decode_segment(segs[i + 1])
+                level = level.children.get(key, EMPTY)
+                i += 2
+            elif seg == _DEF_SEGMENT and i + 1 < len(segs):
+                safe = _map_name(level, level.defs_renamed, segs[i + 1])
+                if safe is not None:
+                    out[i + 1] = _encode_segment(safe)
+                key = safe if safe is not None else _decode_segment(segs[i + 1])
+                level = level.children.get(f"$defs/{key}", EMPTY)
+                i += 2
+            elif seg == "items":
+                level = level.items or EMPTY
+                i += 1
+            elif seg in _SUBSCHEMA_LISTS and i + 1 < len(segs):
+                # Branch maps were merged into the parent; stay at this level.
+                i += 2
+            else:
+                # A keyword we do not track (additionalProperties, patternProperties,
+                # ...). Names below it were not sanitized by us either, so stop
+                # mapping but keep the remaining segments verbatim.
+                break
+        return "#/" + "/".join(out)
 
     def _walk(n: Any) -> Any:
         if isinstance(n, list):
             return [_walk(v) for v in n]
         if not isinstance(n, dict):
             return n
-        out: Dict[str, Any] = {}
+        result: Dict[str, Any] = {}
         for key, value in n.items():
             if key == "$ref" and isinstance(value, str):
-                out[key] = _rewrite_pointer(value)
+                result[key] = _rewrite_pointer(value)
             elif key == "properties" and isinstance(value, dict):
                 # Property names are user data and may be spelled "$ref"; only
                 # the VALUES are subschemas.
-                out[key] = {k: _walk(v) for k, v in value.items()}
+                result[key] = {k: _walk(v) for k, v in value.items()}
             else:
-                out[key] = _walk(value)
-        return out
+                result[key] = _walk(value)
+        return result
 
     return _walk(node)
 
@@ -439,17 +529,25 @@ def restore_names(value: Any, name_map: Optional[NameMap]) -> Any:
     out: Dict[str, Any] = {}
     for key, val in value.items():
         original = name_map.renamed.get(key, key)
-        child = name_map.children.get(key)
-        if child is None and isinstance(val, str):
+        if isinstance(val, str) and key in name_map.container_keys:
             # A group the model serialized as a JSON STRING (Sonnet 5 did this for
             # a `$ref` it could not resolve, #783). Its inner keys are the
             # SANITIZED spellings the model was given, so if it is left as text
             # for coercion to parse later, the parsed object carries wire names
             # that nothing restores — and they leak into inference_result. Parse
-            # it here, where the map is, so the inner names come back too.
+            # it here, where the map is, so the inner names come back too. ONLY
+            # under a key the schema declares as a container (never one that also
+            # permits a string): a genuine text field holding JSON stays text.
             parsed = _parse_serialized_container(val)
             if parsed is not None:
+                logger.info(
+                    "Parsed a serialized %s the model returned as a string for "
+                    "tool-schema field %r and restored its inner names",
+                    "object" if isinstance(parsed, dict) else "array",
+                    original,
+                )
                 val = parsed
+        child = name_map.children.get(key)
         if child is None:
             # Fall back to a $defs map if exactly one is available and the value
             # is a container: a $ref'd child's names live there.
@@ -484,13 +582,6 @@ def _parse_serialized_container(text: str) -> Any:
             seen[k] = v
         return seen
 
-    try:
-        parsed = json.loads(
-            stripped, parse_constant=_no_constants, object_pairs_hook=_no_dupes
-        )
-    except (ValueError, RecursionError):
-        return None
-
     def _finite(v: Any) -> bool:
         if isinstance(v, float):
             return math.isfinite(v)
@@ -500,9 +591,16 @@ def _parse_serialized_container(text: str) -> Any:
             return all(_finite(x) for x in v)
         return True
 
-    if isinstance(parsed, (dict, list)) and _finite(parsed):
-        return parsed
-    return None
+    try:
+        parsed = json.loads(
+            stripped, parse_constant=_no_constants, object_pairs_hook=_no_dupes
+        )
+        # Inside the try: this Python recursion trips RecursionError (~500
+        # levels) long before json's C scanner does (~10,000).
+        finite = isinstance(parsed, (dict, list)) and _finite(parsed)
+    except (ValueError, RecursionError):
+        return None
+    return parsed if finite else None
 
 
 def _sole_defs_child(name_map: NameMap) -> Optional[NameMap]:

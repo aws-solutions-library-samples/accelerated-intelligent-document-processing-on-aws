@@ -273,7 +273,7 @@ DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
     ),
     "xai-grok": (
         "xAI Grok models reject Converse document blocks (\"This model doesn't "
-        'support documents"); their input modalities are text and image only'
+        "support documents\"); their input modalities are text and image only"
     ),
 }
 

@@ -700,7 +700,10 @@ class TestDefsPointerRewriteEdges:
         assert clean["properties"]["G"]["properties"]["S"]["$ref"] == (
             "#/properties/G/$defs/Inner_Def"
         )
-        assert name_map.defs_renamed == {"Inner_Def": "Inner Def"}
+        # Per level: the nested block's rename lives on property G's child map.
+        assert name_map.defs_renamed == {}
+        assert name_map.children["G"].defs_renamed == {"Inner_Def": "Inner Def"}
+        assert name_map.total_definition_renames() == 1
         assert name_map.is_empty() is False
         assert self._resolves(clean, {"G": {"S": 5}}) == ["5 is not of type 'string'"]
 
@@ -842,3 +845,211 @@ class TestRestoreNamesParsesSerializedGroups:
         _, name_map = sanitize_tool_schema(schema)
         for raw in ('{"A_B": NaN}', '{"A_B": 1, "A_B": 2}', '{"A_B": 1e400}'):
             assert restore_names({"X": raw}, name_map) == {"X": raw}
+
+    def test_a_genuine_string_field_holding_json_text_stays_a_string(self):
+        """The parse is scoped to keys the schema declares as containers. A
+        `Notes` string field whose VALUE is JSON text must not be turned into a
+        dict — that would be a new regression, not a repair."""
+        schema = {
+            "type": "object",
+            "$defs": {"G": {"type": "object", "properties": {"A B": {}}}},
+            "properties": {
+                "X": {"$ref": "#/$defs/G"},
+                "Note Text": {"type": "string"},
+                "Tags": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        assert name_map.container_keys == {"X", "Tags"}
+        restored = restore_names(
+            {"Note_Text": '{"a": 1}', "X": '{"A_B": 2}', "Tags": '["t1"]'}, name_map
+        )
+        assert restored["Note Text"] == '{"a": 1}'  # untouched
+        assert restored["X"] == {"A B": 2}
+        assert restored["Tags"] == ["t1"]
+
+
+class TestPerBlockPointerRewrite:
+    """The rewrite walks the NameMap tree, so each pointer segment is mapped through
+    the rename recorded at THAT location. A single flat map cross-wired pointers
+    between `$defs` blocks that reused a name and left a pointer dangling when two
+    blocks collapsed onto one sanitized key."""
+
+    @staticmethod
+    def _errors(clean, sample):
+        import jsonschema
+
+        jsonschema.Draft202012Validator.check_schema(clean)
+        return sorted(
+            e.message
+            for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+        )
+
+    def test_same_original_name_in_two_blocks_is_not_cross_wired(self):
+        """Root `A B` -> `A_B`. A nested block already HAS a valid `A_B` (an integer)
+        and its own `A B` (an object) that must become `A_B_2`. The nested pointer
+        to `A B` must land on the OBJECT, not the integer."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "A B": {"type": "object", "properties": {"x": {"type": "string"}}}
+            },
+            "properties": {
+                "R": {"$ref": "#/$defs/A B"},
+                "G": {
+                    "type": "object",
+                    "$defs": {
+                        "A_B": {"type": "integer"},
+                        "A B": {
+                            "type": "object",
+                            "properties": {"Deep One": {"type": "string"}},
+                        },
+                    },
+                    "properties": {"Q": {"$ref": "#/properties/G/$defs/A B"}},
+                },
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        g = clean["properties"]["G"]
+        assert set(g["$defs"]) == {"A_B", "A_B_2"}
+        assert g["properties"]["Q"]["$ref"] == "#/properties/G/$defs/A_B_2"
+        assert clean["properties"]["R"]["$ref"] == "#/$defs/A_B"
+        # The object definition, not the integer one, governs Q.
+        assert self._errors(clean, {"G": {"Q": {"Deep_One": "d"}}}) == []
+        assert self._errors(clean, {"G": {"Q": 5}}) == ["5 is not of type 'object'"]
+        assert name_map.total_definition_renames() == 2
+
+    def test_two_blocks_collapsing_onto_one_sanitized_key_both_resolve(self):
+        schema = {
+            "type": "object",
+            "$defs": {"Total (USD)": {"type": "object", "properties": {}}},
+            "properties": {
+                "R": {"$ref": "#/$defs/Total (USD)"},
+                "G": {
+                    "type": "object",
+                    "$defs": {"Total_(USD)": {"type": "integer"}},
+                    "properties": {"Q": {"$ref": "#/properties/G/$defs/Total_(USD)"}},
+                },
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["R"]["$ref"] == "#/$defs/Total__USD_"
+        assert clean["properties"]["G"]["properties"]["Q"]["$ref"] == (
+            "#/properties/G/$defs/Total__USD_"
+        )
+        assert self._errors(clean, {"G": {"Q": "not an int"}}) == [
+            "'not an int' is not of type 'integer'"
+        ]
+
+    def test_a_sanitized_properties_segment_after_defs_is_rewritten_too(self):
+        """``#/$defs/A B/properties/City Name`` — both the definition name AND the
+        inner property name change on the wire, so both segments must."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "A B": {
+                    "type": "object",
+                    "properties": {"City Name": {"type": "string"}},
+                }
+            },
+            "properties": {"C": {"$ref": "#/$defs/A B/properties/City Name"}},
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["C"]["$ref"] == "#/$defs/A_B/properties/City_Name"
+        assert self._errors(clean, {"C": 7}) == ["7 is not of type 'string'"]
+
+    def test_a_properties_segment_at_the_root_is_rewritten(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "Some Group": {
+                    "type": "object",
+                    "properties": {"z": {"type": "string"}},
+                },
+                "Alias": {"$ref": "#/properties/Some Group"},
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["Alias"]["$ref"] == "#/properties/Some_Group"
+        assert self._errors(clean, {"Alias": {"z": 1}}) == ["1 is not of type 'string'"]
+
+    def test_unknown_keywords_stop_the_walk_but_keep_the_pointer(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "M": {"type": "object", "additionalProperties": {"type": "string"}},
+                "P": {"$ref": "#/properties/M/additionalProperties"},
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["P"]["$ref"] == "#/properties/M/additionalProperties"
+        assert self._errors(clean, {"P": 1}) == ["1 is not of type 'string'"]
+
+
+class TestSerializedGroupParseScope:
+    def test_an_inline_group_serialized_as_a_string_restores_inner_names(self):
+        """Not only the `$ref` shape: an inline nested group has a child map, and the
+        parse must happen BEFORE the child map is chosen."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "Account Holder Address": {
+                    "type": "object",
+                    "properties": {"Street Number": {}, "ZIP Code": {}},
+                }
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names(
+            {"Account_Holder_Address": '{"Street_Number": "1", "ZIP_Code": "9"}'},
+            name_map,
+        )
+        assert restored == {
+            "Account Holder Address": {"Street Number": "1", "ZIP Code": "9"}
+        }
+
+    def test_an_anyof_wrapped_group_is_a_container_key(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "Maybe Group": {
+                    "anyOf": [
+                        {"type": "object", "properties": {"In Ner": {}}},
+                        {"type": "null"},
+                    ]
+                }
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert "Maybe_Group" in name_map.container_keys
+        assert restore_names({"Maybe_Group": '{"In_Ner": "x"}'}, name_map) == {
+            "Maybe Group": {"In Ner": "x"}
+        }
+
+    def test_a_union_that_also_permits_string_is_never_parsed(self):
+        """Matches coercion's rule for the same repair: text is a legitimate value."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "Flexible": {"type": ["object", "string"]},
+                "Either": {"anyOf": [{"type": "object"}, {"type": "string"}]},
+                "Spaced Group": {"type": "object", "properties": {"a b": {}}},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert "Flexible" not in name_map.container_keys
+        assert "Either" not in name_map.container_keys
+        raw = '{"a_b": 1}'
+        restored = restore_names({"Flexible": raw, "Either": raw}, name_map)
+        assert restored == {"Flexible": raw, "Either": raw}
+
+    def test_deep_nesting_does_not_escape_as_recursion_error(self):
+        """The finiteness walk is Python recursion and trips at ~500 levels, long
+        before json's C scanner (~10,000). It must be inside the guard."""
+        schema = {
+            "type": "object",
+            "properties": {"G": {"type": "object", "properties": {"a b": {}}}},
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        deep = "[" * 1200 + "]" * 1200
+        assert restore_names({"G": deep}, name_map) == {"G": deep}  # left as text

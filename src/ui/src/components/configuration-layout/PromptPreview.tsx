@@ -178,9 +178,10 @@ function cleanSchemaForPrompt(schema: Record<string, unknown>): Record<string, u
 /**
  * Recursively drop the schema-DOCUMENT metadata keys the backend removes before
  * sending a schema as a toolSpec. Mirrors
- * ``idp_common.bedrock.tool_schema.strip_non_wire_keywords`` — including its one
- * subtlety: keys INSIDE ``properties`` are user-authored field names, so a field
- * legitimately named ``id`` must survive.
+ * ``idp_common.bedrock.tool_schema.strip_non_wire_keywords`` — including its two
+ * subtleties: keys INSIDE ``properties`` are user-authored field names and keys
+ * INSIDE ``$defs`` are user-authored definition names, so a field or a group
+ * legitimately named ``id`` must survive (only their BODIES are stripped).
  */
 function stripToolDocumentMetadata(node: unknown): unknown {
   if (Array.isArray(node)) return node.map((item) => stripToolDocumentMetadata(item));
@@ -189,12 +190,12 @@ function stripToolDocumentMetadata(node: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     if (TOOL_DOCUMENT_METADATA_KEYS.includes(key)) continue;
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
-      const props: Record<string, unknown> = {};
-      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
-        props[propName] = stripToolDocumentMetadata(propSchema);
+    if ((key === 'properties' || key === DEFS_FIELD) && value && typeof value === 'object' && !Array.isArray(value)) {
+      const named: Record<string, unknown> = {};
+      for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+        named[name] = stripToolDocumentMetadata(sub);
       }
-      out[key] = props;
+      out[key] = named;
       continue;
     }
     out[key] = stripToolDocumentMetadata(value);
