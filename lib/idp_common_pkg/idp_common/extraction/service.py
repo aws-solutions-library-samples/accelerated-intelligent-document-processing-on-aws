@@ -53,6 +53,7 @@ from idp_common.extraction.validation import (
     build_empty_list_feedback,
     build_subset_schema,
     find_empty_declared_lists,
+    select_escalated_fields,
     validate_extraction,
 )
 from idp_common.models import Document, Section
@@ -143,6 +144,21 @@ class ExtractionResult(BaseModel):
     or the model did not answer. Greater than the number of records actually in
     the result means records were silently lost — see
     ``extraction_multi_instance_suspected``."""
+
+
+def _escalation_failure_reason(exc: BaseException) -> str:
+    """One bounded line for ``escalation_decision`` when the escalation call raised.
+
+    Deliberately NOT ``str(exc)``: a pydantic ValidationError over a 100-row list
+    model is one block per failing row, each with an ``input_value=`` excerpt of
+    extracted document text — persisting that into section metadata (and rendering
+    it in the Processing Report) is both a layout problem and a disclosure of
+    document content. Type name plus the first line, capped; the full detail goes
+    to the log with ``exc_info``.
+    """
+    lines = (str(exc) or "").strip().splitlines()
+    text = lines[0] if lines else ""
+    return f"escalation call failed: {type(exc).__name__}: {text[:160]}"
 
 
 class ExtractionService:
@@ -3379,18 +3395,24 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 },
             )
 
+        escalation_kept = False
+        escalation_decision: str | None = None
         if not report.valid and vcfg.fail_action == "escalate":
             escalation_model = self._resolve_escalation_model() or model_id
             escalated = True
-            extracted_fields, report, escalation_metering = (
-                self._escalate_simple_fields(
-                    extracted_fields=extracted_fields,
-                    report=report,
-                    escalation_model=escalation_model,
-                    content=content,
-                    system_prompt=system_prompt,
-                    section_info=section_info,
-                )
+            (
+                extracted_fields,
+                report,
+                escalation_metering,
+                escalation_kept,
+                escalation_decision,
+            ) = self._escalate_simple_fields(
+                extracted_fields=extracted_fields,
+                report=report,
+                escalation_model=escalation_model,
+                content=content,
+                system_prompt=system_prompt,
+                section_info=section_info,
             )
             if escalation_metering:
                 metering.update(
@@ -3414,6 +3436,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             validation_metadata["escalation_scope"] = "field-subset"
             validation_metadata["escalation_fields"] = initial_failed_fields
             validation_metadata["resolved_by_escalation"] = report.valid
+            validation_metadata["escalation_kept"] = escalation_kept
+            validation_metadata["escalation_decision"] = escalation_decision
 
         return extracted_fields, validation_metadata, parsing_succeeded
 
@@ -3426,7 +3450,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         content: list[dict[str, Any]],
         system_prompt: str,
         section_info: SectionInfo,
-    ) -> tuple[dict[str, Any], ValidationReport, dict[str, Any]]:
+    ) -> tuple[dict[str, Any], ValidationReport, dict[str, Any], bool, str]:
         """Re-extract only the failing fields with a stronger model (simple mode).
 
         Mirrors the agentic ``_escalate_failing_fields`` intent — scope the retry
@@ -3439,7 +3463,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """
         failed_fields = sorted(report.failed_top_level_fields)
         if not failed_fields:
-            return extracted_fields, report, {}
+            return extracted_fields, report, {}, False, "no failing fields"
 
         subset_schema = build_subset_schema(self._class_schema, failed_fields)
         vcfg = self.config.extraction.validation
@@ -3484,7 +3508,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "Escalation response was not a usable object; keeping the "
                     "original extraction"
                 )
-                return extracted_fields, report, response.get("metering", {})
+                return (
+                    extracted_fields,
+                    report,
+                    response.get("metering", {}),
+                    False,
+                    "escalation response unusable",
+                )
 
             # In integrated (1S-TopK) confidence mode the original content carries
             # the top-K task prompt, so the escalation model may answer in the
@@ -3498,32 +3528,62 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "Escalation answered in the top-K candidate shape rather than "
                     "plain values; keeping the original extraction"
                 )
-                return extracted_fields, report, response.get("metering", {})
+                return (
+                    extracted_fields,
+                    report,
+                    response.get("metering", {}),
+                    False,
+                    "escalation response unusable",
+                )
 
             # Merge back ONLY the fields we asked for, so an over-eager
             # escalation response cannot overwrite fields that already validated.
-            merged = dict(extracted_fields)
+            candidate = dict(extracted_fields)
             for field_name in failed_fields:
                 if field_name in corrected:
-                    merged[field_name] = corrected[field_name]
+                    candidate[field_name] = corrected[field_name]
 
-            merged, _ = self._coerce_simple_result(merged)
+            candidate, _ = self._coerce_simple_result(candidate)
+            candidate_report = validate_extraction(
+                candidate, self._class_schema, check_formats=vcfg.check_formats
+            )
+            # Same keep-gate as the agentic path (#791). This path previously
+            # merged UNCONDITIONALLY — not even the total-count comparison — so a
+            # stronger model returning `Transactions: null` overwrote 100 rows
+            # every time. Each failing field is accepted on its own merits: no
+            # populated data lost, fewer errors than before.
+            merged, decisions = select_escalated_fields(
+                extracted_fields, candidate, report, candidate_report
+            )
+            kept = any(v.startswith("accepted") for v in decisions.values())
+            decision = "; ".join(f"{k} {v}" for k, v in sorted(decisions.items())) or (
+                "escalation changed nothing"
+            )
+            if not kept:
+                logger.warning(
+                    "Simple-mode escalation REJECTED, keeping original result: %s",
+                    decision,
+                )
+                return (
+                    extracted_fields,
+                    report,
+                    response.get("metering", {}),
+                    False,
+                    decision,
+                )
             new_report = validate_extraction(
                 merged, self._class_schema, check_formats=vcfg.check_formats
             )
-            if new_report.valid:
-                logger.info("Escalation resolved all schema violations")
-            else:
-                logger.warning(
-                    "Escalation reduced violations from %d to %d but the result "
-                    "is still invalid",
-                    len(report.errors),
-                    len(new_report.errors),
-                )
-            return merged, new_report, response.get("metering", {})
+            logger.info(
+                "Simple-mode escalation kept (%s): %d -> %d violations",
+                decision,
+                len(report.errors),
+                len(new_report.errors),
+            )
+            return merged, new_report, response.get("metering", {}), True, decision
         except Exception as e:  # noqa: BLE001 - escalation is best-effort
             logger.warning("Simple-mode escalation failed: %s", e)
-            return extracted_fields, report, {}
+            return extracted_fields, report, {}, False, _escalation_failure_reason(e)
 
     def _validate_and_maybe_escalate(
         self,
@@ -3565,6 +3625,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         escalation_model: str | None = None
         escalation_scope: str | None = None
         escalation_fields: list[str] = []
+        escalation_kept = False
+        escalation_decision: str | None = None
         if not report.valid:
             logger.warning(
                 "Extraction failed full-schema validation for "
@@ -3590,6 +3652,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 report,
                 escalation_metering,
                 escalation_scope,
+                escalation_kept,
+                escalation_decision,
             ) = self._escalate_failing_fields(
                 extracted_fields=extracted_fields,
                 structured_data=structured_data,
@@ -3620,6 +3684,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             validation_metadata["escalation_scope"] = escalation_scope
             validation_metadata["escalation_fields"] = escalation_fields
             validation_metadata["resolved_by_escalation"] = report.valid
+            # Whether the escalated result REPLACED the original, and why. A
+            # rejected escalation (data loss, or no per-field improvement) used to
+            # be indistinguishable from a kept-but-still-invalid one.
+            validation_metadata["escalation_kept"] = escalation_kept
+            validation_metadata["escalation_decision"] = escalation_decision
 
         return (
             extracted_fields,
@@ -3640,7 +3709,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         agentic_images: list[bytes],
         custom_instruction: str | None,
         section_info: SectionInfo,
-    ) -> tuple[dict[str, Any], Any, ValidationReport, dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], Any, ValidationReport, dict[str, Any], str, bool, str]:
         """Re-extract only the failing top-level fields with a stronger model.
 
         Builds a reduced schema containing just ``full_report.failed_top_level_fields``,
@@ -3648,9 +3717,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         result and re-validates. Falls back to a whole-section re-extraction when
         a usable subset schema can't be built (e.g. failures are root-level only).
 
-        Returns ``(extracted_fields, structured_data, report, metering, scope)``
-        where ``scope`` is ``"field-subset"`` or ``"full-section"``. On any error
-        the original inputs are returned unchanged with an empty metering dict.
+        Returns ``(extracted_fields, structured_data, report, metering, scope,
+        kept, decision)`` where ``scope`` is ``"field-subset"`` or
+        ``"full-section"``, ``kept`` says whether ANY escalated field replaced the
+        original, and ``decision`` lists the per-field reasons (see
+        ``validation.select_escalated_fields``). On any error the original inputs
+        are returned unchanged with an empty metering dict.
         """
         failed_fields = sorted(full_report.failed_top_level_fields)
         subset_schema = build_subset_schema(self._class_schema, failed_fields)
@@ -3680,14 +3752,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     class_label=f"{section_info.class_label}__escalation",
                     clean_schema=False,
                 )
-                # Seed with current values for the failing fields only.
-                seed = {k: extracted_fields.get(k) for k in failed_fields}
-                try:
-                    existing_model = subset_model(
-                        **{k: v for k, v in seed.items() if v is not None}
-                    )
-                except Exception:
-                    existing_model = None
+                # Seed with current values for the failing fields only. Only when
+                # there is at least one non-null value: an all-null seed must be
+                # None, not an empty-but-constructible model, because a truthy
+                # existing_data triggers the "RESUME FROM CHECKPOINT — do NOT call
+                # extraction_tool again" prompt, which would tell the stronger
+                # model brought in to re-read the value that it must not
+                # re-extract. A strict model happened to raise here; a nullable
+                # one constructs, so the intent is now explicit (#791).
+                seed = {
+                    k: v
+                    for k in failed_fields
+                    if (v := extracted_fields.get(k)) is not None
+                }
+                existing_model = None
+                if seed:
+                    try:
+                        existing_model = subset_model(**seed)
+                    except Exception:
+                        existing_model = None
 
                 esc_data, esc_response = structured_output(
                     model_id=escalation_model,
@@ -3731,31 +3814,84 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 merged, self._class_schema, check_formats=check_formats
             )
 
-            # Keep the escalated result only if it's valid or strictly improves.
-            if esc_report.valid or len(esc_report.errors) < len(full_report.errors):
+            # Keep the escalated result only if it lost no populated data AND got
+            # better per field. NOT ``len(esc.errors) < len(full.errors)``: per-row
+            # errors scale with row count while a whole-field error is always one,
+            # so total counts favour the result with less data — a nulled 100-row
+            # list "improved" from 100 errors to 1 and was kept (#791).
+            # Accept each escalated field on its own merits (no populated data
+            # lost, fewer errors than before) rather than the whole result on its
+            # total error count — totals favour the result with LESS data (#791),
+            # and all-or-nothing let one field the stronger model got wrong sink
+            # the ones it got right.
+            selected, decisions = select_escalated_fields(
+                extracted_fields, merged, full_report, esc_report
+            )
+            kept = any(v.startswith("accepted") for v in decisions.values())
+            reason = "; ".join(f"{k} {v}" for k, v in sorted(decisions.items())) or (
+                "escalation changed nothing"
+            )
+            if kept:
+                final_report = validate_extraction(
+                    selected, self._class_schema, check_formats=check_formats
+                )
                 # Re-validate the merged dict through the full Pydantic model so
                 # the returned structured_data stays consistent with the fields.
                 try:
-                    structured_data = data_model(**merged)
+                    structured_data = data_model(**selected)
                 except Exception:
                     pass  # keep prior structured_data; fields dict is source of truth
-                return merged, structured_data, esc_report, metering, scope
+                logger.info(
+                    f"Escalation kept for '{section_info.class_label}': {reason}",
+                    extra={
+                        "original_errors": len(full_report.errors),
+                        "escalated_errors": len(final_report.errors),
+                    },
+                )
+                return (
+                    selected,
+                    structured_data,
+                    final_report,
+                    metering,
+                    scope,
+                    True,
+                    reason,
+                )
 
-            logger.info(
-                "Escalation did not improve validation; keeping original result",
+            logger.warning(
+                f"Escalation REJECTED for '{section_info.class_label}', keeping "
+                f"original result: {reason}",
                 extra={
                     "original_errors": len(full_report.errors),
                     "escalated_errors": len(esc_report.errors),
+                    "original_errors_by_field": full_report.errors_by_field(),
+                    "escalated_errors_by_field": esc_report.errors_by_field(),
                 },
             )
-            return extracted_fields, structured_data, full_report, metering, scope
+            return (
+                extracted_fields,
+                structured_data,
+                full_report,
+                metering,
+                scope,
+                False,
+                reason,
+            )
         except Exception as e:
             logger.error(
                 "Escalation re-extraction failed; keeping original result",
                 extra={"error": str(e)},
                 exc_info=True,
             )
-            return extracted_fields, structured_data, full_report, {}, scope
+            return (
+                extracted_fields,
+                structured_data,
+                full_report,
+                {},
+                scope,
+                False,
+                _escalation_failure_reason(e),
+            )
 
     def _check_extraction_completeness(
         self,

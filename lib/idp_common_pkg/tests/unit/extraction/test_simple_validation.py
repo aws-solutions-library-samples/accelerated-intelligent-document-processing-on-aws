@@ -210,6 +210,8 @@ def test_escalate_reextracts_only_the_failing_field_and_resolves():
     assert meta["escalated"] is True
     assert meta["resolved_by_escalation"] is True
     assert meta["escalation_fields"] == ["due_date"]
+    assert meta["escalation_kept"] is True
+    assert meta["escalation_decision"].startswith("due_date accepted")
     assert metering, "escalation cost must be metered"
 
 
@@ -362,3 +364,39 @@ def test_bad_date_order_is_rejected_at_config_time():
 
     with _pytest.raises(ValidationError, match="date_order"):
         IDPConfig(**{"extraction": {"coercion": {"date_order": "YMD-ish"}}})
+
+
+def test_simple_escalation_that_nulls_a_populated_field_is_rejected():
+    """The simple path used to merge the stronger model's answer UNCONDITIONALLY —
+    not even the total-count comparison the agentic path had (#791). A stronger
+    model that gives up on the failing field and returns null must not erase the
+    value that was there."""
+    svc = _svc(enabled=True, fail_action="escalate", escalation_model="us.big-model")
+    original = {"invoice_number": "INV-1", "amount": 10.0, "due_date": "March 15th"}
+    with patch(
+        "idp_common.bedrock.invoke_model",
+        return_value=_escalation_response('{"due_date": null}'),
+    ):
+        fields, meta, ok = _validate(svc, dict(original), metering={})
+    # due_date was present-but-invalid (a format error, not `required`), so a
+    # retraction to null IS permitted as a correction — and it is valid afterwards
+    # only if due_date is not required. In this schema it IS required, so the null
+    # produces a `required` error: same count as before, nothing visibly fixed.
+    assert fields["due_date"] == "March 15th"
+    assert meta["escalation_kept"] is False
+    assert "rejected" in meta["escalation_decision"]
+
+
+def test_simple_escalation_failure_records_a_bounded_reason():
+    svc = _svc(enabled=True, fail_action="escalate", escalation_model="us.big-model")
+    original = {"invoice_number": "INV-1", "amount": 10.0, "due_date": "March 15th"}
+    with patch(
+        "idp_common.bedrock.invoke_model",
+        side_effect=RuntimeError("throttled\nsecond line with document text"),
+    ):
+        _fields, meta, _ok = _validate(svc, dict(original), metering={})
+    assert meta["escalation_kept"] is False
+    assert meta["escalation_decision"].startswith(
+        "escalation call failed: RuntimeError: throttled"
+    )
+    assert "\n" not in meta["escalation_decision"]
