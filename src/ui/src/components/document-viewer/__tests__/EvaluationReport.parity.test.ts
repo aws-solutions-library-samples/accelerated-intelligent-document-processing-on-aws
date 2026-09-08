@@ -12,6 +12,12 @@
  * `idp_common/evaluation/models.py` and requires each to have a counterpart in
  * the component source, so the two cannot drift apart again without a test
  * saying so.
+ *
+ * Consequently a heading rename on the Python side fails THIS test, not a Python
+ * one, and the UI suite needs the full repository checkout, not `src/ui` alone. When
+ * that happens: update the key in COUNTERPARTS below to the new heading text (and
+ * the component, if the section's content changed). The failure message names the
+ * heading that has no counterpart.
  */
 
 import { readFileSync } from 'node:fs';

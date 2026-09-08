@@ -521,6 +521,17 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
     });
   }, [results]);
   const executionTime = formatDuration(results?.execution_time);
+  // Built once per change of input rather than inline in the render: rebuilding
+  // every section's rows on each render also defeated AttributeTable's sort memo,
+  // which keys on row identity.
+  const rowsBySection = useMemo(() => {
+    const map = new Map<string, ComparisonRow[]>();
+    for (const section of results?.section_results ?? []) {
+      const attributes = onlyProblems ? mismatchedAttributes(section) : (section.attributes ?? []);
+      map.set(String(section.section_id), attributeRows(attributes, `${section.section_id}/`));
+    }
+    return map;
+  }, [results, onlyProblems]);
   // Page-derived, so a section whose split is wrong still has a ground-truth
   // class for every page to compare against — which is why this is reported per
   // document rather than per section: results.json carries no page ids on its
@@ -743,9 +754,12 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
               : typeof metricsMap.f1_score === 'number'
                 ? metricsMap.f1_score
                 : null;
+          // A never-evaluated section carries one placeholder attribute, which is not
+          // a measured mismatch; counting it beside "not scored" contradicted the
+          // alert below in miniature.
           const counterParts = [
             failure ? 'not scored' : sectionScore !== null ? formatScore(sectionScore) : null,
-            mismatchCount > 0 ? `${mismatchCount} mismatched` : null,
+            !failure && mismatchCount > 0 ? `${mismatchCount} mismatched` : null,
           ].filter(Boolean);
 
           return (
@@ -796,7 +810,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
                 {failure ? null : onlyProblems && attributes.length === 0 ? (
                   <Box color="text-status-success">Every field in this section matched.</Box>
                 ) : (
-                  <AttributeTable rows={attributeRows(attributes, `${section.section_id}/`)} />
+                  <AttributeTable rows={rowsBySection.get(String(section.section_id)) ?? []} />
                 )}
               </SpaceBetween>
             </ExpandableSection>

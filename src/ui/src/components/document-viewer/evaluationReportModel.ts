@@ -269,6 +269,16 @@ const asInt = (value: unknown): number => (typeof value === 'number' && Number.i
 const toPageNumbers = (indices: unknown): number[] =>
   Array.isArray(indices) ? indices.filter((i): i is number => typeof i === 'number').map((i) => i + 1) : [];
 
+/**
+ * `excluded_sections[].page_ids` is a different animal from the split tables'
+ * indices: it is copied from `Section.page_ids`, which the pipeline writes as
+ * 1-based page ids in string form (`str(page_index + 1)`). So: coerce, and do not
+ * shift. Running these through `toPageNumbers` filtered every string out and would
+ * have added one to any number, leaving the Pages column reading "—".
+ */
+const toPageIds = (ids: unknown): number[] =>
+  Array.isArray(ids) ? ids.map((id) => (typeof id === 'number' ? id : Number(String(id)))).filter((n) => Number.isInteger(n) && n > 0) : [];
+
 const asString = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
 
 /**
@@ -379,7 +389,7 @@ export const excludedSectionRows = (results: EvaluationResults | null | undefine
       sectionId: asString(entry.section_id) ?? '',
       classification: asString(entry.classification) ?? '',
       reason: asString(entry.exclusion_reason) ?? 'excluded',
-      pages: toPageNumbers(entry.page_ids),
+      pages: toPageIds(entry.page_ids),
     }));
 
 export interface SectionFailure {

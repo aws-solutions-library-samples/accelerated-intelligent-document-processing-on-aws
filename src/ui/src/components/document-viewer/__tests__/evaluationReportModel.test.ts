@@ -293,10 +293,14 @@ describe('splitAnalysis', () => {
 
 describe('excludedSectionRows', () => {
   it('names the section, class, reason and pages', () => {
+    // page_ids come from Section.page_ids: 1-based, and strings. Not the 0-based
+    // indices the split tables carry, so no shift.
     const rows = excludedSectionRows({
-      excluded_sections: [{ section_id: '3', classification: 'Cover', exclusion_reason: 'no extractable attributes', page_ids: [4, 5] }],
+      excluded_sections: [
+        { section_id: '3', classification: 'Cover', exclusion_reason: 'no extractable attributes', page_ids: ['4', '5'] },
+      ],
     });
-    expect(rows).toEqual([{ sectionId: '3', classification: 'Cover', reason: 'no extractable attributes', pages: [5, 6] }]);
+    expect(rows).toEqual([{ sectionId: '3', classification: 'Cover', reason: 'no extractable attributes', pages: [4, 5] }]);
   });
 
   it('defaults the reason as the markdown does', () => {

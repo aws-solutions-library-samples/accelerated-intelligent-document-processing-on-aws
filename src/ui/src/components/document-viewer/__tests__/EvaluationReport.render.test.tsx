@@ -91,7 +91,7 @@ const { RESULTS } = vi.hoisted(() => ({
       errors: ['section 2 had no prediction'],
       final_score: 0.75,
     },
-    excluded_sections: [{ section_id: '3', classification: 'Cover', exclusion_reason: 'no extractable attributes', page_ids: [2] }],
+    excluded_sections: [{ section_id: '3', classification: 'Cover', exclusion_reason: 'no extractable attributes', page_ids: ['3'] }],
     section_results: [
       {
         section_id: '1',
@@ -208,7 +208,9 @@ describe('EvaluationReport mounted against a packet payload', () => {
     await waitFor(() => expect(screen.getByText('Section 1 — W2')).toBeInTheDocument());
     // Header counters render in their own node; match on content, not exact text.
     expect(screen.getByText(/82\.0% · 1 mismatched/)).toBeInTheDocument();
-    expect(screen.getByText(/not scored/)).toBeInTheDocument();
+    // No mismatch count beside it: the placeholder attribute of a never-evaluated
+    // section is not a measured mismatch.
+    expect(screen.getByText('(not scored)')).toBeInTheDocument();
     expect(screen.getByText('This section was not evaluated')).toBeInTheDocument();
     expect(screen.getByText('No evaluation configuration found for Payslip')).toBeInTheDocument();
     expect(screen.getByText(/Add a configuration for 'Payslip'/)).toBeInTheDocument();

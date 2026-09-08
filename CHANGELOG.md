@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The evaluation report view now shows everything the markdown report does.** It had shipped as a summary with a click-through to the markdown for the detail. Added: the document-split figures and a section split analysis, every recorded metric with its rating, excluded sections with reasons, per-section scores and metrics, the not-evaluated state with how-to-fix steps, Confidence and Weight columns, nested field comparisons as expandable rows, structured display of list and object values instead of one flattened JSON string, and a scoring explainer. A parity test reads the section headings out of the markdown generator and fails if the two drift. See [docs/web-ui.md](docs/web-ui.md#evaluation-report).
+
 ## [0.6.7]
 
 ### Added
@@ -68,8 +74,6 @@ SPDX-License-Identifier: MIT-0
 - **Configuration validation: a Bedrock ARN whose resource looks like a model ID but is not a known model is now rejected**, instead of warning. This turns a typo in an ARN's resource-id, partition or account into a loud upload failure rather than a silent misconfiguration. ⚠️ A legitimate ARN newer than this release's model list will also be rejected; name the model directly, or upgrade.
 
 ### Fixed
-
-- **The evaluation report view now shows everything the markdown report does.** It had shipped as a summary with a click-through to the markdown for the detail. Added: the document-split figures and a section split analysis, every recorded metric with its rating, excluded sections with reasons, per-section scores and metrics, the not-evaluated state with how-to-fix steps, Confidence and Weight columns, nested field comparisons as expandable rows, structured display of list and object values instead of one flattened JSON string, and a scoring explainer. A parity test reads the section headings out of the markdown generator and fails if the two drift. See [docs/web-ui.md](docs/web-ui.md#evaluation-report).
 
 - **OCR: small, faint and skewed characters are no longer silently dropped.** With `ocr.image` unset — the default for every shipped preset — pages were rendered at about 110 DPI for A4, below what Textract needs. Affects every document processed with a default configuration; no action needed beyond upgrading. ⚠️ **Re-running OCR on an existing document can now yield more text than before**, so extracted values for affected fields may change from `null` to a real value, and stored page images are larger ([#729](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/729)).
 
