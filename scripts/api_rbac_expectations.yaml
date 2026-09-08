@@ -43,7 +43,10 @@
 #                  404-for-admin instead of failing.
 #   args:          safe arguments for the dynamic test. Mutations use
 #                  nonexistent ids (benign validation failure proves the call
-#                  passed authorization).
+#                  passed authorization). An op whose authorization depends on
+#                  the referenced object existing (getStepFunctionExecution)
+#                  has its args replaced at run time by apply_dynamic_args in
+#                  scripts/test_api_rbac.py.
 #   skip_allowed:  true -> dynamic test exercises ONLY the denied cells
 #                  (unauth + disallowed roles); the allowed-role call is
 #                  skipped because it would do real work (start an LLM agent,
@@ -117,9 +120,18 @@ operations:
   getStepFunctionExecution:
     groups: ANY
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py
     args: { executionArn: "arn:aws:states:us-east-1:000000000000:execution:x:y" }
-    known_gap: GAP-01
+    note: >-
+      Caller-supplied executionArn. The resolver requires it to name this
+      deployment's state machine (STATE_MACHINE_ARN) before calling Step
+      Functions, then enforces the caller's allowedConfigVersions against the
+      config_version in the execution input. Formerly GAP-01. The args here are
+      a placeholder the resolver correctly refuses; the dynamic harness replaces
+      them with a live execution ARN read from listDocuments (see
+      apply_dynamic_args in scripts/test_api_rbac.py) and SKIPs the op when the
+      stack has processed no documents.
   listDocumentVersions:
     groups: ANY
     kind: read
@@ -857,20 +869,16 @@ operations:
 # will then hold the line.
 # ============================================================================
 known_gaps:
-  GAP-01:
-    summary: getStepFunctionExecution has no group or ownership check
-    detail: >
-      Any authenticated user can fetch execution details for any execution ARN
-      the resolver's IAM role can describe. Mitigated by the role being scoped
-      to the stack's state machines; still exposes processing metadata to
-      Reviewers/Viewers.
   GAP-02:
     summary: queryKnowledgeBase has no group check
     detail: >
       Any authenticated user (including Reviewer) can query the knowledge base
       when one is configured.
-# GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted risks — a
-# regression now hard-FAILS the gate):
+# GAP-01, GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted
+# risks — a regression now hard-FAILS the gate):
+#   GAP-01 getStepFunctionExecution now requires the caller-supplied
+#          executionArn to name this deployment's state machine, and enforces
+#          allowedConfigVersions against the execution input's config_version.
 #   GAP-03 listAvailableAgents / sendAgentChatMessage now carry a server-side
 #          _caller_in_groups check (Admin/Author/Viewer; Reviewer excluded)
 #          matching their schema directives — the exclusion is no longer

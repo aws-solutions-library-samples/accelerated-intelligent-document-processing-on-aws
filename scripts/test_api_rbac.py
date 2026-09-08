@@ -392,13 +392,79 @@ def classify(role, allowed, status, et, in_band):
 # ----------------------------------------------------------------------------
 # Matrices
 # ----------------------------------------------------------------------------
-def run_group_matrix(ops, ctx, tokens, results):
+def resolve_execution_arn(ctx, tokens):
+    """Find a real workflow execution ARN in this stack, or None.
+
+    getStepFunctionExecution now requires the caller-supplied ARN to name this
+    deployment's state machine, so the placeholder ARN in the expectations file is
+    refused for every role. That refusal is correct behaviour, but it is
+    indistinguishable from an RBAC denial, and would read as "unexpected denial"
+    for an ANY-auth op. Driving the op with a real ARN keeps the matrix cell
+    meaningful: an authenticated caller of any role should be able to read an
+    execution of this stack.
+    """
+    st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
+    if st != 200:
+        return None
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return None
+    # The op result may be wrapped by the dispatcher; accept either shape.
+    items = payload.get("listDocuments") or payload.get("data") or payload
+    if isinstance(items, dict):
+        items = items.get("Items") or items.get("items") or []
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        arn = item.get("WorkflowExecutionArn")
+        if isinstance(arn, str) and ":execution:" in arn:
+            return arn
+    return None
+
+
+def apply_dynamic_args(ops, ctx, tokens):
+    """Replace placeholder args that a real object reference is needed for.
+
+    Returns the set of fields to skip because no such object exists in this
+    stack (an empty deployment), so the run reports SKIP rather than a
+    misleading failure.
+    """
+    skip = set()
+    if "getStepFunctionExecution" in ops:
+        arn = resolve_execution_arn(ctx, tokens)
+        if arn:
+            ops["getStepFunctionExecution"]["args"] = {"executionArn": arn}
+            print(f"  getStepFunctionExecution: using live execution {arn}")
+        else:
+            skip.add("getStepFunctionExecution")
+            print(
+                "  getStepFunctionExecution: no processed document found — "
+                "cannot supply a live execution ARN"
+            )
+    return skip
+
+
+def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
     print("\n=== GROUP MATRIX (unauth + 4 roles) ===")
     for field, o in ops.items():
         groups = o["groups"]
         allowed = (
             ANY if groups == "ANY" else IAM if groups == "IAM_ONLY" else set(groups)
         )
+        if field in skip_fields:
+            _record(
+                results,
+                field,
+                "*",
+                "SKIP",
+                True,
+                "no live object reference available to drive this op",
+            )
+            print(f"  {field:28s} SKIP (no live object reference)")
+            continue
         # Skip conditional ops when the feature is off (404 for everyone).
         # NOTE: the probe below EXECUTES the op as Admin, so a `conditional`
         # op must never also be side-effectful/skip_allowed — probe with a
@@ -839,7 +905,8 @@ def main():
             tokens["userB"] = ub
 
         results = []
-        run_group_matrix(ops, ctx, tokens, results)
+        skip_fields = apply_dynamic_args(ops, ctx, tokens)
+        run_group_matrix(ops, ctx, tokens, results, skip_fields)
         run_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
 

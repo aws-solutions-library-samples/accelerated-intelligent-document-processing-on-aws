@@ -2844,7 +2844,8 @@ Resources:
         WorkingBucketName: !Ref WorkingBucket
         DiscoveryBucketName: !Ref DiscoveryBucket
         MultiDocDiscoveryStateMachineArn: !Ref MultiDocDiscoveryStateMachine
-        
+        StateMachineArn: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+
         # SQS Queues
         DocumentQueueUrl: !Ref DocumentQueue
         DiscoveryQueueUrl: !Ref DiscoveryQueue
