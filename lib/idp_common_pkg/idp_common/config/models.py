@@ -776,7 +776,11 @@ class ConfidenceConfig(BaseModel):
             "inference: a per-shard second pass for advanced/agentic extraction, or "
             "the standalone Assessment step for simple extraction); 'integrated' "
             "(the extraction inference emits each value's confidence in one pass, "
-            "saving a model call — the standalone step is bypassed)."
+            "saving a model call — the standalone step is bypassed). In simple "
+            "extraction a class that declares list fields is automatically scored "
+            "in a separate pass even when 'integrated' is selected, because simple "
+            "+ integrated loses list rows silently; a "
+            "confidence_integrated_downgraded issue records it."
         ),
     )
     enabled: bool = Field(

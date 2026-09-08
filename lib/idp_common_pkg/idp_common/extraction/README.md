@@ -940,6 +940,16 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 
 ## 1S-TopK: single-stage extraction + confidence (Simple mode)
 
+> **Not used on list-bearing classes.** When the section's class declares a top-level
+> array property, `ExtractionService._simple_integrated_list_downgrade` switches the
+> section to the plain extraction prompt and emits no inline confidence, so the
+> standalone Assessment step (which skips only when `explainability_info` is already
+> present) scores it separately. Benchmarked reason: Simple + integrated returned
+> 1–10 of 100 rows on 4/4 repeats and an 800-row list came back absent, all reporting
+> COMPLETED (config-guidance §2.1). A `confidence_integrated_downgraded` issue and
+> `metadata.confidence_mode_effective` record the downgrade. Runtime per-section
+> decision, not a config rejection: a stored config must keep loading.
+
 When `extraction.mode: simple` and `extraction.confidence.mode: integrated`, the
 service produces the extracted values **and** their per-field confidence in a
 **single LLM call** — there is no separate Assessment pass, halving the number of

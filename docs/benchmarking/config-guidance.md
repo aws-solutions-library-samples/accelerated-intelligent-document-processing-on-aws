@@ -351,8 +351,9 @@ accuracy:**
 
 1. **🚨 Integrated confidence + simple extraction returns empty/partial lists (P0).** At the
    default extraction model this is a total loss of list data with no error and perfect
-   scalar accuracy. Refuse the `integrated` + simple combination for list-bearing schemas
-   (route to a separate confidence pass or sharded advanced), or fail the section loudly.
+   scalar accuracy. **Addressed:** a Simple-mode section whose class declares list fields is
+   now routed to a separate confidence pass automatically, with a
+   `confidence_integrated_downgraded` ProcessingIssue; scalar-only classes are unchanged.
 2. **Silent truncation needs detection, not just documentation (P0).** Both failure modes
    above return `COMPLETED`. Compare extracted row count against schema `minItems` (or an
    OCR-derived row estimate) and surface a completeness warning/metric. Note the recovered
