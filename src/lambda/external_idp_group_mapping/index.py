@@ -219,12 +219,22 @@ def handler(event, context):
 
     logger.info(f"User {username} group sync complete. Groups: {target_groups}")
 
-    # Inject groups into the token so they are available immediately on first sign-in
+    # Inject groups into the token so they are available immediately on first
+    # sign-in, rather than only from the second token onwards.
+    #
+    # BOTH response keys are emitted because the key Cognito reads depends on the
+    # pool's PreTokenGenerationConfig.LambdaVersion, and the two names are not
+    # interchangeable:
+    #   V1_0        -> claimsOverrideDetails
+    #   V2_0/V3_0   -> claimsAndScopeOverrideDetails
+    # The template registers the trigger with `PreTokenGeneration:`, which is
+    # V1_0, so emitting only the V2 name meant the override was silently ignored
+    # and a first sign-in produced a token with no group claim. Cognito ignores a
+    # key it does not recognise, so writing both is safe and survives a later
+    # move to V2_0/V3_0.
+    group_override = {"groupOverrideDetails": {"groupsToOverride": list(target_groups)}}
     event.setdefault("response", {})
-    event["response"]["claimsAndScopeOverrideDetails"] = {
-        "groupOverrideDetails": {
-            "groupsToOverride": list(target_groups)
-        }
-    }
+    event["response"]["claimsOverrideDetails"] = group_override
+    event["response"]["claimsAndScopeOverrideDetails"] = group_override
 
     return event

@@ -85,6 +85,25 @@ def _admin_get_user_response(provider_name=IDP_NAME):
     return {"Username": "testuser", "UserAttributes": attributes}
 
 
+
+def _override_groups(result):
+    """The groups the handler asked Cognito to put in the token, or None.
+
+    Reads whichever response key is present. The two names are not
+    interchangeable — Cognito reads `claimsOverrideDetails` for a V1_0 trigger and
+    `claimsAndScopeOverrideDetails` for V2_0/V3_0 — so the handler emits both and
+    tests assert on both (see TestTokenOverrideShape).
+    """
+    response = result.get("response") or {}
+    details = (
+        response.get("claimsOverrideDetails")
+        or response.get("claimsAndScopeOverrideDetails")
+    )
+    if not details:
+        return None
+    return (details.get("groupOverrideDetails") or {}).get("groupsToOverride")
+
+
 # ============================================================
 # Group parsing tests
 # ============================================================
@@ -613,6 +632,60 @@ class TestDeployedInlineCopy:
         """The trusted provider must come from EXTERNAL_IDP_NAME, not be hardcoded."""
         assert self.mod.EXTERNAL_IDP_NAME == IDP_NAME
 
+
+
+# ============================================================
+# Token override response shape
+# ============================================================
+
+@pytest.mark.unit
+class TestTokenOverrideShape:
+    """Cognito reads a different response key per trigger event version.
+
+    `claimsOverrideDetails` is the V1_0 name; `claimsAndScopeOverrideDetails` is
+    V2_0/V3_0. template.yaml registers the trigger with `PreTokenGeneration:`,
+    which is V1_0, so emitting only the V2 name meant Cognito silently ignored the
+    override and a first sign-in produced a token with no group claim — confirmed
+    against a deployed pool. The handler emits both; these tests keep it that way.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load_module(self):
+        with patch.dict(os.environ, ENV_VARS, clear=False):
+            import importlib
+            import index as mod
+            importlib.reload(mod)
+            self.handler = mod.handler
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            mod.cognito = self.mock_cognito
+
+    def test_emits_the_v1_key(self):
+        result = self.handler(_make_event(idp_groups="IdP-Admins"), None)
+        details = result["response"]["claimsOverrideDetails"]
+        assert details["groupOverrideDetails"]["groupsToOverride"] == ["Admin"]
+
+    def test_emits_the_v2_key(self):
+        result = self.handler(_make_event(idp_groups="IdP-Admins"), None)
+        details = result["response"]["claimsAndScopeOverrideDetails"]
+        assert details["groupOverrideDetails"]["groupsToOverride"] == ["Admin"]
+
+    def test_both_keys_agree(self):
+        result = self.handler(_make_event(idp_groups="IdP-Admins, IdP-Viewers"), None)
+        v1 = result["response"]["claimsOverrideDetails"]
+        v2 = result["response"]["claimsAndScopeOverrideDetails"]
+        assert v1 == v2
+
+    def test_neither_key_appears_when_nothing_is_granted(self):
+        """A skipped sign-in must not emit an empty override under either name."""
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response(
+            provider_name=None
+        )
+        result = self.handler(_make_event(idp_groups="IdP-Admins"), None)
+        response = result.get("response") or {}
+        assert "claimsOverrideDetails" not in response
+        assert "claimsAndScopeOverrideDetails" not in response
 
 # ============================================================
 # Module-level GROUP_MAPPING tests

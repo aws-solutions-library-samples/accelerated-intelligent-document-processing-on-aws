@@ -144,10 +144,28 @@ def groups_of(cog, pool_id: str, username: str) -> set[str]:
 
 
 def override_of(payload: dict) -> list[str] | None:
-    details = (payload.get("response") or {}).get("claimsAndScopeOverrideDetails")
+    """Groups the handler asked Cognito to put in the token, under either key.
+
+    Cognito reads `claimsOverrideDetails` for a V1_0 trigger and
+    `claimsAndScopeOverrideDetails` for V2_0/V3_0, so the handler emits both.
+    """
+    response = payload.get("response") or {}
+    details = (
+        response.get("claimsOverrideDetails")
+        or response.get("claimsAndScopeOverrideDetails")
+    )
     if not details:
         return None
     return (details.get("groupOverrideDetails") or {}).get("groupsToOverride")
+
+
+def override_keys(payload: dict) -> set[str]:
+    response = payload.get("response") or {}
+    return {
+        k
+        for k in ("claimsOverrideDetails", "claimsAndScopeOverrideDetails")
+        if k in response
+    }
 
 
 def main() -> int:
@@ -327,6 +345,12 @@ def main() -> int:
         fed_groups = groups_of(cog, pool_id, FED_USER)
         check(fed_groups == {"Admin"}, f"Admin granted (groups={fed_groups})")
         check(override_of(out) == ["Admin"], f"token override = {override_of(out)}")
+        check(
+            override_keys(out)
+            == {"claimsOverrideDetails", "claimsAndScopeOverrideDetails"},
+            "override emitted under BOTH response keys (V1_0 and V2_0/V3_0) — "
+            f"got {sorted(override_keys(out))}",
+        )
 
         print("\n--- 3. federated user rewrites the attribute, then REFRESHES ---")
         cog.admin_remove_user_from_group(UserPoolId=pool_id, Username=FED_USER, GroupName="Admin")
