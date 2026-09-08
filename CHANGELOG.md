@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The evaluation report view now shows everything the markdown report does.** It had shipped as a summary with a click-through to the markdown for the detail. Added: the document-split figures and a section split analysis, every recorded metric with its rating, excluded sections with reasons, per-section scores and metrics, the not-evaluated state with how-to-fix steps, Confidence and Weight columns, nested field comparisons as expandable rows, structured display of list and object values instead of one flattened JSON string, and a scoring explainer. A parity test reads the section headings out of the markdown generator and fails if the two drift. See [docs/web-ui.md](docs/web-ui.md#evaluation-report).
+
 ## [0.6.7]
 
 ### Added
