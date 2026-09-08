@@ -118,10 +118,95 @@ Resources:
         - Key: Purpose
           Value: ApplicationBuilder
 
+  # Credentials for the CI failure-analysis agent (scripts/sdlc/failure_agent.py).
+  #
+  # The BuilderRole above carries PowerUserAccess + broad IAM write, so an agent
+  # inheriting CodeBuild's ambient credentials would already be able to mutate
+  # anything in the account. This account is SHARED with concurrent pipelines
+  # (the stale-resource reapers in codebuild_deployment.py are age-gated
+  # specifically so "a concurrent pipeline's in-flight buckets are never
+  # touched"), so an agent with write access could destroy another running
+  # pipeline's stack. This role is the actual boundary: the agent assumes it and
+  # therefore cannot mutate the account no matter what it decides to try.
+  #
+  # ReadOnlyAccess alone is NOT sufficient — bedrock:InvokeModel is not a
+  # read-only action, so without the Bedrock statement below the agent can read
+  # the evidence but cannot think about it.
+  FailureAgentReadOnlyRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Explicit name required so the pipeline can pass a predictable ARN to the agent"
+    Properties:
+      RoleName: !Sub '${BuilderRoleName}-failure-agent'
+      Description: 'Read-only role for the CI failure-analysis agent. Cannot mutate the shared CI account.'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Trusting the account root + an ArnLike condition, rather than naming
+          # principals directly, because the caller is the PIPELINE stack's
+          # CodeBuild role — `genaiic-sdlc-codepipeline-CodeBuildRole-<suffix>`,
+          # a CloudFormation-generated name this stack cannot reference without
+          # a cross-stack parameter that would break on every pipeline replace.
+          # An earlier version named BuilderRole.Arn only; the pipeline does NOT
+          # run as that role, so every assume failed and the agent silently fell
+          # back to ambient PowerUser credentials — the exact posture this role
+          # exists to prevent. Account-root trust alone grants nothing: the
+          # caller still needs its own sts:AssumeRole grant (added to STSAccess
+          # in codepipeline-s3.yml), so this is two-key, not open.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action:
+              - 'sts:AssumeRole'
+            Condition:
+              ArnLike:
+                'aws:PrincipalArn':
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BuilderRoleName}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*CodeBuildRole*'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
+      Policies:
+        - PolicyName: BedrockInferenceForAgent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Per the Claude Code on Amazon Bedrock docs: invoke + the two
+              # inference-profile reads. GetInferenceProfile is not strictly
+              # required (Claude Code retries with the alternate request shape
+              # without it) but granting it avoids an extra round-trip per model.
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:GetInferenceProfile
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:inference-profile/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:application-inference-profile/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*:*:foundation-model/*'
+              # Belt and braces on top of ReadOnlyAccess: block the two paths
+              # that would let a read-only session climb back out — assuming a
+              # more privileged role, or reading a credential it could reuse.
+              - Sid: DenyPrivilegeEscalationAndSecretReads
+                Effect: Deny
+                Action:
+                  - sts:AssumeRole
+                  - secretsmanager:GetSecretValue
+                Resource: '*'
+
 Outputs:
   LimitedIAMPolicyArn:
     Description: 'ARN of the created Limited IAM policy'
     Value: !Ref LimitedIAMAccessPolicy
+
+  FailureAgentReadOnlyRoleArn:
+    Description: 'ARN of the read-only role the CI failure-analysis agent assumes (set as IDP_FAILURE_AGENT_ROLE_ARN)'
+    Value: !GetAtt FailureAgentReadOnlyRole.Arn
 
   BuilderRoleArn:
     Description: 'ARN of the created Builder Role'
