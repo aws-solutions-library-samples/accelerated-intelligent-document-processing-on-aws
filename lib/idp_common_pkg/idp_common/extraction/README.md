@@ -1059,13 +1059,26 @@ Treat this as an A/B knob: the benchmark `restatement` suite runs both arms on o
 stack with identical code, and the gate is **completeness**, not token count — a
 token saving that loses list rows is a loss.
 
-Two things that make the payoff smaller and larger than it looks:
+**What the payoff actually is — smaller than it looks in both directions:**
 
 - **Smaller in dollars.** All three copies sit inside the prompt-cache prefix, so on
   a repeated-class workload they are cache reads at roughly a tenth of input price.
-- **Larger in capability.** ~2,600 redundant tokens per request consume the same
-  context budget that `context_buffer` / `shard_token_budget` manage, so removing
-  them can keep a document out of an extra shard.
+- **It does NOT reduce shard count.** An earlier version of this section claimed the
+  reclaimed tokens free "the same context budget that `context_buffer` /
+  `shard_token_budget` manage", so removing them could keep a document out of an
+  extra shard. **That is not how the code works.** `plan_shards` budgets against
+  **OCR page text only**, and `compute_sizing_plan` derives that budget as
+  `max_input × (1 - context_buffer)` minus an output reserve and an image reserve —
+  prompt overhead (this restatement, the prose schema, the toolSpec, few-shot
+  examples) is subtracted nowhere. It is absorbed by the blanket `context_buffer`
+  (default 0.30), so the reclaimed tokens come off a safety reserve that is already
+  ~60,000 tokens on a 200K-window model and were already unused. `max_pages_per_shard`
+  (default 5) closes shards on page count regardless.
+
+  So with the current design this is a per-request token reduction with **no**
+  shard-count, cost or latency mechanism behind it. Making the shard budget subtract
+  measured prompt overhead — which would make this knob pay for itself — is
+  [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
 
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.

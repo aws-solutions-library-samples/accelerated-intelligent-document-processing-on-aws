@@ -77,9 +77,10 @@ three version numbers rather than retyping it:
   The bucket name embeds the region (`aws-ml-blog-<region>`) *and* the host does
   too — a copy-paste that updates one but not the other is the classic error
   here.
-- The file's prior blocks end with a line containing **two trailing spaces**,
-  then a blank line, before the next `## [x.y.z]`. Preserve that so the diff
-  shows only the new release.
+- **No trailing whitespace** on any line — the `eu-central-1` line ends at the
+  closing backtick — then exactly one blank line before the next `## [x.y.z]`.
+  (No block in the file carries the trailing spaces an earlier version of this
+  skill claimed; don't add them.)
 - The filename is `idp-main_<version>.yaml` — the version-pinned artifact, not
   the `idp-main.yaml` floating pointer used by the README launch buttons.
 
@@ -90,6 +91,8 @@ three version numbers rather than retyping it:
 grep -n "^## \[" CHANGELOG.md | head -5
 # All three URLs carry the new version, and no stale one slipped in
 grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md
+# No trailing whitespace crept into the new block
+grep -nE " +$" CHANGELOG.md
 # Only the top of the file moved
 git diff --stat CHANGELOG.md
 git diff CHANGELOG.md | grep -E "^@@" | tail -3
