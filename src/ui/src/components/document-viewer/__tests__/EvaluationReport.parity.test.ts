@@ -90,6 +90,12 @@ describe('evaluation report parity with the markdown generator', () => {
     expect(COMPONENT).toMatch(/const StructuredValue/);
   });
 
+  it('rates a never-evaluated section as not scored, not as poor', () => {
+    // The markdown prints "❌ Failed" beside those zeros; painting them red "Poor"
+    // contradicts the alert above them that calls them placeholders.
+    expect(COMPONENT).toMatch(/notScored=\{failure !== null\}/);
+  });
+
   it('keeps the markdown one click away', () => {
     expect(COMPONENT).toMatch(/Markdown report/);
   });

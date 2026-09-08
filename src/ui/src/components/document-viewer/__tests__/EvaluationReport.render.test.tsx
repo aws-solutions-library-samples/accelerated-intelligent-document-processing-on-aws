@@ -186,6 +186,20 @@ describe('EvaluationReport mounted against a packet payload', () => {
     expect(screen.getByText('All metrics')).toBeInTheDocument();
     expect(screen.getByText('How scores are computed')).toBeInTheDocument();
     expect(screen.getByText('Evaluation took 12.3 s.')).toBeInTheDocument();
+    // One vocabulary for a band, wherever it appears: the tile says what the tables say.
+    expect(screen.queryByText('good')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Good').length).toBeGreaterThan(0);
+  });
+
+  it('sorts the attribute table when a sortable header is clicked', async () => {
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    await waitFor(() => expect(screen.getByText('Boxes')).toBeInTheDocument());
+    const table = screen.getByText('Boxes').closest('table')!;
+    const names = () => [...table.querySelectorAll('tbody tr')].map((tr) => tr.querySelectorAll('td')[1]?.textContent?.trim());
+    expect(names()).toEqual(['Employer', 'Boxes']);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Score/ })[0]);
+    // Ascending by score: Boxes (0.5) before Employer (1).
+    await waitFor(() => expect(names()).toEqual(['Boxes', 'Employer']));
   });
 
   it('puts the section score and the not-scored state in the section headers', async () => {
@@ -218,8 +232,8 @@ describe('EvaluationReport mounted against a packet payload', () => {
   it('opens the split analysis by default when a section went wrong, with the unmatched prediction', async () => {
     render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
 
-    // Two: the expected section nothing matched, and the predicted section that matched nothing.
-    await waitFor(() => expect(screen.getByText(/2 unmatched/)).toBeInTheDocument());
+    // Expected sections only; the stray prediction is reported separately.
+    await waitFor(() => expect(screen.getByText(/1 of 2 unmatched · 1 unexpected/)).toBeInTheDocument());
     expect(screen.getByText('section 2 had no prediction')).toBeInTheDocument();
     expect(screen.getByText(/Graded packet score 75\.0%/)).toBeInTheDocument();
     // The predicted "form" section that matched nothing is listed too.

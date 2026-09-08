@@ -223,7 +223,7 @@ export const metricRows = (metrics: Record<string, unknown> | null | undefined):
       rows.push({ metric, value: null, band: null });
       continue;
     }
-    if (typeof raw !== 'number' || typeof raw === 'boolean' || !Number.isFinite(raw)) continue;
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
     rows.push({ metric, value: raw, band: rateMetric(metric, raw) });
   }
   return rows;

@@ -33,6 +33,7 @@ import {
   Table,
   Toggle,
 } from '@cloudscape-design/components';
+import type { TableProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { generateClient } from '../../api/client-shim';
@@ -73,6 +74,9 @@ interface EvaluationReportProps {
   documentId: string;
 }
 
+/** The markdown's rating words, used everywhere a band is shown so one number never has two labels. */
+const BAND_LABEL: Record<string, string> = { good: 'Excellent', fair: 'Good', poor: 'Fair', bad: 'Poor', unknown: 'Not rated' };
+
 /** One of the headline figures. Omitted entirely when there is no value. */
 const ScoreTile = ({ label, score, hint }: { label: string; score: number | null; hint?: string }): React.JSX.Element | null => {
   if (score === null) return null;
@@ -84,7 +88,7 @@ const ScoreTile = ({ label, score, hint }: { label: string; score: number | null
         <Box variant="h1" padding={{ top: 'n' }}>
           {formatScore(score)}
         </Box>
-        <Badge color={BAND_COLOUR[band]}>{band}</Badge>
+        <Badge color={BAND_COLOUR[band]}>{BAND_LABEL[band]}</Badge>
       </SpaceBetween>
       {hint && (
         <Box variant="small" color="text-body-secondary">
@@ -166,10 +170,17 @@ const bandIndicator: Record<string, 'success' | 'info' | 'warning' | 'error'> = 
   bad: 'error',
 };
 
-const BAND_LABEL: Record<string, string> = { good: 'Excellent', fair: 'Good', poor: 'Fair', bad: 'Poor' };
-
 /** The markdown's "| Metric | Value | Rating |" table. */
-const MetricTable = ({ rows, emptyText }: { rows: MetricRow[]; emptyText: string }): React.JSX.Element => (
+const MetricTable = ({
+  rows,
+  emptyText,
+  notScored = false,
+}: {
+  rows: MetricRow[];
+  emptyText: string;
+  /** The section was never evaluated: its zeros are placeholders, not measurements. */
+  notScored?: boolean;
+}): React.JSX.Element => (
   <Table
     variant="embedded"
     contentDensity="compact"
@@ -182,7 +193,9 @@ const MetricTable = ({ rows, emptyText }: { rows: MetricRow[]; emptyText: string
         id: 'rating',
         header: 'Rating',
         cell: (row: MetricRow) =>
-          row.value === null ? (
+          notScored ? (
+            <StatusIndicator type="stopped">Not scored</StatusIndicator>
+          ) : row.value === null ? (
             <StatusIndicator type="stopped">Excluded</StatusIndicator>
           ) : row.band ? (
             <StatusIndicator type={bandIndicator[row.band]}>{BAND_LABEL[row.band]}</StatusIndicator>
@@ -211,11 +224,13 @@ const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.El
             id: 'section',
             header: 'Section match',
             cell: (row: SplitRow) => verdict(row.sectionMatched, row.sectionMatched ? 'Matched' : 'No match'),
+            width: 150,
           },
           {
             id: 'order',
             header: 'Page order',
-            cell: (row: SplitRow) => verdict(row.orderMatched, row.orderMatched ? 'In order' : 'Differs'),
+            cell: (row: SplitRow) => verdict(row.orderMatched, row.orderMatched ? 'Ordered' : 'Reordered'),
+            width: 150,
           },
           { id: 'id', header: 'Expected section', cell: (row: SplitRow) => row.sectionId ?? '—' },
           { id: 'expectedClass', header: 'Expected class', cell: (row: SplitRow) => row.expectedClass ?? '—' },
@@ -230,7 +245,7 @@ const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.El
                     pairing with a differently-numbered section, or a prediction
                     nothing expected. */}
                 {row.matchedSectionId && row.matchedSectionId !== row.sectionId && (
-                  <Box variant="small" color="text-body-secondary">
+                  <Box variant="small" color="text-body-secondary" display="block">
                     predicted section {row.matchedSectionId}
                   </Box>
                 )}
@@ -273,14 +288,29 @@ const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.El
  */
 const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element => {
   const [expanded, setExpanded] = useState<ComparisonRow[]>([]);
+  // Sorting is applied here rather than through useCollection: the rows carry
+  // their children, and only the top level should reorder.
+  const [sorting, setSorting] = useState<TableProps.SortingState<ComparisonRow> | null>(null);
+  const sortedRows = useMemo(() => {
+    if (!sorting?.sortingColumn.sortingField) return rows;
+    const field = sorting.sortingColumn.sortingField as 'name' | 'score';
+    const dir = sorting.isDescending ? -1 : 1;
+    return [...rows].sort((a, b) => {
+      if (field === 'score') return ((a.score ?? -1) - (b.score ?? -1)) * dir;
+      return a.name.localeCompare(b.name) * dir;
+    });
+  }, [rows, sorting]);
   return (
     <Table
       resizableColumns
       variant="embedded"
       contentDensity="compact"
       wrapLines
-      items={rows}
+      items={sortedRows}
       trackBy="key"
+      sortingColumn={sorting?.sortingColumn}
+      sortingDescending={sorting?.isDescending}
+      onSortingChange={({ detail }) => setSorting(detail)}
       ariaLabels={{
         expandButtonLabel: (row: ComparisonRow) => `Show nested comparisons for ${row.name}`,
         collapseButtonLabel: (row: ComparisonRow) => `Hide nested comparisons for ${row.name}`,
@@ -297,7 +327,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
           id: 'matched',
           header: '',
           cell: (row: ComparisonRow) => <Badge color={row.matched ? 'green' : 'red'}>{row.matched ? 'match' : 'mismatch'}</Badge>,
-          width: 120,
+          width: 150,
         },
         {
           id: 'name',
@@ -313,7 +343,6 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
             </span>
           ),
           sortingField: 'name',
-          minWidth: 215,
         },
         { id: 'expected', header: 'Expected', cell: (row: ComparisonRow) => <ValueCell value={row.expected} /> },
         { id: 'actual', header: 'Extracted', cell: (row: ComparisonRow) => <ValueCell value={row.actual} /> },
@@ -321,7 +350,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
           id: 'confidence',
           header: 'Confidence',
           cell: (row: ComparisonRow) =>
-            row.confidence === null
+            row.confidence === null || (describeValue(row.expected).kind === 'empty' && describeValue(row.actual).kind === 'empty')
               ? '—'
               : `${row.confidence.toFixed(2)}${row.confidenceThreshold !== null ? ` / ${row.confidenceThreshold.toFixed(2)}` : ''}`,
           width: 125,
@@ -344,7 +373,6 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
         {
           id: 'method',
           header: 'Method',
-          minWidth: 170,
           cell: (row: ComparisonRow) =>
             row.reason ? (
               // The reason is why this scored as it did — the single most useful
@@ -422,6 +450,11 @@ const HowScoresAreComputed = ({ hasSplit }: { hasSplit: boolean }): React.JSX.El
           </li>
           <li>
             <b>Split accuracy (with order)</b> — the same, and the page order must match exactly. The strictest of the three.
+          </li>
+          <li>
+            <b>Graded packet score</b> — a softer companion to the exact-match figures: <b>clustering</b> (V-measure and Rand index) rewards
+            pages grouped together correctly even when a section is not reproduced exactly, and <b>ordering</b> rewards pages kept in
+            sequence within their section.
           </li>
         </ul>
       </>
@@ -577,8 +610,10 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
             label="Extraction accuracy"
             score={summary.extractionScore}
             hint={
+              // Both figures, as the markdown summary has: the count is the plain
+              // match rate and can differ from the weighted score by several points.
               summary.extractionIsWeighted
-                ? 'Weighted by field importance'
+                ? `Weighted by field importance · ${summary.matchedAttributes} of ${summary.totalAttributes} fields matched`
                 : `${summary.matchedAttributes} of ${summary.totalAttributes} fields matched`
             }
           />
@@ -657,7 +692,16 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
           <ExpandableSection
             variant="container"
             headerText="Section split analysis"
-            headerCounter={`(${split.rows.filter((r) => !r.sectionMatched).length} unmatched)`}
+            headerCounter={(() => {
+              // Expected sections only: a stray prediction is not an unmatched expectation,
+              // and counting both read "3 unmatched" on a one-section packet.
+              const expected = split.rows.filter((r) => r.sectionId !== null);
+              const unmatched = expected.filter((r) => !r.sectionMatched).length;
+              const unexpected = split.rows.length - expected.length;
+              const parts = [`${unmatched} of ${expected.length} unmatched`];
+              if (unexpected > 0) parts.push(`${unexpected} unexpected`);
+              return `(${parts.join(' · ')})`;
+            })()}
             defaultExpanded={split.rows.some((r) => !r.sectionMatched || !r.orderMatched)}
           >
             <SplitAnalysisSection split={split} />
@@ -746,7 +790,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
                 )}
                 {sectionMetrics.length > 0 && (
                   <ExpandableSection headerText="Section metrics" variant="footer">
-                    <MetricTable rows={sectionMetrics} emptyText="No metrics" />
+                    <MetricTable rows={sectionMetrics} emptyText="No metrics" notScored={failure !== null} />
                   </ExpandableSection>
                 )}
                 {failure ? null : onlyProblems && attributes.length === 0 ? (
