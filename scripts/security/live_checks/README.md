@@ -14,11 +14,15 @@ inconsistently. They are not part of CI (they create IAM roles and Cognito
 pools); run them when changing the code they cover.
 
 ```bash
-AWS_PROFILE=default python3 scripts/security/live_checks/verify_idp_group_mapping.py
-AWS_PROFILE=default python3 scripts/security/live_checks/verify_execution_scope.py
+make live-auth-checks            # both of the self-contained checks below
 ```
 
 Both exit non-zero if any check fails, and print a `PASS`/`FAIL` line per check.
+
+A third check, `verify_federated_signin.py`, needs a deployed stack and the
+throwaway OIDC provider in `oidc_provider/`; run it with
+`make verify-idp-federation`. The full sequence, and the Cognito behaviours these
+exist to pin down, are in `.claude/skills/live-auth-checks.md`.
 
 ## `verify_idp_group_mapping.py`
 
@@ -81,3 +85,30 @@ so operational failures and authorization denials stay distinguishable.
 Denials are asserted to surface as a Lambda `FunctionError` of type
 `PermissionError` with a message beginning `Unauthorized`, which is what
 `http_api_dispatcher` maps to HTTP 403.
+
+## `verify_federated_signin.py` + `oidc_provider/`
+
+The only check that exercises a **real federated sign-in**, so Cognito performs
+OIDC discovery, the authorization-code exchange, JWT signature validation against
+a real JWKS, its own `AttributeMapping` write, and then fires the pre-token
+trigger. The `AttributeMapping` write is what an explicit `WriteAttributes` can
+break, and it fails the *sign-in* rather than the deploy.
+
+`oidc_provider/` is a real minimal OIDC provider on API Gateway + Lambda:
+discovery document, `/authorize`, `/token` issuing RS256-signed id_tokens,
+`/userinfo`, and JWKS. RS256 signing uses only the standard library (PKCS#1 v1.5
+padding plus a modular exponentiation), so the Lambda needs no dependencies and no
+layer. `/authorize` approves without authenticating anyone — that is what makes
+the flow scriptable with plain HTTP and no browser, and also why it is fit only
+for verification. `deploy.py up` stands it up and prints the `ExternalIdP*` stack
+parameters to deploy against it; `deploy.py down` removes it and its secret.
+
+Scenarios: a first federated sign-in maps the asserted group and the **first**
+token carries it; a refresh after the attribute is rewritten out of band changes
+nothing; the deployed trigger removes a stale role on a demoted claim; a
+non-mapped attribute is not writable by an end user while the mapped one is; and a
+native user who wrote `custom:idp_groups` themselves gains no role.
+
+Expect one `NOTE` about pre-existing behaviour — a second federated sign-in by the
+same user fails because the pool's `email` attribute is `Mutable: false`. See the
+skill for what that means and why it is not your change.

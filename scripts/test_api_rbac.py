@@ -402,24 +402,34 @@ def resolve_execution_arn(ctx, tokens):
     for an ANY-auth op. Driving the op with a real ARN keeps the matrix cell
     meaningful: an authenticated caller of any role should be able to read an
     execution of this stack.
+
+    Two hops, because `listDocuments` is served from a GSI whose projection does
+    NOT include WorkflowExecutionArn — it returns `{"Documents": [...]}` with
+    summary fields only, so the ARN has to come from `getDocument`.
     """
     st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
     if st != 200:
         return None
     try:
-        payload = json.loads(body)
+        documents = (json.loads(body) or {}).get("Documents") or []
     except Exception:
         return None
-    # The op result may be wrapped by the dispatcher; accept either shape.
-    items = payload.get("listDocuments") or payload.get("data") or payload
-    if isinstance(items, dict):
-        items = items.get("Items") or items.get("items") or []
-    if not isinstance(items, list):
-        return None
-    for item in items:
-        if not isinstance(item, dict):
+    for summary in documents:
+        if not isinstance(summary, dict):
             continue
-        arn = item.get("WorkflowExecutionArn")
+        object_key = summary.get("ObjectKey")
+        if not object_key:
+            continue
+        st, doc_body = call_body(
+            ctx["api_base"], "getDocument", {"ObjectKey": object_key}, tokens["Admin"]
+        )
+        if st != 200:
+            continue
+        try:
+            doc = json.loads(doc_body) or {}
+        except Exception:
+            continue
+        arn = doc.get("WorkflowExecutionArn")
         if isinstance(arn, str) and ":execution:" in arn:
             return arn
     return None
@@ -437,6 +447,7 @@ def apply_dynamic_args(ops, ctx, tokens):
         arn = resolve_execution_arn(ctx, tokens)
         if arn:
             ops["getStepFunctionExecution"]["args"] = {"executionArn": arn}
+            ctx["live_execution_arn"] = arn
             print(f"  getStepFunctionExecution: using live execution {arn}")
         else:
             skip.add("getStepFunctionExecution")
@@ -931,6 +942,14 @@ def main():
         )
         sec.run_input_validation_suite(
             ctx, call, _record, results, tokens, strict=strict_input
+        )
+        sec.run_caller_supplied_ref_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            live_execution_arn=ctx.get("live_execution_arn"),
+            call=call,
         )
         sec.run_tls_suite(ctx, _record, results)
         _run_token_lifecycle(ctx, results)
