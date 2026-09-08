@@ -48,7 +48,7 @@ _IDP_EXTENSION_PREFIX = "x-aws-idp-"
 # context window. The full count is always reported in the summary line.
 _MAX_FEEDBACK_ERRORS = 25
 
-_REQUIRED_PROP_RE = re.compile(r"'([^']+)' is a required property")
+_REQUIRED_PROP_RE = re.compile(r"""(['"])(.+?)\1 is a required property""")
 
 
 @dataclass
@@ -58,6 +58,10 @@ class FieldError:
     path: str
     message: str
     validator: str
+    # The top-level property this error belongs to (None for unattributable root
+    # errors). Lets callers reason PER FIELD rather than by total count — see
+    # ``escalation_outcome`` for why the distinction matters.
+    field: str | None = None
 
     def __str__(self) -> str:
         loc = self.path or "(root)"
@@ -92,12 +96,25 @@ class ValidationReport:
             )
         return "\n".join(lines)
 
+    def errors_by_field(self) -> dict[str | None, int]:
+        """Error count per top-level field (``None`` bucket for root errors)."""
+        counts: dict[str | None, int] = {}
+        for err in self.errors:
+            counts[err.field] = counts.get(err.field, 0) + 1
+        return counts
+
     def to_metadata(self) -> dict[str, Any]:
         """Compact, JSON-serializable summary for the extraction metadata block."""
         return {
             "valid": self.valid,
             "error_count": len(self.errors),
             "failed_fields": sorted(self.failed_top_level_fields),
+            "errors_by_field": {
+                (k if k is not None else "(root)"): v
+                for k, v in sorted(
+                    self.errors_by_field().items(), key=lambda kv: str(kv[0])
+                )
+            },
             "errors": [
                 {"path": e.path, "validator": e.validator, "message": e.message}
                 for e in self.errors[:_MAX_FEEDBACK_ERRORS]
@@ -204,7 +221,7 @@ def _top_level_field(error: jsonschema.ValidationError) -> str | None:
     if error.validator == "required":
         match = _REQUIRED_PROP_RE.search(error.message)
         if match:
-            return match.group(1)
+            return match.group(2)
     return None
 
 
@@ -252,14 +269,15 @@ def validate_extraction(
     errors: list[FieldError] = []
     failed_fields: set[str] = set()
     for err in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path)):
+        top = _top_level_field(err)
         errors.append(
             FieldError(
                 path=_format_path(err.absolute_path),
                 message=err.message,
                 validator=str(err.validator),
+                field=top,
             )
         )
-        top = _top_level_field(err)
         if top is not None:
             failed_fields.add(top)
 
@@ -341,6 +359,182 @@ def build_empty_list_feedback(
         "see. Do not drop the row, and do not drop the whole list.\n"
         "  - Keep every field you have already extracted correctly."
     )
+
+
+def _populated_leaves(value: Any) -> int:
+    """Count leaves that carry a value. null, empty/blank strings, empty
+    containers and all-null rows contribute nothing."""
+    if value is None:
+        return 0
+    if isinstance(value, dict):
+        return sum(_populated_leaves(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_populated_leaves(v) for v in value)
+    if isinstance(value, str) and not value.strip():
+        return 0
+    return 1
+
+
+def _populated_rows(value: Any) -> int | None:
+    """Rows of a list that carry at least one value; None if not a list."""
+    if not isinstance(value, list):
+        return None
+    return sum(1 for row in value if _populated_leaves(row) > 0)
+
+
+# Constraints whose ONLY fix is removing something. A row-count decrease on a
+# field that violated one of these is a correction, not a truncation.
+_REMOVAL_FIXES = frozenset({"maxItems", "uniqueItems"})
+
+
+def _field_errors(report: ValidationReport | None, field: str) -> list[FieldError]:
+    if report is None:
+        return []
+    return [e for e in report.errors if e.field == field]
+
+
+def escalation_data_loss(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport | None = None,
+) -> list[str]:
+    """Top-level fields where the escalated result carries LESS data than the
+    original without that reduction being the fix. Empty when nothing was lost.
+
+    Measured on populated leaves (values that are not null/blank), not on raw
+    row counts: a row of all-null placeholders has nothing to lose, and a list
+    that keeps its row count but empties every row has lost everything.
+
+    A reduction is allowed only when the original value was PRESENT BUT WRONG,
+    because then removing it can be the correction — retracting a hallucinated
+    enum value to null, dropping duplicate rows for ``uniqueItems``, trimming to
+    ``maxItems``, removing a forbidden extra key. A ``required`` error means data
+    was MISSING, and removing more data never fixes that, so a field whose only
+    errors were ``required`` may not shrink at all. That is what keeps the two
+    #791 hazards rejected: 100 abstained cells (100 ``required`` errors) may not
+    become a nulled list, and a 100-row list may not come back as 50 clean rows.
+
+    Only top-level fields are compared, but leaf counting recurses, so a nested
+    list destroyed inside a group registers as loss on the group.
+    """
+    lost: list[str] = []
+    for name, before_val in (original or {}).items():
+        after_val = (escalated or {}).get(name)
+        leaves_before, leaves_after = (
+            _populated_leaves(before_val),
+            _populated_leaves(after_val),
+        )
+        if leaves_before == 0:
+            continue
+        errs = _field_errors(before, name)
+        non_required = [e for e in errs if e.validator != "required"]
+        rows_before, rows_after = (
+            _populated_rows(before_val),
+            _populated_rows(after_val),
+        )
+        if rows_before is not None and rows_before > 0:
+            rows_after = rows_after if rows_after is not None else 0
+            if rows_after < rows_before and not any(
+                e.validator in _REMOVAL_FIXES for e in errs
+            ):
+                lost.append(
+                    f"{name}: had {rows_before} populated rows, escalation returned "
+                    f"{rows_after}" + ("" if rows_after else " (null/absent)")
+                )
+                continue
+        if leaves_after < leaves_before and not non_required:
+            what = "null" if after_val is None else f"{leaves_after} populated value(s)"
+            lost.append(
+                f"{name}: had {leaves_before} populated value(s), escalation returned {what}"
+            )
+    return lost
+
+
+def _root_error_kinds(report: ValidationReport) -> set[tuple[str, str]]:
+    return {(e.validator, e.message) for e in report.errors if e.field is None}
+
+
+def select_escalated_fields(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport,
+    after: ValidationReport,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Merge an escalation result FIELD BY FIELD, accepting each top-level field
+    on its own merits. Returns ``(merged, decisions)`` where ``decisions`` maps
+    every field the escalation changed to ``"accepted: ..."`` or ``"rejected: ..."``.
+
+    Per field, in order: rejected if it lost data (``escalation_data_loss``);
+    rejected if it has more errors than before; accepted if it has fewer errors
+    or is now clean; otherwise rejected as no visible change. Accepting per field
+    means one field the stronger model got wrong cannot sink four it got right.
+
+    Root-level errors (``field is None``) are not attributable, so any root error
+    KIND that is new in the escalated result rejects the whole result — a count
+    comparison would let a new ``additionalProperties`` violation hide behind an
+    unparseable ``required`` one that went away.
+    """
+    original = original or {}
+    escalated = escalated or {}
+    decisions: dict[str, str] = {}
+    merged = dict(original)
+
+    new_root = _root_error_kinds(after) - _root_error_kinds(before)
+    if new_root:
+        kinds = ", ".join(sorted({v for v, _ in new_root}))
+        for name in escalated:
+            if escalated.get(name) != original.get(name):
+                decisions[name] = f"rejected: escalation introduced root-level {kinds}"
+        return merged, decisions
+
+    lost = {
+        entry.split(":", 1)[0]: entry
+        for entry in escalation_data_loss(original, escalated, before)
+    }
+    before_counts, after_counts = before.errors_by_field(), after.errors_by_field()
+    for name in escalated:
+        if escalated.get(name) == original.get(name):
+            continue
+        if name in lost:
+            decisions[name] = "rejected: " + lost[name]
+            continue
+        b, a = before_counts.get(name, 0), after_counts.get(name, 0)
+        if a > b:
+            decisions[name] = f"rejected: errors rose {b} -> {a}"
+        elif a < b:
+            decisions[name] = f"accepted: errors fell {b} -> {a}"
+            merged[name] = escalated[name]
+        elif a == 0 and b == 0:
+            # Valid before and after; the escalation changed a clean field. That is
+            # neither a fix nor a loss — keep the original, the known-good value.
+            decisions[name] = "rejected: field was already valid"
+        else:
+            decisions[name] = f"rejected: still {a} error(s), nothing visibly fixed"
+    return merged, decisions
+
+
+def escalation_outcome(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport,
+    after: ValidationReport,
+) -> tuple[bool, str]:
+    """Whole-result verdict over :func:`select_escalated_fields`.
+
+    ``keep`` is True when at least one field was accepted. The reason lists every
+    per-field decision, so a rejected escalation is explainable. Replaces
+    ``esc.valid or len(esc.errors) < len(full.errors)``, which compared TOTAL
+    error counts: per-row errors scale with the row count while a whole-field
+    error is always one, so totals favoured the result with LESS data — a nulled
+    100-row list "improved" from 100 errors to 1 and was kept (#791).
+    """
+    merged, decisions = select_escalated_fields(original, escalated, before, after)
+    accepted = sorted(k for k, v in decisions.items() if v.startswith("accepted"))
+    rejected = sorted(k for k, v in decisions.items() if v.startswith("rejected"))
+    if not decisions:
+        return False, "escalation changed nothing"
+    parts = [f"{k} {decisions[k]}" for k in accepted + rejected]
+    return bool(accepted), "; ".join(parts)
 
 
 def build_subset_schema(

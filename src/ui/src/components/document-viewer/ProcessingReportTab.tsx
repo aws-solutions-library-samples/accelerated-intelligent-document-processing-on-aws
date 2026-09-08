@@ -80,6 +80,8 @@ interface ValidationInfo {
   escalation_scope?: string;
   escalation_fields?: string[];
   resolved_by_escalation?: boolean;
+  escalation_kept?: boolean;
+  escalation_decision?: string;
 }
 
 interface PopulationCheck {
@@ -601,11 +603,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                   {validation.escalation_scope === 'field-subset'
                     ? `fields: ${(validation.escalation_fields || []).join(', ') || 'none'}`
                     : 'full section'}
-                  ) — {validation.resolved_by_escalation ? 'resolved' : 'still invalid'}
+                  ) —{' '}
+                  {validation.escalation_kept === false
+                    ? 'rejected, original kept'
+                    : validation.resolved_by_escalation
+                      ? 'resolved'
+                      : 'still invalid'}
                   {validation.initial_error_count !== undefined
                     ? `; errors ${validation.initial_error_count} → ${validation.error_count || 0}`
                     : ''}
-                  .
+                  .{validation.escalation_decision ? ` ${validation.escalation_decision}.` : ''}
                 </Box>
               )}
               {!validation.valid && validation.errors && validation.errors.length > 0 && (
