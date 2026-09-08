@@ -1509,7 +1509,8 @@ How it works:
      into the result. Scoping to the failing fields keeps the schema, prompt and
      output small — far cheaper and faster than re-running the whole section —
      and the fields that already validated are preserved untouched. The merged
-     result is kept only if it is valid or has strictly fewer violations; then
+     result is merged field by field — an escalated field replaces the original only
+   if it lost no populated data and has fewer violations than before (#791); then
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
