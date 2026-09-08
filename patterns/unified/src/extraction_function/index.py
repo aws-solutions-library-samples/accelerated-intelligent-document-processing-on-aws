@@ -12,6 +12,7 @@ from idp_common import metrics, get_config, extraction
 from idp_common.models import Document, Section, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 patch_all()
@@ -326,6 +327,10 @@ def handler(event, context):
         deadline_epoch = time.time() + (context.get_remaining_time_in_millis() / 1000.0)
     except Exception:  # noqa: BLE001 - context may be absent in local/test runs
         deadline_epoch = None
+    # Publish it for the Bedrock retry decorators too, so no backoff ladder can
+    # schedule a sleep that outlives this invocation (the agent retry was capped at
+    # 1800s inside a 900s function). No-op when the deadline is unknown.
+    set_lambda_deadline_epoch(deadline_epoch)
 
     # Process the section in our focused document
     t0 = time.time()
