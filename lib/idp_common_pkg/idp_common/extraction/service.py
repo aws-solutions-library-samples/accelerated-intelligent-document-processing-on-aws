@@ -68,7 +68,10 @@ try:
         set_confidence_data,
         structured_output,
     )
-    from idp_common.schema import create_pydantic_model_from_json_schema
+    from idp_common.schema import (
+        create_pydantic_model_from_json_schema,
+        relax_required_for_transport,
+    )
 
     AGENTIC_AVAILABLE = True
 except ImportError:
@@ -3747,8 +3750,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         try:
             if scope == "field-subset":
+                # Relaxed for the same reason as the primary transport model
+                # (#782), and it matters MORE here: escalation is now triggered BY
+                # an abstention, so a strict subset model would send a stronger
+                # model in to fabricate the value the weaker one honestly declined
+                # to invent — a more convincing wrong answer. Re-extraction should
+                # try harder to READ the value and still be able to abstain.
                 subset_model = create_pydantic_model_from_json_schema(
-                    schema=subset_schema,
+                    schema=relax_required_for_transport(subset_schema),
                     class_label=f"{section_info.class_label}__escalation",
                     clean_schema=False,
                 )
@@ -4059,9 +4068,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 },
             )
 
-            # Create dynamic Pydantic model from JSON Schema
+            # TRANSPORT model: required-ness relaxed so the agent can return null
+            # for a value it genuinely cannot read. A required property renders as a
+            # non-nullable Pydantic field, which leaves a fabricated 0.0 as the only
+            # accepted answer for an unreadable number (#782). Required-ness is still
+            # enforced — by ``extraction.validation`` against the real schema, which
+            # treats null as absent and so reports it as a 'required' violation, feeds
+            # it back for the agent's self-correction round, and can escalate it.
             dynamic_model = create_pydantic_model_from_json_schema(
-                schema=self._class_schema,
+                schema=relax_required_for_transport(self._class_schema),
                 class_label=section_info.class_label,
                 clean_schema=False,  # Already cleaned
             )
@@ -5993,8 +6008,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
 
+        # TRANSPORT model — required-ness relaxed so the agent can abstain with null;
+        # still enforced by extraction.validation against the real schema (#782).
         dynamic_model = create_pydantic_model_from_json_schema(
-            schema=self._class_schema,
+            schema=relax_required_for_transport(self._class_schema),
             class_label=section_info.class_label,
             clean_schema=False,
         )

@@ -94,6 +94,23 @@ class ValidationReport:
                 f"  ... and {len(self.errors) - _MAX_FEEDBACK_ERRORS} more "
                 "violation(s) of the same kind."
             )
+        # A missing/null REQUIRED field is the one violation an agent may be unable
+        # to fix honestly. Saying only "fix each one" invites it to invent a
+        # plausible value — a fabricated 0.0 for an unreadable number is
+        # schema-valid, silent and indistinguishable from a real zero (#782). So
+        # ask for the value only if it is actually readable, and make abstention an
+        # explicit, sanctioned outcome. Left null, it is reported as a validation
+        # failure and can be escalated, which is the honest result.
+        if any(err.validator == "required" for err in self.errors):
+            lines.append(
+                "  NOTE on missing required fields: supply the value ONLY if you can "
+                "actually read it in the document. If a value is genuinely absent, "
+                "unreadable or illegible, leave it null — do NOT guess, and do NOT "
+                "substitute a placeholder such as 0, false or an empty string. A null "
+                "is recorded and reported as missing, which is correct; an invented "
+                "value is indistinguishable from a real one and is worse than no "
+                "answer."
+            )
         return "\n".join(lines)
 
     def errors_by_field(self) -> dict[str | None, int]:

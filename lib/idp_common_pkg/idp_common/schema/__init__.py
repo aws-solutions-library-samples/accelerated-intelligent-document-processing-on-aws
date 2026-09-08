@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time typing only
         PydanticModelGenerationError,
         clean_schema_for_generation,
         create_pydantic_model_from_json_schema,
+        relax_required_for_transport,
         validate_json_schema_for_pydantic,
     )
 
@@ -36,6 +37,7 @@ _LAZY_EXPORTS = {
     "PydanticModelGenerationError": "idp_common.schema.pydantic_generator",
     "clean_schema_for_generation": "idp_common.schema.pydantic_generator",
     "create_pydantic_model_from_json_schema": "idp_common.schema.pydantic_generator",
+    "relax_required_for_transport": "idp_common.schema.pydantic_generator",
     "validate_json_schema_for_pydantic": "idp_common.schema.pydantic_generator",
 }
 
@@ -44,6 +46,7 @@ __all__ = [
     "PydanticModelGenerationError",
     "clean_schema_for_generation",
     "create_pydantic_model_from_json_schema",
+    "relax_required_for_transport",
     "validate_json_schema_for_pydantic",
 ]
 

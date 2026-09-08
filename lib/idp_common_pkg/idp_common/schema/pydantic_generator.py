@@ -76,6 +76,50 @@ def clean_schema_for_generation(
     return cleaned
 
 
+def relax_required_for_transport(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``schema`` with every ``required`` list removed.
+
+    This exists so an extraction agent can say **"I could not read this"**.
+
+    ``datamodel-code-generator`` renders a required property as a non-nullable
+    field with no default (``Amount: float``), so on the agentic path a genuinely
+    unreadable cell has no representable answer: of ``null``, ``""``, omitting the
+    key and ``0.0``, only ``0.0`` validates. The retry loop then tells the agent its
+    answer failed validation and asks it to fix it, so the contract actively pushes
+    a *fabricated* zero — schema-valid, silent, and indistinguishable from a real
+    zero. That also contradicts the table-tool prompt, which explicitly asks for
+    ``null`` on an unreadable cell.
+
+    The fix is to relax required-ness **only for the transport model** handed to
+    the agent, and keep enforcing it where it can be reported instead of fabricated:
+    ``extraction.validation`` already validates the result against the real schema,
+    already treats a null property as absent, and therefore already reports a
+    required-but-null field as ``'X' is a required property`` — which is exactly
+    what simple mode does today, and what feeds the agent's self-correction round
+    and the escalation path. Nothing is weakened; the check moves from a place where
+    it forces a fabricated value to a place where it produces a visible one.
+
+    Removal is recursive and covers ``properties``, array ``items``, ``$defs`` and
+    every combinator, so nested objects and list rows relax too — list rows are the
+    common case, since that is where per-cell abstention matters.
+
+    Precedent: #438 does the same relaxation for the evaluation path, where a
+    correctly-null required field used to crash scoring.
+    """
+    if isinstance(schema, dict):
+        return {
+            key: relax_required_for_transport(value)
+            for key, value in schema.items()
+            # Only drop the ARRAY form. ``required`` is also a legal property NAME
+            # (a class may declare a field called "required"), and in that position
+            # the value is a schema, not a list of names.
+            if not (key == "required" and isinstance(value, list))
+        }
+    if isinstance(schema, list):
+        return [relax_required_for_transport(item) for item in schema]
+    return schema
+
+
 def _normalize_class_name(name: str) -> str:
     """
     Normalize a class name to PascalCase.
