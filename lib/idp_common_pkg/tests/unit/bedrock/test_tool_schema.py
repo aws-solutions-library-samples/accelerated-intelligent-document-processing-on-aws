@@ -225,9 +225,89 @@ class TestRecursion:
         }
         clean, _ = sanitize_tool_schema(schema)
         assert find_invalid_property_names(clean) == []
-        # $defs DEFINITION names are not property keys, so $refs keep resolving.
+        # An already-valid definition name is left exactly as it is.
         assert "Txn" in clean["$defs"]
         assert clean["properties"]["Transactions"]["items"]["$ref"] == "#/$defs/Txn"
+
+    def test_a_spaced_defs_name_is_renamed_and_every_ref_rewritten(self):
+        """#783: Sonnet 5 does not resolve ``#/$defs/Account Holder Address`` and
+        returns the group as a JSON string, making every section schema-invalid.
+        Bedrock's validation rule never covered definition names, which is why they
+        were left alone; the model still has to RESOLVE the pointer."""
+        addr = {"type": "object", "properties": {"City": {"type": "string"}}}
+        schema = {
+            "type": "object",
+            "$defs": {"Account Holder Address": addr},
+            "properties": {
+                "Account Holder Address": {"$ref": "#/$defs/Account Holder Address"},
+                # Percent-encoded spelling of the same pointer must resolve too.
+                "Mailing": {"$ref": "#/$defs/Account%20Holder%20Address"},
+                "Prior": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/Account Holder Address"},
+                },
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        assert list(clean["$defs"]) == ["Account_Holder_Address"]
+        assert name_map.defs_renamed == {
+            "Account_Holder_Address": "Account Holder Address"
+        }
+        props = clean["properties"]
+        assert (
+            props["Account_Holder_Address"]["$ref"] == "#/$defs/Account_Holder_Address"
+        )
+        assert props["Mailing"]["$ref"] == "#/$defs/Account_Holder_Address"
+        assert props["Prior"]["items"]["$ref"] == "#/$defs/Account_Holder_Address"
+        assert find_invalid_property_names(clean) == []
+        # The whole wire schema is free of anything that must resolve by luck.
+        import json
+
+        assert " " not in json.dumps(clean["$defs"], separators=(",", ":"))
+        assert all(
+            " " not in p["$ref"] for p in (props["Mailing"], props["Prior"]["items"])
+        )
+
+    def test_a_ref_gains_the_definitions_type_as_belt_and_braces(self):
+        """Arm C of the #783 repro: an explicit ``type: object`` beside the ``$ref``
+        made Sonnet 5 return an object even for the pointer it mis-resolved."""
+        schema = {
+            "type": "object",
+            "$defs": {"Addr": {"type": "object", "properties": {"City": {}}}},
+            "properties": {
+                "Home": {"$ref": "#/$defs/Addr"},
+                "Typed": {"type": "object", "$ref": "#/$defs/Addr"},
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        assert clean["properties"]["Home"]["type"] == "object"
+        assert clean["properties"]["Typed"]["type"] == "object"  # untouched
+        # Only `type` is copied — never the definition's body.
+        assert "properties" not in clean["properties"]["Home"]
+
+    def test_defs_renaming_resolves_collisions_and_restores_inner_names(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                # Both reduce to "Total__USD_"; the second must get a suffix.
+                "Total (USD)": {"type": "object", "properties": {"Amt Due": {}}},
+                "Total_(USD)": {"type": "object", "properties": {"X": {}}},
+            },
+            "properties": {
+                "T": {"$ref": "#/$defs/Total (USD)"},
+                "U": {"$ref": "#/$defs/Total_(USD)"},
+            },
+        }
+        clean, name_map = sanitize_tool_schema(schema)
+        assert set(clean["$defs"]) == {"Total__USD_", "Total__USD__2"}
+        assert clean["properties"]["T"]["$ref"] == "#/$defs/Total__USD_"
+        assert clean["properties"]["U"]["$ref"] == "#/$defs/Total__USD__2"
+        # Inner property names inside the renamed definition still restore.
+        assert "$defs/Total__USD_" in name_map.children
+
+    def test_invalid_defs_names_are_reported_by_the_diagnostic(self):
+        schema = {"type": "object", "$defs": {"Acct Holder": {"type": "object"}}}
+        assert find_invalid_property_names(schema) == ["$defs/Acct Holder"]
 
     def test_anyof_branch_names_are_sanitized(self):
         schema = {

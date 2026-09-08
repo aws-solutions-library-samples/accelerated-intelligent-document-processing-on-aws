@@ -462,6 +462,18 @@ merging two fields into one, and truncates to 64 characters.
 > moment a class is wrapped in a list, and the day AWS makes the check recursive.
 > The `ValueError` reports nested offenders for the same reason.
 
+> **`$defs` definition names are renamed too, and every `$ref` follows.** Bedrock's
+> rule never covered definition names, so they were originally left alone — but
+> the *model* has to resolve the pointer that names them, and Claude Sonnet 5 does
+> not resolve `#/$defs/Account Holder Address`: it emitted the group as a
+> serialized JSON **string**, making every section with a spaced group name
+> schema-invalid while Sonnet 4.6 resolved it fine (#783). Definitions are now
+> sanitized with the same rules, local `$ref` pointers (raw or percent-encoded)
+> are rewritten to match, the rename is recorded in `name_map.defs_renamed`, and
+> each `$ref` node without a `type` gains the definition's `type` as belt and
+> braces — the explicit `"type": "object"` made Sonnet 5 return an object even
+> for the pointer it otherwise mis-resolved.
+
 ### Capability gate
 
 Every model that reaches the Converse API supports tool use, so there is no

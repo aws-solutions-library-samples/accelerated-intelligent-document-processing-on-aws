@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
 import logging
 import math
 import re
@@ -84,6 +85,12 @@ CODE_DATE_NORMALIZED = "date_normalized"
 CODE_EMPTY_STRING_TO_NULL = "empty_string_to_null"
 
 CODE_TYPE_FAMILY_MISMATCH = "type_family_mismatch"
+# A string that is itself valid JSON for the container the schema asks for. The
+# one cross-family repair that is lossless and unambiguous: the string parses to
+# exactly the object/array the field wants. Seen live: Sonnet 5 under forced tool
+# use returned a group as a serialized string when a `$ref` pointer contained a
+# space (#783). The pointer is fixed at source; this is the belt-and-braces.
+CODE_JSON_PARSED_FROM_STRING = "json_parsed_from_string"
 CODE_UNPARSEABLE_NUMBER = "unparseable_number"
 CODE_UNPARSEABLE_BOOLEAN = "unparseable_boolean"
 CODE_UNPARSEABLE_DATE = "unparseable_date"
@@ -913,6 +920,24 @@ def _render_types(types: set[str]) -> str:
 # -----------------------------------------------------------------------------
 
 
+def _parse_json_container(
+    raw: str, types: set[str]
+) -> dict[str, Any] | list[Any] | None:
+    """``raw`` parsed as JSON if it is a container of a kind ``types`` allows."""
+    text = raw.strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict) and "object" in types:
+        return parsed
+    if isinstance(parsed, list) and "array" in types:
+        return parsed
+    return None
+
+
 def _walk(
     value: Any,
     node: Any,
@@ -937,6 +962,31 @@ def _walk(
 
     resolved = _effective_node(node, root) if isinstance(node, dict) else {}
     types = _types_of(resolved)
+
+    # A serialized container in a container-typed field. Rule 2 (never cross type
+    # families) exists because splitting a string into an array or reading an object
+    # as text CHANGES the data; parsing a string that IS the JSON of the requested
+    # container does not — it is the same value in a different encoding. Only when
+    # the schema does not also allow a string there, so a genuine string field that
+    # happens to hold JSON text is left alone.
+    if (
+        isinstance(value, str)
+        and types
+        and types <= {"object", "array", "null"}
+        and (types & {"object", "array"})
+    ):
+        parsed = _parse_json_container(value, types)
+        if parsed is not None:
+            kind = "object" if isinstance(parsed, dict) else "array"
+            ctx.coerced(
+                path,
+                value,
+                parsed,
+                CODE_JSON_PARSED_FROM_STRING,
+                f"string held the JSON of the {kind} this field expects; parsed "
+                "losslessly",
+            )
+            value = parsed
 
     if isinstance(value, dict):
         if types and "object" not in types:

@@ -129,6 +129,10 @@ class NameMap:
     children: Dict[str, "NameMap"] = field(default_factory=dict)
     #: the map for ``items`` (arrays), when the item schema has properties
     items: Optional["NameMap"] = None
+    #: sanitized ``$defs`` definition name -> original definition name (root only).
+    #: Not consulted by ``restore_names`` — a definition name never appears in a
+    #: model response — but recorded so the rename is auditable.
+    defs_renamed: Dict[str, str] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         """True when nothing anywhere beneath this level was renamed."""
@@ -214,17 +218,29 @@ def _sanitize_node(node: Any) -> Tuple[Any, NameMap]:
 
         if key == "$defs" and isinstance(value, dict):
             # $defs entries are referenced from elsewhere, so their internal
-            # property names must be sanitized too. The DEFINITION names
-            # themselves are not property keys, so they are left alone and $ref
-            # strings keep resolving.
+            # property names must be sanitized too — AND so must the DEFINITION
+            # names. Bedrock's validation rule does not cover them, which is why
+            # they were originally left alone, but the model has to RESOLVE the
+            # `$ref` pointer that names them, and Claude Sonnet 5 does not resolve
+            # `#/$defs/Account Holder Address`: it emits the group as a serialized
+            # JSON string instead of an object, making every section carrying a
+            # spaced group name schema-invalid (#783; Sonnet 4.6 resolved it, which
+            # is why this went unnoticed). Renaming the definitions and rewriting
+            # every `$ref` that targets them (see ``_rewrite_refs``) keeps the wire
+            # schema free of anything that has to resolve by luck.
             clean_defs = {}
+            taken_defs: set[str] = set()
             for def_name, def_schema in value.items():
+                safe_def = sanitize_property_name(str(def_name), taken_defs)
+                taken_defs.add(safe_def)
+                if safe_def != def_name:
+                    name_map.defs_renamed[safe_def] = str(def_name)
                 def_clean, def_map = _sanitize_node(def_schema)
-                clean_defs[def_name] = def_clean
+                clean_defs[safe_def] = def_clean
                 if not def_map.is_empty():
-                    # Keyed by definition name; merged in at use sites by
-                    # restore_names via the $ref-resolved child map below.
-                    name_map.children[f"$defs/{def_name}"] = def_map
+                    # Keyed by the (sanitized) definition name; merged in at use
+                    # sites by restore_names via the $ref-resolved child map below.
+                    name_map.children[f"$defs/{safe_def}"] = def_map
             out[key] = clean_defs
             continue
 
@@ -252,12 +268,94 @@ def sanitize_tool_schema(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], NameMa
     # Strip first: metadata keys can never be property names, and removing them
     # before the rename walk keeps the two concerns separate.
     clean, name_map = _sanitize_node(strip_non_wire_keywords(schema))
-    if name_map.renamed or name_map.children or name_map.items:
+    if name_map.defs_renamed:
+        clean = _rewrite_refs(clean, name_map.defs_renamed)
+    clean = _annotate_ref_types(clean)
+    if name_map.renamed or name_map.children or name_map.items or name_map.defs_renamed:
         logger.debug(
-            "Sanitized %d top-level tool-schema property name(s) for Bedrock",
+            "Sanitized %d top-level tool-schema property name(s) and %d $defs "
+            "definition name(s) for Bedrock",
             len(name_map.renamed),
+            len(name_map.defs_renamed),
         )
     return clean, name_map
+
+
+_LOCAL_DEF_REF = re.compile(r"^#/\$defs/(.+)$")
+
+
+def _ref_target(ref: Any) -> Optional[str]:
+    """The definition name a local ``#/$defs/...`` pointer targets, URI-decoded.
+
+    Returns None for anything that is not a local definition reference. A pointer
+    may carry the name raw (``#/$defs/Account Holder Address``) or percent-encoded
+    (``#/$defs/Account%20Holder%20Address``); both denote the same definition.
+    """
+    if not isinstance(ref, str):
+        return None
+    m = _LOCAL_DEF_REF.match(ref)
+    if not m:
+        return None
+    from urllib.parse import unquote
+
+    # JSON-pointer escapes (~1 -> /, ~0 -> ~) after percent-decoding, per RFC 6901.
+    return unquote(m.group(1)).replace("~1", "/").replace("~0", "~")
+
+
+def _rewrite_refs(node: Any, defs_renamed: Dict[str, str]) -> Any:
+    """Point every local ``$ref`` at the sanitized definition name."""
+    if isinstance(node, list):
+        return [_rewrite_refs(v, defs_renamed) for v in node]
+    if not isinstance(node, dict):
+        return node
+    reverse = {orig: safe for safe, orig in defs_renamed.items()}
+    out: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "$ref":
+            target = _ref_target(value)
+            out[key] = f"#/$defs/{reverse[target]}" if target in reverse else value
+        elif key == "properties" and isinstance(value, dict):
+            # Property names are user data and may be spelled "$ref"; only the
+            # VALUES are subschemas.
+            out[key] = {k: _rewrite_refs(v, defs_renamed) for k, v in value.items()}
+        else:
+            out[key] = _rewrite_refs(value, defs_renamed)
+    return out
+
+
+def _annotate_ref_types(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy a referenced definition's ``type`` onto each ``$ref`` node lacking one.
+
+    Belt-and-braces for the same #783 failure: with an explicit ``"type":
+    "object"`` beside the ``$ref``, Sonnet 5 returned an object even for the
+    pointer it otherwise mis-resolved. Legal in JSON Schema 2020-12 (``$ref`` is
+    an ordinary keyword that combines with its siblings), redundant when the
+    pointer resolves, and cheap. Only ``type`` is copied — never the definition's
+    properties — so the schema stays as small as before.
+    """
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict) or not defs:
+        return schema
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_walk(v) for v in node]
+        if not isinstance(node, dict):
+            return node
+        out: Dict[str, Any] = {}
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                out[key] = {k: _walk(v) for k, v in value.items()}
+            else:
+                out[key] = _walk(value)
+        target = _ref_target(node.get("$ref"))
+        if target is not None and "type" not in node:
+            definition = defs.get(target)
+            if isinstance(definition, dict) and isinstance(definition.get("type"), str):
+                out["type"] = definition["type"]
+        return out
+
+    return _walk(schema)
 
 
 def restore_names(value: Any, name_map: Optional[NameMap]) -> Any:
@@ -322,7 +420,13 @@ def find_invalid_property_names(schema: Any, _path: str = "") -> List[str]:
             bad += find_invalid_property_names(value, f"{_path}[]")
         elif key == "$defs" and isinstance(value, dict):
             for def_name, def_schema in value.items():
-                bad += find_invalid_property_names(def_schema, f"$defs/{def_name}")
+                here = f"$defs/{def_name}"
+                # A definition name is not a property key, and Bedrock accepts
+                # any spelling — but a `$ref` pointer containing a space is not
+                # resolved by Sonnet 5 (#783), so it is reported here too.
+                if not is_valid_tool_property_name(str(def_name)):
+                    bad.append(here)
+                bad += find_invalid_property_names(def_schema, here)
         elif key in _SUBSCHEMA_LISTS and isinstance(value, list):
             for branch in value:
                 bad += find_invalid_property_names(branch, _path)
