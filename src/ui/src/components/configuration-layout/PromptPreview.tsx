@@ -852,7 +852,12 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
       const integrated = mode === 'integrated';
       let task = String(extraction.task_prompt ?? '');
       if (integrated) {
-        task = String(extraction.task_prompt_extraction_with_confidence ?? '') || String(extraction.task_prompt ?? '');
+        // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
+        // the 1S-TopK template, Advanced the tool-based one. (Previously the
+        // preview showed the Advanced template for both.)
+        const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
+        const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
+        task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
         if (needsBbox) task = appendBboxBlock(task, bboxBlock);
       }
       return {
@@ -1020,8 +1025,16 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             : ` No bounding-box block (Geometry mode: ${geomMode}).`;
           let msg: string;
           if (selectedStep === 'extraction') {
-            msg =
-              mode === 'integrated'
+            const props = (selectedClass?.properties as Record<string, unknown> | undefined) || {};
+            const classDeclaresList = Object.values(props).some(
+              (s) => s && typeof s === 'object' && (s as Record<string, unknown>).type === 'array',
+            );
+            const classHasPromptOverride = Boolean(selectedClass?.['x-aws-idp-extraction-task-prompt']);
+            const downgraded =
+              mode === 'integrated' && extractionModeOf(formValues) === 'simple' && classDeclaresList && !classHasPromptOverride;
+            msg = downgraded
+              ? `Integrated confidence is configured, but this class declares list fields, so for its sections the backend sends the PLAIN extraction prompt (extraction.task_prompt) and scores confidence in a separate pass — Simple + integrated loses list rows silently. The template shown here is the 1S-TopK one that scalar-only classes get.${bbox}`
+              : mode === 'integrated'
                 ? `Integrated confidence mode: showing the extraction + confidence template (one inference emits value and confidence).${bbox}`
                 : 'Showing the extraction-only template (confidence scoring is off or runs separately).';
           } else if (!enabled) {

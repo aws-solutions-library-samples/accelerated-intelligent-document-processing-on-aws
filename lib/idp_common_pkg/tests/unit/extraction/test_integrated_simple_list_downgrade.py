@@ -144,7 +144,7 @@ def test_downgrade_emits_a_processing_issue_and_metadata():
     codes = [i.code for i in issues]
     assert "confidence_integrated_downgraded" in codes
     issue = next(i for i in issues if i.code == "confidence_integrated_downgraded")
-    assert issue.severity == "warning"
+    assert issue.severity == "info"  # a routing decision, not a shortfall
     assert issue.section_id == "s1"
     assert issue.details["effective_confidence_mode"] == "separate"
     assert issue.details["list_fields"] == ["Transactions"]
@@ -163,6 +163,100 @@ def test_no_issue_when_nothing_was_downgraded():
         section_id="s1",
     )
     assert all(i.code != "confidence_integrated_downgraded" for i in issues)
+
+
+@pytest.mark.unit
+def test_a_per_class_task_prompt_override_opts_the_class_out():
+    """The downgrade works by swapping the prompt. When the user controls the prompt
+    it must not half-apply (gate False but the TopK prompt sent would leave raw
+    {G1,P1} candidate objects in the result), so the class stays integrated."""
+    schema = dict(
+        LIST_SCHEMA, **{"x-aws-idp-extraction-task-prompt": "MY TOPK {DOCUMENT_TEXT}"}
+    )
+    svc = _svc(mode="simple", confidence="integrated", schema=schema)
+    assert svc._simple_integrated_list_downgrade() is None
+    assert svc._integrated_assessment_enabled() is True
+
+
+@pytest.mark.unit
+def test_the_content_builder_sends_the_plain_prompt_for_a_downgraded_class():
+    """Pins the call site that matters (the simple path's prompt selection), which
+    the direct prompt_assembly test could not: drop `integrated_ok=` there and the
+    1S-TopK prompt goes out while the split stays off."""
+    from unittest.mock import patch
+
+    from idp_common.extraction import prompt_assembly
+
+    svc = _svc(mode="simple", confidence="integrated", schema=LIST_SCHEMA)
+    svc._document_text = "doc text"
+    seen = {}
+    real = prompt_assembly.select_extraction_task_prompt
+
+    def spy(cfg, **kw):
+        seen.update(kw)
+        return real(cfg, **kw)
+
+    with patch.object(prompt_assembly, "select_extraction_task_prompt", spy):
+        try:
+            content, _system = svc._build_extraction_content(
+                document=None, page_images=[]
+            )  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 - the selection happens before any use of document
+            content = None
+    assert seen.get("integrated_ok") is False
+    if content is not None:
+        assert any("PLAIN" in str(block) for block in content)
+        assert not any("TOPK" in str(block) for block in content)
+
+
+@pytest.mark.unit
+def test_processing_flow_reports_the_effective_mode():
+    svc = _svc(mode="simple", confidence="integrated", schema=LIST_SCHEMA)
+    svc._simple_integrated_list_downgrade()
+    flow = svc._build_processing_flow(
+        metadata={}, extraction_method="simple", tool_used=False
+    )
+    conf = next(s for s in flow["stages"] if s["key"] == "confidence")
+    assert "separate pass" in conf["detail"] and "downgraded" in conf["detail"]
+    assert "inline" not in conf["detail"]
+
+
+@pytest.mark.unit
+def test_config_validation_warns_about_the_affected_classes_without_failing():
+    from idp_common.config.merge_utils import validate_config
+
+    config = {
+        "extraction": {
+            "mode": "simple",
+            "agentic": {"enabled": False},
+            "confidence": {"mode": "integrated"},
+        },
+        "classes": [
+            {
+                "$id": "BankStatement",
+                "type": "object",
+                "properties": LIST_SCHEMA["properties"],
+            },
+            {
+                "$id": "IdCard",
+                "type": "object",
+                "properties": SCALAR_SCHEMA["properties"],
+            },
+            {
+                "$id": "Custom",
+                "type": "object",
+                "properties": LIST_SCHEMA["properties"],
+                "x-aws-idp-extraction-task-prompt": "x",
+            },
+        ],
+    }
+    result = validate_config(config)
+    hits = [w for w in result.get("warnings", []) if "declare list fields" in w]
+    assert len(hits) == 1 and "BankStatement" in hits[0]
+    assert "IdCard" not in hits[0] and "Custom" not in hits[0]
+    assert result["valid"] is True or not any(
+        "integrated" in e for e in result.get("errors", [])
+    )
 
 
 if __name__ == "__main__":

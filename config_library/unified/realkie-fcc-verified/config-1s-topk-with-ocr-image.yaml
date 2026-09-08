@@ -9,6 +9,13 @@
 # (extraction.task_prompt_extraction_with_confidence_topk), which is selected
 # automatically for extraction.mode: simple + extraction.confidence.mode:
 # integrated. To customize the prompt, override that key here or in the UI.
+#
+# NOTE: the Invoice class in this preset declares a list field (LineItems), and
+# Simple + integrated loses list rows silently, so its sections are scored in a
+# SEPARATE confidence pass at run time (an info-level
+# confidence_integrated_downgraded issue records it). 1S-TopK is therefore
+# exercised here only on a scalar-only class; to force it for Invoice, set a
+# per-class x-aws-idp-extraction-task-prompt on the class.
 
 use_bda: false
 

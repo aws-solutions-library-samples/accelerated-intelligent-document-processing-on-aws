@@ -633,6 +633,7 @@ def validate_config(
     _validate_task_prompt_placeholders(merged, result)
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
+    _validate_simple_integrated_lists(merged, result)
     _validate_discovery_openai(merged, result)
 
     return result
@@ -1274,3 +1275,48 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
             logger.warning(
                 "Could not validate max_tokens for %s: %s", section_name, str(e)
             )
+
+
+def _validate_simple_integrated_lists(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when Simple + integrated confidence meets a class that
+    declares list fields.
+
+    At run time such a section is scored in a separate pass instead — a routing
+    decision, not a failure — but it costs more than the single inference the user
+    configured (benchmarked ~2.5x per 100-row document, since long lists are
+    scored in batches) and the 1S-TopK prompt is not used for that class. Saying
+    so at config time is free. A hard error would wedge a stored config that
+    validated yesterday (the rollback trap), so this is a warning only.
+    """
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict):
+        return
+    if bool((extraction.get("agentic") or {}).get("enabled")):
+        return
+    confidence = extraction.get("confidence") or {}
+    if not isinstance(confidence, dict) or confidence.get("mode") != "integrated":
+        return
+    affected: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        if cls.get("x-aws-idp-extraction-task-prompt"):
+            continue  # a per-class prompt override opts the class out
+        props = cls.get("properties") or {}
+        has_list = any(
+            isinstance(s, dict) and s.get("type") == "array" for s in props.values()
+        )
+        if has_list or cls.get("x-aws-idp-multi-instance"):
+            affected.append(str(cls.get("$id") or cls.get("name") or "?"))
+    if affected:
+        result["warnings"].append(
+            "extraction.confidence.mode is 'integrated' with simple extraction, but "
+            f"these classes declare list fields: {', '.join(affected)}. Their "
+            "sections will be scored in a separate confidence pass instead "
+            "(Simple + integrated loses list rows silently), at roughly 2.5x the "
+            "per-document confidence cost of a single inference. Set "
+            "confidence.mode: separate to make this explicit, or use Advanced "
+            "extraction to keep integrated confidence."
+        )

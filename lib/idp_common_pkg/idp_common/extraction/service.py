@@ -925,7 +925,7 @@ class ExtractionService:
         # Reason a Simple + integrated section was downgraded to a separate
         # confidence pass (list-bearing class), or None. Set lazily per section by
         # _simple_integrated_list_downgrade; surfaced as a ProcessingIssue.
-        self._integrated_downgrade_reason: str | None = None
+        self._integrated_downgrade_reason = None
         self._integrated_downgrade_checked = False
 
     def _validate_and_find_section(
@@ -2425,24 +2425,29 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # the section is COMPLETE and scored; the user asked for one inference
         # and got two, and should know why.
         if self._integrated_downgrade_reason:
+            # `info`, not `warning`: this is a routing decision that produced a
+            # COMPLETE, scored section, not a shortfall. `warning` would mark every
+            # such document "Degraded" / "COMPLETED WITH WARNINGS" and set the
+            # sticky HasProcessingIssues flag on a correct result.
             issues.append(
                 ProcessingIssue(
                     stage="extraction",
-                    severity="warning",
+                    severity="info",
                     code="confidence_integrated_downgraded",
                     message=(
-                        "Integrated confidence was scored in a separate pass for "
-                        "this section because its class declares list field(s) "
-                        f"({', '.join(array_fields)}); Simple + integrated loses "
-                        "list rows silently. Use confidence.mode: separate for "
-                        "list-bearing classes, or Advanced extraction."
+                        "Confidence was scored in a separate pass (integrated was "
+                        "configured) because this class declares list field(s) "
+                        f"({', '.join(sorted(array_fields))}); Simple + integrated "
+                        "loses list rows silently. Set confidence.mode: separate "
+                        "for list-bearing classes to make this explicit, or use "
+                        "Advanced extraction to keep a single inference."
                     ),
                     root_cause=self._integrated_downgrade_reason,
                     section_id=section_id,
                     details={
                         "requested_confidence_mode": "integrated",
                         "effective_confidence_mode": "separate",
-                        "list_fields": array_fields,
+                        "list_fields": sorted(array_fields),
                     },
                 )
             )
@@ -2911,7 +2916,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         else:
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
-            if conf_mode == "integrated":
+            if conf_mode == "integrated" and self._integrated_downgrade_reason:
+                # Configured integrated, ran separately (list-bearing class).
+                # Report what HAPPENED, not what was configured.
+                c_detail = (
+                    f"{conf_cfg.model or 'model'} · separate pass (integrated "
+                    "requested; downgraded because the class declares list fields)"
+                )
+                if batch_count and batch_count > 1:
+                    c_detail += f" · {batch_count} batches"
+                fan = concurrent if (concurrent and concurrent > 1) else 0
+            elif conf_mode == "integrated":
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
@@ -5795,6 +5810,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if isinstance(spec, dict) and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
         )
         if not list_fields:
+            return None
+        if (self._class_schema or {}).get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            # The class carries its own extraction task prompt. The downgrade
+            # works by swapping the prompt; when the user controls the prompt we
+            # must not half-apply it (plain-prompt gate False but TopK prompt
+            # sent would leave raw {G1,P1} candidate objects in the result). The
+            # override is an explicit choice, so that class keeps integrated mode.
+            logger.info(
+                "Class '%s' declares list fields but carries a per-class extraction "
+                "task prompt; leaving integrated confidence as configured",
+                self._class_label,
+            )
             return None
         self._integrated_downgrade_reason = (
             "Simple extraction with integrated confidence loses list rows "
