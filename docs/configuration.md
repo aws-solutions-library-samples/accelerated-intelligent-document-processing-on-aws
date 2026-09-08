@@ -318,7 +318,8 @@ lists automatically**: it slices the largest list field into
 `extraction.confidence.list_batch_size` chunks (default **25**), scores each chunk
 sequentially, then reconciles so every list cell gets its own confidence and
 bounding box. A bounded missing-row retry re-scores any dropped rows so coverage
-reaches 100%. Lower `list_batch_size` if a chunk under-enumerates; raise it to cut
+reaches 100%. `list_batch_size` is a ceiling on a derived size: lower it if a chunk
+under-enumerates, but raising it does not cut
 inference count.
 
 ```yaml

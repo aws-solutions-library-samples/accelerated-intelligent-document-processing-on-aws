@@ -78,6 +78,14 @@ from idp_common.utils import extract_json_from_text, repair_truncated_json
 
 logger = logging.getLogger(__name__)
 
+# The shipped default of ``extraction.confidence.list_batch_size``. The field is
+# ``gt=0`` so it cannot express "unset", and its default is persisted into
+# ``Config#default`` on every stack update — so it cannot simply be changed to 0
+# without wedging a rollback to any release whose validator still requires > 0.
+# This constant lets ``_get_sizing_plan`` treat exactly the default as "the user
+# did not choose this" when deciding whether to report a manual override.
+_LEGACY_LIST_BATCH_DEFAULT = 25
+
 
 # Pydantic models for internal data transfer
 class SectionInfo(BaseModel):
@@ -665,21 +673,30 @@ class ExtractionService:
         # Explicit (non-zero) config values act as overrides; 0 => auto-size.
         stb = getattr(agentic, "shard_token_budget", 0) or None
         lbs = getattr(ex.confidence, "list_batch_size", 0) or None
-        # list_batch_size has a legacy non-zero default (25); treat the legacy
-        # default as "not an explicit override" so auto-sizing applies unless the
-        # user genuinely changed it. We can't perfectly detect that, so honor any
-        # value <= 0 as auto and otherwise pass it as an override only when the
-        # confidence model is unknown (auto-size can't help). Simplest robust
-        # rule: always auto-size list batch, but never EXCEED the configured
-        # ceiling — handled in assess_results_batched's token-aware sizing.
+        # ``list_batch_size`` has a non-zero legacy default (25) and the field is
+        # ``gt=0``, so there is no in-band way to say "unset". Treat exactly the
+        # legacy default as "not an explicit override" so the reported figure shows
+        # a derived value rather than "manual override in effect" for a number
+        # nobody chose. This sentinel cannot be removed by defaulting the field to
+        # 0: the default is written into ``Config#default`` on every stack update,
+        # and a 0 there is REJECTED by every release up to and including v0.6.7
+        # (``gt=0``), which wedges a rollback — the same trap as
+        # `pricing-units-rollback-deadlock`.
+        #
+        # Note the plan's list_batch_size is a report-only ESTIMATE (no column count
+        # is available before extraction); the authoritative per-field size is
+        # derived at assessment time from the real rows.
         plan = compute_sizing_plan(
             model_id=(self._pending_extraction_model or ex.model),
             context_buffer=getattr(ex, "context_buffer", 0.30),
             geometry_mode=ex.geometry.mode,
             max_images_per_agent=getattr(agentic, "max_images_per_agent", 20),
             default_max_pages_per_shard=self._max_pages_per_shard(),
+            confidence_model_id=getattr(ex.confidence, "model", None),
             shard_token_budget_override=stb,
-            list_batch_size_override=lbs if (lbs and lbs != 25) else None,
+            list_batch_size_override=lbs
+            if (lbs and lbs != _LEGACY_LIST_BATCH_DEFAULT)
+            else None,
             log_label="extraction",
         )
         self._sizing_plan = plan
@@ -4875,15 +4892,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         for field, _missing in targets.items():
             rows = extracted_fields[field]
             # 1.1 Token-aware first-pass size for this field's confidence model.
-            sample_row = rows[0] if rows else None
+            # Pass the whole row list — the widest row governs the batch, and rows
+            # are not guaranteed to carry the same keys.
             batch_size = compute_token_aware_batch_size(
-                confidence_cfg.model, sample_row, geometry_mode, configured_batch_size
+                confidence_cfg.model, rows, geometry_mode, configured_batch_size
             )
             if split_stats["derived_batch_size"] is None:
                 split_stats["derived_batch_size"] = batch_size
             esc_batch = (
                 compute_token_aware_batch_size(
-                    escalation_model, sample_row, geometry_mode, configured_batch_size
+                    escalation_model, rows, geometry_mode, configured_batch_size
                 )
                 if escalation_one_call is not None
                 else batch_size

@@ -39,36 +39,24 @@ from idp_common import utils
 
 logger = logging.getLogger(__name__)
 
-# --- Token-aware batch sizing constants (see compute_token_aware_batch_size) ---
-# Fraction of the model's output cap we let a single assessment call target. A
-# batch sized to the FULL cap would truncate on any per-row estimate error, so we
-# leave headroom for the scalar/group assessments that ride every call and for
-# the model being chattier than our chars/4 estimate.
-# Target only HALF the model's output cap on the first pass (was 0.7). Confidence
-# output is variable — the model occasionally over-generates on a heavy multimodal
-# prompt — so a 50% target leaves real headroom for the first call to FIT instead
-# of sitting on the truncation edge and relying on the adaptive splitter to bisect
-# (each bisection doubles the sequential call count and, under slow Bedrock, was
-# what ran shard Lambdas into their 900s wall).
-_OUTPUT_SAFETY_FRACTION = 0.5
-# The confidence output per row is driven by the row's COLUMN COUNT, not by the
-# length of the extracted values: each scalar column emits a fixed-ish leaf like
-# ``"ColumnName": {"confidence": 0.97},`` (column-name tokens + the envelope),
-# plus an occasional short ``confidence_reason`` for the low-confidence cells.
-# Empirically (Nova Lite, live-measured on a 6-column financial row) a clean
-# per-cell cost is ~28 output tokens; we budget ~40 to leave headroom for the
-# column name, the reason allowance on sub-0.9 cells, and the model being
-# chattier than a chars/4 estimate. Sizing by columns is what makes a WIDE table
-# (many columns) correctly shrink the first-pass batch, where the old
-# value-length-based heuristic under-counted.
-_PER_CELL_CONFIDENCE_TOKENS = 40.0
+# --- Token-aware batch sizing (see compute_token_aware_batch_size) ------------
+# The per-row/per-cell token estimate, the output safety fraction and the absolute
+# batch ceiling now live in ``idp_common.bedrock.sizing`` and are imported here, so
+# there is ONE estimator. They used to be duplicated between the two modules, and
+# the copies disagreed by a factor of the column count.
 # Legacy value-length-based multiplier, kept ONLY as the fallback estimate for
 # scalar/opaque rows where per-column counting doesn't apply (non-dict rows).
 _CONFIDENCE_ENVELOPE_MULTIPLIER = 8.0
-# ``geometry.mode`` in {"llm", "llm_grounded"} appends a per-cell bounding-box
-# instruction, so each confidence leaf also emits ``bbox``/``page`` coordinates —
-# the investigation measured ~3× the output. Applied ON TOP of the envelope.
-_BBOX_GEOMETRY_MULTIPLIER = 3.0
+# Bounding-box multiplier for that same opaque-row fallback. Mirrors
+# ``bedrock.sizing._BBOX_GEOMETRY_MULTIPLIER``; kept local because the fallback
+# applies it to a value-length estimate rather than to a per-column one.
+_BBOX_GEOMETRY_MULTIPLIER_FALLBACK = 3.0
+# Rows are not guaranteed uniform — an extraction can omit a key on some rows — and
+# sizing off row 0 alone under-counts the width of every other row, which inflates
+# the batch. Counting keys over EVERY row is O(rows x columns) on data already in
+# memory, so there is no sampling window: a window would just move the same bug
+# from row 0 to the first N rows (an 800-row statement whose first 25 rows are
+# narrow would still be sized as if the whole list were narrow).
 
 # Wall-clock safety reserve (seconds). Before starting a NEW escalation round —
 # the slow, big-model call — the ladder checks that an estimated round fits in
@@ -454,6 +442,33 @@ def _schema_field_mismatch_reason(
     return None
 
 
+def count_row_columns(rows: Any) -> int | None:
+    """Widest scalar column count across a list's rows, or None if not countable.
+
+    Takes the whole row list (not one row) and returns the MAXIMUM count over
+    EVERY dict row. Sizing off ``rows[0]`` alone under-counts whenever extraction
+    omitted a key on that row, and under-counting the width inflates the batch —
+    the direction that truncates. A bare dict is accepted and treated as a single
+    row. Returns None when no dict row is found, which tells the caller to use the
+    value-length fallback.
+    """
+    if isinstance(rows, dict):
+        candidates: list[Any] = [rows]
+    elif isinstance(rows, (list, tuple)):
+        candidates = list(rows)
+    else:
+        return None
+    widest = 0
+    for row in candidates:
+        if not isinstance(row, dict):
+            continue
+        widest = max(
+            widest,
+            sum(1 for v in row.values() if not isinstance(v, (dict, list))),
+        )
+    return widest or None
+
+
 def compute_token_aware_batch_size(
     model_id: str | None,
     sample_row: Any,
@@ -462,83 +477,118 @@ def compute_token_aware_batch_size(
 ) -> int:
     """Derive a list-batch size that fits the confidence model's output cap.
 
-    The static ``list_batch_size`` (default 25) is a guess that ignores the
-    model. When the confidence model has a small output ceiling (Nova Lite:
-    10K) and each row emits a large confidence payload — tripled again by the
-    per-cell bounding-box block in ``geometry.mode: llm``/``llm_grounded`` — a
-    25-row batch overruns the cap and the response truncates (the exact failure
-    that left 34/68 rows unscored). Sizing the FIRST pass to the model's budget
-    means it fits without needing the adaptive splitter to bisect down from 25.
+    ``sample_row`` should be the list's ROW LIST; a single dict is accepted and
+    treated as one row. The column count is measured across a sample of rows
+    (:func:`count_row_columns`) rather than off row 0.
 
-    Estimation (all reused pieces): resolve the output cap from
-    ``get_model_max_output_tokens`` (falls back to ``configured_batch_size`` on
-    an unknown model), estimate per-row output tokens as
-    ``estimate_tokens(json.dumps(sample_row))`` × a confidence-envelope
-    multiplier × a bbox multiplier (only for LLM-box geometry modes), then
-    ``derived = floor(cap × 0.7 / per_row_tokens)``. The result is clamped to
-    ``[1, configured_batch_size]`` — this only ever SHRINKS the configured size
-    (never grows it past the user's ceiling) and never returns 0.
+    Why this exists: when the confidence model has a small output ceiling (Nova
+    Lite: 10,000) and each row emits a confidence leaf per column — tripled again
+    by the per-cell bounding-box block under ``geometry.mode: llm``/
+    ``llm_grounded`` — a 25-row batch overruns the cap and the response truncates.
+    That is the failure that left 34/68 rows unscored, and the failure whose
+    recovery ladder ran an Assessment Lambda into its 900-second wall five times
+    and lost a document. Sizing the FIRST pass to the model's real budget means it
+    fits without the adaptive splitter having to bisect down from 25.
+
+    ``configured_batch_size`` is a user CEILING, not a target: the result is never
+    larger. Pass 0 (or any non-positive value) for "no user ceiling", in which case
+    only the absolute reliability ceiling applies. The result is never 0.
+
+    An unknown model, or a row shape whose width cannot be measured, now yields a
+    CONSERVATIVE derived size rather than the configured value — previously either
+    case silently returned the configured 25, which is how a permissive default
+    reached a small-cap model.
     """
-    if not model_id or configured_batch_size <= 1:
-        return max(1, configured_batch_size)
+    from idp_common.bedrock.sizing import (
+        confidence_per_row_tokens,
+        confidence_rows_for_per_row_tokens,
+        confidence_rows_per_call,
+    )
 
-    from idp_common.bedrock.model_utils import get_model_max_output_tokens
-    from idp_common.extraction.sharding import estimate_tokens
+    ceiling = configured_batch_size if configured_batch_size > 0 else None
+    if ceiling is not None and ceiling <= 1:
+        return 1
 
-    try:
-        output_cap = get_model_max_output_tokens(model_id)
-    except Exception as e:  # noqa: BLE001 - unknown model → keep configured size
-        logger.debug(
-            "compute_token_aware_batch_size: unknown output cap for %s (%s); "
-            "using configured batch size %d",
-            model_id,
-            e,
+    output_cap: int | None = None
+    if model_id:
+        from idp_common.bedrock.model_utils import get_model_max_output_tokens
+
+        try:
+            output_cap = get_model_max_output_tokens(model_id)
+        except Exception as e:  # noqa: BLE001 - unknown model → conservative cap
+            logger.warning(
+                "compute_token_aware_batch_size: no output cap known for "
+                "confidence model %s (%s); sizing conservatively instead of "
+                "trusting the configured batch size %s",
+                model_id,
+                e,
+                configured_batch_size,
+            )
+    else:
+        logger.warning(
+            "compute_token_aware_batch_size: no confidence model id supplied; "
+            "sizing conservatively instead of trusting the configured batch "
+            "size %s",
             configured_batch_size,
         )
-        return max(1, configured_batch_size)
 
-    # Estimate per-row CONFIDENCE OUTPUT tokens. The output is driven by the row's
-    # column count (each scalar column emits a fixed-ish confidence leaf), NOT by
-    # the length of the extracted values — so count the row's scalar sub-fields and
-    # budget a realistic per-cell cost. This is what makes a WIDE table correctly
-    # shrink the first-pass batch; the old ``json.dumps(row) × 8`` heuristic scaled
-    # with value length and under-counted wide rows of short values (the exact
-    # Truist case: 6 short columns estimated ~256 tok but really produced ~170-400,
-    # sitting on the 10K truncation edge at batch=25).
-    if isinstance(sample_row, dict):
-        num_scalar_cols = sum(
-            1 for v in sample_row.values() if not isinstance(v, (dict, list))
+    num_columns = count_row_columns(sample_row)
+    if num_columns is not None:
+        result = confidence_rows_per_call(
+            output_cap, num_columns, geometry_mode, ceiling
         )
-        num_scalar_cols = max(1, num_scalar_cols)
-        per_row_tokens = num_scalar_cols * _PER_CELL_CONFIDENCE_TOKENS
+        per_row_tokens = confidence_per_row_tokens(num_columns, geometry_mode)
     else:
-        # Scalar/opaque row element: fall back to the value-length heuristic.
+        # Scalar/opaque rows: per-column counting does not apply, so fall back to
+        # the value-length heuristic on the first element.
+        from idp_common.extraction.sharding import estimate_tokens
+
+        first = (
+            sample_row[0]
+            if isinstance(sample_row, (list, tuple)) and sample_row
+            else sample_row
+        )
         try:
             per_row_tokens = (
-                estimate_tokens(json.dumps(sample_row, default=str))
+                estimate_tokens(json.dumps(first, default=str))
                 * _CONFIDENCE_ENVELOPE_MULTIPLIER
             )
-        except Exception:  # noqa: BLE001 - unserializable row → keep configured size
-            return max(1, configured_batch_size)
-    if per_row_tokens <= 0:
-        return max(1, configured_batch_size)
+        except Exception:  # noqa: BLE001 - unserializable row → assumed width
+            per_row_tokens = 0.0
+        if per_row_tokens <= 0:
+            # Unmeasurable row: fall back to the assumed column width rather than
+            # to the configured ceiling.
+            per_row_tokens = confidence_per_row_tokens(None, geometry_mode)
+        else:
+            if (geometry_mode or "").lower() in ("llm", "llm_grounded"):
+                per_row_tokens *= _BBOX_GEOMETRY_MULTIPLIER_FALLBACK
+            # FLOOR the value-length estimate at the cost of one confidence leaf.
+            # ``json.dumps("Robert Smith")`` is ~3 tokens, so the x8 envelope
+            # predicts ~24 output tokens for a row that really emits 40-120 — about
+            # 5x optimistic, and optimism here means a batch that truncates. Even a
+            # scalar row emits at least one leaf, so the per-cell figure is a valid
+            # floor. Without this the estimate is also non-monotonic: a 1-character
+            # scalar estimates 0 and lands on the conservative assumed width, while
+            # a 12-character scalar estimates low enough to reach the ceiling.
+            per_row_tokens = max(
+                per_row_tokens, confidence_per_row_tokens(1, geometry_mode)
+            )
+        result = confidence_rows_for_per_row_tokens(output_cap, per_row_tokens, ceiling)
 
-    if (geometry_mode or "").lower() in ("llm", "llm_grounded"):
-        per_row_tokens *= _BBOX_GEOMETRY_MULTIPLIER
-
-    derived = math.floor(output_cap * _OUTPUT_SAFETY_FRACTION / per_row_tokens)
-    result = max(1, min(configured_batch_size, derived))
-    if result < configured_batch_size:
-        logger.info(
-            "Token-aware batch sizing: model=%s cap=%d geometry=%s per_row~%d "
-            "-> batch %d (configured %d)",
-            model_id,
-            output_cap,
-            geometry_mode,
-            int(per_row_tokens),
-            result,
-            configured_batch_size,
-        )
+    # Logged unconditionally. Previously suppressed when the result equalled the
+    # configured value, which hid the sizing decision from exactly the operator most
+    # likely to be debugging it — someone who pinned a ceiling.
+    logger.info(
+        "Token-aware batch sizing: model=%s cap=%s geometry=%s cols=%s "
+        "per_row~%d -> batch %d (configured ceiling %s)",
+        model_id or "(none)",
+        output_cap if output_cap else "unknown",
+        geometry_mode,
+        num_columns if num_columns is not None else "n/a",
+        int(per_row_tokens),
+        result,
+        ceiling if ceiling is not None else "none",
+    )
     return result
 
 
@@ -629,8 +679,11 @@ def merge_split_stats(
         if v is not None
     ]
     merged["derived_batch_size"] = min(derived) if derived else None
-    merged["configured_batch_size"] = a.get("configured_batch_size") or b.get(
-        "configured_batch_size"
+    # ``is not None``, not ``or``: a legitimate configured value can be falsy, and
+    # ``or`` would silently discard it in favour of the other shard's.
+    _cfg_a = a.get("configured_batch_size")
+    merged["configured_batch_size"] = (
+        _cfg_a if _cfg_a is not None else b.get("configured_batch_size")
     )
     merged["escalation_model"] = a.get("escalation_model") or b.get("escalation_model")
     merged["deadline_reached"] = bool(
@@ -1203,18 +1256,27 @@ def assess_results_batched(
     split_stats = _new_split_stats()
     split_stats["configured_batch_size"] = batch_size
 
-    # 1.1 Token-aware first-pass sizing: shrink the batch to fit the confidence
-    # model's output cap BEFORE the first call, so a small-cap model (Nova Lite,
-    # 10K) does not truncate a 25-row batch (esp. with bbox geometry ~3× output).
-    # Only ever shrinks; a large-output model keeps the configured size.
-    effective_batch_size = batch_size
+    # 1.1 Token-aware first-pass sizing: fit the batch to the confidence model's
+    # output cap BEFORE the first call, so a small-cap model (Nova Lite, 10K) does
+    # not truncate (bbox geometry roughly triples the per-row output). ``batch_size``
+    # is a user CEILING and may be 0 meaning "no ceiling, derive it".
     all_list_fields_probe = [
         v for v in extraction_results.values() if isinstance(v, list) and v
     ]
-    if confidence_model_id and all_list_fields_probe:
-        sample_row = max(all_list_fields_probe, key=len)[0]
+    # Pass the whole row list: the widest row governs the batch, and rows are not
+    # guaranteed uniform. Sized even when confidence_model_id is empty, so a missing
+    # model falls back to a conservative size rather than to the configured ceiling.
+    #
+    # Only sized when there IS a list. With no list fields nothing below slices rows,
+    # so the derived value would be unused — and computing it would import
+    # ``extraction.sharding`` for the opaque-row fallback, pulling the whole
+    # extraction package (and strands) into the Assessment Lambda for a number it
+    # never reads.
+    effective_batch_size = batch_size
+    if all_list_fields_probe:
+        widest_list = max(all_list_fields_probe, key=len)
         effective_batch_size = compute_token_aware_batch_size(
-            confidence_model_id, sample_row, geometry_mode, batch_size
+            confidence_model_id, widest_list, geometry_mode, batch_size
         )
         split_stats["derived_batch_size"] = effective_batch_size
 
@@ -1260,7 +1322,7 @@ def assess_results_batched(
         if all_list_fields_probe:
             escalation_batch_size = compute_token_aware_batch_size(
                 ladder_escalation_model,
-                max(all_list_fields_probe, key=len)[0],
+                max(all_list_fields_probe, key=len),
                 geometry_mode,
                 batch_size,
             )

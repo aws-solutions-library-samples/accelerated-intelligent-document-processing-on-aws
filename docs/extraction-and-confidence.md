@@ -338,7 +338,7 @@ extraction:
     max_pages_per_shard: 5        # page ceiling per shard (timeout-critical; fixed default, not model-derived)
 ```
 
-- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer` — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically. The confidence list-batch size is likewise auto-derived from the confidence model's output cap. You set only `context_buffer`; the derived sizes are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
+- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer` — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
@@ -1153,9 +1153,11 @@ and the inline-confidence retry (`integrated`) all share one implementation:
    bounding box.
 
 So large lists are handled with no extra configuration regardless of the
-Simple/Advanced or separate/integrated choice. The one knob is `list_batch_size`
-— **lower** it if a model still struggles to enumerate a full chunk; **raise** it
-to reduce the number of inference calls.
+Simple/Advanced or separate/integrated choice. The one knob is `list_batch_size`,
+and it is a **ceiling**: the size actually used is derived per list from the
+confidence model's output cap, the row's column count and the geometry mode, and is
+only ever smaller. **Lower** it to force smaller batches than the derivation;
+raising it above the derived size has no effect.
 
 ```yaml
 extraction:
@@ -1174,10 +1176,13 @@ extraction:
 > `0.5` to every field and leave list rows unscored. Advanced mode now heals this
 > automatically, cheapest-first:
 >
-> 1. **Token-aware first-pass sizing.** The first batch is sized to the confidence
->    model's output cap — so Nova Lite + `llm_grounded` starts at ~6–9 rows
->    instead of truncating at 25. This only ever *shrinks* `list_batch_size`; a
->    large-output model keeps your configured size.
+> 1. **Token-aware first-pass sizing.** The first batch is sized from three inputs:
+>    the confidence model's output cap, the **column count** of the list's widest
+>    row, and whether the geometry mode adds a bounding box per cell. On Nova Lite
+>    (10,000-token cap) with `llm_grounded` that is 13 rows for a 3-column list and
+>    5 for 8 columns; without bounding boxes three times as many fit. This only ever
+>    *shrinks* `list_batch_size` — it never grows past your configured ceiling, so
+>    raising the ceiling above the derived size has no effect.
 > 2. **Recursive splitting.** Any batch that still truncates is halved and
 >    re-assessed until it fits.
 > 3. **Model escalation.** If rows are *still* unscored after shrinking + retries,
@@ -1958,7 +1963,7 @@ the system automatically adds `confidence_threshold` from configuration.
 3. **Model selection** — Claude Haiku/Sonnet class models with `temperature: 0` for deterministic scoring.
 4. **Risk-based thresholds** — 0.90+ for critical data, 0.75–0.85 global defaults, per-attribute overrides where needed.
 5. **Keep `ocr_only` geometry** (the default) unless you have a specific reason — it is cheaper and more accurate than LLM boxes.
-6. **Tune `list_batch_size`** for large lists — lower if a chunk under-enumerates, raise to cut inference count.
+6. **Lower `list_batch_size`** for large lists only if a chunk under-enumerates — it is a ceiling on a derived size, so raising it does not cut the inference count.
 7. **Route below-threshold fields to [Human Review](human-review.md).**
 
 ---
