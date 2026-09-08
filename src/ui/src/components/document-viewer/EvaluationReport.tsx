@@ -297,7 +297,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
           id: 'matched',
           header: '',
           cell: (row: ComparisonRow) => <Badge color={row.matched ? 'green' : 'red'}>{row.matched ? 'match' : 'mismatch'}</Badge>,
-          width: 150,
+          width: 120,
         },
         {
           id: 'name',
@@ -313,7 +313,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
             </span>
           ),
           sortingField: 'name',
-          minWidth: 240,
+          minWidth: 215,
         },
         { id: 'expected', header: 'Expected', cell: (row: ComparisonRow) => <ValueCell value={row.expected} /> },
         { id: 'actual', header: 'Extracted', cell: (row: ComparisonRow) => <ValueCell value={row.actual} /> },
@@ -324,7 +324,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
             row.confidence === null
               ? '—'
               : `${row.confidence.toFixed(2)}${row.confidenceThreshold !== null ? ` / ${row.confidenceThreshold.toFixed(2)}` : ''}`,
-          width: 120,
+          width: 125,
         },
         {
           id: 'score',
@@ -338,13 +338,13 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
                   `${row.score.toFixed(3)} (aggregate)`
                 : row.score.toFixed(3),
           sortingField: 'score',
-          width: 150,
+          width: 130,
         },
         { id: 'weight', header: 'Weight', cell: (row: ComparisonRow) => (row.weight === null ? '1.00' : row.weight.toFixed(2)), width: 90 },
         {
           id: 'method',
           header: 'Method',
-          minWidth: 200,
+          minWidth: 170,
           cell: (row: ComparisonRow) =>
             row.reason ? (
               // The reason is why this scored as it did — the single most useful
