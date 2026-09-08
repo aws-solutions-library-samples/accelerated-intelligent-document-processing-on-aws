@@ -66,6 +66,7 @@ ocr = [
   "numpy==1.26.4",
   "pandas==2.2.3",
   "openpyxl==3.1.5",
+  "xlrd==2.0.2",
   "python-docx==1.2.0",
 ]
 
@@ -192,6 +193,7 @@ test = [
   "pyarrow==23.0.1",
   "PyYAML==6.0.2",
   "openpyxl==3.1.5",
+  "xlrd==2.0.2",
   "python-docx==1.2.0",
   "moto[s3,cloudformation]==5.1.8", # For mocking AWS services in tests (cloudformation extra needed by feature-platform launch-url tests)
   "Pillow==12.3.0",                 # Required for image processing in assessment tests
