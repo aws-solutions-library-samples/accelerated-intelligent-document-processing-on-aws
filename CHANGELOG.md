@@ -13,6 +13,8 @@ SPDX-License-Identifier: MIT-0
 
   Over-sizing matters because a batch that overruns the model's output cap truncates, the recovery ladder halves it and retries, and every retry is a fresh paid inference — on an 800-row statement that ladder ran the Assessment Lambda into its 900-second limit five times, about 6,200 seconds, before the document ended `ABORTED`. The per-row estimate was also duplicated between `bedrock/sizing.py` and `assessment/batching.py` and the two copies disagreed by a factor of the column count, because the flat per-row figure in the first was the per-cell formula evaluated at exactly one column; there is now a single estimator. Every change here can only make a batch **smaller**: across 151 (model × column count × geometry × ceiling) combinations, 148 are byte-identical to v0.6.7 and the 3 that differ are the two defects above ([#784](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/784)).
 
+- **The evaluation report view now shows everything the markdown report does.** It had shipped as a summary with a click-through to the markdown for the detail. Added: the document-split figures and a section split analysis, every recorded metric with its rating, excluded sections with reasons, per-section scores and metrics, the not-evaluated state with how-to-fix steps, Confidence and Weight columns, nested field comparisons as expandable rows, structured display of list and object values instead of one flattened JSON string, and a scoring explainer. A parity test reads the section headings out of the markdown generator and fails if the two drift. See [docs/web-ui.md](docs/web-ui.md#evaluation-report).
+
 ## [0.6.7]
 
 ### Added
