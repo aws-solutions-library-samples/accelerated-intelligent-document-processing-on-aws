@@ -254,7 +254,9 @@ def _required_error_is_scalar(error: jsonschema.ValidationError) -> bool | None:
     match = _REQUIRED_PROP_RE.search(error.message)
     if not match or not isinstance(error.schema, dict):
         return None
-    prop = (error.schema.get("properties") or {}).get(match.group(1))
+    # group(2) is the name; group(1) is the quote character (jsonschema uses
+    # repr(), which switches to double quotes for a name with an apostrophe).
+    prop = (error.schema.get("properties") or {}).get(match.group(2))
     if not isinstance(prop, dict):
         return None
     declared = prop.get("type")
