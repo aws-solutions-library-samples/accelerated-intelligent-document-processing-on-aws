@@ -58,6 +58,10 @@ class FieldError:
     path: str
     message: str
     validator: str
+    # The top-level property this error belongs to (None for unattributable root
+    # errors). Lets callers reason PER FIELD rather than by total count — see
+    # ``escalation_outcome`` for why the distinction matters.
+    field: str | None = None
 
     def __str__(self) -> str:
         loc = self.path or "(root)"
@@ -91,6 +95,13 @@ class ValidationReport:
                 "violation(s) of the same kind."
             )
         return "\n".join(lines)
+
+    def errors_by_field(self) -> dict[str | None, int]:
+        """Error count per top-level field (``None`` bucket for root errors)."""
+        counts: dict[str | None, int] = {}
+        for err in self.errors:
+            counts[err.field] = counts.get(err.field, 0) + 1
+        return counts
 
     def to_metadata(self) -> dict[str, Any]:
         """Compact, JSON-serializable summary for the extraction metadata block."""
@@ -252,14 +263,15 @@ def validate_extraction(
     errors: list[FieldError] = []
     failed_fields: set[str] = set()
     for err in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path)):
+        top = _top_level_field(err)
         errors.append(
             FieldError(
                 path=_format_path(err.absolute_path),
                 message=err.message,
                 validator=str(err.validator),
+                field=top,
             )
         )
-        top = _top_level_field(err)
         if top is not None:
             failed_fields.add(top)
 
@@ -341,6 +353,95 @@ def build_empty_list_feedback(
         "see. Do not drop the row, and do not drop the whole list.\n"
         "  - Keep every field you have already extracted correctly."
     )
+
+
+def _row_count(value: Any) -> int | None:
+    """Rows in a list value; None when the value is not a list."""
+    return len(value) if isinstance(value, list) else None
+
+
+def escalation_data_loss(
+    original: dict[str, Any], escalated: dict[str, Any]
+) -> list[str]:
+    """Top-level fields where the escalated result carries LESS data than the
+    original, each with a reason. Empty when nothing was lost.
+
+    A re-extraction is allowed to CORRECT a value; it is never allowed to remove
+    one. Concretely: a list that had rows must not come back null, absent or
+    shorter, and a non-null scalar or group must not come back null or absent.
+    Whether the escalated values are *better* is the validator's job — this
+    function only asks whether anything the original had is now gone.
+    """
+    lost: list[str] = []
+    for name, before in (original or {}).items():
+        if before is None:
+            continue
+        after = (escalated or {}).get(name)
+        rows_before = _row_count(before)
+        if rows_before is not None:
+            if rows_before == 0:
+                continue
+            rows_after = _row_count(after)
+            if rows_after is None:
+                lost.append(
+                    f"{name}: had {rows_before} rows, escalation returned "
+                    f"{'null' if after is None else type(after).__name__}"
+                )
+            elif rows_after < rows_before:
+                lost.append(
+                    f"{name}: had {rows_before} rows, escalation returned {rows_after}"
+                )
+        elif after is None:
+            lost.append(f"{name}: had a value, escalation returned null")
+    return lost
+
+
+def escalation_outcome(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport,
+    after: ValidationReport,
+) -> tuple[bool, str]:
+    """Decide whether an escalation re-extraction should REPLACE the original.
+
+    Returns ``(keep, reason)``. Two rules, in order:
+
+    1. **Never keep a result that loses populated data** (``escalation_data_loss``),
+       even if it validates. A valid result with 50 rows where the original had
+       100 is a truncation, not a fix — and nothing but ``minItems`` would
+       otherwise notice.
+    2. **Compare errors per top-level field, not in total.** No field may get
+       worse, and at least one must get better (or the result is valid).
+
+    Why not ``len(after.errors) < len(before.errors)``, which this replaces:
+    per-row errors scale with the row count while a whole-field error is always
+    one, so total counts systematically favour the result with LESS data. Measured:
+    100 rows with one unreadable cell each produce 100 ``required`` errors; the
+    same field returned as ``null`` produces 1. The old gate kept the null and
+    logged it as an improvement from 100 to 1 (#791).
+    """
+    lost = escalation_data_loss(original, escalated)
+    if lost:
+        return False, "escalation lost populated data: " + "; ".join(lost)
+
+    if after.valid:
+        return True, "escalation result is valid and lost no data"
+
+    before_counts = before.errors_by_field()
+    after_counts = after.errors_by_field()
+    worse = [
+        str(f)
+        for f in set(before_counts) | set(after_counts)
+        if after_counts.get(f, 0) > before_counts.get(f, 0)
+    ]
+    if worse:
+        return False, "escalation made these fields worse: " + ", ".join(sorted(worse))
+    better = [
+        str(f) for f in before_counts if after_counts.get(f, 0) < before_counts[f]
+    ]
+    if better:
+        return True, "escalation improved: " + ", ".join(sorted(better))
+    return False, "escalation changed nothing that validation can see"
 
 
 def build_subset_schema(

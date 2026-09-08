@@ -303,7 +303,7 @@ extraction:
       min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
 
-- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back (kept only if valid or fewer errors) — far cheaper than human review. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
+- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.
