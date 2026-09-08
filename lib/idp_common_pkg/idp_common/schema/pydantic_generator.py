@@ -76,48 +76,100 @@ def clean_schema_for_generation(
     return cleaned
 
 
-def relax_required_for_transport(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of ``schema`` with every ``required`` list removed.
+_SCALAR_TYPES = frozenset({"string", "number", "integer", "boolean"})
 
-    This exists so an extraction agent can say **"I could not read this"**.
 
-    ``datamodel-code-generator`` renders a required property as a non-nullable
-    field with no default (``Amount: float``), so on the agentic path a genuinely
+def nullable_leaves_for_transport(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``schema`` in which every SCALAR leaf accepts ``null``.
+    ``required`` is left exactly as it is.
+
+    This exists so an extraction agent can say **"I could not read this cell"**.
+
+    ``datamodel-code-generator`` renders a required scalar as a non-nullable field
+    with no default (``Amount: float``), so on the agentic path a genuinely
     unreadable cell has no representable answer: of ``null``, ``""``, omitting the
     key and ``0.0``, only ``0.0`` validates. The retry loop then tells the agent its
     answer failed validation and asks it to fix it, so the contract actively pushes
     a *fabricated* zero — schema-valid, silent, and indistinguishable from a real
-    zero. That also contradicts the table-tool prompt, which explicitly asks for
-    ``null`` on an unreadable cell.
+    zero (#782). It also contradicts the table-tool prompt, which asks for ``null``
+    on an unreadable cell.
 
-    The fix is to relax required-ness **only for the transport model** handed to
-    the agent, and keep enforcing it where it can be reported instead of fabricated:
-    ``extraction.validation`` already validates the result against the real schema,
-    already treats a null property as absent, and therefore already reports a
-    required-but-null field as ``'X' is a required property`` — which is exactly
-    what simple mode does today, and what feeds the agent's self-correction round
-    and the escalation path. Nothing is weakened; the check moves from a place where
-    it forces a fabricated value to a place where it produces a visible one.
+    ``required`` conflates two things, and only one of them should relax:
 
-    Removal is recursive and covers ``properties``, array ``items``, ``$defs`` and
-    every combinator, so nested objects and list rows relax too — list rows are the
-    common case, since that is where per-cell abstention matters.
+    * **structural presence** — the key must exist, a list must be a list, the
+      multi-instance wrapper must contain ``instances``. Relaxing this lets an
+      empty tool call, a misspelled key set, or a nulled 100-row list through as
+      "success", which is the #666 failure the repo already fixed once.
+    * **a readable value** — the cell must hold something. This is the part an
+      agent can honestly be unable to satisfy.
 
-    Precedent: #438 does the same relaxation for the evaluation path, where a
-    correctly-null required field used to crash scoring.
+    So the transform keeps ``required`` and instead widens each scalar leaf's type
+    to ``[<type>, "null"]``, which the generator renders as ``X | None`` with
+    ``required=True`` — the key must be present, and ``null`` is a legal value. The
+    result, measured on the generated model:
+
+    ========================  ======  ============
+    agent returns             before  after
+    ========================  ======  ============
+    ``Amount: null``          reject  **accept**
+    ``Amount`` key omitted    reject  reject
+    ``Amount: ""``            reject  reject
+    ``Transactions: null``    reject  reject
+    ``{"instances": null}``   reject  reject
+    misspelled keys           reject  reject
+    ========================  ======  ============
+
+    Required-ness is still enforced where it can be REPORTED rather than forced:
+    ``extraction.validation`` validates the result against the real schema, treats
+    a null property as absent, and reports ``'X' is a required property`` — the
+    same treatment simple mode gets, and what feeds the agent's self-correction
+    round and the escalation path.
+
+    Scope, deliberately narrow: only nodes whose ``type`` is a scalar (or a list of
+    scalars) are widened; arrays, objects, ``$ref`` leaves and combinator branches
+    are recursed into but never themselves made nullable. An ``enum`` on a widened
+    leaf gains ``None`` so the transport model's own JSON-Schema validator (used
+    for classes with advanced constraints) agrees with the Pydantic type. The
+    input is not mutated — the caller keeps validating against the real schema.
     """
-    if isinstance(schema, dict):
-        return {
-            key: relax_required_for_transport(value)
-            for key, value in schema.items()
-            # Only drop the ARRAY form. ``required`` is also a legal property NAME
-            # (a class may declare a field called "required"), and in that position
-            # the value is a schema, not a list of names.
-            if not (key == "required" and isinstance(value, list))
-        }
+    return _widen_scalar_leaves(schema)
+
+
+def _widen_scalar_leaves(schema: Any) -> Any:
+    """Recursive worker for :func:`nullable_leaves_for_transport` (any JSON node)."""
     if isinstance(schema, list):
-        return [relax_required_for_transport(item) for item in schema]
-    return schema
+        return [_widen_scalar_leaves(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    out: Dict[str, Any] = {
+        key: _widen_scalar_leaves(value) for key, value in schema.items()
+    }
+    declared = schema.get("type")
+    types: List[str] | None
+    if isinstance(declared, str):
+        types = [declared]
+    elif isinstance(declared, list) and all(isinstance(x, str) for x in declared):
+        types = list(declared)
+    else:
+        types = None
+
+    # A scalar leaf: every declared type is scalar. (A node with `properties` or
+    # `items` is an object/array regardless of what `type` says, so those keys are
+    # checked too rather than trusting `type` alone.)
+    is_scalar_leaf = (
+        types is not None
+        and types
+        and all(x in _SCALAR_TYPES for x in types)
+        and "properties" not in schema
+        and "items" not in schema
+    )
+    if is_scalar_leaf:
+        assert types is not None
+        out["type"] = types + ["null"]
+        if isinstance(schema.get("enum"), list) and None not in schema["enum"]:
+            out["enum"] = list(schema["enum"]) + [None]
+    return out
 
 
 def _normalize_class_name(name: str) -> str:

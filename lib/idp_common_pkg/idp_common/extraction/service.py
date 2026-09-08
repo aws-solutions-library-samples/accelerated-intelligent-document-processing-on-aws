@@ -53,6 +53,7 @@ from idp_common.extraction.validation import (
     build_empty_list_feedback,
     build_subset_schema,
     find_empty_declared_lists,
+    required_null_paths,
     select_escalated_fields,
     validate_extraction,
 )
@@ -70,7 +71,7 @@ try:
     )
     from idp_common.schema import (
         create_pydantic_model_from_json_schema,
-        relax_required_for_transport,
+        nullable_leaves_for_transport,
     )
 
     AGENTIC_AVAILABLE = True
@@ -223,6 +224,7 @@ class ExtractionService:
         # consumed by _save_results when building the metadata block. Reset per
         # section so a prior section's result can never leak into the next.
         self._pending_validation_metadata: dict[str, Any] | None = None
+        self._pending_abstained_fields: dict[str, Any] | None = None
         self._pending_forced_tool_metadata: dict[str, Any] | None = None
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
@@ -3750,14 +3752,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         try:
             if scope == "field-subset":
-                # Relaxed for the same reason as the primary transport model
+                # Nullable leaves for the same reason as the primary transport model
                 # (#782), and it matters MORE here: escalation is now triggered BY
                 # an abstention, so a strict subset model would send a stronger
                 # model in to fabricate the value the weaker one honestly declined
                 # to invent — a more convincing wrong answer. Re-extraction should
                 # try harder to READ the value and still be able to abstain.
                 subset_model = create_pydantic_model_from_json_schema(
-                    schema=relax_required_for_transport(subset_schema),
+                    schema=nullable_leaves_for_transport(subset_schema),
                     class_label=f"{section_info.class_label}__escalation",
                     clean_schema=False,
                 )
@@ -3982,6 +3984,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Clear any per-section audit state from a previously processed section.
         self._pending_validation_metadata = None
+        self._pending_abstained_fields = None
         self._pending_coercion_metadata = None
         self._pending_extraction_model = None
         self._pending_forced_tool_metadata = None
@@ -4068,15 +4071,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 },
             )
 
-            # TRANSPORT model: required-ness relaxed so the agent can return null
-            # for a value it genuinely cannot read. A required property renders as a
+            # TRANSPORT model: scalar leaves made nullable so the agent can return
+            # null for a cell it genuinely cannot read. A required scalar renders as a
             # non-nullable Pydantic field, which leaves a fabricated 0.0 as the only
-            # accepted answer for an unreadable number (#782). Required-ness is still
-            # enforced — by ``extraction.validation`` against the real schema, which
-            # treats null as absent and so reports it as a 'required' violation, feeds
-            # it back for the agent's self-correction round, and can escalate it.
+            # accepted answer for an unreadable number (#782). `required` itself is
+            # KEPT, so an omitted key, a nulled list or a misspelled key set still
+            # fails the model; a null CELL passes here and is then reported by
+            # ``extraction.validation`` as a 'required' violation, fed back for the
+            # agent's self-correction round, and escalatable.
             dynamic_model = create_pydantic_model_from_json_schema(
-                schema=relax_required_for_transport(self._class_schema),
+                schema=nullable_leaves_for_transport(self._class_schema),
                 class_label=section_info.class_label,
                 clean_schema=False,  # Already cleaned
             )
@@ -4312,6 +4316,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         assess_runner=self._build_assess_runner(
                             section_info, self._document
                         ),
+                        # Full-schema self-correction per shard. WITHOUT the OCR
+                        # table evidence: that check demands rows from every
+                        # declared list, and a shard whose pages hold no table
+                        # legitimately has none — it would cost one wasted agent
+                        # turn per such shard.
+                        schema_validator=self._build_schema_validator(),
                     )
                 )
             else:
@@ -4366,6 +4376,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
             if validation_metadata is not None:
                 self._pending_validation_metadata = validation_metadata
+            # Abstentions, recorded regardless of validation.enabled: with nullable
+            # scalar leaves a null cell no longer trips the Pydantic guard, so this
+            # is what makes an abstention attributable on a stack that has
+            # validation switched off (v0.6-migrated stacks carry enabled: false).
+            abstained, abstained_total = required_null_paths(
+                extracted_fields, self._class_schema
+            )
+            self._pending_abstained_fields = (
+                {"count": abstained_total, "paths": abstained}
+                if abstained_total
+                else None
+            )
             if escalation_metering:
                 from idp_common.extraction.agentic_idp import _accumulate_metering
 
@@ -4701,6 +4723,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
                 if validation_metadata is not None:
                     self._pending_validation_metadata = validation_metadata
+                # Abstentions, recorded regardless of validation.enabled: with nullable
+                # scalar leaves a null cell no longer trips the Pydantic guard, so this
+                # is what makes an abstention attributable on a stack that has
+                # validation switched off (v0.6-migrated stacks carry enabled: false).
+                abstained, abstained_total = required_null_paths(
+                    extracted_fields, self._class_schema
+                )
+                self._pending_abstained_fields = (
+                    {"count": abstained_total, "paths": abstained}
+                    if abstained_total
+                    else None
+                )
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for extraction: {total_duration:.2f} seconds")
@@ -5342,6 +5376,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # extraction.validation.enabled).
         if self._pending_validation_metadata is not None:
             metadata["validation"] = self._pending_validation_metadata
+        if self._pending_abstained_fields is not None:
+            metadata["abstained_fields"] = self._pending_abstained_fields
         if self._pending_forced_tool_metadata is not None:
             # Recorded so an A/B can tell "forcing had no effect" from "forcing
             # never ran" — a skipped route or an unhonored force are both normal
@@ -6008,10 +6044,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
 
-        # TRANSPORT model — required-ness relaxed so the agent can abstain with null;
-        # still enforced by extraction.validation against the real schema (#782).
+        # TRANSPORT model — scalar leaves nullable so the agent can abstain on a
+        # cell; `required` is KEPT so structure is still enforced (#782).
         dynamic_model = create_pydantic_model_from_json_schema(
-            schema=relax_required_for_transport(self._class_schema),
+            schema=nullable_leaves_for_transport(self._class_schema),
             class_label=section_info.class_label,
             clean_schema=False,
         )
@@ -6099,6 +6135,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 persistence=persistence,
                 shard_runner=default_shard_runner,
                 assess_runner=self._build_assess_runner(section_info, self._document),
+                # See the in-process fan-out: schema checks only, no table evidence.
+                schema_validator=self._build_schema_validator(),
             )
         )
         return {
@@ -6270,6 +6308,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Same validation/escalation + completeness as the in-process path.
         self._pending_validation_metadata = None
+        self._pending_abstained_fields = None
         self._pending_extraction_model = model_id
         message_prompt: Any = ""
         (
@@ -6291,6 +6330,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         if validation_metadata is not None:
             self._pending_validation_metadata = validation_metadata
+        # Abstentions, recorded regardless of validation.enabled: with nullable
+        # scalar leaves a null cell no longer trips the Pydantic guard, so this
+        # is what makes an abstention attributable on a stack that has
+        # validation switched off (v0.6-migrated stacks carry enabled: false).
+        abstained, abstained_total = required_null_paths(
+            extracted_fields, self._class_schema
+        )
+        self._pending_abstained_fields = (
+            {"count": abstained_total, "paths": abstained} if abstained_total else None
+        )
         if escalation_metering:
             from idp_common.extraction.agentic_idp import _accumulate_metering
 

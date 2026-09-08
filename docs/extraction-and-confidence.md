@@ -224,8 +224,10 @@ the schema again mid-run.
 total — so turning the setting off shows the total drop instead of leaving it
 unchanged. One caveat the preview states rather than hides: the real block is
 generated from a Pydantic model built from your class (every field gains a
-`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
-can only approximate it from the class schema. Expect the real block to be
+`title`, and every optional field — plus, in Advanced mode, every required
+*scalar*, so the agent can leave an unreadable cell `null` rather than invent a
+value — an `anyOf` with `{"type": "null"}`), so the browser can only approximate
+it from the class schema. Expect the real block to be
 **larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
 which makes the previewed saving a floor, not a ceiling.
 
