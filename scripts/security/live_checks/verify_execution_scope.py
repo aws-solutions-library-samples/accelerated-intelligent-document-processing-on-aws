@@ -93,8 +93,21 @@ def main() -> int:
         s.client("iam"), s.client("lambda"), s.client("stepfunctions"),
         s.client("dynamodb"), s.client("sts"),
     )
-    account = sts.get_caller_identity()["Account"]
-    print(f"Account {account} / {REGION}\n")
+    identity = sts.get_caller_identity()
+    account = identity["Account"]
+    # Derive the partition rather than assuming "aws" — a hardcoded arn:aws:
+    # is simply invalid in aws-us-gov / aws-cn, and the resulting error reads
+    # as a permissions problem rather than a partition one.
+    _caller_arn_parts = (identity.get("Arn") or "").split(":")
+    partition = (
+        _caller_arn_parts[1]
+        if len(_caller_arn_parts) > 1 and _caller_arn_parts[1]
+        else "aws"
+    )
+    basic_exec_policy = (
+        f"arn:{partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    )
+    print(f"Account {account} / {REGION} / partition {partition}\n")
 
     made = {"sfn_role": False, "sm": [], "table": False, "role": False, "fn": False}
 
@@ -204,7 +217,7 @@ def main() -> int:
         made["role"] = True
         iam.attach_role_policy(
             RoleName=ROLE_NAME,
-            PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            PolicyArn=basic_exec_policy,
         )
         # Mirrors GetStepFunctionExecutionResolverFunction's policy: the states
         # actions are scoped to a `<StackName>-*` execution prefix, which DOES
@@ -221,7 +234,8 @@ def main() -> int:
                             "states:GetExecutionHistory",
                         ],
                         "Resource": (
-                            f"arn:aws:states:{REGION}:{account}:execution:{PREFIX}-*:*"
+                            f"arn:{partition}:states:{REGION}:{account}"
+                            f":execution:{PREFIX}-*:*"
                         ),
                     },
                     {
@@ -315,7 +329,7 @@ def main() -> int:
 
         print("\n--- 7. operational failure still returns a 200 error payload ---")
         bogus = (
-            f"arn:aws:states:{REGION}:{account}:execution:{OWN_SM}:"
+            f"arn:{partition}:states:{REGION}:{account}:execution:{OWN_SM}:"
             "00000000-0000-0000-0000-000000000000"
         )
         err, body = invoke(event(bogus, UNSCOPED_USER, ["Viewer"]))
@@ -345,7 +359,7 @@ def main() -> int:
                 iam.delete_role_policy(RoleName=ROLE_NAME, PolicyName="resolver")
                 iam.detach_role_policy(
                     RoleName=ROLE_NAME,
-                    PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                    PolicyArn=basic_exec_policy,
                 )
                 iam.delete_role(RoleName=ROLE_NAME)
                 print(f"  deleted role {ROLE_NAME}")
@@ -354,7 +368,9 @@ def main() -> int:
         for name in made["sm"]:
             try:
                 sfn.delete_state_machine(
-                    stateMachineArn=f"arn:aws:states:{REGION}:{account}:stateMachine:{name}"
+                    stateMachineArn=(
+                        f"arn:{partition}:states:{REGION}:{account}:stateMachine:{name}"
+                    )
                 )
                 print(f"  deleted state machine {name}")
             except Exception as e:

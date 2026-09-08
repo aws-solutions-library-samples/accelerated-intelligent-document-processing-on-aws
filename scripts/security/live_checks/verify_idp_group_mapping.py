@@ -156,8 +156,21 @@ def main() -> int:
     iam = session.client("iam")
     lam = session.client("lambda")
     sts = session.client("sts")
-    account = sts.get_caller_identity()["Account"]
-    print(f"Account {account} / {REGION}\n")
+    identity = sts.get_caller_identity()
+    account = identity["Account"]
+    # Derive the partition rather than assuming "aws" — a hardcoded arn:aws:
+    # is simply invalid in aws-us-gov / aws-cn, and the resulting error reads
+    # as a permissions problem rather than a partition one.
+    _caller_arn_parts = (identity.get("Arn") or "").split(":")
+    partition = (
+        _caller_arn_parts[1]
+        if len(_caller_arn_parts) > 1 and _caller_arn_parts[1]
+        else "aws"
+    )
+    basic_exec_policy = (
+        f"arn:{partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+    )
+    print(f"Account {account} / {REGION} / partition {partition}\n")
 
     pool_id = None
     role_arn = None
@@ -178,7 +191,7 @@ def main() -> int:
                 }
             ],
         )["UserPool"]["Id"]
-        pool_arn = f"arn:aws:cognito-idp:{REGION}:{account}:userpool/{pool_id}"
+        pool_arn = f"arn:{partition}:cognito-idp:{REGION}:{account}:userpool/{pool_id}"
         print(f"  pool {pool_id}")
 
         for g in COGNITO_GROUPS:
@@ -231,7 +244,7 @@ def main() -> int:
         )["Role"]["Arn"]
         iam.attach_role_policy(
             RoleName=ROLE_NAME,
-            PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            PolicyArn=basic_exec_policy,
         )
         # Mirrors ExternalIdPGroupMappingCognitoPolicy in template.yaml exactly.
         iam.put_role_policy(
@@ -391,7 +404,7 @@ def main() -> int:
                 )
                 iam.detach_role_policy(
                     RoleName=ROLE_NAME,
-                    PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                    PolicyArn=basic_exec_policy,
                 )
                 iam.delete_role(RoleName=ROLE_NAME)
                 print(f"  deleted role {ROLE_NAME}")
