@@ -1276,9 +1276,17 @@ def test_step11_test_compare(stack_name):
                 test_run_ids.append(test_run_id)
                 print(f"Test run {i + 1} ID: {test_run_id}")
 
-                # Wait for test run to complete before starting next one
+                # Wait for test run to complete before starting next one.
+                # 600s, matching Step 7's budget for the same fake-w2 test set:
+                # the wait spans queue -> OCR -> classify -> extract -> assess ->
+                # evaluate, and since eda68b256 moved this step into the parallel
+                # pool it competes with Steps 3-10/13-14 on the shared stack. The
+                # inherited 300s was tuned when it ran sequentially with the
+                # stack to itself and times out under that contention (a 2-doc
+                # run was still in flight at 303s while Step 7's 3-doc run on the
+                # same test set was likewise unfinished at 305s).
                 print(f"Waiting for test run {i + 1} to complete...")
-                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 300"
+                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 600"
                 result = run_command(cmd, check=False)
 
                 if result.returncode != 0:
