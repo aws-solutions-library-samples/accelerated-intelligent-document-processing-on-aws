@@ -146,11 +146,27 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # Trusting the account root + an ArnLike condition, rather than naming
+          # principals directly, because the caller is the PIPELINE stack's
+          # CodeBuild role — `genaiic-sdlc-codepipeline-CodeBuildRole-<suffix>`,
+          # a CloudFormation-generated name this stack cannot reference without
+          # a cross-stack parameter that would break on every pipeline replace.
+          # An earlier version named BuilderRole.Arn only; the pipeline does NOT
+          # run as that role, so every assume failed and the agent silently fell
+          # back to ambient PowerUser credentials — the exact posture this role
+          # exists to prevent. Account-root trust alone grants nothing: the
+          # caller still needs its own sts:AssumeRole grant (added to STSAccess
+          # in codepipeline-s3.yml), so this is two-key, not open.
           - Effect: Allow
             Principal:
-              AWS: !GetAtt BuilderRole.Arn
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action:
               - 'sts:AssumeRole'
+            Condition:
+              ArnLike:
+                'aws:PrincipalArn':
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BuilderRoleName}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*CodeBuildRole*'
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
       Policies:

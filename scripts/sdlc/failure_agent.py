@@ -557,6 +557,7 @@ def run_failure_agent(
         if not report:
             print("⚠️  failure-agent: produced no text — falling back")
             return None
+        report = _strip_preamble(report)
         cost_note = f", cost ${cost:.2f}" if cost is not None else ""
         print(f"✅ failure-agent: completed in {elapsed:.0f}s{cost_note}")
         return report
@@ -570,6 +571,21 @@ def run_failure_agent(
     except Exception as e:  # noqa: BLE001 - diagnostics must never fail a build
         print(f"⚠️  failure-agent: {type(e).__name__}: {e} — falling back")
         return None
+
+
+def _strip_preamble(report: str) -> str:
+    """Drop anything the model emitted before the ROOT CAUSE header.
+
+    The prompt says "no preamble", and the first live run still opened with
+    "I have enough to establish the root cause decisively... Let me write up the
+    finding." — narration that belongs in a transcript, not in a CI summary a
+    human skims at 2am. Enforcing the contract in code is more reliable than
+    another round of prompt-tuning. If the header is absent (the model ignored
+    the format entirely) the text is returned untouched rather than discarded.
+    """
+    marker = "ROOT CAUSE"
+    idx = report.find(marker)
+    return report[idx:].strip() if idx > 0 else report.strip()
 
 
 def _parse_agent_output(stdout: str) -> tuple[str | None, float | None]:

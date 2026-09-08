@@ -174,6 +174,25 @@ def test_agent_swallows_unexpected_errors(monkeypatch):
     assert fa.run_failure_agent("stk", "err", []) is None
 
 
+def test_preamble_is_stripped():
+    # Observed in the first live run: the model narrated before the header.
+    leaked = (
+        "I have enough to establish the root cause decisively from the source.\n"
+        "Let me write up the finding.\n\n"
+        "ROOT CAUSE\n  Step 11 timed out."
+    )
+    cleaned = fa._strip_preamble(leaked)
+    assert cleaned.startswith("ROOT CAUSE")
+    assert "Let me write up" not in cleaned
+
+
+def test_preamble_strip_keeps_text_that_ignored_the_format():
+    # Better a badly formatted report than no report.
+    assert fa._strip_preamble("no header here") == "no header here"
+    # Already compliant: unchanged apart from trimming.
+    assert fa._strip_preamble("ROOT CAUSE\n  x\n") == "ROOT CAUSE\n  x"
+
+
 def test_output_parsing_handles_json_plain_text_and_junk():
     assert fa._parse_agent_output(
         '{"result": "ROOT CAUSE\\n  x", "total_cost_usd": 1.5}'
