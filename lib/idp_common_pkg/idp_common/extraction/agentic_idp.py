@@ -983,11 +983,32 @@ ROW COUNT VALIDATION:
 """
 
 
+# Backoff bounds for the agent call. ``max_delay`` was 1800 — thirty minutes of
+# backoff for a function Lambda kills at 900 seconds — so a single transient
+# ``Read timed out`` could spend the entire invocation asleep and lose the whole
+# shard, which Step Functions then repeats from scratch having persisted nothing.
+# Two bounds now apply, whichever binds first:
+#
+# * ``max_delay=60`` keeps any ONE sleep well inside a single invocation. Delays
+#   run 5, 10, 20, 40, 60, 60, ... rather than doubling to half an hour.
+# * ``max_total_delay=300`` bounds the SUM. A per-sleep cap alone still permits
+#   50 x 60s; five minutes is a third of a 900s invocation, which leaves room for
+#   the work itself.
+#
+# The decorator additionally refuses any sleep that would not finish before the
+# Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
+# short-remaining invocation it gives up sooner than either constant implies.
+# ``max_retries=50`` is left alone: the real bound is time, not attempts.
+_AGENT_MAX_BACKOFF_SECONDS = 60
+_AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300
+
+
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
-    max_delay=1800,
+    max_delay=_AGENT_MAX_BACKOFF_SECONDS,
     jitter=0.5,
+    max_total_delay=_AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     return await agent.invoke_async(input)
