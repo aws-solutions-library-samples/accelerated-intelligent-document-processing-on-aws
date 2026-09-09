@@ -499,22 +499,41 @@ The solution tracks metrics for throttling events and successful retries, viewab
 
 ### Step Functions Retry Configuration
 
-The Step Functions state machine includes comprehensive retry policies for API failures:
+The state machine retries each processing task on **transient** failures only. Step
+Functions matches the error *name* the Lambda reports (the Python exception class),
+so each task lists the Lambda service errors, the Lambda timeout
+(`Sandbox.Timedout`) and the Bedrock throttling / availability codes. The five
+extraction and assessment task states (in-process extraction, shard plan, shard,
+shard merge, assessment) additionally list `TransientError` — the one name their
+handlers re-raise a transient cause under when it arrives as an ordinary Python
+exception (a botocore read or connect timeout, a dropped connection, a Strands
+wrapper around one). The classification lives in
+`idp_common.utils.transient_errors`. It judges an exception by its own error
+code first (a `ValidationException` is deterministic whatever its message says),
+and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
+hide a transient root and a swallowed transient error cannot lend its transience
+to an unrelated failure raised after it.
+
+Deterministic failures — a malformed request (`ValidationException`), a schema
+violation, an unparseable document, missing input — keep their own names and are
+**not** retried: eight attempts at 2.5× backoff cannot make a document that fails the
+same way every time succeed, they only multiply its cost and delay. No task retries
+`States.TaskFailed` or `States.ALL` for that reason.
 
 ```json
 {
   "Retry": [
     {
-      "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
-      "IntervalSeconds": 2,
-      "MaxAttempts": 6,
-      "BackoffRate": 2
-    },
-    {
-      "ErrorEquals": ["States.TaskFailed"],
-      "IntervalSeconds": 1,
-      "MaxAttempts": 3,
-      "BackoffRate": 2
+      "ErrorEquals": [
+        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout",
+        "Lambda.ServiceException", "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException", "Lambda.TooManyRequestsException",
+        "ThrottlingException", "ServiceUnavailableException",
+        "InternalServerException", "TransientError"
+      ],
+      "IntervalSeconds": 10,
+      "MaxAttempts": 8,
+      "BackoffRate": 2.5
     }
   ]
 }

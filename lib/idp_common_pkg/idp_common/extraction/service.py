@@ -917,7 +917,11 @@ class ExtractionService:
         except Exception as e:
             error_msg = f"Failed to invoke custom prompt Lambda {lambda_arn}: {str(e)}"
             logger.error(error_msg)
-            raise Exception(error_msg)
+            # `from e` keeps the cause chain: a Lambda-side throttle or a botocore
+            # timeout invoking the hook is transient and the handler classifies it
+            # through the explicit cause (#787); a hook that failed on its own
+            # terms stays a hard error.
+            raise Exception(error_msg) from e
 
     def _reset_context(self) -> None:
         """Reset instance variables for clean state before processing."""
