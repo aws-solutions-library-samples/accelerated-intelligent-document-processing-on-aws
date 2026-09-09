@@ -224,8 +224,13 @@ the schema again mid-run.
 total — so turning the setting off shows the total drop instead of leaving it
 unchanged. One caveat the preview states rather than hides: the real block is
 generated from a Pydantic model built from your class (every field gains a
-`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
-can only approximate it from the class schema. Expect the real block to be
+`title`, and every optional field — plus, in Advanced mode, every required
+*scalar*, so the agent can leave an unreadable cell `null` rather than invent a
+value — an `anyOf` with `{"type": "null"}`), so the browser can only approximate
+it from the class schema. Cells the agent left `null` because it could not read them
+are counted under `metadata.abstained_fields` (scalar cells only — a whole list
+returned as null is a defect, not an abstention) and shown in the **Processing
+Report**, regardless of whether schema validation is enabled. Expect the real block to be
 **larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
 which makes the previewed saving a floor, not a ceiling.
 
@@ -303,7 +308,7 @@ extraction:
       min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
 
-- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back (kept only if valid or fewer errors) — far cheaper than human review. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
+- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.

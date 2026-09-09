@@ -1509,7 +1509,8 @@ How it works:
      into the result. Scoping to the failing fields keeps the schema, prompt and
      output small — far cheaper and faster than re-running the whole section —
      and the fields that already validated are preserved untouched. The merged
-     result is kept only if it is valid or has strictly fewer violations; then
+     result is merged field by field — an escalated field replaces the original only
+   if it lost no populated data and has fewer violations than before (#791); then
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
@@ -1524,8 +1525,14 @@ How it works:
   (path + validator + message), `check_formats`, `fail_action`,
   `initial_error_count` / `initial_failed_fields` (before any escalation), and —
   when escalation ran — `escalated`, `escalation_model`, `escalation_scope`
-  (`field-subset` | `full-section`), `escalation_fields`, and
-  `resolved_by_escalation`.
+  (`field-subset` | `full-section`), `escalation_fields`,
+  `resolved_by_escalation`, and `escalation_kept` / `escalation_decision`:
+  whether the escalated result **replaced** the original, and why. An escalation
+  is kept only if it lost no populated data (a list that had rows must not come
+  back null, absent or shorter; a non-null value must not come back null) and
+  got better **per field** — never on total error count, because per-row errors
+  scale with row count while a whole-field error is always one, so totals favour
+  the result with less data (`validation.escalation_outcome`, #791).
 - `metadata.population_check` — completeness heuristic (advisory). Reports
   `fields_defined`, `fields_populated`, `population_ratio`, `below_threshold`,
   and `empty_fields` (dotted paths of unpopulated leaves). A warning is logged
@@ -1591,10 +1598,17 @@ state the rule outright — declining the tool obliges direct extraction, and on
 unreadable column means that *cell* is null, not the row and not the list.
 
 **Null = absent.** Extraction follows the convention "return `null` if a field is
-not found", and the generated Pydantic model makes every non-required property
-`Optional[...] = None`. Validation therefore treats a `null` property as
-**absent**: an optional field left null passes, while a *required* field left
-null surfaces as a `required` violation (not a confusing type error). Enum /
+not found". The generated Pydantic model makes every non-required property
+`Optional[...] = None`, and on the **agentic** path the transport model
+additionally makes every required *scalar* nullable (`X | None`, still required —
+`schema.nullable_leaves_for_transport`), so the agent can abstain on a cell it
+cannot read instead of inventing a value; arrays, groups and `required` itself are
+untouched, so an omitted key or a nulled list still fails the model (#782).
+Validation therefore treats a `null` property as **absent**: an optional field
+left null passes, while a *required* field left null surfaces as a `required`
+violation (not a confusing type error) — and is fed back to the agent with an
+explicit instruction to fill it only if readable. Abstentions are also counted,
+independently of `validation.enabled`, under `metadata.abstained_fields`. Enum /
 pattern / format / numeric / `minItems` checks on present values are unaffected.
 
 > **`format: date` caveat.** JSON-Schema `format: date` means ISO-8601

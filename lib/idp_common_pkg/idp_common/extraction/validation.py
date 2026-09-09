@@ -48,7 +48,7 @@ _IDP_EXTENSION_PREFIX = "x-aws-idp-"
 # context window. The full count is always reported in the summary line.
 _MAX_FEEDBACK_ERRORS = 25
 
-_REQUIRED_PROP_RE = re.compile(r"'([^']+)' is a required property")
+_REQUIRED_PROP_RE = re.compile(r"""(['"])(.+?)\1 is a required property""")
 
 
 @dataclass
@@ -58,6 +58,15 @@ class FieldError:
     path: str
     message: str
     validator: str
+    # The top-level property this error belongs to (None for unattributable root
+    # errors). Lets callers reason PER FIELD rather than by total count — see
+    # ``escalation_outcome`` for why the distinction matters.
+    field: str | None = None
+    # For a ``required`` error: whether the missing property is declared as a
+    # SCALAR in the schema (None when unknown). Drives the abstention note in
+    # ``agent_feedback``: "leave it null" is right for an unreadable cell and
+    # wrong for a whole list or group.
+    leaf: bool | None = None
 
     def __str__(self) -> str:
         loc = self.path or "(root)"
@@ -79,18 +88,52 @@ class ValidationReport:
         if self.valid:
             return "All extracted fields satisfy the schema constraints."
 
-        shown = self.errors[:_MAX_FEEDBACK_ERRORS]
+        # A missing/null REQUIRED scalar is the one violation an agent may be
+        # unable to fix honestly. Saying only "fix each one" invites it to invent a
+        # plausible value — a fabricated 0.0 for an unreadable number is
+        # schema-valid, silent and indistinguishable from a real zero (#782). So
+        # for SCALAR leaves, ask for the value only if it is readable and make
+        # abstention a sanctioned outcome. Deliberately NOT for a missing list or
+        # group: "leave it null" there would sanction nulling a whole table, which
+        # is the #666 failure — and ``build_empty_list_feedback`` says the opposite.
+        abstainable = [
+            err for err in self.errors if err.validator == "required" and err.leaf
+        ]
+        shown = list(self.errors[:_MAX_FEEDBACK_ERRORS])
+        if abstainable and not any(e is err for err in shown for e in abstainable):
+            # The note must never refer to an error the agent cannot see. APPEND
+            # rather than displace: the 25th shown error may be the only instance
+            # of its kind.
+            shown.append(abstainable[0])
         lines = [
             "The extraction violates the following schema constraints. "
             "Fix each one using the available tools and keep all other data:",
         ]
         lines.extend(f"  - {err}" for err in shown)
-        if len(self.errors) > _MAX_FEEDBACK_ERRORS:
+        if len(self.errors) > len(shown):
             lines.append(
-                f"  ... and {len(self.errors) - _MAX_FEEDBACK_ERRORS} more "
-                "violation(s) of the same kind."
+                f"  ... and {len(self.errors) - len(shown)} more violation(s)."
+            )
+        if abstainable:
+            lines.append(
+                "  NOTE on a missing required VALUE (a single cell or field, not a "
+                "list): supply it ONLY if you can actually read it in the document. "
+                "If it is genuinely absent, unreadable or illegible, leave that one "
+                "cell null — do NOT guess, and do NOT substitute a placeholder such "
+                "as 0, false or an empty string. A null cell is recorded and reported "
+                "as missing, which is correct; an invented value is indistinguishable "
+                "from a real one and is worse than no answer. This never applies to "
+                "a list or group: never null a whole list or drop a row — emit every "
+                "row and null only the unreadable cell."
             )
         return "\n".join(lines)
+
+    def errors_by_field(self) -> dict[str | None, int]:
+        """Error count per top-level field (``None`` bucket for root errors)."""
+        counts: dict[str | None, int] = {}
+        for err in self.errors:
+            counts[err.field] = counts.get(err.field, 0) + 1
+        return counts
 
     def to_metadata(self) -> dict[str, Any]:
         """Compact, JSON-serializable summary for the extraction metadata block."""
@@ -98,6 +141,12 @@ class ValidationReport:
             "valid": self.valid,
             "error_count": len(self.errors),
             "failed_fields": sorted(self.failed_top_level_fields),
+            "errors_by_field": {
+                (k if k is not None else "(root)"): v
+                for k, v in sorted(
+                    self.errors_by_field().items(), key=lambda kv: str(kv[0])
+                )
+            },
             "errors": [
                 {"path": e.path, "validator": e.validator, "message": e.message}
                 for e in self.errors[:_MAX_FEEDBACK_ERRORS]
@@ -191,6 +240,46 @@ def _format_path(absolute_path: Any) -> str:
     return "".join(parts)
 
 
+_SCALAR_JSON_TYPES = frozenset({"string", "number", "integer", "boolean"})
+
+
+def _required_error_is_scalar(
+    error: jsonschema.ValidationError, root: dict[str, Any] | None = None
+) -> bool | None:
+    """For a ``required`` error, is the missing property declared as a scalar?
+
+    ``error.schema`` is the object subschema whose ``required`` list failed, so the
+    missing property's declaration is ``error.schema["properties"][name]``. Returns
+    None for non-``required`` errors or when the declaration cannot be resolved
+    (e.g. a ``$ref``), so callers treat unknown as "do not assume a leaf".
+    """
+    if error.validator != "required":
+        return None
+    match = _REQUIRED_PROP_RE.search(error.message)
+    if not match or not isinstance(error.schema, dict):
+        return None
+    # group(2) is the name; group(1) is the quote character (jsonschema uses
+    # repr(), which switches to double quotes for a name with an apostrophe).
+    prop = (error.schema.get("properties") or {}).get(match.group(2))
+    if isinstance(prop, dict) and "const" in prop:
+        # A const leaf is not abstainable: the transport model does not widen it,
+        # so telling the agent "leave it null" would be rejected. Agrees with
+        # ``nullable_leaves_for_transport``.
+        return False
+    if isinstance(prop, dict) and "$ref" in prop and isinstance(root, dict):
+        # One level of local $ref via the root $defs, so a scalar declared as
+        # `{"$ref": "#/$defs/Amount"}` still counts as a leaf.
+        target = str(prop["$ref"]).split("/")[-1]
+        prop = (root.get("$defs") or {}).get(target, prop)
+    if not isinstance(prop, dict):
+        return None
+    declared = prop.get("type")
+    types = [declared] if isinstance(declared, str) else declared
+    if not isinstance(types, list) or not types:
+        return None
+    return all(x in _SCALAR_JSON_TYPES for x in types if x != "null")
+
+
 def _top_level_field(error: jsonschema.ValidationError) -> str | None:
     """Identify the top-level property an error belongs to, if any.
 
@@ -204,7 +293,7 @@ def _top_level_field(error: jsonschema.ValidationError) -> str | None:
     if error.validator == "required":
         match = _REQUIRED_PROP_RE.search(error.message)
         if match:
-            return match.group(1)
+            return match.group(2)
     return None
 
 
@@ -252,14 +341,16 @@ def validate_extraction(
     errors: list[FieldError] = []
     failed_fields: set[str] = set()
     for err in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path)):
+        top = _top_level_field(err)
         errors.append(
             FieldError(
                 path=_format_path(err.absolute_path),
                 message=err.message,
                 validator=str(err.validator),
+                field=top,
+                leaf=_required_error_is_scalar(err, cleaned),
             )
         )
-        top = _top_level_field(err)
         if top is not None:
             failed_fields.add(top)
 
@@ -268,6 +359,108 @@ def validate_extraction(
         errors=errors,
         failed_top_level_fields=failed_fields,
     )
+
+
+def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """The class schema with every ``required`` list and every ``minItems`` /
+    ``maxItems`` bound removed.
+
+    For validating ONE SHARD of a sharded agentic section. A shard sees only its
+    pages and is told "if a field does not appear in your pages, leave it null —
+    another shard will provide it", so a document-level required scalar is
+    legitimately null on most shards and a declared list legitimately empty on a
+    cover page. Validating a shard against the full schema turned that correct
+    behaviour into up to three extra agent turns per shard and told a cover-page
+    shard to produce rows its pages do not contain (the #666 fabrication pressure).
+    Row-count bounds describe the whole section, not one shard, in BOTH directions
+    — a shard whose pages hold more rows than the section's ``maxItems`` must not
+    be told to drop rows before the merge counts them. What remains — type,
+    format, enum, pattern, value bounds, ``uniqueItems`` — is what a shard CAN fix.
+    Presence and row counts are enforced once, on the merged section, against the
+    real schema.
+
+    Only the KEYWORD forms are dropped: ``required`` as a list of names, and the
+    bounds as integers. A property literally named ``minItems`` (its value is a
+    schema, not an int) survives.
+    """
+    return _strip_shard_keywords(schema)
+
+
+def _strip_shard_keywords(node: Any) -> Any:
+    if isinstance(node, list):
+        return [_strip_shard_keywords(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    return {
+        k: _strip_shard_keywords(v)
+        for k, v in node.items()
+        if not (k == "required" and isinstance(v, list))
+        and not (k in ("minItems", "maxItems") and isinstance(v, int))
+    }
+
+
+def required_null_paths(
+    data: Any, schema: dict[str, Any], *, limit: int = 200
+) -> tuple[list[str], int]:
+    """Paths of REQUIRED properties that are null or absent, plus the total count.
+
+    Independent of ``extraction.validation.enabled`` on purpose: with a nullable
+    transport model an abstention no longer trips the Pydantic guard, so this is
+    the record that survives when validation is switched off (v0.6-migrated
+    stacks carry ``enabled: false``). Recorded as ``metadata.abstained_fields``.
+
+    Counts SCALAR leaves only. A null list or group is not an abstention — it is
+    the whole-list loss this codebase treats as a defect (#666) — and must not be
+    filed under the benign label. Walks objects and array items; ``$ref`` is
+    resolved one level via ``$defs``; ``anyOf``/``oneOf`` branches,
+    ``additionalProperties`` and ``prefixItems`` are not walked (a known
+    under-count, never an over-count).
+    """
+    defs = (schema or {}).get("$defs") or {}
+
+    def _deref(node: Any) -> Any:
+        if isinstance(node, dict) and "$ref" in node:
+            return defs.get(str(node["$ref"]).split("/")[-1], {})
+        return node
+
+    found: list[str] = []
+    total = 0
+
+    def _declares_scalar(prop: Any) -> bool:
+        if not isinstance(prop, dict):
+            return False
+        if "properties" in prop or "items" in prop or "const" in prop:
+            return False
+        declared = prop.get("type")
+        types = [declared] if isinstance(declared, str) else declared
+        if not isinstance(types, list) or not types:
+            return False
+        return all(x in _SCALAR_JSON_TYPES for x in types if x != "null")
+
+    def _walk(value: Any, node: Any, path: str) -> None:
+        nonlocal total
+        node = _deref(node)
+        if not isinstance(node, dict):
+            return
+        if isinstance(value, dict):
+            props = node.get("properties") or {}
+            for name in node.get("required") or []:
+                if value.get(name) is None and _declares_scalar(
+                    _deref(props.get(name))
+                ):
+                    total += 1
+                    if len(found) < limit:
+                        found.append(f"{path}.{name}" if path else name)
+            for name, sub in props.items():
+                if name in value:
+                    _walk(value[name], sub, f"{path}.{name}" if path else name)
+        elif isinstance(value, list):
+            item_schema = node.get("items")
+            for i, item in enumerate(value):
+                _walk(item, item_schema, f"{path}[{i}]")
+
+    _walk(data, schema, "")
+    return found, total
 
 
 def find_empty_declared_lists(
@@ -341,6 +534,182 @@ def build_empty_list_feedback(
         "see. Do not drop the row, and do not drop the whole list.\n"
         "  - Keep every field you have already extracted correctly."
     )
+
+
+def _populated_leaves(value: Any) -> int:
+    """Count leaves that carry a value. null, empty/blank strings, empty
+    containers and all-null rows contribute nothing."""
+    if value is None:
+        return 0
+    if isinstance(value, dict):
+        return sum(_populated_leaves(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_populated_leaves(v) for v in value)
+    if isinstance(value, str) and not value.strip():
+        return 0
+    return 1
+
+
+def _populated_rows(value: Any) -> int | None:
+    """Rows of a list that carry at least one value; None if not a list."""
+    if not isinstance(value, list):
+        return None
+    return sum(1 for row in value if _populated_leaves(row) > 0)
+
+
+# Constraints whose ONLY fix is removing something. A row-count decrease on a
+# field that violated one of these is a correction, not a truncation.
+_REMOVAL_FIXES = frozenset({"maxItems", "uniqueItems"})
+
+
+def _field_errors(report: ValidationReport | None, field: str) -> list[FieldError]:
+    if report is None:
+        return []
+    return [e for e in report.errors if e.field == field]
+
+
+def escalation_data_loss(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport | None = None,
+) -> list[str]:
+    """Top-level fields where the escalated result carries LESS data than the
+    original without that reduction being the fix. Empty when nothing was lost.
+
+    Measured on populated leaves (values that are not null/blank), not on raw
+    row counts: a row of all-null placeholders has nothing to lose, and a list
+    that keeps its row count but empties every row has lost everything.
+
+    A reduction is allowed only when the original value was PRESENT BUT WRONG,
+    because then removing it can be the correction — retracting a hallucinated
+    enum value to null, dropping duplicate rows for ``uniqueItems``, trimming to
+    ``maxItems``, removing a forbidden extra key. A ``required`` error means data
+    was MISSING, and removing more data never fixes that, so a field whose only
+    errors were ``required`` may not shrink at all. That is what keeps the two
+    #791 hazards rejected: 100 abstained cells (100 ``required`` errors) may not
+    become a nulled list, and a 100-row list may not come back as 50 clean rows.
+
+    Only top-level fields are compared, but leaf counting recurses, so a nested
+    list destroyed inside a group registers as loss on the group.
+    """
+    lost: list[str] = []
+    for name, before_val in (original or {}).items():
+        after_val = (escalated or {}).get(name)
+        leaves_before, leaves_after = (
+            _populated_leaves(before_val),
+            _populated_leaves(after_val),
+        )
+        if leaves_before == 0:
+            continue
+        errs = _field_errors(before, name)
+        non_required = [e for e in errs if e.validator != "required"]
+        rows_before, rows_after = (
+            _populated_rows(before_val),
+            _populated_rows(after_val),
+        )
+        if rows_before is not None and rows_before > 0:
+            rows_after = rows_after if rows_after is not None else 0
+            if rows_after < rows_before and not any(
+                e.validator in _REMOVAL_FIXES for e in errs
+            ):
+                lost.append(
+                    f"{name}: had {rows_before} populated rows, escalation returned "
+                    f"{rows_after}" + ("" if rows_after else " (null/absent)")
+                )
+                continue
+        if leaves_after < leaves_before and not non_required:
+            what = "null" if after_val is None else f"{leaves_after} populated value(s)"
+            lost.append(
+                f"{name}: had {leaves_before} populated value(s), escalation returned {what}"
+            )
+    return lost
+
+
+def _root_error_kinds(report: ValidationReport) -> set[tuple[str, str]]:
+    return {(e.validator, e.message) for e in report.errors if e.field is None}
+
+
+def select_escalated_fields(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport,
+    after: ValidationReport,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Merge an escalation result FIELD BY FIELD, accepting each top-level field
+    on its own merits. Returns ``(merged, decisions)`` where ``decisions`` maps
+    every field the escalation changed to ``"accepted: ..."`` or ``"rejected: ..."``.
+
+    Per field, in order: rejected if it lost data (``escalation_data_loss``);
+    rejected if it has more errors than before; accepted if it has fewer errors
+    or is now clean; otherwise rejected as no visible change. Accepting per field
+    means one field the stronger model got wrong cannot sink four it got right.
+
+    Root-level errors (``field is None``) are not attributable, so any root error
+    KIND that is new in the escalated result rejects the whole result — a count
+    comparison would let a new ``additionalProperties`` violation hide behind an
+    unparseable ``required`` one that went away.
+    """
+    original = original or {}
+    escalated = escalated or {}
+    decisions: dict[str, str] = {}
+    merged = dict(original)
+
+    new_root = _root_error_kinds(after) - _root_error_kinds(before)
+    if new_root:
+        kinds = ", ".join(sorted({v for v, _ in new_root}))
+        for name in escalated:
+            if escalated.get(name) != original.get(name):
+                decisions[name] = f"rejected: escalation introduced root-level {kinds}"
+        return merged, decisions
+
+    lost = {
+        entry.split(":", 1)[0]: entry
+        for entry in escalation_data_loss(original, escalated, before)
+    }
+    before_counts, after_counts = before.errors_by_field(), after.errors_by_field()
+    for name in escalated:
+        if escalated.get(name) == original.get(name):
+            continue
+        if name in lost:
+            decisions[name] = "rejected: " + lost[name]
+            continue
+        b, a = before_counts.get(name, 0), after_counts.get(name, 0)
+        if a > b:
+            decisions[name] = f"rejected: errors rose {b} -> {a}"
+        elif a < b:
+            decisions[name] = f"accepted: errors fell {b} -> {a}"
+            merged[name] = escalated[name]
+        elif a == 0 and b == 0:
+            # Valid before and after; the escalation changed a clean field. That is
+            # neither a fix nor a loss — keep the original, the known-good value.
+            decisions[name] = "rejected: field was already valid"
+        else:
+            decisions[name] = f"rejected: still {a} error(s), nothing visibly fixed"
+    return merged, decisions
+
+
+def escalation_outcome(
+    original: dict[str, Any],
+    escalated: dict[str, Any],
+    before: ValidationReport,
+    after: ValidationReport,
+) -> tuple[bool, str]:
+    """Whole-result verdict over :func:`select_escalated_fields`.
+
+    ``keep`` is True when at least one field was accepted. The reason lists every
+    per-field decision, so a rejected escalation is explainable. Replaces
+    ``esc.valid or len(esc.errors) < len(full.errors)``, which compared TOTAL
+    error counts: per-row errors scale with the row count while a whole-field
+    error is always one, so totals favoured the result with LESS data — a nulled
+    100-row list "improved" from 100 errors to 1 and was kept (#791).
+    """
+    merged, decisions = select_escalated_fields(original, escalated, before, after)
+    accepted = sorted(k for k, v in decisions.items() if v.startswith("accepted"))
+    rejected = sorted(k for k, v in decisions.items() if v.startswith("rejected"))
+    if not decisions:
+        return False, "escalation changed nothing"
+    parts = [f"{k} {decisions[k]}" for k in accepted + rejected]
+    return bool(accepted), "; ".join(parts)
 
 
 def build_subset_schema(
