@@ -1,4 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
+
+_IDP_EXTENSION_PREFIX = "x-aws-idp-"
 from .schema_constants import (
     # JSON Schema standard fields
     SCHEMA_FIELD,
@@ -235,6 +237,18 @@ def migrate_legacy_to_schema(
             migrated_class[X_AWS_IDP_EXCLUSION_REASON] = class_config[
                 "exclusion_reason"
             ]
+
+        # Any other class-level x-aws-idp-* key (e.g. x-aws-idp-allow-integrated-lists,
+        # x-aws-idp-multi-instance) is carried through unchanged: the modern form
+        # tolerates arbitrary extension keys, and dropping one here made the
+        # runtime and the config-time check disagree about a legacy-format class.
+        for key, value in class_config.items():
+            if (
+                isinstance(key, str)
+                and key.startswith(_IDP_EXTENSION_PREFIX)
+                and key not in migrated_class
+            ):
+                migrated_class[key] = value
 
         legacy_attributes = class_config.get(LEGACY_ATTRIBUTES, [])
 
@@ -565,6 +579,15 @@ def _convert_classes_to_json_schema(
             schema[X_AWS_IDP_EXCLUSION_REASON] = doc_type_class[
                 X_AWS_IDP_EXCLUSION_REASON
             ]
+
+        # Carry the remaining class-level extension keys (see migrate_legacy_to_schema).
+        for key, value in doc_type_class.items():
+            if (
+                isinstance(key, str)
+                and key.startswith(_IDP_EXTENSION_PREFIX)
+                and key not in schema
+            ):
+                schema[key] = value
 
         if defs:
             schema[DEFS_FIELD] = defs

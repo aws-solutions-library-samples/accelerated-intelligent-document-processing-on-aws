@@ -1303,10 +1303,10 @@ def _class_declares_list(cls: Dict[str, Any]) -> bool:
         ATTRIBUTE_TYPE_LIST,
         LEGACY_ATTRIBUTE_TYPE,
         LEGACY_ATTRIBUTES,
-        X_AWS_IDP_MULTI_INSTANCE,
     )
+    from idp_common.schema.multi_instance import is_multi_instance
 
-    if cls.get(X_AWS_IDP_MULTI_INSTANCE):
+    if is_multi_instance(cls):  # tolerant of "true"/"false" strings, like the runtime
         return True
     props = cls.get("properties") or {}
     if isinstance(props, dict) and any(
@@ -1337,6 +1337,7 @@ def _validate_simple_integrated_lists(
     validate operation. The web UI does NOT validate on save; its Prompt Preview
     pane shows the same decision per class.
     """
+    from idp_common.config.flags import flag_is_true
     from idp_common.config.schema_constants import (
         X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
         X_AWS_IDP_EXTRACTION_TASK_PROMPT,
@@ -1348,15 +1349,15 @@ def _validate_simple_integrated_lists(
     confidence = extraction.get("confidence") or {}
     if not isinstance(confidence, dict) or confidence.get("mode") != "integrated":
         return
-    if confidence.get("enabled") is False:
-        return  # reconciles to mode "off": no confidence runs at all
+    if not flag_is_true(confidence.get("enabled"), default=True):
+        return  # reconciles to mode "off": no confidence runs at all ("false" too)
     affected: List[str] = []
     for cls in merged_config.get("classes") or []:
         if not isinstance(cls, dict):
             continue
         if cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
             continue  # a per-class prompt override opts the class out
-        if cls.get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS):
+        if flag_is_true(cls.get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS)):
             continue  # explicit opt-in: the author verified list completeness
         if _class_declares_list(cls):
             affected.append(str(cls.get("$id") or cls.get("name") or "?"))

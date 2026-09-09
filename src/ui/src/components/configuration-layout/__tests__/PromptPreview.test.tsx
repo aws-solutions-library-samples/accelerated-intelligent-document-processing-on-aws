@@ -328,6 +328,9 @@ describe('simpleIntegratedDowngraded', () => {
     expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': true })).toBe(false);
     expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': 'true' })).toBe(false);
     expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': false })).toBe(true);
+    // String spellings agree with the backend's flag_is_true: "false" is NOT an opt-in.
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': 'false' })).toBe(true);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...scalarClass, 'x-aws-idp-multi-instance': 'false' })).toBe(false);
   });
 
   it('treats mode as authoritative over a stale agentic.enabled, like the backend', () => {

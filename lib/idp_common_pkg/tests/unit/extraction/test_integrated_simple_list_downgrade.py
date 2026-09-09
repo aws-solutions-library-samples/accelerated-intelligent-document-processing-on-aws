@@ -472,5 +472,120 @@ def test_agentic_call_site_does_not_consult_the_downgrade():
     )
 
 
+def _validate_si(extraction_extra: dict, classes: list) -> dict:
+    """validate_config under Simple + integrated, with `extraction_extra` merged in."""
+    return _validate(
+        {"mode": "simple", "confidence": {"mode": "integrated"}, **extraction_extra},
+        classes,
+    )
+
+
+@pytest.mark.unit
+def test_config_check_warns_for_a_multi_instance_scalar_only_class():
+    """validate_config sees the UN-wrapped stored class, so the multi-instance branch
+    of _class_declares_list is the only thing that makes the warning fire here."""
+    cls = {
+        "$id": "PayStub",
+        "type": "object",
+        "properties": SCALAR_SCHEMA["properties"],
+        "x-aws-idp-multi-instance": True,
+    }
+    hits = _hits(_validate_si({}, [cls]))
+    assert len(hits) == 1 and "PayStub" in hits[0]
+
+
+@pytest.mark.unit
+def test_flag_strings_are_read_the_same_way_everywhere():
+    """`"false"` must mean false on the runtime, in the config check and in the UI's
+    Prompt Preview (its `boolish` mirrors the same spellings) — plain truthiness read
+    it as an opt-in on the backend only."""
+    from idp_common.config.flags import flag_is_true
+
+    for spelling, expected in [
+        (True, True),
+        ("true", True),
+        ("Yes", True),
+        ("1", True),
+        (False, False),
+        ("false", False),
+        ("no", False),
+        ("0", False),
+        (None, False),
+        ("maybe", False),  # unrecognised -> default, never a silent opt-in
+    ]:
+        assert flag_is_true(spelling) is expected, spelling
+    assert flag_is_true(None, default=True) is True
+    assert flag_is_true("false", default=True) is False
+
+    # runtime
+    for spelling, downgraded in [("false", True), ("true", False)]:
+        schema = dict(LIST_SCHEMA, **{"x-aws-idp-allow-integrated-lists": spelling})
+        svc = _svc(mode="simple", confidence="integrated", schema=schema)
+        assert (svc._simple_integrated_list_downgrade() is not None) is downgraded
+    # config check
+    base = {
+        "$id": "BankStatement",
+        "type": "object",
+        "properties": LIST_SCHEMA["properties"],
+    }
+    assert _hits(
+        _validate_si({}, [dict(base, **{"x-aws-idp-allow-integrated-lists": "false"})])
+    )
+    assert not _hits(
+        _validate_si({}, [dict(base, **{"x-aws-idp-allow-integrated-lists": "true"})])
+    )
+
+
+@pytest.mark.unit
+def test_config_check_reads_string_booleans_for_confidence_enabled_and_multi_instance():
+    base = {
+        "$id": "BankStatement",
+        "type": "object",
+        "properties": LIST_SCHEMA["properties"],
+    }
+    # "false" (a string a YAML/DynamoDB round-trip can produce) disables confidence:
+    # Pydantic reconciles it to mode "off", so nothing is downgraded and no warning.
+    assert not _hits(
+        _validate_si({"confidence": {"mode": "integrated", "enabled": "false"}}, [base])
+    )
+    # x-aws-idp-multi-instance: "false" is NOT multi-instance (matches is_multi_instance).
+    scalar = {
+        "$id": "Card",
+        "type": "object",
+        "properties": SCALAR_SCHEMA["properties"],
+        "x-aws-idp-multi-instance": "false",
+    }
+    assert not _hits(_validate_si({}, [scalar]))
+
+
+@pytest.mark.unit
+def test_legacy_attributes_class_keeps_its_extension_flags_through_migration():
+    """The runtime migrates a legacy `attributes` class before reading it; the flag
+    must survive that so the runtime and the config check agree."""
+    from idp_common.config.migration import migrate_legacy_to_schema
+
+    legacy = [
+        {
+            "name": "Invoice",
+            "description": "an invoice",
+            "attributes": [
+                {"name": "Total", "attributeType": "simple", "description": "t"},
+                {
+                    "name": "LineItems",
+                    "attributeType": "list",
+                    "description": "rows",
+                    "itemAttributes": [{"name": "Amt", "description": "a"}],
+                },
+            ],
+            "x-aws-idp-allow-integrated-lists": True,
+            "x-aws-idp-multi-instance": "true",
+        }
+    ]
+    (migrated,) = migrate_legacy_to_schema(legacy)
+    assert migrated["x-aws-idp-allow-integrated-lists"] is True
+    assert migrated["x-aws-idp-multi-instance"] == "true"
+    assert migrated["properties"]["LineItems"]["type"] == "array"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

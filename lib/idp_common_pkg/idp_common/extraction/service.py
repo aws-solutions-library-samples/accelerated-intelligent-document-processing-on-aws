@@ -5798,8 +5798,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         if not list_fields:
             return None
-        if (self._class_schema or {}).get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS):
-            # Explicit opt-in. For a multi-instance class the flag rides on the
+        from idp_common.config.flags import flag_is_true
+
+        if flag_is_true(
+            (self._class_schema or {}).get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS)
+        ):
+            # Explicit opt-in (tolerant of the "true"/"false" strings a config
+            # round-trip can produce, and in agreement with the Prompt Preview). For a multi-instance class the flag rides on the
             # wrapper (wrap_class_schema keeps every non-record-shape key there),
             # so this reads it for both plain and wrapped classes.
             logger.info(
