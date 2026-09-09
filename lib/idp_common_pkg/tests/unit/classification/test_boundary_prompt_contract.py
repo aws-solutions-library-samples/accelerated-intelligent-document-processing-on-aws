@@ -144,3 +144,21 @@ def test_the_prompt_still_carries_its_required_placeholders(task_prompt):
         "{FEW_SHOT_EXAMPLES}",
     ):
         assert ph in task_prompt, ph
+
+
+def test_repeated_column_headings_are_named_as_not_a_title(task_prompt):
+    """#726: the classifier called page 2/3 of a 3-page statement "start" because the
+    table's column headings repeat at the top of each page and look like a heading.
+    The rule has to say so explicitly — measured 8/15 -> 15/15 correct section counts
+    on the over-split shape once it did, with the two-document and paginated shapes
+    unchanged."""
+    rules = task_prompt[task_prompt.index("<boundary-detection-rules>") :]
+    assert "TABLE CONTINUATION" in rules
+    assert "COLUMN HEADINGS" in rules
+    assert "do NOT make a page a first page" in rules
+    # ...and it comes AFTER the opening-block rule it qualifies.
+    assert rules.index("OPENING HEADER BLOCK") < rules.index("TABLE CONTINUATION")
+
+
+def test_the_no_preceding_page_clause_covers_a_rows_only_page(task_prompt):
+    assert "a page that shows only table rows" in task_prompt

@@ -207,3 +207,13 @@ docs:
   documents: 1
   tag: shape=paginated
   series: null
+- id: repeathdr_3pg
+  gen: bank_statement
+  pdf: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/repeathdr_3pg.pdf
+  truth: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/repeathdr_3pg.pdf.truth.json
+  out: /home/ec2-user/projects/idp1/benchmarks/corpus/docs/repeathdr_3pg.pdf
+  rows: 100
+  pages: 3
+  documents: 1
+  tag: shape=runninghdr
+  series: null
