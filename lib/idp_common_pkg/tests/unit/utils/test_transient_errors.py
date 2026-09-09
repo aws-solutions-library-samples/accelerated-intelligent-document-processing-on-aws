@@ -46,6 +46,18 @@ class TestTransient:
                 "EventLoopException: AWSHTTPSConnectionPool(host='bedrock-runtime'): "
                 "Read timed out."
             ),
+            # S3 spellings (SlowDown is S3's throttling code) and the stream error.
+            _client_error("SlowDown"),
+            _client_error("ServiceUnavailable"),
+            _client_error("InternalError"),
+            _client_error("ModelStreamErrorException"),
+            ConnectionRefusedError(111, "Connection refused"),
+            BrokenPipeError(32, "Broken pipe"),
+            botocore.exceptions.IncompleteReadError(actual_bytes=1, expected_bytes=2),
+            # A TYPE match with a name the vocabulary does not know and no marker text.
+            type("Weird", (botocore.exceptions.ReadTimeoutError,), {})(
+                endpoint_url="https://x"
+            ),
         ],
         ids=lambda e: f"{type(e).__name__}:{str(e)[:30]}",
     )
@@ -68,6 +80,19 @@ class TestTransient:
     def test_a_transient_error_is_itself_transient(self):
         assert is_transient_error(TransientError(TimeoutError("x"))) is True
 
+    def test_only_the_explicit_cause_link_is_followed(self):
+        """A wrapper raised WITHOUT `from` inherits nothing: `__context__` is set by
+        Python on any exception raised while another is handled."""
+        root = botocore.exceptions.ReadTimeoutError(endpoint_url="https://bedrock")
+        try:
+            try:
+                raise root
+            except Exception:
+                raise RuntimeError("EventLoopException: agent failed")  # no `from`
+        except Exception as wrapper:
+            assert wrapper.__context__ is root
+            assert is_transient_error(wrapper) is False
+
 
 class TestNotTransient:
     @pytest.mark.parametrize(
@@ -83,7 +108,7 @@ class TestNotTransient:
             _client_error("ResourceNotFoundException"),
             ValueError("No section_id found in event"),
             KeyError("Transactions"),
-            json_error := __import__("json").JSONDecodeError("x", "{", 0),
+            __import__("json").JSONDecodeError("x", "{", 0),
             type("EventLoopException", (Exception,), {})("tool returned invalid JSON"),
             RuntimeError("schema validation failed: 'Amount' is a required property"),
         ],
@@ -100,6 +125,52 @@ class TestNotTransient:
                 raise RuntimeError("EventLoopException: agent failed") from inner
         except Exception as wrapper:
             assert is_transient_error(wrapper) is False
+
+    def test_bedrock_client_retry_recursion_does_not_make_a_hard_error_transient(self):
+        """`BedrockClient._invoke_with_retry` re-invokes from inside its `except`, so
+        attempt 2's ValidationException carries attempt 1's throttle as __context__.
+        The definite code on the outer exception is the verdict; the chain is not
+        walked (reproduced by the #806 review against the real client)."""
+        first = _client_error("ThrottlingException", "Rate exceeded")
+        try:
+            try:
+                raise first
+            except Exception:
+                raise _client_error(
+                    "ValidationException", "Input is too long for requested model."
+                )
+        except Exception as second:
+            assert second.__context__ is first
+            assert is_transient_error(second) is False
+        # Even an EXPLICIT `from` a transient cause does not rescue a definite hard code.
+        try:
+            raise _client_error("ValidationException", "malformed") from first
+        except Exception as explicit:
+            assert is_transient_error(explicit) is False
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ValueError("Unknown config key 'throttling_limit'"),
+            KeyError("rate exceeded"),
+            Exception(
+                "Failed to invoke custom prompt Lambda: ValidationException: Too many "
+                "tokens, please wait before trying again."
+            ),
+            _client_error(
+                "ValidationException",
+                "Too many tokens, please wait before trying again.",
+            ),
+            _client_error(
+                "AccessDeniedException", "throttled by policy: rate exceeded"
+            ),
+        ],
+        ids=lambda e: f"{type(e).__name__}:{str(e)[:30]}",
+    )
+    def test_throttling_words_in_a_deterministic_error_do_not_make_it_transient(
+        self, exc
+    ):
+        assert is_transient_error(exc) is False
 
     def test_a_cycle_in_the_chain_terminates(self):
         a, b = RuntimeError("a"), RuntimeError("b")

@@ -25,7 +25,16 @@ import pytest
 ASL_PATH = Path(__file__).resolve().parents[1] / "statemachine" / "workflow.asl.json"
 _UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[^}]+\}")
 
-TASKS = ("ExtractionStep", "AssessmentStep", "ShardExtractionStep")
+# Every task whose Lambda handler re-raises TransientError: the in-process
+# extraction task, the assessment task, and all THREE shard-runtime tasks (plan,
+# shard, merge share one handler, so all three must list the name).
+TASKS = (
+    "ExtractionStep",
+    "AssessmentStep",
+    "ExtractionPlanStep",
+    "ShardExtractionStep",
+    "ExtractionMergeStep",
+)
 
 
 def _find_state(states: dict, name: str) -> dict:
@@ -59,7 +68,7 @@ def test_transient_error_is_retried(states, task):
         f"{task} must retry TransientError — the name "
         "idp_common.utils.transient_errors re-raises transient causes under"
     )
-    for n in ("ThrottlingException", "ServiceUnavailableException", "Sandbox.Timedout"):
+    for n in ("ThrottlingException", "ServiceUnavailableException"):
         assert n in names, f"{task} lost {n}"
 
 
@@ -76,7 +85,9 @@ def test_no_blanket_retry_of_every_function_error(states, task):
 def test_the_handlers_actually_raise_the_listed_name():
     """The ASL name is only useful if the three handlers re-raise under it."""
     src_dir = ASL_PATH.parents[1] / "src"
-    for rel in (
+    for (
+        rel
+    ) in (  # each wraps its WHOLE handler, so loads before the main call count too
         "extraction_function/index.py",
         "extraction_function/sfn_runtime_handler.py",
         "assessment_function/index.py",

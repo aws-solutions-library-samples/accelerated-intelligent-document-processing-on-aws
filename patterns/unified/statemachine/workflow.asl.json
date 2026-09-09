@@ -393,6 +393,7 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
@@ -495,6 +496,7 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",

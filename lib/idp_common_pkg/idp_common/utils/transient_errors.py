@@ -22,11 +22,25 @@ document that can never succeed. This module is the narrow fix: a handler asks
 :class:`TransientError`; the state machine lists that ONE name. Hard errors keep
 their own names and are not retried.
 
-The classification reuses the pipeline's Bedrock retry vocabulary
-(``DEFAULT_RETRYABLE_ERRORS``) minus the entries that are not transient at the task
-level, walks the ``__cause__`` / ``__context__`` chain so a wrapper does not hide a
-transient root, and treats the standard-library network/timeout exception types as
-transient by ``isinstance``.
+Classification rules, in order:
+
+1. The exception's OWN verdict comes first. A ``ClientError`` with a definite code
+   is judged by that code alone — a ``ValidationException`` whose message happens
+   to mention throttling is still a ``ValidationException`` — and a deterministic
+   code ends the walk. Only an exception with no verdict of its own (a generic
+   wrapper) is looked through.
+2. Looking through follows ``__cause__`` only — the explicit ``raise ... from``
+   link. ``__context__`` is NOT followed: Python sets it on ANY exception raised
+   while another is being handled, so a retry loop that re-invokes from inside an
+   ``except`` chains attempt 2's deterministic failure to attempt 1's throttle,
+   and a deterministic error raised after a swallowed transient one would inherit
+   its transience. Both were reproduced against the Bedrock client.
+3. Transient vocabulary: the pipeline's Bedrock retry codes
+   (``DEFAULT_RETRYABLE_ERRORS``) minus the entries that are deterministic at the
+   task level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
+   ``InternalError``), the streaming error, and the standard-library / botocore /
+   urllib3 network and timeout exception TYPES. Message markers are limited to
+   network-transport text that carries no error code of its own.
 """
 
 from __future__ import annotations
@@ -40,11 +54,21 @@ import botocore.exceptions
 
 from idp_common.utils.bedrock_utils import DEFAULT_RETRYABLE_ERRORS
 
+try:  # urllib3 is a botocore dependency, but keep the import defensive
+    from urllib3.exceptions import NewConnectionError, ProtocolError
+
+    _URLLIB3_TYPES: tuple[type[BaseException], ...] = (
+        ProtocolError,
+        NewConnectionError,
+    )
+except Exception:  # pragma: no cover - environment without urllib3
+    _URLLIB3_TYPES = ()
+
 #: Entries of the Bedrock retry vocabulary that are NOT transient at the task level.
-#: ``ValidationException`` is a malformed request (deterministic — the in-call
-#: decorator retries it only for the content-filter special case, which a re-run
-#: of the whole task would not change either). ``ModelErrorException`` is Bedrock's
-#: generic model-side failure and is usually deterministic for a given input.
+#: ``ValidationException`` is a malformed or oversized request (deterministic — the
+#: in-call decorator retries it only for the content-filter special case, which a
+#: re-run of the whole task would not change either). ``ModelErrorException`` is
+#: Bedrock's generic model-side failure and is usually deterministic for an input.
 _NOT_TRANSIENT_AT_TASK_LEVEL = frozenset({"ValidationException", "ModelErrorException"})
 
 #: Error codes / exception class names treated as transient (case-insensitive).
@@ -57,46 +81,53 @@ TRANSIENT_ERROR_NAMES: frozenset[str] = frozenset(
     | {
         "modeltimeoutexception",  # Bedrock: model did not answer in time
         "modelnotreadyexception",  # Bedrock: model warming up
+        "modelstreamerrorexception",  # Bedrock: ConverseStream broke mid-stream
+        "slowdown",  # S3 throttling
+        "serviceunavailable",  # S3 / generic spelling without the suffix
+        "internalerror",  # S3 spelling
         "endpointconnectionerror",
         "connectionclosederror",
         "connectionresetterror",
+        "connectionrefusederror",
+        "brokenpipeerror",
         "remotedisconnected",
+        "incompletereaderror",
+        "responsestreamingerror",
+        "proxyconnectionerror",
+        "newconnectionerror",
+        "protocolerror",
         "timeouterror",
-        "eventloopexception",  # Strands wrapper — only if its ROOT/message is transient; see below
     }
 )
 
-#: Message substrings that mark a transient condition even when the type does not.
+#: Message substrings that mark a transient TRANSPORT failure — text urllib3 /
+#: botocore put in exceptions that carry no error code of their own. Deliberately
+#: NOT throttling phrases: those arrive inside a ``ClientError`` that has a code,
+#: and as bare text they appear in deterministic wrappers too.
 TRANSIENT_MESSAGE_MARKERS: tuple[str, ...] = (
     "read timed out",
     "awshttpsconnectionpool",
     "connection reset",
     "connection aborted",
+    "connection broken",
     "remote end closed connection",
-    "temporarily unavailable",
-    "please wait before trying again",
-    "too many tokens",
-    "reached max retries",
-    "rate exceeded",
-    "throttl",
 )
 
-#: Exception TYPES that are transient wherever they appear in the chain.
+#: Exception TYPES that are transient wherever they appear in the followed chain.
 TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
     botocore.exceptions.ReadTimeoutError,
     botocore.exceptions.ConnectTimeoutError,
     botocore.exceptions.EndpointConnectionError,
     botocore.exceptions.ConnectionClosedError,
-    ConnectionResetError,
-    ConnectionAbortedError,
+    botocore.exceptions.IncompleteReadError,
+    botocore.exceptions.ResponseStreamingError,
+    botocore.exceptions.ProxyConnectionError,
+    ConnectionError,  # Reset / Aborted / Refused / BrokenPipe
     RemoteDisconnected,
     socket.timeout,
     TimeoutError,
     asyncio.TimeoutError,
-)
-
-#: The generic wrapper names: transient only if something BENEATH or INSIDE them is.
-_WRAPPER_NAMES = frozenset({"eventloopexception"})
+) + _URLLIB3_TYPES
 
 _MAX_CHAIN = 16
 
@@ -115,12 +146,13 @@ class TransientError(Exception):
 
 
 def _chain(exc: BaseException) -> Iterable[BaseException]:
+    """``exc`` and its explicit ``raise ... from`` ancestors — never ``__context__``."""
     seen: set[int] = set()
     node: BaseException | None = exc
     while node is not None and id(node) not in seen and len(seen) < _MAX_CHAIN:
         seen.add(id(node))
         yield node
-        node = node.__cause__ or node.__context__
+        node = node.__cause__
 
 
 def _client_error_code(exc: BaseException) -> str | None:
@@ -130,33 +162,39 @@ def _client_error_code(exc: BaseException) -> str | None:
     return None
 
 
+def _verdict(node: BaseException) -> bool | None:
+    """True/False when ``node`` decides on its own; None when it must be looked through."""
+    if isinstance(node, TransientError):
+        return True
+    if isinstance(node, TRANSIENT_EXCEPTION_TYPES):
+        return True
+    code = _client_error_code(node)
+    if code is not None:
+        # A definite service code is the verdict for this node AND its chain: a
+        # ValidationException raised after a swallowed throttle is still hard.
+        return code.lower() in TRANSIENT_ERROR_NAMES
+    if type(node).__name__.lower() in TRANSIENT_ERROR_NAMES:
+        return True
+    text = str(node).lower()
+    if any(marker in text for marker in TRANSIENT_MESSAGE_MARKERS):
+        return True
+    return None
+
+
 def is_transient_error(exc: BaseException) -> bool:
-    """True if ``exc`` — or any exception it was raised from — is a transient failure.
+    """True if ``exc`` — or an exception it was explicitly raised ``from`` — is a
+    transient failure.
 
     Transient means: a retry of the same task with the same inputs can succeed
     (throttling, service unavailable, network/read timeout, dropped connection,
     model not ready). Deterministic failures (validation, schema, parse, missing
-    data) are NOT transient, whatever wrapper they arrive in.
+    data) are NOT transient, whatever wrapper they arrive in, and a node with a
+    definite deterministic verdict ends the walk.
     """
     for node in _chain(exc):
-        if isinstance(node, TransientError):
-            return True
-        if isinstance(node, TRANSIENT_EXCEPTION_TYPES):
-            return True
-        code = _client_error_code(node)
-        if code is not None:
-            if code.lower() in TRANSIENT_ERROR_NAMES:
-                return True
-            # A ClientError with a definite, non-transient code is the verdict for
-            # this node; its message is not consulted (a ValidationException whose
-            # text mentions "tokens" is still a ValidationException).
-            continue
-        name = type(node).__name__.lower()
-        if name in TRANSIENT_ERROR_NAMES and name not in _WRAPPER_NAMES:
-            return True
-        text = str(node).lower()
-        if any(marker in text for marker in TRANSIENT_MESSAGE_MARKERS):
-            return True
+        verdict = _verdict(node)
+        if verdict is not None:
+            return verdict
     return False
 
 
