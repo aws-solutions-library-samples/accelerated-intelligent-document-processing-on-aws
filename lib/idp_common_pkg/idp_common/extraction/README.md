@@ -1601,10 +1601,17 @@ state the rule outright — declining the tool obliges direct extraction, and on
 unreadable column means that *cell* is null, not the row and not the list.
 
 **Null = absent.** Extraction follows the convention "return `null` if a field is
-not found", and the generated Pydantic model makes every non-required property
-`Optional[...] = None`. Validation therefore treats a `null` property as
-**absent**: an optional field left null passes, while a *required* field left
-null surfaces as a `required` violation (not a confusing type error). Enum /
+not found". The generated Pydantic model makes every non-required property
+`Optional[...] = None`, and on the **agentic** path the transport model
+additionally makes every required *scalar* nullable (`X | None`, still required —
+`schema.nullable_leaves_for_transport`), so the agent can abstain on a cell it
+cannot read instead of inventing a value; arrays, groups and `required` itself are
+untouched, so an omitted key or a nulled list still fails the model (#782).
+Validation therefore treats a `null` property as **absent**: an optional field
+left null passes, while a *required* field left null surfaces as a `required`
+violation (not a confusing type error) — and is fed back to the agent with an
+explicit instruction to fill it only if readable. Abstentions are also counted,
+independently of `validation.enabled`, under `metadata.abstained_fields`. Enum /
 pattern / format / numeric / `minItems` checks on present values are unaffected.
 
 > **`format: date` caveat.** JSON-Schema `format: date` means ISO-8601

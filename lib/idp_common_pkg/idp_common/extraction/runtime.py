@@ -442,6 +442,7 @@ async def extract_one_shard(
     persistence: ShardPersistence | None = None,
     shard_runner: ShardRunner | None = None,
     assess_runner: "AssessRunner | None" = None,
+    schema_validator: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run ONE shard's agent (or load a previously-completed result).
 
@@ -574,6 +575,11 @@ async def extract_one_shard(
             max_tokens=max_tokens,
             checkpoint_callback=checkpoint_callback,
             custom_instruction=custom_instruction,
+            # Opaque to this module (strands-free): the in-loop full-schema check
+            # the in-process path has always had. Without it a shard had ONLY the
+            # Pydantic guard, and once scalar leaves became nullable (#782) a shard
+            # returning nulls had no self-correction round at all.
+            schema_validator=schema_validator,
         )
         extracted_fields = data.model_dump(mode="json")
 
@@ -746,6 +752,7 @@ class ExtractionRuntime(abc.ABC):
         persistence: ShardPersistence | None = None,
         shard_runner: ShardRunner | None = None,
         assess_runner: AssessRunner | None = None,
+        schema_validator: Any | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Run all shards and return ``(merged data_format instance, response)``."""
         raise NotImplementedError
@@ -782,6 +789,7 @@ class InProcessRuntime(ExtractionRuntime):
         persistence: ShardPersistence | None = None,
         shard_runner: ShardRunner | None = None,
         assess_runner: AssessRunner | None = None,
+        schema_validator: Any | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         total_shards = len(shard_payloads)
         logger.info(
@@ -812,6 +820,7 @@ class InProcessRuntime(ExtractionRuntime):
                     persistence=persistence,
                     shard_runner=shard_runner,
                     assess_runner=assess_runner,
+                    schema_validator=schema_validator,
                 )
                 # Re-hydrate into a model instance for the shared merge helper.
                 return data_format(**fields), response

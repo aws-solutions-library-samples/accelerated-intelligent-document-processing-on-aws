@@ -1621,6 +1621,7 @@ async def _run_shard_agent(
     checkpoint_callback: Any | None,
     base_custom_instruction: str | None = None,
     emit_field_assessment: bool = False,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """Run one extraction agent over a single shard.
 
@@ -1654,6 +1655,7 @@ async def _run_shard_agent(
         custom_instruction=combined_instruction,
         checkpoint_callback=checkpoint_callback,
         emit_field_assessment=emit_field_assessment,
+        schema_validator=schema_validator,
     )
 
 
@@ -1672,6 +1674,7 @@ async def default_shard_runner(
     max_tokens: int | None,
     checkpoint_callback: Any | None,
     custom_instruction: str | None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, "BedrockInvokeModelResponse"]:
     """Strands-backed shard runner used by the runtime backends.
 
@@ -1700,6 +1703,7 @@ async def default_shard_runner(
         # Integrated-assessment mode flows through the payload (set by the
         # service when extraction.confidence.mode == "integrated").
         emit_field_assessment=bool(payload.get("emit_field_assessment")),
+        schema_validator=schema_validator,
     )
 
 
@@ -1732,6 +1736,7 @@ async def concurrent_structured_output_async(
     persistence: Any | None = None,
     runtime: Any | None = None,
     assess_runner: Any | None = None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Run one extraction agent per input shard, concurrently, and merge results.
@@ -1785,6 +1790,7 @@ async def concurrent_structured_output_async(
         persistence=persistence,
         shard_runner=default_shard_runner,
         assess_runner=assess_runner,
+        schema_validator=schema_validator,
     )
     # Normalise the runtime's plain-dict response into the typed envelope that
     # existing callers expect. The runtime returns a BaseModel; it is an instance
