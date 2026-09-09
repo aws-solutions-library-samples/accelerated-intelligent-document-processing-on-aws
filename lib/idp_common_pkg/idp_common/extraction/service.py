@@ -1736,7 +1736,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         for field_name, field_def in properties.items():
             if field_def.get("type") == "array":
-                min_items = field_def.get("minItems", 0)
+                # minItems can arrive as a string after a config round-trip
+                # (the Configuration table stores numeric schema fields as
+                # strings); coerce defensively so the comparison never raises.
+                try:
+                    min_items = int(field_def.get("minItems", 0) or 0)
+                except (TypeError, ValueError):
+                    min_items = 0
                 actual_items = len(extracted_fields.get(field_name) or [])
 
                 if min_items > 0 and actual_items < min_items:
