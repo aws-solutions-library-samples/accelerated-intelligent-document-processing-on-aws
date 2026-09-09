@@ -1,0 +1,156 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# The two security gates that previously ran ONLY in GitLab CI.
+#
+# Why this exists: `.gitlab-ci.yml` gates every push and MR on `srt_security_review`
+# and `dep_audit`, but PRs merged on GitHub only ever ran "Lint, Type Check, and
+# Test". So a change merged through GitHub skipped both gates entirely — which is
+# how twelve HIGH SRT findings reached `develop` with every visible check green.
+#
+# Both jobs mirror their GitLab counterparts deliberately: same commands, same
+# `needs: []`-style independence (separate jobs run in parallel here), so a
+# finding surfaces the same way on either platform and there is one behaviour to
+# reason about rather than two.
+#
+# ⚠️  A workflow makes these checks VISIBLE, not BLOCKING. To actually gate a
+#     merge, both check names must be added to the branch-protection rule for
+#     `develop` as required status checks. Without that, a PR can still be merged
+#     while these are red or pending.
+name: Security Checks
+
+on:
+  pull_request:
+    branches:
+      - "**" # Any PR, matching developer-tests.yml
+
+# Least-privilege default for the GITHUB_TOKEN — see the note in
+# developer-tests.yml. Every job here also declares its own block.
+permissions:
+  contents: read
+
+jobs:
+  srt_security_review:
+    name: SRT Security Review
+    runs-on: ubuntu-latest
+    # GitLab budgets 50m for the same work: a cold install of the five scanners
+    # (checkov, semgrep, bandit, syft, jupyter) into SRT's own venv takes 10-15
+    # min without a pip cache, and the scan itself 5-15 min. The cache step below
+    # usually removes the install cost, but the timeout has to cover a cache miss.
+    timeout-minutes: 50
+
+    permissions:
+      contents: read
+
+    # Same image as developer-tests.yml and the GitLab job, so the scanners run on
+    # the Python they are tested against.
+    container:
+      image: python:3.13-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Git safe directory
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Set up environment
+        run: |
+          python --version
+          apt-get update -y
+          apt-get install make curl -y
+          pip install --upgrade pip
+
+      # The expensive part is SRT's managed venv, not the scan. Keyed on
+      # setup.py because REQUIRED_SCANNERS lives there, so adding or changing a
+      # scanner invalidates the cache. Safe to restore a partial cache: setup.py
+      # verifies all five scanners landed and retries `srt config
+      # --reinstall-prerequisites` once, so a corrupt cache self-heals instead of
+      # silently degrading the scan.
+      #
+      # `.srt/issues.json` is also under this path, but caching it is harmless —
+      # `make srt-setup` overwrites it from the committed baseline
+      # (scripts/srt/issues.json), which is how suppressions are restored.
+      - name: Cache SRT toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .srt
+          key: srt-${{ runner.os }}-${{ hashFiles('scripts/srt/setup.py') }}
+          restore-keys: |
+            srt-${{ runner.os }}-
+
+      # No AWS credentials needed: setup.py only writes a region/output into
+      # .srt/srtconfig.json, and skips even that when the AWS CLI is absent.
+      # GITHUB_TOKEN is passed so the one-per-run GitHub release lookup is
+      # authenticated — unauthenticated API is 60 requests/hour per IP, and
+      # hosted runners share IPs.
+      - name: Set up SRT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make srt-setup
+
+      - name: Run SRT security assessment
+        run: make srt-scan
+
+      - name: Upload SRT reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: srt-reports
+          path: |
+            .srt/issues.json
+            .srt/dashboard.html
+            .srt/bandit-summary.json
+            .srt/syft-summary.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  dep_audit:
+    name: Dependency Audit (SCA)
+    runs-on: ubuntu-latest
+    # GitLab budgets 20m: manifest generation resolves a few loose pins with uv,
+    # then ~1800 packages are queried against OSV in batches.
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    # Deliberately NOT containerised, unlike the SRT job above. This runs on the
+    # host runner because generate-dep-manifest.sh needs `jq` to read the
+    # committed package-lock.json files, and jq is preinstalled on GitHub's
+    # runners but absent from python:3.13-bookworm. (The GitLab job apt-installs
+    # jq for exactly this reason — see the note on its before_script.) Node/npm
+    # are not needed: the Node manifest is read from the lockfiles, not from an
+    # install.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # uv provides the Python runtime and the `packaging` library that
+      # scripts/generate-dep-manifest.sh runs its inline manifest script with.
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.3.1
+
+      - name: Verify jq is available
+        # Fail loudly rather than let the Node half of the manifest come out
+        # silently empty, which would make the audit look clean.
+        run: jq --version
+
+      # Regenerates the manifests then audits ~1800 pinned packages against OSV.
+      # Fails on HIGH/CRITICAL. Exit 2 means the audit could not run (OSV
+      # unreachable) and is NOT a pass — dep_audit.py distinguishes the two.
+      - name: Run dependency audit
+        run: python3 scripts/security/dep_audit.py --json dep-audit-report.json
+
+      - name: Upload dependency audit report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dep-audit-report
+          path: |
+            dep-audit-report.json
+            dist/manifests/python-packages.txt
+            dist/manifests/node-packages.txt
+          if-no-files-found: ignore
+          retention-days: 7

@@ -54,14 +54,33 @@ def get_platform_suffix():
 
 
 def get_latest_release():
-    """Fetch latest release information from GitHub."""
+    """Fetch latest release information from GitHub.
+
+    Authenticates when a token is available. This call runs once per setup, and
+    unauthenticated GitHub API is limited to 60 requests/hour **per IP** — which
+    hosted CI runners share, so on a busy runner pool the anonymous request
+    returns 403 and the whole scan fails with "Failed to fetch latest release".
+    A token raises the limit to 5,000/hour for that token. GitHub Actions always
+    provides GITHUB_TOKEN; GitLab CI has no equivalent, so there the request
+    stays anonymous exactly as before.
+    """
     url = "https://api.github.com/repos/aws-samples/sample-security-review-tool/releases/latest"
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(url) as response:  # nosec B310 - GitHub API URL is trusted
+        with urllib.request.urlopen(request) as response:  # nosec B310 - GitHub API URL is trusted
             data = json.loads(response.read().decode())
             return data["tag_name"], data["assets"]
     except Exception as e:
         print(f"Failed to fetch latest release: {e}")
+        if not token:
+            print(
+                "   Hint: unauthenticated GitHub API allows 60 requests/hour per "
+                "IP, which CI runners share. Set GITHUB_TOKEN to raise it."
+            )
         return None, None
 
 

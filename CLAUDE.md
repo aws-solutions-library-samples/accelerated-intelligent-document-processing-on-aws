@@ -99,7 +99,11 @@ make srt-fix       # Interactive fix mode
 ```
 
 **CI/CD Integration:**
-- SRT automatically runs on merge requests targeting `develop` branch (GitLab CI `security_review` stage)
+- SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
+  **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
+  A change merged on GitHub used to skip it entirely — see the note in that
+  workflow. ⚠️ Being visible is not being blocking: the check must also be a
+  required status check on `develop` in branch-protection settings.
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -112,8 +116,9 @@ make dep-audit        # audit every pinned Python + Node dep against OSV (fails 
 make dep-audit-fast   # reuse existing dist/manifests instead of regenerating
 ```
 
-Gated in CI by the `dep_audit` job (`fast_checks`, every push and MR, no AWS
-needed). Triage unreachable advisories in
+Gated in CI by the `dep_audit` job — GitLab (`fast_checks`, every push and MR)
+and GitHub (`.github/workflows/security-checks.yml`, every pull request). No AWS
+needed either side. Triage unreachable advisories in
 `scripts/security/dep_audit_allowlist.json` with a justification — the same
 pattern `scripts/srt/issues.json` uses for SRT. See
 `.claude/skills/srt-security-scan.md`.
