@@ -561,9 +561,13 @@ anti-over-merge clause holds at scale, and page-level *class* accuracy moves at 
 0.015 — the change touches boundaries only. On #653's reported 2-page form Sonnet 5
 goes 6/24 → 10/10; on a 4-page packet of two copies of one form, 1/10 → 5/5.
 
-⚠️ **Still incomplete**: an unpaginated multi-page document is split roughly 40% of the
-time even with the fix, because the rules lean on pagination markers — corpora whose
-scans lack them benefit least. Raising `classification.contextPagesCount` is not the
+⚠️ **Partly closed by #726**: after the #653 rules an unpaginated multi-page document was
+still split roughly 40% of the time, because the rules leaned on pagination markers. The
+#726 TABLE CONTINUATION rule (repeated column headings are not a document title) took the
+unpaginated 3-page statement from 8/15 to 15/15 correct section counts in the offline
+probe, so that residual over-split is fixed for table-continuation pages; a reprinted
+title-and-account running header (#750) is still not, and corpora whose scans lack
+pagination benefit least from the pagination rule itself. Raising `classification.contextPagesCount` is not the
 answer (0/5 on the 4-page two-copies packet, by merging all four pages). The block sits
 inside the prompt-cache prefix, so it is not re-billed per page.
 

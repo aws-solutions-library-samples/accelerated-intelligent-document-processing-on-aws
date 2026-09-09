@@ -58,6 +58,21 @@ Page 6: type="invoice", boundary="continue"   → Section 3 (Invoice #2)
 
 The system automatically creates three sections, properly separating the two invoices despite them having the same document type.
 
+### The boundary rules (`<boundary-detection-rules>` in `task_prompt`)
+
+Pagination first (`Page 2 of 2` ⇒ `continue`), then the opening header block ⇒
+`start`, then **table continuation** ⇒ `continue` — a page of table rows whose column
+headings are reprinted at the top is a continuation page, because repeated column
+headings are not a document title (#726: page 2/3 of a 3-page single-class statement
+was called `start` in ~half the runs; 8/15 → 15/15 correct section counts after the
+rule, other fixtures unchanged) — then other continuation evidence, then the two
+paired CRITICAL clauses (#653). The block is pinned by
+`tests/unit/classification/test_boundary_prompt_contract.py`, and every committed
+copy of the prompt (presets, sample configs, notebooks) is checked to carry the same
+rules block by `scripts/tests/test_classification_prompt_copies_in_sync.py`. A
+configuration profile a user saved on a running stack is an independent snapshot and
+does not receive an updated default prompt on upgrade.
+
 ### Where the `document_boundary` signal lives
 
 The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is also copied onto the declared `Page.document_boundary` field, which **is** persisted — it appears in the `document.json` page dict, in the DynamoDB page record as `Boundary`, in the `create_document_run` snapshot, and on the GraphQL `Page` type. So a merge decision can be inspected after the fact rather than re-derived from Lambda logs.

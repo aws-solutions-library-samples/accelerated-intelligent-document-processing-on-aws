@@ -189,8 +189,27 @@ result was intermittent over-splitting of multi-page documents
 `classification.task_prompt` now carries a `<boundary-detection-rules>` block that
 asks a question a single page **can** answer — is this page a *first* page? — from
 its own evidence, in priority order: pagination (`Page 2 of 2` ⇒ `continue`), then
-the presence of an opening identity block, then continuation evidence. Two clauses
-in it are a matched pair and must not be removed independently:
+the presence of an opening identity block, then **table continuation** — a page of
+table rows whose column headings repeat at the top is a continuation page, because
+repeated column headings are not a document title — then other continuation
+evidence. The table-continuation rule was added for
+[#726](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/726):
+on a single-class config the classifier called the second or third page of a
+three-page bank statement `start` in about half of the runs, because the reprinted
+`Date | Description | Amount` heading row looked like a heading. Measured with the
+real OCR and classification services (Nova 2 Lite, `temperature 0`) on the
+benchmark fixtures: the unpaginated 3-page statement went from **8/15** to
+**15/15** correct section counts, with the two-documents (5/5) and paginated (5/5)
+fixtures unchanged. Confirmed end to end on a deployed stack with a same-stack A/B
+(`boundaryab` suite, the frozen v0.6.7 prompt as the control, 5 repeats): the
+unpaginated statement scored **1/5** under the v0.6.7 prompt and **5/5** under the
+new rules, the two-documents and paginated fixtures 5/5 under both, and the
+running-header fixture 0/5 under both. Note that an upgrade delivers the new rules to `Config#default`
+(and to a `CustomConfigPath` config, which is re-resolved from S3) but **not** to a
+configuration profile you saved yourself — a saved profile is an independent snapshot
+that keeps whatever `classification.task_prompt` it was saved with. Re-apply the block or
+reset the prompt to the default in such a profile. Two clauses in the block are a matched
+pair and must not be removed independently:
 
 | Clause | Prevents |
 |---|---|
@@ -249,12 +268,18 @@ combination defeats the priority order above:
 
 - rules 1–2 never fire, because a lone `7` matches none of the pagination
   patterns the model is given;
-- rule 3 (opening header block ⇒ `start`) is evaluated **before** rule 4
-  (continuation evidence ⇒ `continue`), and the repeated running header satisfies
-  it — especially when the reprinted column headers themselves carry a date
-  (`NAV as of 10/31/2024`), which rule 3 lists as page-1 evidence;
-- `contextPagesCount: 0` (the default) means rule 4's *"a table continuing from a
-  previous page"* has no preceding page to compare against.
+- rule 3 (opening header block ⇒ `start`) is evaluated **before** rules 4–5
+  (table / other continuation evidence ⇒ `continue`), and the repeated running
+  header satisfies it — especially when the reprinted column headers themselves
+  carry a date (`NAV as of 10/31/2024`), which rule 3 lists as page-1 evidence.
+  Rule 4 (added for #726) only clears a page whose repeated content is the table's
+  **column headings**; a reprinted **title and account block** still reads as an
+  opening block, so a synthetic 3-page statement with that running header and no
+  pagination scores 0/5 before and after the #726 change, on Nova 2 Lite and on
+  Claude Haiku 4.5 alike;
+- `contextPagesCount: 0` (the default) means the continuation rules have no preceding
+  page to compare against — rule 4 judges the page's own table rows and rule 5's
+  *"running balance or subtotal carried forward"* is a within-page clue.
 
 The model says so in its own reasoning: *"The page number '15' at the top right
 indicates this is part of a multi-page document, **but the presence of the full
@@ -291,12 +316,17 @@ balances:
 
 | prompt / setting | 16-page running-header table (want 1) | `small_narrow` — 3-page statement, no pagination (want 1) | `paginated_3pg` (want 1) | `twodocs_2x20` — two forms back to back (want 2) |
 |---|---|---|---|---|
-| shipped rules | **0/10** | 7/10 | 10/10 | 10/10 |
+| v0.6.7 rules (#653, before the #726 table-continuation rule) | **0/10** | 7/10 | 10/10 | 10/10 |
 | + *"a running header is not an opening block"* | — | 4/10 ↓ | 10/10 | 10/10 |
 | + *"a bare page number > 1 is decisive"* | 10/10 | 2/10 ↓ | 10/10 | 10/10 |
 | + both | 10/10 | 0/10 ↓ | 10/10 | 10/10 |
 | `contextPagesCount: 1`, rules unchanged | 10/10 | 10/10 | 10/10 | **5/10 ↓** |
 | **class-description `BOUNDARY:` sentence** | **10/10** | unaffected | unaffected | unaffected |
+
+Re-measured for #726 (5 runs per cell, real services): `contextPagesCount: 1` fixes
+the running-header statement (4/5) and the unpaginated one (5/5) but scores **0/5** on
+`twodocs_2x20` with the shipped rules and with the #726 rules alike — the
+over-merge trade is not a prompt-wording artefact.
 
 `contextPagesCount: 1` is the right lever if your corpus contains no back-to-back
 copies of the same form — it fixes both over-split directions with the shipped
