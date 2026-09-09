@@ -28,6 +28,8 @@ SPDX-License-Identifier: MIT-0
 - **The evaluation report view now shows everything the markdown report does.** It had shipped as a summary with a click-through to the markdown for the detail. Added: the document-split figures and a section split analysis, every recorded metric with its rating, excluded sections with reasons, per-section scores and metrics, the not-evaluated state with how-to-fix steps, Confidence and Weight columns, nested field comparisons as expandable rows, structured display of list and object values instead of one flattened JSON string, and a scoring explainer. A parity test reads the section headings out of the markdown generator and fails if the two drift. See [docs/web-ui.md](docs/web-ui.md#evaluation-report).
 - **Advanced extraction no longer crashes on a class whose `minItems` was set through the Web UI.** Saving a class stores numeric schema fields as strings and nothing converts them back on read, so the completeness check raised `TypeError` and the section lost its schema-constraint report entirely. A value that cannot be read as a number now disables that one constraint instead. (#797)
 
+- **Legacy `.xls` workbooks now produce readable pages instead of a single blank page.** The upload picker and the OCR router both accept `.xls`, but the Excel reader's `.xls` engine (`xlrd`) was never declared, so every such workbook converted to one empty page reading "Error reading Excel file" and the document went through classification and extraction with no content. `xlrd` is now part of the `[ocr]` extra. (#799)
+
 ## [0.6.7]
 
 ### Added
