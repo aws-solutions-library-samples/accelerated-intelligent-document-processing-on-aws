@@ -5,6 +5,7 @@
 DynamoDB client for direct table operations.
 """
 
+import copy
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -231,10 +232,13 @@ class DynamoDBClient:
             DynamoDBError: If the DynamoDB operation fails
         """
         try:
-            # Convert table references to use the table name
+            # Convert table references to use the table name. Deep-copied:
+            # a shallow copy shares the nested Put/Update/Delete dicts with
+            # the caller, so injecting TableName below would write into the
+            # caller's own payload.
             processed_items = []
             for item in transact_items:
-                processed_item = item.copy()
+                processed_item = copy.deepcopy(item)
                 if "Put" in processed_item:
                     processed_item["Put"]["TableName"] = self.table_name
                 elif "Update" in processed_item:

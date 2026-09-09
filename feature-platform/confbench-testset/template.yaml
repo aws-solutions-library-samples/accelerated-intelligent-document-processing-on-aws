@@ -281,6 +281,11 @@ Resources:
               jobId.$: $.jobId
               testSetId.$: $.testSetId
               error.$: $.error
+            Retry:
+              - ErrorEquals: [States.TaskFailed, Lambda.ServiceException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 10
+                MaxAttempts: 3
+                BackoffRate: 2.0
             # A failure to record a failure must not mask the original one.
             Catch:
               - ErrorEquals: [States.ALL]

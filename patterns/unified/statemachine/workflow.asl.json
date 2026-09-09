@@ -18,6 +18,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.SdkClientException",
             "Lambda.TooManyRequestsException"
@@ -142,6 +151,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.SdkClientException",
             "Lambda.TooManyRequestsException",
@@ -178,6 +196,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -209,6 +236,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -235,6 +271,15 @@
       },
       "ResultPath": "$.OCRResult",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Sandbox.Timedout",
@@ -268,6 +313,15 @@
       },
       "ResultPath": "$.HookResults.postOcr",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -308,6 +362,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Sandbox.Timedout",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
@@ -339,6 +402,15 @@
       },
       "ResultPath": "$.HookResults.postClassification",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -391,6 +463,15 @@
             },
             "ResultPath": "$.ShardPlan",
             "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
               {
                 "ErrorEquals": [
                   "TransientError",
@@ -448,6 +529,7 @@
                   "Retry": [
                     {
                       "ErrorEquals": [
+                        "TransientError",
                         "States.Timeout",
                         "Lambda.Unknown",
                         "Sandbox.Timedout",
@@ -461,8 +543,7 @@
                         "RequestLimitExceeded",
                         "ServiceUnavailableException",
                         "InternalServerException",
-                        "InternalServerError",
-                        "TransientError"
+                        "InternalServerError"
                       ],
                       "IntervalSeconds": 10,
                       "MaxAttempts": 8,
@@ -496,6 +577,15 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
@@ -522,8 +612,17 @@
             "Retry": [
               {
                 "ErrorEquals": [
-                  "States.Timeout",
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "TransientError",
+                  "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
@@ -559,6 +658,15 @@
             },
             "ResultPath": "$.HookResults",
             "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
               {
                 "ErrorEquals": [
                   "Lambda.ServiceException",
@@ -600,8 +708,17 @@
             "Retry": [
               {
                 "ErrorEquals": [
-                  "States.Timeout",
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "TransientError",
+                  "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
@@ -642,6 +759,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Sandbox.Timedout",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
@@ -675,6 +801,15 @@
       "Type": "Task",
       "Resource": "${RuleValidationPolicyClassificationLambdaArn}",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Sandbox.Timedout",
@@ -741,6 +876,15 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
@@ -774,6 +918,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -805,6 +958,15 @@
       },
       "ResultPath": "$.HookResults.postRuleValidation",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -862,6 +1024,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Sandbox.Timedout",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
@@ -894,6 +1065,15 @@
       },
       "ResultPath": "$.PostSummarizationHookOut",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -932,6 +1112,15 @@
       },
       "ResultPath": "$",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "Comment": "A Lambda timeout in evaluation is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. This used to share the transient-error policy (8 attempts @2.5x backoff), so one such document occupied a workflow slot for ~5.2 hours before failing - and with MaxConcurrentWorkflows slots leaking behind it, a batch of them stopped a stack accepting documents at all. One attempt, then hand off to the Catch below, which preserves the document and records the failure.",
           "ErrorEquals": [
@@ -987,6 +1176,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1023,6 +1221,15 @@
       },
       "ResultPath": "$.HookResults.postprocessing",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",

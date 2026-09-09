@@ -280,6 +280,35 @@ make srt-setup     # one-time (or after upgrading SRT); restores suppressions
 make srt-scan      # ~5–15 min; run in background
 ```
 
+### Run it with `CI=1` when there is no tty — plain `make srt-setup` hangs
+
+`scripts/srt/setup.py` branches on `is_ci` (`CI` / `GITLAB_CI` /
+`GITHUB_ACTIONS`). The CI branch runs `yes '' | timeout 900 ./srt config` and
+retries once with `--reinstall-prerequisites`; the local branch is a bare
+`subprocess.run(["./srt", "config"])` with **no timeout and no prompt feeding**,
+so with stdin closed — a backgrounded command, an agent tool call, a CI-like
+shell — it spins at 100% CPU indefinitely (observed: 29 minutes, zero output,
+killed manually). Always run:
+
+```bash
+CI=1 AWS_PROFILE=default AWS_DEFAULT_REGION=us-east-1 make srt-setup > /tmp/srt-setup.log 2>&1  # ~4 min
+CI=1 AWS_PROFILE=default AWS_DEFAULT_REGION=us-east-1 make srt-scan  > /tmp/srt-scan.log  2>&1  # ~25 min
+```
+
+Three reasons that exact form matters:
+
+- `CI=1` on **`srt-scan`** also makes it *gate* — it exits non-zero on
+  undispositioned HIGH findings, which is the only way to reproduce the
+  `srt_security_review` verdict locally. Without it the scan exits 0 and merely
+  prints the table (see the exit-code note above).
+- **Redirect to a file; do not pipe to `tail`.** A pipe buffers the whole run,
+  so a scan that is working looks identical to one that is wedged. With a log
+  file you can watch progress and inspect the stage with
+  `pgrep -af "srt assess"` / `ps --ppid <pid>` (bandit alone can run 15+ min).
+- Run `make srt-clean` first. `.aws-sam` build dirs are gitignored, so they add
+  phantom findings (34 in one run) *and* crash checkov on the largest templates,
+  which leaves the scan reporting "SCANNERS THAT DID NOT COMPLETE".
+
 If `srt assess` errors with **"Configuration not found. Run: srt config"**, the
 `.srt/srtconfig.json` is missing. Recreate it (non-interactive) and install
 prereqs:

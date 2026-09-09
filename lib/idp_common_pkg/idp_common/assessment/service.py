@@ -1566,9 +1566,22 @@ class AssessmentService:
 
             # Update the section in the document with confidence threshold alerts
             # and any structured processing issues.
+            #
+            # Deduped again here on purpose. The batched path already collapses
+            # repeats at its merge, which is where the diagnosis lives; this is
+            # the last statement before the list leaves for the tracking item,
+            # which is where the FAILURE lives — a section that will not fit in
+            # DynamoDB's 409,600-byte item ceiling fails the run and the document
+            # is left unaccounted for. Guarding the boundary too means a future
+            # accumulation path cannot reintroduce the fault silently.
+            # dedupe_alerts is idempotent, so on the batched path this is a no-op.
+            #
+            # Imported here, as the other batching imports in this file are.
+            from idp_common.assessment.batching import dedupe_alerts
+
             for doc_section in document.sections:
                 if doc_section.section_id == section_id:
-                    doc_section.confidence_threshold_alerts = (
+                    doc_section.confidence_threshold_alerts = dedupe_alerts(
                         confidence_threshold_alerts
                     )
                     # Replace only the assessment-stage issues, keep the rest.

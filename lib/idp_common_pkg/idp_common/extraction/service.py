@@ -1740,7 +1740,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         for field_name, field_def in properties.items():
             if field_def.get("type") == "array":
-                min_items = field_def.get("minItems", 0)
+                # minItems can arrive as a string after a config round-trip
+                # (the Configuration table stores numeric schema fields as
+                # strings); coerce defensively so the comparison never raises.
+                try:
+                    min_items = int(field_def.get("minItems", 0) or 0)
+                except (TypeError, ValueError):
+                    min_items = 0
                 actual_items = len(extracted_fields.get(field_name) or [])
 
                 if min_items > 0 and actual_items < min_items:
@@ -5056,7 +5062,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
 
         self._grounded_assessment = grounded
-        section.confidence_threshold_alerts = merged_assessment_alerts
+        # Deduped at this boundary too: the integrated path accumulates alerts
+        # from the enrich pass, cross-shard merges, and the missing-row retry
+        # (whose extra_alerts re-emit the shared scalars per recovery chunk), so
+        # the same non-indexed finding can arrive several times. Idempotent;
+        # imported lazily like the other batching imports in this file.
+        from idp_common.assessment.batching import dedupe_alerts
+
+        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
         output_metadata["assessment_integrated_in_extraction"] = True
         output_metadata["assessment_alert_count"] = len(merged_assessment_alerts)
 
