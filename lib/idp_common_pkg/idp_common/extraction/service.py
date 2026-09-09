@@ -53,7 +53,9 @@ from idp_common.extraction.validation import (
     build_empty_list_feedback,
     build_subset_schema,
     find_empty_declared_lists,
+    required_null_paths,
     select_escalated_fields,
+    shard_validation_schema,
     validate_extraction,
 )
 from idp_common.models import Document, Section
@@ -68,7 +70,10 @@ try:
         set_confidence_data,
         structured_output,
     )
-    from idp_common.schema import create_pydantic_model_from_json_schema
+    from idp_common.schema import (
+        create_pydantic_model_from_json_schema,
+        nullable_leaves_for_transport,
+    )
 
     AGENTIC_AVAILABLE = True
 except ImportError:
@@ -220,6 +225,7 @@ class ExtractionService:
         # consumed by _save_results when building the metadata block. Reset per
         # section so a prior section's result can never leak into the next.
         self._pending_validation_metadata: dict[str, Any] | None = None
+        self._pending_abstained_fields: dict[str, Any] | None = None
         self._pending_forced_tool_metadata: dict[str, Any] | None = None
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
@@ -3196,9 +3202,22 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             or self.config.extraction.validation.escalation_model
         )
 
-    def _build_schema_validator(self, ocr_analysis: dict[str, Any] | None = None):
+    def _build_schema_validator(
+        self,
+        ocr_analysis: dict[str, Any] | None = None,
+        *,
+        shard_scoped: bool = False,
+    ):
         """Return an in-loop validation callback for the agent's self-correction
         round, or None when there is nothing to check.
+
+        ``shard_scoped=True`` builds the variant for ONE shard of a sharded
+        section: it validates against ``validation.shard_validation_schema`` (no
+        ``required``, no ``minItems``) and never applies the OCR table-evidence
+        check. A shard is told to leave out-of-shard fields null, so presence must
+        not be enforced on it — that produced up to three extra agent turns per
+        shard and told a cover-page shard to invent rows. Presence is enforced once
+        on the merged section against the real schema.
 
         Two independent checks, with **independent enablement**:
 
@@ -3246,10 +3265,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         accuracy 1.000.
         """
         vcfg = self.config.extraction.validation
-        class_schema = self._class_schema
+        class_schema = (
+            shard_validation_schema(self._class_schema)
+            if shard_scoped
+            else self._class_schema
+        )
         check_formats = vcfg.check_formats
         schema_checks = bool(vcfg.enabled)
-        ocr = ocr_analysis or {}
+        ocr = {} if shard_scoped else (ocr_analysis or {})
         table_evidence = bool(ocr.get("tool_usage_recommended")) and bool(
             ocr.get("tables_detected")
         )
@@ -3747,8 +3770,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         try:
             if scope == "field-subset":
+                # Nullable leaves for the same reason as the primary transport model
+                # (#782), and it matters MORE here: escalation is now triggered BY
+                # an abstention, so a strict subset model would send a stronger
+                # model in to fabricate the value the weaker one honestly declined
+                # to invent — a more convincing wrong answer. Re-extraction should
+                # try harder to READ the value and still be able to abstain.
                 subset_model = create_pydantic_model_from_json_schema(
-                    schema=subset_schema,
+                    schema=nullable_leaves_for_transport(subset_schema),
                     class_label=f"{section_info.class_label}__escalation",
                     clean_schema=False,
                 )
@@ -3973,6 +4002,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Clear any per-section audit state from a previously processed section.
         self._pending_validation_metadata = None
+        self._pending_abstained_fields = None
         self._pending_coercion_metadata = None
         self._pending_extraction_model = None
         self._pending_forced_tool_metadata = None
@@ -4059,9 +4089,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 },
             )
 
-            # Create dynamic Pydantic model from JSON Schema
+            # TRANSPORT model: scalar leaves made nullable so the agent can return
+            # null for a cell it genuinely cannot read. A required scalar renders as a
+            # non-nullable Pydantic field, which leaves a fabricated 0.0 as the only
+            # accepted answer for an unreadable number (#782). `required` itself is
+            # KEPT, so an omitted key, a nulled list or a misspelled key set still
+            # fails the model; a null CELL passes here and is then reported by
+            # ``extraction.validation`` as a 'required' violation, fed back for the
+            # agent's self-correction round, and escalatable.
             dynamic_model = create_pydantic_model_from_json_schema(
-                schema=self._class_schema,
+                schema=nullable_leaves_for_transport(self._class_schema),
                 class_label=section_info.class_label,
                 clean_schema=False,  # Already cleaned
             )
@@ -4238,9 +4275,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
 
             # Build the in-loop schema validator (None unless validation enabled).
-            # Used only on the single-agent path: per-batch validation would
-            # falsely fail minItems before the batches are merged, so batch
-            # output is validated once after merge below.
+            # This FULL validator is for the single-agent path. Shards get the
+            # shard-scoped variant (no required/minItems): per-shard presence
+            # checks would falsely fail before the shards are merged, so presence
+            # is validated once after merge below.
             #
             # ocr_analysis is the whole-document pre-flight, which is exactly the
             # right scope here for the same reason: the single agent sees the
@@ -4297,6 +4335,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         assess_runner=self._build_assess_runner(
                             section_info, self._document
                         ),
+                        # Shard-scoped self-correction: types/formats/enums only.
+                        # No presence checks — a shard legitimately leaves out-of-
+                        # shard fields null and a cover-page shard has no rows.
+                        schema_validator=self._build_schema_validator(
+                            shard_scoped=True
+                        ),
                     )
                 )
             else:
@@ -4351,6 +4395,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
             if validation_metadata is not None:
                 self._pending_validation_metadata = validation_metadata
+            # Abstentions, recorded regardless of validation.enabled: with nullable
+            # scalar leaves a null cell no longer trips the Pydantic guard, so this
+            # is what makes an abstention attributable on a stack that has
+            # validation switched off (v0.6-migrated stacks carry enabled: false).
+            abstained, abstained_total = required_null_paths(
+                extracted_fields, self._class_schema
+            )
+            self._pending_abstained_fields = (
+                {"count": abstained_total, "paths": abstained}
+                if abstained_total
+                else None
+            )
             if escalation_metering:
                 from idp_common.extraction.agentic_idp import _accumulate_metering
 
@@ -4686,6 +4742,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
                 if validation_metadata is not None:
                     self._pending_validation_metadata = validation_metadata
+                # Abstentions, recorded regardless of validation.enabled: with nullable
+                # scalar leaves a null cell no longer trips the Pydantic guard, so this
+                # is what makes an abstention attributable on a stack that has
+                # validation switched off (v0.6-migrated stacks carry enabled: false).
+                abstained, abstained_total = required_null_paths(
+                    extracted_fields, self._class_schema
+                )
+                self._pending_abstained_fields = (
+                    {"count": abstained_total, "paths": abstained}
+                    if abstained_total
+                    else None
+                )
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for extraction: {total_duration:.2f} seconds")
@@ -5327,6 +5395,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # extraction.validation.enabled).
         if self._pending_validation_metadata is not None:
             metadata["validation"] = self._pending_validation_metadata
+        if self._pending_abstained_fields is not None:
+            metadata["abstained_fields"] = self._pending_abstained_fields
         if self._pending_forced_tool_metadata is not None:
             # Recorded so an A/B can tell "forcing had no effect" from "forcing
             # never ran" — a skipped route or an unhonored force are both normal
@@ -5993,8 +6063,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
 
+        # TRANSPORT model — scalar leaves nullable so the agent can abstain on a
+        # cell; `required` is KEPT so structure is still enforced (#782).
         dynamic_model = create_pydantic_model_from_json_schema(
-            schema=self._class_schema,
+            schema=nullable_leaves_for_transport(self._class_schema),
             class_label=section_info.class_label,
             clean_schema=False,
         )
@@ -6082,6 +6154,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 persistence=persistence,
                 shard_runner=default_shard_runner,
                 assess_runner=self._build_assess_runner(section_info, self._document),
+                # Shard-scoped, as in the in-process fan-out.
+                schema_validator=self._build_schema_validator(shard_scoped=True),
             )
         )
         return {
@@ -6253,6 +6327,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # Same validation/escalation + completeness as the in-process path.
         self._pending_validation_metadata = None
+        self._pending_abstained_fields = None
         self._pending_extraction_model = model_id
         message_prompt: Any = ""
         (
@@ -6274,6 +6349,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         if validation_metadata is not None:
             self._pending_validation_metadata = validation_metadata
+        # Abstentions, recorded regardless of validation.enabled: with nullable
+        # scalar leaves a null cell no longer trips the Pydantic guard, so this
+        # is what makes an abstention attributable on a stack that has
+        # validation switched off (v0.6-migrated stacks carry enabled: false).
+        abstained, abstained_total = required_null_paths(
+            extracted_fields, self._class_schema
+        )
+        self._pending_abstained_fields = (
+            {"count": abstained_total, "paths": abstained} if abstained_total else None
+        )
         if escalation_metering:
             from idp_common.extraction.agentic_idp import _accumulate_metering
 

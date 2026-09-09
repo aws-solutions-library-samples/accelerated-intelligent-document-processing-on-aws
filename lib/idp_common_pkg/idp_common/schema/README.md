@@ -67,6 +67,7 @@ The module uses `datamodel-code-generator` to convert JSON Schema into Pydantic 
 |----------|-------------|
 | `create_pydantic_model_from_json_schema(schema, class_label, ...)` | Main entry point — generates a Pydantic model from a JSON Schema dict |
 | `clean_schema_for_generation(schema, fields_to_remove=None)` | Recursively removes custom extension fields from a JSON Schema |
+| `nullable_leaves_for_transport(schema)` | Copy of a schema with every scalar leaf widened to `[<type>, "null"]`, `required` kept. Used for the model handed to the extraction agent so it can abstain on an unreadable **cell** (`null`) while an omitted key, a nulled list or a misspelled key set still fails (#782) |
 
 ### Exceptions
 

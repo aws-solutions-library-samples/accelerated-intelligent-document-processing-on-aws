@@ -564,9 +564,12 @@ export function toolSpecWireText(schema: ClassSchema): string {
  * (``create_pydantic_model_from_json_schema``), and that generated schema is a
  * different document from the class schema in both directions:
  *
- * - larger, dominantly: every field gains a ``title``, every optional field
- *   becomes ``anyOf: [<type>, {"type": "null"}]`` with ``default: null``, and
- *   groups become ``$defs`` entries with their own titles;
+ * - larger, dominantly: every field gains a ``title``; every optional field
+ *   becomes ``anyOf: [<type>, {"type": "null"}]`` with ``default: null``; every
+ *   REQUIRED SCALAR also becomes ``anyOf: [<type>, {"type": "null"}]`` (no
+ *   default — the backend's transport model lets the agent abstain on a cell it
+ *   cannot read, #782, while ``required`` itself is kept); and groups become
+ *   ``$defs`` entries with their own titles;
  * - smaller, marginally: object-level ``description`` is dropped (the class
  *   description on every shipped preset, plus ``$defs`` group descriptions).
  *
