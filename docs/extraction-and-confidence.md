@@ -60,9 +60,9 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 
 > **Recommended defaults:** **Simple + `separate`** for most workloads; **Advanced + `separate`** for complex or large documents. Reach for `integrated` only on small docs where minimizing inferences matters, and `off` only when you don't consume confidence at all.
 
-> **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips. The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
+> **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips — for scalar-only classes; a list-bearing class is scored separately regardless (see the warning below). The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
-> ⚠️ **Simple + `integrated` truncates long lists — prefer `separate` for list-heavy documents.** Benchmarked on a 100-row transaction list, Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat, at ~1.5–2× the cost. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are now asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer told the model to make each guess *"as short as possible"* (which was also causing it to return shortened *values*) — but the fundamental single-response limit remains. **On list-bearing schemas use `separate`.** See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per document, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
 
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
@@ -224,8 +224,13 @@ the schema again mid-run.
 total — so turning the setting off shows the total drop instead of leaving it
 unchanged. One caveat the preview states rather than hides: the real block is
 generated from a Pydantic model built from your class (every field gains a
-`title`, every optional field an `anyOf` with `{"type": "null"}`), so the browser
-can only approximate it from the class schema. Expect the real block to be
+`title`, and every optional field — plus, in Advanced mode, every required
+*scalar*, so the agent can leave an unreadable cell `null` rather than invent a
+value — an `anyOf` with `{"type": "null"}`), so the browser can only approximate
+it from the class schema. Cells the agent left `null` because it could not read them
+are counted under `metadata.abstained_fields` (scalar cells only — a whole list
+returned as null is a defect, not an abstention) and shown in the **Processing
+Report**, regardless of whether schema validation is enabled. Expect the real block to be
 **larger** than the preview's — roughly 1.7–2.9x on the shipped lending presets —
 which makes the previewed saving a floor, not a ceiling.
 
@@ -303,7 +308,7 @@ extraction:
       min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
 
-- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back (kept only if valid or fewer errors) — far cheaper than human review. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
+- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.
@@ -338,7 +343,7 @@ extraction:
     max_pages_per_shard: 5        # page ceiling per shard (timeout-critical; fixed default, not model-derived)
 ```
 
-- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer` — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically. The confidence list-batch size is likewise auto-derived from the confidence model's output cap. You set only `context_buffer`; the derived sizes are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
+- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer` — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
@@ -558,6 +563,7 @@ Repairs type/format mismatches deterministically — **no model call, no cost**:
 | `"03/15/2024"` | `string` + `format: date` | `"2024-03-15"` |
 | `"March 15, 1980"` | `string` + `format: date` | `"1980-03-15"` |
 | `"Yes"` | `boolean` | `true` |
+| `'{"City": "Anytown"}'` (a JSON string) | `object` | `{"City": "Anytown"}` — the one cross-type repair that loses nothing |
 
 Every change is recorded in the section's `metadata.coercion`, so nothing is
 silently rewritten and you can audit exactly what was changed and why.
@@ -687,9 +693,25 @@ configuration. Models reached through a custom Lambda hook and the GPT-5.x
 before/after comparison can tell "forcing changed nothing" from "forcing never
 ran", which are very different results.
 
+**A fixed failure to know about.** Before this fix, a *group* attribute whose name
+contains a space (`Account Holder Address` — normal in human-authored classes,
+including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as a
+JSON **string** rather than an object, so every section carrying it failed
+validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
+resolve the `$ref` pointer to it. Definition names are now made wire-safe like
+property names, the pointers are rewritten, and a group the model still returns as
+a JSON string is parsed while its field names are restored — so the stored result
+carries the names you authored, not the wire spellings. The name map follows each
+`$ref` to its definition, so this holds for a class with several groups (the shipped
+lending package has three) and never restores one group's names against another's.
+A `$ref` to a shared *string* definition (an enum factored into `$defs`) is treated as
+a string, so JSON-looking text in it is left alone. If you measured forcing before and
+saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
+
 **What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
 `honored` (the model can accept a tool configuration and still answer in prose),
-`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
+`renamed_properties`, `renamed_definitions`, and `skipped` with a reason where
+applicable. `honored` is
 the number to look at first: forcing that is not honored has not been tested.
 
 **Visible in the Prompt Preview.** With Extraction mode **Simple** and this
@@ -1153,9 +1175,11 @@ and the inline-confidence retry (`integrated`) all share one implementation:
    bounding box.
 
 So large lists are handled with no extra configuration regardless of the
-Simple/Advanced or separate/integrated choice. The one knob is `list_batch_size`
-— **lower** it if a model still struggles to enumerate a full chunk; **raise** it
-to reduce the number of inference calls.
+Simple/Advanced or separate/integrated choice. The one knob is `list_batch_size`,
+and it is a **ceiling**: the size actually used is derived per list from the
+confidence model's output cap, the row's column count and the geometry mode, and is
+only ever smaller. **Lower** it to force smaller batches than the derivation;
+raising it above the derived size has no effect.
 
 ```yaml
 extraction:
@@ -1174,10 +1198,13 @@ extraction:
 > `0.5` to every field and leave list rows unscored. Advanced mode now heals this
 > automatically, cheapest-first:
 >
-> 1. **Token-aware first-pass sizing.** The first batch is sized to the confidence
->    model's output cap — so Nova Lite + `llm_grounded` starts at ~6–9 rows
->    instead of truncating at 25. This only ever *shrinks* `list_batch_size`; a
->    large-output model keeps your configured size.
+> 1. **Token-aware first-pass sizing.** The first batch is sized from three inputs:
+>    the confidence model's output cap, the **column count** of the list's widest
+>    row, and whether the geometry mode adds a bounding box per cell. On Nova Lite
+>    (10,000-token cap) with `llm_grounded` that is 13 rows for a 3-column list and
+>    5 for 8 columns; without bounding boxes three times as many fit. This only ever
+>    *shrinks* `list_batch_size` — it never grows past your configured ceiling, so
+>    raising the ceiling above the derived size has no effect.
 > 2. **Recursive splitting.** Any batch that still truncates is halved and
 >    re-assessed until it fits.
 > 3. **Model escalation.** If rows are *still* unscored after shrinking + retries,
@@ -1958,7 +1985,7 @@ the system automatically adds `confidence_threshold` from configuration.
 3. **Model selection** — Claude Haiku/Sonnet class models with `temperature: 0` for deterministic scoring.
 4. **Risk-based thresholds** — 0.90+ for critical data, 0.75–0.85 global defaults, per-attribute overrides where needed.
 5. **Keep `ocr_only` geometry** (the default) unless you have a specific reason — it is cheaper and more accurate than LLM boxes.
-6. **Tune `list_batch_size`** for large lists — lower if a chunk under-enumerates, raise to cut inference count.
+6. **Lower `list_batch_size`** for large lists only if a chunk under-enumerates — it is a ceiling on a derived size, so raising it does not cut the inference count.
 7. **Route below-threshold fields to [Human Review](human-review.md).**
 
 ---

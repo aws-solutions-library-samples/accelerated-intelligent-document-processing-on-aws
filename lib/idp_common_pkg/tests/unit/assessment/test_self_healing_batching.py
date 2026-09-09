@@ -65,13 +65,21 @@ def test_token_aware_bbox_shrinks_more_than_ocr_only():
     assert with_bbox <= without_bbox
 
 
-def test_token_aware_unknown_model_falls_back():
-    """An unknown model (no entry in model_config_limits) → keep configured size."""
+def test_token_aware_unknown_model_sizes_conservatively():
+    """An unknown model (no entry in model_config_limits) must NOT keep the
+    configured size — trusting a permissive configured value on a model whose cap
+    is unknown is how a 25-row batch reached a 10,000-token model. It sizes from a
+    conservative fallback cap instead, and never exceeds the configured ceiling."""
     sample = {"date": "2020-01-01", "amount": "1.00"}
     derived = compute_token_aware_batch_size(
         "some.unknown.model-v9:0", sample, "ocr_only", configured_batch_size=25
     )
-    assert derived == 25
+    assert 1 <= derived <= 25
+    # With bbox geometry the same unknown model must size down further still.
+    bbox = compute_token_aware_batch_size(
+        "some.unknown.model-v9:0", sample, "llm_grounded", configured_batch_size=25
+    )
+    assert bbox < derived
 
 
 def test_token_aware_never_returns_zero():
@@ -81,9 +89,10 @@ def test_token_aware_never_returns_zero():
     assert derived >= 1
 
 
-def test_token_aware_no_model_keeps_configured():
-    """No model id → cannot resolve a cap → keep the configured size."""
-    assert compute_token_aware_batch_size(None, {"a": 1}, "ocr_only", 25) == 25
+def test_token_aware_no_model_sizes_conservatively():
+    """No model id → cannot resolve a cap → size conservatively, do NOT fall back to
+    the configured size (see test_token_aware_unknown_model_sizes_conservatively)."""
+    assert 1 <= compute_token_aware_batch_size(None, {"a": 1}, "ocr_only", 25) <= 25
 
 
 def test_token_aware_sizes_by_column_count_not_value_length():

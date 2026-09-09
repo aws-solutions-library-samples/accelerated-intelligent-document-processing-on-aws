@@ -1357,7 +1357,7 @@ Confidence results automatically appear in the web interface with color-coded di
 
 1. **Enable Selectively**: Disable confidence (`enabled: false` or `mode: off`) for non-critical document types to control costs
 2. **Use Advanced (agentic) for Complex Documents**: For very large documents and big tables, prefer agentic extraction — it shards both extraction and confidence assessment and yields the best-calibrated confidence
-3. **Tune `list_batch_size` for Large Lists**: Lower it if a chunk under-enumerates; raise it to cut inference count
+3. **Lower `list_batch_size` for Large Lists** if a chunk under-enumerates. It is a ceiling on a derived size, so raising it does not cut the inference count
 4. **Configure Appropriate Image Dimensions**: Use original resolution for maximum accuracy
 5. **Monitor Resource Usage**: Track processing time and costs when using confidence features
 

@@ -115,6 +115,14 @@ X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
 # and scripts/migrate_multi_instance_baselines.py.
 X_AWS_IDP_MULTI_INSTANCE = "x-aws-idp-multi-instance"
 
+# Class-level opt-IN that keeps Simple + integrated (1S-TopK) confidence on a class
+# that declares list fields. By default such a class is scored in a separate pass,
+# because Simple + integrated silently drops list rows (measured at 100+ rows on
+# the shipped default model). Set this when the class's lists are short enough
+# that you have verified completeness on your own documents. Unknown to older
+# releases, which ignore it (classes are free-form dicts), so it is rollback-safe.
+X_AWS_IDP_ALLOW_INTEGRATED_LISTS = "x-aws-idp-allow-integrated-lists"
+
 # ============================================================================
 # AWS IDP Policy/Rule Type Extensions
 # ============================================================================
