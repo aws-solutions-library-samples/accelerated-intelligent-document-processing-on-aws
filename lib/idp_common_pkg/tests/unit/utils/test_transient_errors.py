@@ -269,8 +269,10 @@ class TestEachRuleInIsolation:
             "IncompleteReadError": {"actual_bytes": 1, "expected_bytes": 2},
             "ResponseStreamingError": {"error": "e"},
             "ProxyConnectionError": {"proxy_url": "u"},
-            "NewConnectionError": {"pool": None, "message": "plain text"},
         }.get(base.__name__)
-        exc = odd(**kwargs) if kwargs else odd("plain text")
+        if base.__name__ == "NewConnectionError":  # urllib3: (conn, message) positional
+            exc = odd(None, "plain text")
+        else:
+            exc = odd(**kwargs) if kwargs else odd("plain text")
         assert "read timed out" not in str(exc).lower()
         assert is_transient_error(exc) is True
