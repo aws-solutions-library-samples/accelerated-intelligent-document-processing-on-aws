@@ -30,6 +30,8 @@ SPDX-License-Identifier: MIT-0
 
 - **Legacy `.xls` workbooks now produce readable pages instead of a single blank page.** The upload picker and the OCR router both accept `.xls`, but the Excel reader's `.xls` engine (`xlrd`) was never declared, so every such workbook converted to one empty page reading "Error reading Excel file" and the document went through classification and extraction with no content. `xlrd` is now part of the `[ocr]` extra. (#799)
 
+- **Documents no longer fail on a Lambda that is still provisioning its code artifact.** `Invoke` answers `Lambda.CodeArtifactUserPendingException` (HTTP 409) while a function's code artifact is being provisioned — seen when a stack has been idle and its functions have gone cold — and no retry policy listed it, so the first documents through failed outright on a condition that clears in seconds to about two minutes. Every Lambda task now retries the provisioning errors: most on a short dedicated ladder, the rest through retry entries that already matched them. (#801)
+
 ## [0.6.7]
 
 ### Added
