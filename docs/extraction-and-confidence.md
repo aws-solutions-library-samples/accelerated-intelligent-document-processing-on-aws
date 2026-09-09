@@ -563,6 +563,7 @@ Repairs type/format mismatches deterministically — **no model call, no cost**:
 | `"03/15/2024"` | `string` + `format: date` | `"2024-03-15"` |
 | `"March 15, 1980"` | `string` + `format: date` | `"1980-03-15"` |
 | `"Yes"` | `boolean` | `true` |
+| `'{"City": "Anytown"}'` (a JSON string) | `object` | `{"City": "Anytown"}` — the one cross-type repair that loses nothing |
 
 Every change is recorded in the section's `metadata.coercion`, so nothing is
 silently rewritten and you can audit exactly what was changed and why.
@@ -692,9 +693,25 @@ configuration. Models reached through a custom Lambda hook and the GPT-5.x
 before/after comparison can tell "forcing changed nothing" from "forcing never
 ran", which are very different results.
 
+**A fixed failure to know about.** Before this fix, a *group* attribute whose name
+contains a space (`Account Holder Address` — normal in human-authored classes,
+including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as a
+JSON **string** rather than an object, so every section carrying it failed
+validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
+resolve the `$ref` pointer to it. Definition names are now made wire-safe like
+property names, the pointers are rewritten, and a group the model still returns as
+a JSON string is parsed while its field names are restored — so the stored result
+carries the names you authored, not the wire spellings. The name map follows each
+`$ref` to its definition, so this holds for a class with several groups (the shipped
+lending package has three) and never restores one group's names against another's.
+A `$ref` to a shared *string* definition (an enum factored into `$defs`) is treated as
+a string, so JSON-looking text in it is left alone. If you measured forcing before and
+saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
+
 **What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
 `honored` (the model can accept a tool configuration and still answer in prose),
-`renamed_properties`, and `skipped` with a reason where applicable. `honored` is
+`renamed_properties`, `renamed_definitions`, and `skipped` with a reason where
+applicable. `honored` is
 the number to look at first: forcing that is not honored has not been tested.
 
 **Visible in the Prompt Preview.** With Extraction mode **Simple** and this

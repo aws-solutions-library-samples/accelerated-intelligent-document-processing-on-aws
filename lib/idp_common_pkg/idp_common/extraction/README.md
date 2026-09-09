@@ -538,7 +538,10 @@ some time; as of v0.7 the simple path gets the same guarantee, in two steps.
 **1. Deterministic coercion (always, free).** Before validating, obvious
 type/format mismatches are repaired without a model call: `"$1,234.00"` and
 `"1.234,00"` into a `number` field, named-month and unambiguous numeric dates
-into `format: date`, boolean-ish strings into `boolean`. Every change is recorded
+into `format: date`, boolean-ish strings into `boolean`, and a string that is the
+JSON of the object/array the field asks for is parsed (`json_parsed_from_string` —
+the one cross-family repair that is lossless; the field must not also allow a
+string, so a text field holding JSON is left alone). Every change is recorded
 under `metadata.coercion` and anything ambiguous (`01/02/2024`, a 2-digit year,
 fractional-to-integer) is **refused** rather than guessed. Nothing is ever
 rewritten without a record. See `idp_common.extraction.coercion`.
@@ -594,7 +597,7 @@ unless `fallback_to_prompt` is off, in which case the section is a parse failure
 which exists only to measure the honored rate without fallback masking it.
 
 **`metadata.forced_tool`** records `requested`, `honored`, `renamed_properties`,
-and `skipped` (with a reason). This is load-bearing for measurement, not just
+`renamed_definitions`, and `skipped` (with a reason). This is load-bearing for measurement, not just
 audit: without it a before/after comparison cannot distinguish "forcing had no
 effect" from "forcing never ran", and both look identical in the output.
 
