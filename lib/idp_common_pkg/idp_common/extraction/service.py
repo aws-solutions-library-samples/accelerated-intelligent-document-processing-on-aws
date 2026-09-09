@@ -5067,7 +5067,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
         output_metadata["assessment_integrated_in_extraction"] = True
-        output_metadata["assessment_alert_count"] = len(merged_assessment_alerts)
+        # Counts the list that was actually STORED. Reading the pre-dedupe list
+        # here let the recorded count contradict the data next to it — a section
+        # carrying 16 alerts reported 2,603. The raw figure is still worth having
+        # when it differs, because the gap IS the duplication this path removes,
+        # so it is recorded under its own name rather than smuggled into this one.
+        output_metadata["assessment_alert_count"] = len(
+            section.confidence_threshold_alerts
+        )
+        if len(merged_assessment_alerts) != len(section.confidence_threshold_alerts):
+            output_metadata["assessment_alert_count_before_dedupe"] = len(
+                merged_assessment_alerts
+            )
 
     def _retry_missing_integrated_rows(
         self,
