@@ -5058,7 +5058,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
 
         self._grounded_assessment = grounded
-        section.confidence_threshold_alerts = merged_assessment_alerts
+        # Deduped at this boundary too: the integrated path accumulates alerts
+        # from the enrich pass, cross-shard merges, and the missing-row retry
+        # (whose extra_alerts re-emit the shared scalars per recovery chunk), so
+        # the same non-indexed finding can arrive several times. Idempotent;
+        # imported lazily like the other batching imports in this file.
+        from idp_common.assessment.batching import dedupe_alerts
+
+        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
         output_metadata["assessment_integrated_in_extraction"] = True
         output_metadata["assessment_alert_count"] = len(merged_assessment_alerts)
 
