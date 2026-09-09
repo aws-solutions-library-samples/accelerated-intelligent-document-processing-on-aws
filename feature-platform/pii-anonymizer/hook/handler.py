@@ -53,6 +53,7 @@ structured error dict on failure so the dispatcher can apply that policy.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -151,6 +152,85 @@ def _ext_of(key: str) -> str:
     return key.rsplit(".", 1)[-1].lower() if "." in key else ""
 
 
+def _xls_cell_value(cell: Any, datemode: int) -> Any:
+    """One BIFF cell as a value openpyxl can write.
+
+    Formula cells arrive as their cached NUMBER/TEXT result, which is what a
+    reader of the sheet would see and therefore what PII detection should scan.
+    """
+    import xlrd
+
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        try:
+            return xlrd.xldate.xldate_as_datetime(cell.value, datemode)
+        except (ValueError, OverflowError):
+            # An out-of-range serial is not worth failing a redaction over; the
+            # raw number still carries whatever the cell showed.
+            return cell.value
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, xlrd.XL_CELL_ERROR):
+        return None
+    if cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
+        # Excel stores every number as a float; writing 42.0 where the sheet
+        # showed 42 changes what the detector sees and what the reviewer reads.
+        return int(cell.value)
+    return cell.value
+
+
+def _convert_xls_to_xlsx(source_bucket: str, source_key: str, dest_key: str) -> str:
+    """Rewrite a legacy BIFF ``.xls`` as ``.xlsx`` in the Working bucket.
+
+    The vendored redactor reads workbooks with ``openpyxl``, which handles only
+    the OOXML container. On a ``.xls`` it fails with ``zipfile.BadZipFile`` — not
+    the ``InvalidFileException`` you would expect, because that check is on the
+    filename and the processor downloads to a temp path it names ``*.xlsx``
+    regardless — and because this extension is *claimed* as supported it never
+    reaches the handler's unsupported-format path. Converting here keeps the fix in accelerator-owned
+    code: the vendored subtree stays byte-identical to its upstream provenance,
+    and the redacted output was already ``.xlsx`` for both extensions, so the
+    contract downstream is unchanged.
+
+    ``xlrd`` (BIFF-only since 2.0) is the same engine pandas uses for this
+    format, and it is pure Python, so it adds no wheel-architecture constraint to
+    this function's build.
+
+    Returns the Working-bucket key of the converted workbook.
+    """
+    import xlrd
+    from openpyxl import Workbook
+
+    raw = _s3.get_object(Bucket=source_bucket, Key=source_key)["Body"].read()
+    book = xlrd.open_workbook(file_contents=raw)
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)  # drop the default sheet Workbook() creates
+    for sheet in book.sheets():
+        # Excel caps a sheet name at 31 chars; a BIFF name is already within it,
+        # but truncating defensively beats an openpyxl error mid-redaction.
+        worksheet = workbook.create_sheet(title=sheet.name[:31])
+        for row in range(sheet.nrows):
+            for col in range(sheet.ncols):
+                value = _xls_cell_value(sheet.cell(row, col), book.datemode)
+                if value is not None:
+                    worksheet.cell(row=row + 1, column=col + 1, value=value)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    _s3.put_object(Bucket=_WORKING_BUCKET, Key=dest_key, Body=buffer.getvalue())
+    logger.info(
+        "Converted legacy .xls to .xlsx for redaction: s3://%s/%s -> s3://%s/%s "
+        "(%d sheet(s))",
+        source_bucket,
+        source_key,
+        _WORKING_BUCKET,
+        dest_key,
+        len(book.sheets()),
+    )
+    return dest_key
+
+
 def _build_pii_config(args: Dict[str, str]) -> Dict[str, Any]:
     """Build the plain-dict config the vendored processors expect from the
     hook's generic key/value args (the `argsMap` the dispatcher passes). All
@@ -242,9 +322,20 @@ def _redact_to_scratch(
     elif ext in ("xlsx", "xls"):
         from processors.tabular_processor import process_excel_file
 
+        source_bucket, source_key = input_bucket, input_key
+        if ext == "xls":
+            # openpyxl (the vendored processor's engine) cannot read BIFF at all,
+            # so convert first. Reading the ORIGINAL from the Input bucket and
+            # writing the conversion to the Working bucket keeps the original
+            # untouched — the halt/delete decision downstream still applies to it.
+            source_bucket = _WORKING_BUCKET
+            source_key = _convert_xls_to_xlsx(
+                input_bucket, input_key, f"{scratch_folder}{base}.converted.xlsx"
+            )
+
         result = process_excel_file(
-            input_bucket,
-            input_key,
+            source_bucket,
+            source_key,
             _WORKING_BUCKET,
             base,
             pii_config,
