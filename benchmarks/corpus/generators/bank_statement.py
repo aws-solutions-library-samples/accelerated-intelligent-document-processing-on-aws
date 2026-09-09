@@ -172,6 +172,13 @@ def build(
 ):
     """``documents=N`` emits N back-to-back COMPLETE statements in one file.
 
+    ``repeat_header=True`` reprints a running identity header — bank name, account
+    number, statement period, but NOT the account holder's name and address — at the
+    top of every page after the first (the #750 shape, and the boundary rules'
+    known failure mode). It composes with ``paginate`` (header at the top, "Page N of
+    M" at the bottom). Meant for ``documents=1``: the header carries the FIRST
+    statement's account number on every page.
+
     This is the over-MERGE direction of boundary detection, and it is the case a
     naive over-split fix regresses: a prompt biased toward ``continue`` collapses
     N statements into one section. #653 measured the unfixed prompt at 1/10 on
@@ -258,38 +265,28 @@ def build(
             story.append(t)
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
-    if repeat_header and not paginate:
-        # The OTHER common real-world shape (#726 counter-case): many statements print
-        # a running identity header — bank name, account number, statement period —
-        # at the top of EVERY page, with no "Page x of y". A boundary rule that keys
-        # on "carries the identity block => start" over-splits exactly this shape;
-        # a rule that keys on the FULL opening block (title + addressee + address)
-        # must still call these later pages "continue". The header is drawn on the
-        # canvas so it does not disturb the table flow.
-        acct0 = FIELDS["Account Number"]
 
-        def _running_header(canvas, _doc):
-            canvas.saveState()
-            canvas.setFont("Helvetica-Bold", 9)
-            canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
-            canvas.setFont("Helvetica", 8)
-            canvas.drawString(
-                0.4 * inch,
-                10.45 * inch,
-                f"Account Number: {acct0}    Statement Period: 01/01/2024 - 12/31/2024",
-            )
-            canvas.restoreState()
-
-        doc = SimpleDocTemplate(
-            out,
-            pagesize=letter,
-            topMargin=0.85 * inch,
-            bottomMargin=0.5 * inch,
-            leftMargin=0.4 * inch,
-            rightMargin=0.4 * inch,
+    def _running_header(canvas, _doc):
+        # The OTHER common real-world shape (#726 counter-case, #750): many statements
+        # print a running identity header — bank name, account number, statement
+        # period — at the top of EVERY page, with no addressee name or address. A
+        # boundary rule that keys on "carries an identity block => start" over-splits
+        # exactly this shape; drawn on the canvas so it does not disturb the table.
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(
+            0.4 * inch,
+            10.45 * inch,
+            f"Account Number: {FIELDS['Account Number']}    "
+            "Statement Period: 01/01/2024 - 12/31/2024",
         )
-        doc.build(story, onLaterPages=_running_header)
-    elif paginate:
+        canvas.restoreState()
+
+    top_margin = 0.85 * inch if repeat_header else 0.5 * inch
+
+    if paginate:
         # Real statements paginate, and "Page 2 of 3" is the single most decisive
         # boundary signal a page can carry — the classification boundary rules
         # check it FIRST (#653). A corpus document without it tests those rules
@@ -314,15 +311,30 @@ def build(
             )
             canvas.restoreState()
 
+        def _later(canvas, doc_):
+            _footer(canvas, doc_)
+            if repeat_header:
+                _running_header(canvas, doc_)
+
         doc = SimpleDocTemplate(
             out,
             pagesize=letter,
-            topMargin=0.5 * inch,
+            topMargin=top_margin,
             bottomMargin=0.5 * inch,
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+        doc.build(story, onFirstPage=_footer, onLaterPages=_later)
+    elif repeat_header:
+        doc = SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=top_margin,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        )
+        doc.build(story, onLaterPages=_running_header)
     else:
         doc.build(story)
     truth = {

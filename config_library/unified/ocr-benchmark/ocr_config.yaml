@@ -844,8 +844,8 @@ classification:
   max_tokens: '4096'
   top_k: '5'
   system_prompt: 'You are a multimodal document classification expert that analyzes business documents using both visual layout and textual content. Your task is to classify single-page documents into predefined categories based on their structural patterns, visual features, and text content. Your output must be valid JSON according to the requested format. <variables> <document-ocr-data>: OCR-extracted text content from the document page that provides textual information for classification <document-image>: Visual representation of the document page that provides layout, formatting, and visual structure information <document-types>: List of valid document types with their descriptions that the document must be classified into </variables>'
-  "task_prompt": "<task-description> Analyze the provided document using both its visual layout and textual content to determine\
-    \ its document type and whether this page begins a new document or continues the previous one. </task-description>\n<document-types>\
+  task_prompt: "<task-description> Analyze the provided document using both its visual layout and textual content to determine its document\
+    \ type and whether this page begins a new document or continues the previous one. </task-description>\n<document-types>\
     \ {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>\n<classification-instructions> Follow these steps to classify the document:\
     \ 1. Examine the visual layout: headers, logos, formatting, structure, and visual organization 2. Analyze the textual\
     \ content: key phrases, terminology, purpose, and information type 3. Identify distinctive features that match the document\

@@ -68,8 +68,10 @@ was called `start` in ~half the runs; 8/15 → 15/15 correct section counts afte
 rule, other fixtures unchanged) — then other continuation evidence, then the two
 paired CRITICAL clauses (#653). The block is pinned by
 `tests/unit/classification/test_boundary_prompt_contract.py`, and every committed
-copy of the prompt (presets, sample configs, notebooks) is kept identical by
-`scripts/tests/test_classification_prompt_copies_in_sync.py`.
+copy of the prompt (presets, sample configs, notebooks) is checked to carry the same
+rules block by `scripts/tests/test_classification_prompt_copies_in_sync.py`. A
+configuration profile a user saved on a running stack is an independent snapshot and
+does not receive an updated default prompt on upgrade.
 
 ### Where the `document_boundary` signal lives
 

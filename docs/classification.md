@@ -200,8 +200,12 @@ three-page bank statement `start` in about half of the runs, because the reprint
 real OCR and classification services (Nova 2 Lite, `temperature 0`) on the
 benchmark fixtures: the unpaginated 3-page statement went from **8/15** to
 **15/15** correct section counts, with the two-documents (5/5) and paginated (5/5)
-fixtures unchanged. Two clauses in the block are a matched pair and must not be
-removed independently:
+fixtures unchanged. Note that an upgrade delivers the new rules to `Config#default`
+(and to a `CustomConfigPath` config, which is re-resolved from S3) but **not** to a
+configuration profile you saved yourself — a saved profile is an independent snapshot
+that keeps whatever `classification.task_prompt` it was saved with. Re-apply the block or
+reset the prompt to the default in such a profile. Two clauses in the block are a matched
+pair and must not be removed independently:
 
 | Clause | Prevents |
 |---|---|
@@ -269,8 +273,9 @@ combination defeats the priority order above:
   opening block, so a synthetic 3-page statement with that running header and no
   pagination scores 0/5 before and after the #726 change, on Nova 2 Lite and on
   Claude Haiku 4.5 alike;
-- `contextPagesCount: 0` (the default) means rule 4's *"a table continuing from a
-  previous page"* has no preceding page to compare against.
+- `contextPagesCount: 0` (the default) means the continuation rules have no preceding
+  page to compare against — rule 4 judges the page's own table rows and rule 5's
+  *"running balance or subtotal carried forward"* is a within-page clue.
 
 The model says so in its own reasoning: *"The page number '15' at the top right
 indicates this is part of a multi-page document, **but the presence of the full
@@ -307,7 +312,7 @@ balances:
 
 | prompt / setting | 16-page running-header table (want 1) | `small_narrow` — 3-page statement, no pagination (want 1) | `paginated_3pg` (want 1) | `twodocs_2x20` — two forms back to back (want 2) |
 |---|---|---|---|---|
-| shipped rules | **0/10** | 7/10 | 10/10 | 10/10 |
+| v0.6.7 rules (#653, before the #726 table-continuation rule) | **0/10** | 7/10 | 10/10 | 10/10 |
 | + *"a running header is not an opening block"* | — | 4/10 ↓ | 10/10 | 10/10 |
 | + *"a bare page number > 1 is decisive"* | 10/10 | 2/10 ↓ | 10/10 | 10/10 |
 | + both | 10/10 | 0/10 ↓ | 10/10 | 10/10 |
