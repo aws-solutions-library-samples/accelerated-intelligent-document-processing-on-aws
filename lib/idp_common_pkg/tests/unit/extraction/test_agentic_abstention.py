@@ -658,5 +658,96 @@ def test_feedback_appends_the_required_error_rather_than_displacing_one():
     assert "do NOT guess" in fb
 
 
+@pytest.mark.unit
+def test_every_transport_model_goes_through_the_one_helper():
+    """The three transport-model sites and the two shard fan-out sites each call a
+    helper; the helper is what a test can pin. Reverting the transform or the shard
+    scoping AT the helper now fails — and the sites are one-line delegations."""
+    from idp_common.config.models import IDPConfig
+    from idp_common.extraction.service import ExtractionService
+
+    svc = ExtractionService(
+        config=IDPConfig(
+            **{"extraction": {"mode": "advanced", "agentic": {"enabled": True}}}
+        )
+    )
+    svc._reset_context()
+    svc._class_schema = _statement_schema()
+    model = svc._transport_model(_statement_schema(), "Stmt")
+    assert _accepts(model, _doc([_row(Amount=None)])) is True  # abstention
+    assert _accepts(model, {}) is False  # structure still enforced
+    assert _accepts(model, _doc(None)) is False
+
+    shard = svc._shard_schema_validator()
+    assert shard is not None
+    rows_only = {"AccountNumber": None, "Transactions": [_row()]}
+    assert shard(rows_only)[0] is True
+    assert shard({"AccountNumber": "1", "Transactions": []})[0] is True
+
+
+@pytest.mark.unit
+def test_service_source_has_no_transport_or_shard_site_outside_the_helpers():
+    """Belt and braces for the delegation: a new call site that bypasses the helper
+    is the one thing the helper test cannot see."""
+    import inspect
+
+    from idp_common.extraction import service as svc_mod
+
+    src = inspect.getsource(svc_mod)
+    # The transform is called exactly once — inside _transport_model.
+    assert src.count("nullable_leaves_for_transport(") == 1
+    # The shard-scoped validator is built exactly once — inside
+    # _shard_schema_validator — and no fan-out site builds its own.
+    assert src.count("return self._build_schema_validator(shard_scoped=True)") == 1
+    # (The full-schema validator is still passed directly where a WHOLE section is
+    # validated, e.g. the escalation re-extraction; that is the non-shard rule.)
+    assert src.count("self._build_schema_validator(shard_scoped=True)") == 1
+    assert src.count("schema_validator=self._shard_schema_validator()") == 2
+
+
+@pytest.mark.unit
+def test_shard_schema_drops_row_count_bounds_but_keeps_a_property_named_minitems():
+    from idp_common.extraction.validation import shard_validation_schema
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "Rows": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "uniqueItems": True,
+            },
+            "minItems": {"type": "string"},  # an attribute that happens to be named so
+        },
+        "required": ["Rows", "minItems"],
+    }
+    s = shard_validation_schema(schema)
+    assert "minItems" not in s["properties"]["Rows"]
+    assert "maxItems" not in s["properties"]["Rows"]
+    assert s["properties"]["Rows"]["uniqueItems"] is True
+    assert "minItems" in s["properties"]  # the PROPERTY survives
+    assert "required" not in s
+
+
+@pytest.mark.unit
+def test_const_leaves_are_not_abstainable_anywhere():
+    """The transform, the note predicate and the accounting must agree on const."""
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "Currency": {"type": "string", "const": "USD"},
+            "Amt": {"type": "number"},
+        },
+        "required": ["Currency", "Amt"],
+    }
+    report = validate_extraction({"Amt": 1.0}, schema)
+    assert report.errors[0].leaf is False
+    assert "do NOT guess" not in report.agent_feedback()
+    assert required_null_paths({"Currency": None, "Amt": None}, schema) == (["Amt"], 1)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

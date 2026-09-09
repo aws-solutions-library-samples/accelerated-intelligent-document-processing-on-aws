@@ -353,8 +353,8 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   if (abstained && (abstained.count || 0) > 0) {
     const sample = (abstained.paths || []).slice(0, 5).join(', ');
     issues.push({
-      label: 'Unreadable cells left blank',
-      detail: `The model could not read ${abstained.count} required value(s) and left them null rather than guessing${
+      label: 'Required values left blank',
+      detail: `${abstained.count} required value(s) came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it${
         sample ? `: ${sample}${(abstained.paths || []).length > 5 ? ', …' : ''}` : ''
       }.`,
     });

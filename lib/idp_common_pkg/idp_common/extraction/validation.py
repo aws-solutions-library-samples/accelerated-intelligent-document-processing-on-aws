@@ -261,6 +261,11 @@ def _required_error_is_scalar(
     # group(2) is the name; group(1) is the quote character (jsonschema uses
     # repr(), which switches to double quotes for a name with an apostrophe).
     prop = (error.schema.get("properties") or {}).get(match.group(2))
+    if isinstance(prop, dict) and "const" in prop:
+        # A const leaf is not abstainable: the transport model does not widen it,
+        # so telling the agent "leave it null" would be rejected. Agrees with
+        # ``nullable_leaves_for_transport``.
+        return False
     if isinstance(prop, dict) and "$ref" in prop and isinstance(root, dict):
         # One level of local $ref via the root $defs, so a scalar declared as
         # `{"$ref": "#/$defs/Amount"}` still counts as a leaf.
@@ -357,7 +362,8 @@ def validate_extraction(
 
 
 def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """The class schema with every ``required`` list and ``minItems`` removed.
+    """The class schema with every ``required`` list and every ``minItems`` /
+    ``maxItems`` bound removed.
 
     For validating ONE SHARD of a sharded agentic section. A shard sees only its
     pages and is told "if a field does not appear in your pages, leave it null —
@@ -366,17 +372,30 @@ def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
     cover page. Validating a shard against the full schema turned that correct
     behaviour into up to three extra agent turns per shard and told a cover-page
     shard to produce rows its pages do not contain (the #666 fabrication pressure).
-    What remains — type, format, enum, pattern, bounds — is what a shard CAN fix.
-    Presence is enforced once, on the merged section, against the real schema.
+    Row-count bounds describe the whole section, not one shard, in BOTH directions
+    — a shard whose pages hold more rows than the section's ``maxItems`` must not
+    be told to drop rows before the merge counts them. What remains — type,
+    format, enum, pattern, value bounds, ``uniqueItems`` — is what a shard CAN fix.
+    Presence and row counts are enforced once, on the merged section, against the
+    real schema.
+
+    Only the KEYWORD forms are dropped: ``required`` as a list of names, and the
+    bounds as integers. A property literally named ``minItems`` (its value is a
+    schema, not an int) survives.
     """
-    if isinstance(schema, list):
-        return [shard_validation_schema(s) for s in schema]  # type: ignore[return-value]
-    if not isinstance(schema, dict):
-        return schema
+    return _strip_shard_keywords(schema)
+
+
+def _strip_shard_keywords(node: Any) -> Any:
+    if isinstance(node, list):
+        return [_strip_shard_keywords(v) for v in node]
+    if not isinstance(node, dict):
+        return node
     return {
-        k: shard_validation_schema(v)
-        for k, v in schema.items()
-        if not (k == "required" and isinstance(v, list)) and k != "minItems"
+        k: _strip_shard_keywords(v)
+        for k, v in node.items()
+        if not (k == "required" and isinstance(v, list))
+        and not (k in ("minItems", "maxItems") and isinstance(v, int))
     }
 
 
@@ -410,7 +429,7 @@ def required_null_paths(
     def _declares_scalar(prop: Any) -> bool:
         if not isinstance(prop, dict):
             return False
-        if "properties" in prop or "items" in prop:
+        if "properties" in prop or "items" in prop or "const" in prop:
             return False
         declared = prop.get("type")
         types = [declared] if isinstance(declared, str) else declared
