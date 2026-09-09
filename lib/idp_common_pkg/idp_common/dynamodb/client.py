@@ -5,11 +5,6 @@
 DynamoDB client for direct table operations.
 """
 
-# botocore types ClientError.response with not-required keys, but every read of
-# Error/Code/Message in this file happens inside an `except ClientError` block,
-# where botocore populates them. File pre-dates the typecheck gate.
-# pyright: reportTypedDictNotRequiredAccess=false
-
 import copy
 import logging
 import os
