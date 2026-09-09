@@ -527,6 +527,15 @@
                   },
                   "OutputPath": "$.Payload",
                   "Retry": [
+{
+                      "ErrorEquals": [
+                        "Lambda.CodeArtifactUserPendingException",
+                        "Lambda.CodeArtifactUserDeletedException"
+                      ],
+                      "IntervalSeconds": 5,
+                      "MaxAttempts": 5,
+                      "BackoffRate": 2
+                    },
                     {
                       "ErrorEquals": [
                         "TransientError",
