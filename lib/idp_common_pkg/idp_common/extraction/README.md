@@ -950,7 +950,8 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > Assessment step (which skips only when `explainability_info` is already present)
 > scores it separately. Benchmarked reason: Simple + integrated returned 1–10 of 100
 > rows on 4/4 repeats and an 800-row list came back absent, all reporting COMPLETED
-> (config-guidance §2.1); the separate pass costs ~2.5× per 100-row document. Recorded
+> (config-guidance §2.1). The cost delta is model-dependent: ~2.5× per 100-row document
+> at Sonnet 5, cheaper than the integrated call at Sonnet 4.6 (live pass 2026-09-09). Recorded
 > in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
 > Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
 > `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
