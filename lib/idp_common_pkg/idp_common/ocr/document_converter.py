@@ -20,6 +20,38 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 
+class UnsupportedLegacyFormatError(ValueError):
+    """A pre-OOXML Office file was submitted to a reader that cannot open it.
+
+    Raised — not logged and swallowed — on purpose. The converters answer a
+    failure with a single page reading "Error reading <format>", which is the
+    right shape for a corrupt file (one page of explanation beats a dead
+    workflow) but the wrong shape for a whole *format* that cannot be read at
+    all: the document then completes classification and extraction with no
+    content, and the failure surfaces downstream as inexplicably empty results.
+    That is how legacy ``.doc`` behaved for every release that advertised it
+    (#829). A document that cannot be read must fail visibly.
+
+    ``ocr.service._process_non_pdf_document`` re-raises this ahead of its
+    catch-all, so the OCR task fails. That is safe to do loudly: ``OCRStep``
+    retries only named transient errors (no ``States.TaskFailed`` wildcard and no
+    ``Catch``), so a permanent error like this one fails immediately instead of
+    burning a retry ladder.
+    """
+
+
+# Pre-OOXML Office files are OLE2/CFB containers ("D0 CF 11 E0 A1 B1 1A E1"),
+# while .docx/.xlsx are zip containers ("PK"). Sniffing the container rather
+# than trusting the extension also catches a .doc that was renamed .docx —
+# which is how these files usually arrive, since Word will happily save either.
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def is_legacy_ole2_office_file(content: bytes) -> bool:
+    """True if ``content`` is a pre-OOXML (OLE2/CFB) Office document."""
+    return content[: len(_OLE2_MAGIC)] == _OLE2_MAGIC
+
+
 class DocumentConverter:
     """Converter for various document formats to images and text."""
 
@@ -242,7 +274,23 @@ class DocumentConverter:
 
         Returns:
             List of tuples (image_bytes, page_text)
+
+        Raises:
+            UnsupportedLegacyFormatError: for a legacy binary ``.doc``. python-docx
+                reads only the OOXML container, and there is no pure-Python reader
+                for the OLE2 format, so this cannot be answered with content — and
+                answering it with a blank page loses the document silently (#829).
         """
+        # Checked BEFORE the try: this must not be turned into an "Error reading
+        # Word document" page by the handler below.
+        if is_legacy_ole2_office_file(file_bytes):
+            raise UnsupportedLegacyFormatError(
+                "This is a legacy binary Word document (.doc). Only the modern "
+                ".docx format can be read — python-docx reads the OOXML container "
+                "only, and no pure-Python reader exists for .doc. Re-save the file "
+                "as .docx (Word: File > Save As > Word Document) and upload it "
+                "again."
+            )
         try:
             from docx import Document
 

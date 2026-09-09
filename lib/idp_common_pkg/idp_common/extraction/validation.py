@@ -185,6 +185,72 @@ def _coerce_numeric_keyword(key: str, value: Any) -> Any:
     return value
 
 
+def coerce_numeric_schema_keywords(schema: Any) -> Any:
+    """Return ``schema`` with every stringified numeric constraint made numeric.
+
+    ``ConfigurationRecord._stringify_values`` turns every numeric scalar into a
+    string on the way into the Configuration table ("avoids Decimal conversion
+    issues") and it recurses into a class's ``json_schema``; nothing coerces them
+    back on read, because ``classes`` is typed ``List[Dict[str, Any]]`` so
+    validation never descends into it. A class authored in the Web UI therefore
+    arrives with ``minItems: "100"``.
+
+    Readers that compare such a value against a number raise ``TypeError``, and
+    the ones that guard themselves do it one site at a time — five separate
+    implementations of this rule had accumulated (this module, the Stickler
+    mapper, and three ad-hoc guards in ``extraction.service``) before a sixth
+    reader crashed on the constraint it was supposed to enforce (#797). Calling
+    this once where the schema enters the service gives every reader numbers.
+
+    Returns the input object unchanged when there was nothing to coerce, so the
+    common case allocates nothing and callers can keep sharing the config's own
+    dict. Never mutates its input. A value that cannot be read as a number is
+    left exactly as it is and logged at WARNING: the constraint is then ignored
+    by the guards downstream, and "constraint silently ignored" is the failure
+    mode that let #797 hide, so it must not be silent here too.
+    """
+    coerced, changed = _coerce_numerics(schema, "")
+    return coerced if changed else schema
+
+
+def _coerce_numerics(node: Any, path: str) -> tuple[Any, bool]:
+    """Recursive worker for :func:`coerce_numeric_schema_keywords`.
+
+    Returns ``(value, changed)`` so an untouched subtree can be handed back by
+    identity rather than rebuilt.
+    """
+    if isinstance(node, dict):
+        out: dict[Any, Any] = {}
+        changed = False
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            new_value, sub_changed = _coerce_numerics(value, here)
+            if isinstance(key, str) and key in _NUMERIC_SCHEMA_KEYWORDS:
+                candidate = _coerce_numeric_keyword(key, new_value)
+                if candidate is not new_value:
+                    new_value, sub_changed = candidate, True
+                elif isinstance(new_value, str):
+                    logger.warning(
+                        "Schema constraint %s at '%s' is not a number (%r); it "
+                        "will be ignored rather than enforced",
+                        key,
+                        here,
+                        new_value,
+                    )
+            out[key] = new_value
+            changed = changed or sub_changed
+        return (out, True) if changed else (node, False)
+    if isinstance(node, list):
+        items = []
+        changed = False
+        for index, item in enumerate(node):
+            new_item, sub_changed = _coerce_numerics(item, f"{path}[{index}]")
+            items.append(new_item)
+            changed = changed or sub_changed
+        return (items, True) if changed else (node, False)
+    return node, False
+
+
 def _strip_idp_extensions(schema: Any) -> Any:
     """Recursively drop ``x-aws-idp-*`` keys so only standard JSON Schema remains.
 
