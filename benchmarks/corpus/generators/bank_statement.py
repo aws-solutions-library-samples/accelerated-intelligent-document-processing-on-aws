@@ -167,6 +167,7 @@ def build(
     value_noise=False,
     documents=1,
     paginate=False,
+    repeat_header=False,
     out="doc.pdf",
 ):
     """``documents=N`` emits N back-to-back COMPLETE statements in one file.
@@ -257,7 +258,38 @@ def build(
             story.append(t)
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
-    if paginate:
+    if repeat_header and not paginate:
+        # The OTHER common real-world shape (#726 counter-case): many statements print
+        # a running identity header — bank name, account number, statement period —
+        # at the top of EVERY page, with no "Page x of y". A boundary rule that keys
+        # on "carries the identity block => start" over-splits exactly this shape;
+        # a rule that keys on the FULL opening block (title + addressee + address)
+        # must still call these later pages "continue". The header is drawn on the
+        # canvas so it does not disturb the table flow.
+        acct0 = FIELDS["Account Number"]
+
+        def _running_header(canvas, _doc):
+            canvas.saveState()
+            canvas.setFont("Helvetica-Bold", 9)
+            canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
+            canvas.setFont("Helvetica", 8)
+            canvas.drawString(
+                0.4 * inch,
+                10.45 * inch,
+                f"Account Number: {acct0}    Statement Period: 01/01/2024 - 12/31/2024",
+            )
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=0.85 * inch,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        )
+        doc.build(story, onLaterPages=_running_header)
+    elif paginate:
         # Real statements paginate, and "Page 2 of 3" is the single most decisive
         # boundary signal a page can carry — the classification boundary rules
         # check it FIRST (#653). A corpus document without it tests those rules
@@ -295,6 +327,7 @@ def build(
         doc.build(story)
     truth = {
         "gen": "bank_statement",
+        "repeat_header": bool(repeat_header),
         "rows": rows,
         "cols": cols,
         "lists": lists,
