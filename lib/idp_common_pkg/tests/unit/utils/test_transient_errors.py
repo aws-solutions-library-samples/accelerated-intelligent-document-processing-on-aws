@@ -12,6 +12,8 @@ import botocore.exceptions
 import pytest
 
 from idp_common.utils.transient_errors import (
+    TRANSIENT_EXCEPTION_TYPES,
+    TRANSIENT_MESSAGE_MARKERS,
     TransientError,
     is_transient_error,
     raise_if_transient,
@@ -192,3 +194,83 @@ class TestRaiseIfTransient:
 
     def test_returns_silently_for_a_hard_error(self):
         raise_if_transient(ValueError("bad"))  # no raise
+
+    def test_an_already_surfaced_transient_error_is_not_wrapped_again(self):
+        """The assessment handler classifies inside `_handle` AND in the outer
+        wrapper; the outer pass must not produce TransientError(TransientError(...))."""
+        inner = TransientError(TimeoutError("x"), where="assessment section 1")
+        raise_if_transient(inner, where="assessment section 1")  # no raise
+        assert inner.original_type == "TimeoutError"
+
+
+class TestProducersInThisCodebase:
+    def test_the_custom_prompt_lambda_wrapper_is_judged_by_its_cause(self):
+        """`_invoke_custom_prompt_lambda` re-raises `Exception(msg) from e`. A Lambda
+        throttle or a botocore timeout invoking the hook is transient THROUGH the
+        cause; the same wrapper text without a cause (a hook that failed on its own
+        terms) stays hard."""
+        throttle = _client_error("TooManyRequestsException", "Rate Exceeded")
+        try:
+            raise Exception(
+                "Failed to invoke custom prompt Lambda arn: x"
+            ) from throttle
+        except Exception as wrapped:
+            assert is_transient_error(wrapped) is True
+        timeout = botocore.exceptions.ReadTimeoutError(endpoint_url="https://lambda")
+        try:
+            raise Exception("Failed to invoke custom prompt Lambda arn: y") from timeout
+        except Exception as wrapped:
+            assert is_transient_error(wrapped) is True
+        assert (
+            is_transient_error(
+                Exception("Failed to invoke custom prompt Lambda arn: z")
+            )
+            is False
+        )
+
+    def test_botocore_read_timeout_text_is_a_marker(self):
+        """botocore says 'Read timeout on endpoint URL', not 'read timed out'."""
+        assert (
+            is_transient_error(
+                RuntimeError('Read timeout on endpoint URL: "https://x"')
+            )
+            is True
+        )
+
+    def test_dynamodb_throttle_code_is_transient(self):
+        assert (
+            is_transient_error(_client_error("ProvisionedThroughputExceededException"))
+            is True
+        )
+
+
+class TestEachRuleInIsolation:
+    """One case per marker and per type, so dropping any single entry fails a test."""
+
+    @pytest.mark.parametrize("marker", sorted(TRANSIENT_MESSAGE_MARKERS))
+    def test_each_message_marker(self, marker):
+        assert is_transient_error(RuntimeError(f"zzz {marker.upper()} zzz")) is True
+
+    @pytest.mark.parametrize(
+        "base",
+        [t for t in TRANSIENT_EXCEPTION_TYPES if t not in (asyncio.TimeoutError,)],
+        ids=lambda t: t.__name__,
+    )
+    def test_each_exception_type_by_isinstance_alone(self, base):
+        """A subclass with an unknown NAME and a marker-free message: only the
+        isinstance rule can catch it. botocore types format their message from
+        required kwargs, so each gets the kwargs its template needs."""
+        odd = type("Odd", (base,), {})
+        kwargs = {
+            "ReadTimeoutError": {"endpoint_url": "u"},
+            "ConnectTimeoutError": {"endpoint_url": "u"},
+            "EndpointConnectionError": {"endpoint_url": "u"},
+            "ConnectionClosedError": {"endpoint_url": "u"},
+            "IncompleteReadError": {"actual_bytes": 1, "expected_bytes": 2},
+            "ResponseStreamingError": {"error": "e"},
+            "ProxyConnectionError": {"proxy_url": "u"},
+            "NewConnectionError": {"pool": None, "message": "plain text"},
+        }.get(base.__name__)
+        exc = odd(**kwargs) if kwargs else odd("plain text")
+        assert "read timed out" not in str(exc).lower()
+        assert is_transient_error(exc) is True

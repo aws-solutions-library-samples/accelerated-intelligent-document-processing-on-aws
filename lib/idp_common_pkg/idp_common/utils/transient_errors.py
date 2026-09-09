@@ -82,6 +82,7 @@ TRANSIENT_ERROR_NAMES: frozenset[str] = frozenset(
         "modeltimeoutexception",  # Bedrock: model did not answer in time
         "modelnotreadyexception",  # Bedrock: model warming up
         "modelstreamerrorexception",  # Bedrock: ConverseStream broke mid-stream
+        "provisionedthroughputexceededexception",  # DynamoDB throttle
         "slowdown",  # S3 throttling
         "serviceunavailable",  # S3 / generic spelling without the suffix
         "internalerror",  # S3 spelling
@@ -106,6 +107,7 @@ TRANSIENT_ERROR_NAMES: frozenset[str] = frozenset(
 #: and as bare text they appear in deterministic wrappers too.
 TRANSIENT_MESSAGE_MARKERS: tuple[str, ...] = (
     "read timed out",
+    "read timeout on endpoint url",  # botocore ReadTimeoutError's own text
     "awshttpsconnectionpool",
     "connection reset",
     "connection aborted",
@@ -207,5 +209,7 @@ def raise_if_transient(exc: BaseException, where: str = "") -> None:
             raise_if_transient(e, where="extraction")
             raise
     """
+    if isinstance(exc, TransientError):
+        return  # already surfaced under the name; the caller's bare `raise` keeps it
     if is_transient_error(exc):
         raise TransientError(exc, where) from exc
