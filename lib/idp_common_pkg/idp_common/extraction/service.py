@@ -3202,6 +3202,32 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             or self.config.extraction.validation.escalation_model
         )
 
+    def _transport_model(self, schema: dict[str, Any], class_label: str) -> Any:
+        """The Pydantic model handed to the extraction agent for ``schema``.
+
+        Every scalar leaf is made nullable and ``required`` is KEPT
+        (``schema.nullable_leaves_for_transport``, #782), so the agent can abstain
+        on a cell it cannot read while an omitted key, a nulled list or a
+        misspelled key set still fail. Every transport-model site (in-process
+        agent, SFN shard plan, escalation subset) goes through here, so the rule
+        has one home and one test.
+        """
+        return create_pydantic_model_from_json_schema(
+            schema=nullable_leaves_for_transport(schema),
+            class_label=class_label,
+            clean_schema=False,
+        )
+
+    def _shard_schema_validator(self):
+        """The in-loop validator for ONE shard: types/formats/enums only.
+
+        No presence checks — a shard legitimately leaves out-of-shard fields null
+        and a cover-page shard has no rows — and no OCR table evidence. Both
+        fan-out sites (in-process and SFN) use this, so the shard rule has one
+        home and one test. See ``_build_schema_validator(shard_scoped=True)``.
+        """
+        return self._build_schema_validator(shard_scoped=True)
+
     def _build_schema_validator(
         self,
         ocr_analysis: dict[str, Any] | None = None,
@@ -3776,10 +3802,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # model in to fabricate the value the weaker one honestly declined
                 # to invent — a more convincing wrong answer. Re-extraction should
                 # try harder to READ the value and still be able to abstain.
-                subset_model = create_pydantic_model_from_json_schema(
-                    schema=nullable_leaves_for_transport(subset_schema),
-                    class_label=f"{section_info.class_label}__escalation",
-                    clean_schema=False,
+                subset_model = self._transport_model(
+                    subset_schema, f"{section_info.class_label}__escalation"
                 )
                 # Seed with current values for the failing fields only. Only when
                 # there is at least one non-null value: an all-null seed must be
@@ -4097,10 +4121,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # fails the model; a null CELL passes here and is then reported by
             # ``extraction.validation`` as a 'required' violation, fed back for the
             # agent's self-correction round, and escalatable.
-            dynamic_model = create_pydantic_model_from_json_schema(
-                schema=nullable_leaves_for_transport(self._class_schema),
-                class_label=section_info.class_label,
-                clean_schema=False,  # Already cleaned
+            dynamic_model = self._transport_model(
+                self._class_schema, section_info.class_label
             )
 
             # Log schema for debugging
@@ -4335,12 +4357,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         assess_runner=self._build_assess_runner(
                             section_info, self._document
                         ),
-                        # Shard-scoped self-correction: types/formats/enums only.
-                        # No presence checks — a shard legitimately leaves out-of-
-                        # shard fields null and a cover-page shard has no rows.
-                        schema_validator=self._build_schema_validator(
-                            shard_scoped=True
-                        ),
+                        schema_validator=self._shard_schema_validator(),
                     )
                 )
             else:
@@ -4742,18 +4759,6 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
                 if validation_metadata is not None:
                     self._pending_validation_metadata = validation_metadata
-                # Abstentions, recorded regardless of validation.enabled: with nullable
-                # scalar leaves a null cell no longer trips the Pydantic guard, so this
-                # is what makes an abstention attributable on a stack that has
-                # validation switched off (v0.6-migrated stacks carry enabled: false).
-                abstained, abstained_total = required_null_paths(
-                    extracted_fields, self._class_schema
-                )
-                self._pending_abstained_fields = (
-                    {"count": abstained_total, "paths": abstained}
-                    if abstained_total
-                    else None
-                )
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for extraction: {total_duration:.2f} seconds")
@@ -6065,10 +6070,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # TRANSPORT model — scalar leaves nullable so the agent can abstain on a
         # cell; `required` is KEPT so structure is still enforced (#782).
-        dynamic_model = create_pydantic_model_from_json_schema(
-            schema=nullable_leaves_for_transport(self._class_schema),
-            class_label=section_info.class_label,
-            clean_schema=False,
+        dynamic_model = self._transport_model(
+            self._class_schema, section_info.class_label
         )
 
         schema_analysis = self._analyze_schema_for_table_requirements(
@@ -6154,8 +6157,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 persistence=persistence,
                 shard_runner=default_shard_runner,
                 assess_runner=self._build_assess_runner(section_info, self._document),
-                # Shard-scoped, as in the in-process fan-out.
-                schema_validator=self._build_schema_validator(shard_scoped=True),
+                schema_validator=self._shard_schema_validator(),
             )
         )
         return {
