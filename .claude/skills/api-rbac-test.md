@@ -28,6 +28,7 @@ for APIs" checklist. Mapping (suite → checklist item), implemented in
 | 1 | Unauthenticated access denied | `run_group_matrix` (unauth cell) + `run_token_negatives` |
 | 2 / 2.2 | Authorization matrix, negative + positive; role X not authorized for API Y | `run_group_matrix` (every op × every role) |
 | 2.1 | IDOR — User A's data unreachable by User B | `run_idor_suite` (chat session ownership) |
+| 2.1 | Caller-supplied resource reference bounded to the deployment and the caller's config scope | `run_caller_supplied_ref_suite` — `getStepFunctionExecution` must refuse an ARN naming another state machine, still serve this deployment's own, and refuse a config-scoped caller an out-of-scope execution. **Needs a processed document**, else all three SKIP (see below) |
 | 2.3 | Tokens rejected after expiry | `run_token_lifecycle_suite` (+ token negatives); real-expiry wait via `IDP_SECTEST_WAIT_EXPIRY=<seconds>` |
 | 2.4 | Tokens revoked after logout | `run_token_lifecycle_suite` — global sign-out then re-test; **stateless-JWT reuse is a documented gap** (`GAP-SEC-LOGOUT`, WARN — see AUTH.T10) |
 | 2.5 | Deleted resources no longer accessible | `run_deleted_resource_suite` (config version create→delete→read-gone) |
@@ -40,7 +41,17 @@ Notes:
 - Suites that need conditions not present are recorded as **SKIP (pass)**, never
   silent omissions (e.g. expiry without `IDP_SECTEST_WAIT_EXPIRY`).
 - Threat-model coverage: AUTH.T09 (IDOR), AUTH.T10 (token lifecycle), AUTH.T11
-  (TLS) in `security/threat-modeling/feature-threats/rbac-authentication.md`.
+  (TLS), AUTH.T13 (IdP group-claim provenance) in
+  `security/threat-modeling/feature-threats/rbac-authentication.md`.
+- **Process a document on the stack before running this**, or the three
+  `SEC-2.1-CALLER-SUPPLIED-REF` checks record SKIP. They need a real execution
+  ARN, which the harness resolves via `listDocuments` -> `getDocument` — the list
+  projection does not carry `WorkflowExecutionArn`. `apply_dynamic_args` also
+  substitutes that ARN into `getStepFunctionExecution`'s matrix args, because the
+  placeholder ARN in the expectations file is (correctly) refused now, and for an
+  ANY-auth op the matrix reads any refusal as a failure.
+- The Cognito pre-token IdP group-mapping trigger is NOT covered here — it is not
+  an API operation. See `.claude/skills/live-auth-checks.md`.
 
 ## The architecture you are testing (read this first)
 

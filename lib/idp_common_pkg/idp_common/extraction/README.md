@@ -538,7 +538,10 @@ some time; as of v0.7 the simple path gets the same guarantee, in two steps.
 **1. Deterministic coercion (always, free).** Before validating, obvious
 type/format mismatches are repaired without a model call: `"$1,234.00"` and
 `"1.234,00"` into a `number` field, named-month and unambiguous numeric dates
-into `format: date`, boolean-ish strings into `boolean`. Every change is recorded
+into `format: date`, boolean-ish strings into `boolean`, and a string that is the
+JSON of the object/array the field asks for is parsed (`json_parsed_from_string` —
+the one cross-family repair that is lossless; the field must not also allow a
+string, so a text field holding JSON is left alone). Every change is recorded
 under `metadata.coercion` and anything ambiguous (`01/02/2024`, a 2-digit year,
 fractional-to-integer) is **refused** rather than guessed. Nothing is ever
 rewritten without a record. See `idp_common.extraction.coercion`.
@@ -594,7 +597,7 @@ unless `fallback_to_prompt` is off, in which case the section is a parse failure
 which exists only to measure the honored rate without fallback masking it.
 
 **`metadata.forced_tool`** records `requested`, `honored`, `renamed_properties`,
-and `skipped` (with a reason). This is load-bearing for measurement, not just
+`renamed_definitions`, and `skipped` (with a reason). This is load-bearing for measurement, not just
 audit: without it a before/after comparison cannot distinguish "forcing had no
 effect" from "forcing never ran", and both look identical in the output.
 
@@ -939,6 +942,25 @@ The service supports both text and image inputs:
 The extraction service is designed to be thread-safe, supporting concurrent processing of multiple sections in parallel workloads.
 
 ## 1S-TopK: single-stage extraction + confidence (Simple mode)
+
+> **Not used on list-bearing classes unless the class opts in.** When the section's
+> class declares a top-level array property (a multi-instance `instances` wrapper
+> counts), `ExtractionService._simple_integrated_list_downgrade` switches the section
+> to the plain extraction prompt and emits no inline confidence, so the standalone
+> Assessment step (which skips only when `explainability_info` is already present)
+> scores it separately. Benchmarked reason: Simple + integrated returned 1–10 of 100
+> rows on 4/4 repeats and an 800-row list came back absent, all reporting COMPLETED
+> (config-guidance §2.1); the separate pass costs ~2.5× per 100-row document. Recorded
+> in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
+> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
+> `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
+> opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
+> never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
+> verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
+> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
+> not a config rejection: a stored config must keep loading, and the new key is a
+> free-form class key that older releases ignore.
 
 When `extraction.mode: simple` and `extraction.confidence.mode: integrated`, the
 service produces the extracted values **and** their per-field confidence in a
@@ -1509,7 +1531,8 @@ How it works:
      into the result. Scoping to the failing fields keeps the schema, prompt and
      output small — far cheaper and faster than re-running the whole section —
      and the fields that already validated are preserved untouched. The merged
-     result is kept only if it is valid or has strictly fewer violations; then
+     result is merged field by field — an escalated field replaces the original only
+   if it lost no populated data and has fewer violations than before (#791); then
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
@@ -1524,8 +1547,14 @@ How it works:
   (path + validator + message), `check_formats`, `fail_action`,
   `initial_error_count` / `initial_failed_fields` (before any escalation), and —
   when escalation ran — `escalated`, `escalation_model`, `escalation_scope`
-  (`field-subset` | `full-section`), `escalation_fields`, and
-  `resolved_by_escalation`.
+  (`field-subset` | `full-section`), `escalation_fields`,
+  `resolved_by_escalation`, and `escalation_kept` / `escalation_decision`:
+  whether the escalated result **replaced** the original, and why. An escalation
+  is kept only if it lost no populated data (a list that had rows must not come
+  back null, absent or shorter; a non-null value must not come back null) and
+  got better **per field** — never on total error count, because per-row errors
+  scale with row count while a whole-field error is always one, so totals favour
+  the result with less data (`validation.escalation_outcome`, #791).
 - `metadata.population_check` — completeness heuristic (advisory). Reports
   `fields_defined`, `fields_populated`, `population_ratio`, `below_threshold`,
   and `empty_fields` (dotted paths of unpopulated leaves). A warning is logged
@@ -1591,10 +1620,17 @@ state the rule outright — declining the tool obliges direct extraction, and on
 unreadable column means that *cell* is null, not the row and not the list.
 
 **Null = absent.** Extraction follows the convention "return `null` if a field is
-not found", and the generated Pydantic model makes every non-required property
-`Optional[...] = None`. Validation therefore treats a `null` property as
-**absent**: an optional field left null passes, while a *required* field left
-null surfaces as a `required` violation (not a confusing type error). Enum /
+not found". The generated Pydantic model makes every non-required property
+`Optional[...] = None`, and on the **agentic** path the transport model
+additionally makes every required *scalar* nullable (`X | None`, still required —
+`schema.nullable_leaves_for_transport`), so the agent can abstain on a cell it
+cannot read instead of inventing a value; arrays, groups and `required` itself are
+untouched, so an omitted key or a nulled list still fails the model (#782).
+Validation therefore treats a `null` property as **absent**: an optional field
+left null passes, while a *required* field left null surfaces as a `required`
+violation (not a confusing type error) — and is fed back to the agent with an
+explicit instruction to fill it only if readable. Abstentions are also counted,
+independently of `validation.enabled`, under `metadata.abstained_fields`. Enum /
 pattern / format / numeric / `minItems` checks on present values are unaffected.
 
 > **`format: date` caveat.** JSON-Schema `format: date` means ISO-8601

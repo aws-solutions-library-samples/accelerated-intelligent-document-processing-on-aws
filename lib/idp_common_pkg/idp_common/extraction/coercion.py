@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
 import logging
 import math
 import re
@@ -84,6 +85,12 @@ CODE_DATE_NORMALIZED = "date_normalized"
 CODE_EMPTY_STRING_TO_NULL = "empty_string_to_null"
 
 CODE_TYPE_FAMILY_MISMATCH = "type_family_mismatch"
+# A string that is itself valid JSON for the container the schema asks for. The
+# one cross-family repair that is lossless and unambiguous: the string parses to
+# exactly the object/array the field wants. Seen live: Sonnet 5 under forced tool
+# use returned a group as a serialized string when a `$ref` pointer contained a
+# space (#783). The pointer is fixed at source; this is the belt-and-braces.
+CODE_JSON_PARSED_FROM_STRING = "json_parsed_from_string"
 CODE_UNPARSEABLE_NUMBER = "unparseable_number"
 CODE_UNPARSEABLE_BOOLEAN = "unparseable_boolean"
 CODE_UNPARSEABLE_DATE = "unparseable_date"
@@ -913,6 +920,69 @@ def _render_types(types: set[str]) -> str:
 # -----------------------------------------------------------------------------
 
 
+class _NotLossless(ValueError):
+    """The text is JSON, but parsing it would lose or invent information."""
+
+
+def _reject_constant(_name: str) -> Any:
+    # json.loads accepts the JSON5-style constants NaN / Infinity / -Infinity by
+    # default. Downstream consumers of a JSON Schema `number` (the UI's JSON.parse,
+    # Athena) do not, and a value the text did not carry as a finite number is
+    # not a lossless re-encoding.
+    raise _NotLossless("non-finite constant")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _NotLossless(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
+def _has_non_finite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_has_non_finite(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_non_finite(v) for v in value)
+    return False
+
+
+def _parse_json_container(
+    raw: str, types: set[str]
+) -> dict[str, Any] | list[Any] | None:
+    """``raw`` parsed as JSON if it is a container of a kind ``types`` allows AND
+    the parse is lossless: no NaN/Infinity constants, no overflow to inf
+    (``1e400``), no duplicate keys (a later value silently replacing an earlier
+    one). Anything else is left as the string it was, for the refusal path."""
+    text = raw.strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        # Inside the try on purpose: _has_non_finite is Python recursion and trips
+        # RecursionError at ~500 levels, long before json's C scanner (~10,000).
+        non_finite = _has_non_finite(parsed)
+    except (ValueError, RecursionError):
+        # RecursionError: a model coaxed into "[[[[..." must not abort coercion
+        # for the whole section.
+        return None
+    if non_finite:
+        return None
+    if isinstance(parsed, dict) and "object" in types:
+        return parsed
+    if isinstance(parsed, list) and "array" in types:
+        return parsed
+    return None
+
+
 def _walk(
     value: Any,
     node: Any,
@@ -937,6 +1007,31 @@ def _walk(
 
     resolved = _effective_node(node, root) if isinstance(node, dict) else {}
     types = _types_of(resolved)
+
+    # A serialized container in a container-typed field. Rule 2 (never cross type
+    # families) exists because splitting a string into an array or reading an object
+    # as text CHANGES the data; parsing a string that IS the JSON of the requested
+    # container does not — it is the same value in a different encoding. Only when
+    # the schema does not also allow a string there, so a genuine string field that
+    # happens to hold JSON text is left alone.
+    if (
+        isinstance(value, str)
+        and types
+        and types <= {"object", "array", "null"}
+        and (types & {"object", "array"})
+    ):
+        parsed = _parse_json_container(value, types)
+        if parsed is not None:
+            kind = "object" if isinstance(parsed, dict) else "array"
+            ctx.coerced(
+                path,
+                value,
+                parsed,
+                CODE_JSON_PARSED_FROM_STRING,
+                f"string held the JSON of the {kind} this field expects; parsed "
+                "losslessly",
+            )
+            value = parsed
 
     if isinstance(value, dict):
         if types and "object" not in types:

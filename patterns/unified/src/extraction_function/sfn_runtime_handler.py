@@ -28,6 +28,7 @@ import time
 
 import boto3
 from idp_common import extraction, get_config
+from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
@@ -117,6 +118,10 @@ def handler(event, context):
         deadline_epoch = time.time() + (context.get_remaining_time_in_millis() / 1000.0)
     except Exception:
         deadline_epoch = None
+    # Publish it for the Bedrock retry decorators too. This is the shard-per-Lambda
+    # runtime, so it is the handler where a long agent backoff most directly wastes
+    # an invocation — and it was the one that computed the deadline without sharing it.
+    set_lambda_deadline_epoch(deadline_epoch)
 
     if mode == "plan":
         plan = service.plan_section_shards(

@@ -80,6 +80,8 @@ interface ValidationInfo {
   escalation_scope?: string;
   escalation_fields?: string[];
   resolved_by_escalation?: boolean;
+  escalation_kept?: boolean;
+  escalation_decision?: string;
 }
 
 interface PopulationCheck {
@@ -152,6 +154,10 @@ interface ProcessingMetadata {
   table_parsing_tool_used?: boolean;
   table_parsing_stats?: TableParsingStats;
   validation?: ValidationInfo;
+  // Scalar cells the extraction agent left null because it could not read them
+  // (#782). Recorded regardless of validation.enabled; a nulled LIST is not
+  // counted here — that is a defect, surfaced as extraction_incomplete.
+  abstained_fields?: { count?: number; paths?: string[] };
   population_check?: PopulationCheck;
   sizing_plan?: SizingPlan;
   assessment_batch_split_stats?: AssessmentBatchSplitStats;
@@ -342,6 +348,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   const issues: { label: string; detail: string }[] = [];
   if (!succeeded) {
     issues.push({ label: 'Extraction failed', detail: 'The model output could not be parsed into the expected structure.' });
+  }
+  const abstained = metadata.abstained_fields;
+  if (abstained && (abstained.count || 0) > 0) {
+    const sample = (abstained.paths || []).slice(0, 5).join(', ');
+    issues.push({
+      label: 'Required values left blank',
+      detail: `${abstained.count} required value(s) came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it${
+        sample ? `: ${sample}${(abstained.paths || []).length > 5 ? ', …' : ''}` : ''
+      }.`,
+    });
   }
   if (validation && validation.valid === false) {
     const fields = (validation.failed_fields || []).join(', ');
@@ -601,11 +617,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                   {validation.escalation_scope === 'field-subset'
                     ? `fields: ${(validation.escalation_fields || []).join(', ') || 'none'}`
                     : 'full section'}
-                  ) — {validation.resolved_by_escalation ? 'resolved' : 'still invalid'}
+                  ) —{' '}
+                  {validation.escalation_kept === false
+                    ? 'rejected, original kept'
+                    : validation.resolved_by_escalation
+                      ? 'resolved'
+                      : 'still invalid'}
                   {validation.initial_error_count !== undefined
                     ? `; errors ${validation.initial_error_count} → ${validation.error_count || 0}`
                     : ''}
-                  .
+                  .{validation.escalation_decision ? ` ${validation.escalation_decision}.` : ''}
                 </Box>
               )}
               {!validation.valid && validation.errors && validation.errors.length > 0 && (

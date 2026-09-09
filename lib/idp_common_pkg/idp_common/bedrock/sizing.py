@@ -42,10 +42,45 @@ logger = logging.getLogger(__name__)
 # ~(w*h)/750; a full-page image lands around this figure.
 _TOKENS_PER_IMAGE = 1600
 
-# Per-row confidence OUTPUT token estimate (mirrors assessment.batching): a
-# confidence leaf per column + a short reason. Larger under bbox geometry.
-_CONF_ROW_TOKENS = 40
-_CONF_ROW_TOKENS_BBOX = 120
+# --- Per-row confidence OUTPUT token estimate -------------------------------
+# These used to be duplicated: this module carried a flat per-ROW figure (40, or
+# 120 under bbox geometry) while assessment.batching carried a per-CELL figure
+# and multiplied by the row's column count. The two disagreed by a factor of the
+# column count, because the flat 120 IS the per-cell formula evaluated at exactly
+# one column (1 x 40 x 3.0) frozen as if it were universal. This module now owns
+# the single estimator (``confidence_rows_per_call``) and assessment.batching
+# imports it, so a wide table can never be sized as if it were one column wide.
+#
+# Fraction of the model's output cap a single assessment call may target. A batch
+# sized to the FULL cap truncates on any per-row estimate error, so leave
+# headroom for the scalar/group assessments that ride every call and for the
+# model being chattier than a chars/4 estimate. 0.5 (was 0.7) because confidence
+# output is variable — the model over-generates on a heavy multimodal prompt — and
+# sitting on the truncation edge makes the first call rely on the adaptive
+# splitter to bisect, which doubles the sequential call count and, under slow
+# Bedrock, ran shard Lambdas into their 900s wall.
+_OUTPUT_SAFETY_FRACTION = 0.5
+# Confidence output per row is driven by the row's COLUMN COUNT, not by the length
+# of the extracted values: each scalar column emits a fixed-ish leaf like
+# ``"ColumnName": {"confidence": 0.97},`` (column-name tokens + envelope), plus an
+# occasional short ``confidence_reason`` on low-confidence cells. Empirically
+# (Nova Lite, live-measured on a 6-column financial row) a clean per-cell cost is
+# ~28 output tokens; budget ~40 for the column name, the reason allowance on
+# sub-0.9 cells, and model chattiness.
+_PER_CELL_CONFIDENCE_TOKENS = 40.0
+# ``geometry.mode`` in {"llm", "llm_grounded"} appends a per-cell bounding-box
+# instruction, so each leaf also emits ``bbox``/``page`` coordinates — measured at
+# ~3x the output. Applied ON TOP of the per-cell cost.
+_BBOX_GEOMETRY_MULTIPLIER = 3.0
+# Column count assumed when the caller cannot supply one (``compute_sizing_plan``
+# runs per section BEFORE extraction, so no rows exist yet). Six is the width of a
+# typical transaction table and is deliberately not 1: under-estimating the width
+# is what produced a permissive batch size. The AUTHORITATIVE size is recomputed
+# from the real rows at assessment time by ``compute_token_aware_batch_size``.
+_ASSUMED_LIST_COLUMNS = 6
+# Output cap assumed when the model is unknown or its limits lookup fails. Small
+# on purpose: an unknown model must batch conservatively rather than optimistically.
+_FALLBACK_CONFIDENCE_OUTPUT_CAP = 8_000
 
 # Fallbacks when the model is unknown (limits lookup fails). Conservative so an
 # unknown model still shards rather than trying a giant single call.
@@ -159,6 +194,73 @@ def _resolve_limits(model_id: str | None) -> tuple[int, int, bool]:
     return max_in, max_out, (resolved_in and resolved_out)
 
 
+def confidence_per_row_tokens(
+    num_columns: int | None, geometry_mode: str | None
+) -> float:
+    """Estimated confidence OUTPUT tokens for one list row.
+
+    ``num_columns`` is the row's scalar column count; ``None``/non-positive falls
+    back to :data:`_ASSUMED_LIST_COLUMNS`. Bounding-box geometry modes multiply
+    the per-cell cost because each leaf also emits coordinates.
+    """
+    cols = num_columns if (num_columns and num_columns > 0) else _ASSUMED_LIST_COLUMNS
+    per_row = cols * _PER_CELL_CONFIDENCE_TOKENS
+    if (geometry_mode or "").lower() in ("llm", "llm_grounded"):
+        per_row *= _BBOX_GEOMETRY_MULTIPLIER
+    return per_row
+
+
+def confidence_rows_for_per_row_tokens(
+    output_cap: int | None,
+    per_row_tokens: float,
+    ceiling: int | None = None,
+) -> int:
+    """Rows that fit one confidence call, given a per-row output-token estimate.
+
+    ``floor(output_cap x _OUTPUT_SAFETY_FRACTION / per_row_tokens)``, clamped to
+    ``[_MIN_LIST_BATCH, ceiling]``. ``ceiling`` defaults to
+    :data:`_ABS_MAX_LIST_BATCH`; a caller with a user-configured ceiling passes the
+    smaller of the two. An unknown ``output_cap`` uses
+    :data:`_FALLBACK_CONFIDENCE_OUTPUT_CAP` rather than trusting a configured value.
+    """
+    cap = (
+        int(output_cap)
+        if (output_cap and output_cap > 0)
+        else _FALLBACK_CONFIDENCE_OUTPUT_CAP
+    )
+    # _ABS_MAX_LIST_BATCH applies ONLY when auto-deriving (no explicit ceiling). An
+    # explicit ceiling is a deliberate user choice and is honoured in full: clamping
+    # it here would silently turn a pinned 75 into 50, which earlier releases did
+    # not do on the path that decides the real batch. The reliability cap therefore
+    # bounds what the SYSTEM picks, never what the operator asked for.
+    if ceiling is not None:
+        limit = max(_MIN_LIST_BATCH, ceiling)
+    else:
+        limit = _ABS_MAX_LIST_BATCH
+    if per_row_tokens <= 0:
+        return limit
+    derived = int(cap * _OUTPUT_SAFETY_FRACTION // per_row_tokens)
+    return max(_MIN_LIST_BATCH, min(limit, derived))
+
+
+def confidence_rows_per_call(
+    output_cap: int | None,
+    num_columns: int | None,
+    geometry_mode: str | None,
+    ceiling: int | None = None,
+) -> int:
+    """Rows one confidence call can score without truncating.
+
+    There is no single correct constant here — the answer is a function of the
+    model's output cap, the geometry mode and the column count. On Nova Lite
+    (10,000 cap) with bounding boxes it is 41 rows for a 1-column list, 13 for 3
+    columns and 5 for 8; on Sonnet 5 (128,000) the reliability ceiling binds first.
+    """
+    return confidence_rows_for_per_row_tokens(
+        output_cap, confidence_per_row_tokens(num_columns, geometry_mode), ceiling
+    )
+
+
 def compute_sizing_plan(
     *,
     model_id: str | None,
@@ -166,6 +268,14 @@ def compute_sizing_plan(
     geometry_mode: str | None = None,
     max_images_per_agent: int = 20,
     default_max_pages_per_shard: int = 5,
+    # The model that runs the CONFIDENCE pass. Defaults to ``model_id`` only for
+    # back-compat; callers should pass ``extraction.confidence.model``, because the
+    # list-batch figure is meaningless when derived from the extraction model.
+    confidence_model_id: str | None = None,
+    # Scalar column count of the list being scored, when known. ``compute_sizing_plan``
+    # runs before extraction, so this is normally None and a conservative width is
+    # assumed; the authoritative value is recomputed from real rows at assessment time.
+    list_columns: int | None = None,
     # Explicit overrides (None = auto-derive). Kept so power users / tests can pin.
     shard_token_budget_override: int | None = None,
     max_pages_per_shard_override: int | None = None,
@@ -209,13 +319,19 @@ def compute_sizing_plan(
     )
 
     # --- Output (list-batch) budget ---
-    per_row = (
-        _CONF_ROW_TOKENS_BBOX
-        if (geometry_mode or "").lower() in ("llm", "llm_grounded")
-        else _CONF_ROW_TOKENS
-    )
-    derived_list_batch = max(
-        _MIN_LIST_BATCH, min(_ABS_MAX_LIST_BATCH, usable_output // per_row)
+    # This is a CONFIDENCE-pass figure, so it must be derived from the confidence
+    # model's output cap, not the extraction model's. It previously used
+    # ``usable_output`` (the extraction model), which on a Sonnet-5-extracts /
+    # Nova-Lite-scores setup computed 128,000 x 0.7 / 120 = 746, clamped to 50, and
+    # reported "50 rows" while the assessment path actually used 13. The value here
+    # is an UPPER-BOUND estimate for the processing report: the authoritative size
+    # is recomputed per field from the real rows by
+    # ``assessment.batching.compute_token_aware_batch_size``.
+    conf_model = confidence_model_id or model_id
+    _, conf_max_out, conf_resolved = _resolve_limits(conf_model)
+    per_row = confidence_per_row_tokens(list_columns, geometry_mode)
+    derived_list_batch = confidence_rows_per_call(
+        conf_max_out if conf_resolved else None, list_columns, geometry_mode
     )
     list_batch_size = (
         int(list_batch_size_override)
@@ -253,8 +369,9 @@ def compute_sizing_plan(
         "Model-aware sizing (%s): model=%s resolved=%s buffer=%.2f "
         "input_window=%d output_cap=%d | usable_in=%d usable_out=%d "
         "image_reserve=%d(%dimg) output_reserve=%d -> shard_token_budget=%d "
-        "max_pages_per_shard=%d | per_row_out=%d(geometry=%s) -> "
-        "list_batch_size=%d | overrides=%s",
+        "max_pages_per_shard=%d | confidence_model=%s(cap=%d resolved=%s) "
+        "cols=%s per_row_out=%d(geometry=%s) -> list_batch_size=%d(estimate) "
+        "| overrides=%s",
         log_label,
         plan.model_id,
         resolved,
@@ -268,6 +385,10 @@ def compute_sizing_plan(
         output_reserve,
         shard_token_budget,
         max_pages_per_shard,
+        conf_model or "(unknown)",
+        conf_max_out,
+        conf_resolved,
+        list_columns if list_columns else f"assumed {_ASSUMED_LIST_COLUMNS}",
         per_row,
         geometry_mode,
         list_batch_size,

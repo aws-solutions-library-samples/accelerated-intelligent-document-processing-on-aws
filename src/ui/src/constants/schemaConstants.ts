@@ -206,6 +206,15 @@ export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
 export const X_AWS_IDP_MULTI_INSTANCE = 'x-aws-idp-multi-instance';
 
 /**
+ * Class-level opt-IN that keeps Simple + integrated (1S-TopK) confidence on a
+ * class that declares list fields. Without it such a class is scored in a
+ * separate pass, because Simple + integrated silently drops list rows (measured
+ * at 100+ rows on the shipped default model). Must stay in sync with
+ * schema_constants.py.
+ */
+export const X_AWS_IDP_ALLOW_INTEGRATED_LISTS = 'x-aws-idp-allow-integrated-lists';
+
+/**
  * Declares the named page sub-types a class can include. Each entry has a
  * `name`, optional `description`, and `x-aws-idp-document-page-content-regex`
  * used to detect the page type from per-page OCR text.

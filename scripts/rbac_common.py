@@ -133,16 +133,58 @@ def get_auth_flows(ctx):
     )
 
 
+# Properties UpdateUserPoolClient does NOT accept back. Everything else the
+# describe call returns has to be re-sent, because the update is a full replace.
+_CLIENT_READ_ONLY_FIELDS = frozenset(
+    {"ClientSecret", "CreationDate", "LastModifiedDate"}
+)
+
+
 def set_auth_flows(ctx, flows):
+    """Change ONLY the app client's auth flows, preserving everything else.
+
+    UpdateUserPoolClient is a full replace, not a patch: any property omitted
+    from the request is cleared. Sending just --explicit-auth-flows therefore
+    wiped ReadAttributes, WriteAttributes, SupportedIdentityProviders,
+    CallbackURLs, LogoutURLs, AllowedOAuthFlows/Scopes and the token validities
+    off the UI app client every time the harness minted a token — which
+    * broke the Web UI's hosted-UI login (no callback URLs, no OAuth flows),
+    * broke external IdP federation (no supported providers), and
+    * removed the WriteAttributes restriction that keeps end users from writing
+      attributes the application never writes.
+    CloudFormation does not repair it on the next deploy either: the client
+    resource is unchanged in the template, so the stack update skips it and the
+    out-of-band edit survives.
+
+    So read the current client, change one field, and send the whole thing back.
+    """
+    current = (
+        aws(
+            "cognito-idp",
+            "describe-user-pool-client",
+            "--user-pool-id",
+            ctx["user_pool"],
+            "--client-id",
+            ctx["client"],
+            "--query",
+            "UserPoolClient",
+            region=ctx["region"],
+        )
+        or {}
+    )
+    desired = {
+        k: v
+        for k, v in current.items()
+        if k not in _CLIENT_READ_ONLY_FIELDS and v is not None
+    }
+    desired["UserPoolId"] = ctx["user_pool"]
+    desired["ClientId"] = ctx["client"]
+    desired["ExplicitAuthFlows"] = list(flows)
     aws(
         "cognito-idp",
         "update-user-pool-client",
-        "--user-pool-id",
-        ctx["user_pool"],
-        "--client-id",
-        ctx["client"],
-        "--explicit-auth-flows",
-        *flows,
+        "--cli-input-json",
+        json.dumps(desired),
         region=ctx["region"],
     )
 

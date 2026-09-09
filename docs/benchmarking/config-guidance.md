@@ -217,16 +217,20 @@ into a single "0 rows":
   1.000, because the scalar fields are extracted correctly either way.
 
 The `separate` control was complete in 8 of 8 runs across both models, at 1.5–2× the
-integrated cell's cost. **Use `separate`.**
+integrated cell's cost. The recommendation at the time was **use `separate`**; since then
+the routing is automatic — Simple + `integrated` runs the separate pass on any list-bearing
+class unless the class sets `x-aws-idp-allow-integrated-lists: true` (see the "Addressed"
+note below).
 
 > **Fixes since this measurement.** The value-corruption cause ("as short as possible") is
 > removed and list cells now request a single guess instead of four, which cuts list output
 > ~4× and pushes the truncation point out. A separate defect found in the same
 > investigation — group/object fields keeping their raw `{G1,P1,…}` candidate dict as the
 > extracted value, with no confidence at all — is also fixed. The single-response limit is
-> fundamental to this mode, so **the recommendation to use `separate` on list-bearing
-> schemas stands**, and these numbers describe the configuration as measured, before those
-> fixes.
+> fundamental to this mode, so list-bearing classes are now **routed to the separate pass
+> automatically** (the opt-in flag above keeps 1S-TopK for a class whose lists you have
+> verified complete), and these numbers describe the configuration as measured, before
+> those fixes.
 
 ---
 
@@ -351,8 +355,10 @@ accuracy:**
 
 1. **🚨 Integrated confidence + simple extraction returns empty/partial lists (P0).** At the
    default extraction model this is a total loss of list data with no error and perfect
-   scalar accuracy. Refuse the `integrated` + simple combination for list-bearing schemas
-   (route to a separate confidence pass or sharded advanced), or fail the section loudly.
+   scalar accuracy. **Addressed:** a Simple-mode section whose class declares list fields is
+   now routed to a separate confidence pass automatically (recorded in
+   `metadata.confidence_mode_effective` and the Processing Flow; a class can opt back in
+   with `x-aws-idp-allow-integrated-lists: true`); scalar-only classes are unchanged.
 2. **Silent truncation needs detection, not just documentation (P0).** Both failure modes
    above return `COMPLETED`. Compare extracted row count against schema `minItems` (or an
    OCR-derived row estimate) and surface a completeness warning/metric. Note the recovered
