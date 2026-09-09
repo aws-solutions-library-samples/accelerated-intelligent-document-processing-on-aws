@@ -53,6 +53,7 @@ from idp_common.extraction.validation import (
     ValidationReport,
     build_empty_list_feedback,
     build_subset_schema,
+    coerce_numeric_schema_keywords,
     find_empty_declared_lists,
     required_null_paths,
     select_escalated_fields,
@@ -313,6 +314,17 @@ class ExtractionService:
         knowing about it. The transform is a no-op (returning the same object)
         for every unflagged class, which is all of them by default.
 
+        For the same reason, stringified numeric constraints are coerced back to
+        numbers here. The Configuration table stores every numeric scalar as a
+        string and nothing converts them on read (``classes`` is
+        ``List[Dict[str, Any]]``, so validation never descends into it), so a
+        class authored in the Web UI arrives with ``minItems: "100"`` — which
+        raised ``TypeError`` in the one reader that compared it without a guard
+        and cost that section its whole completeness report (#797). Coercing at
+        this single entry point means readers do not each need their own guard;
+        the ones that already have one keep it, since they are also reachable
+        with a schema that did not come through here.
+
         Args:
             class_label: The document class name
 
@@ -330,7 +342,7 @@ class ExtractionService:
                 X_AWS_IDP_DOCUMENT_TYPE, ""
             )
             if class_id.lower() == class_label.lower():
-                return wrap_class_schema(class_obj)
+                return coerce_numeric_schema_keywords(wrap_class_schema(class_obj))
 
         return {}
 
