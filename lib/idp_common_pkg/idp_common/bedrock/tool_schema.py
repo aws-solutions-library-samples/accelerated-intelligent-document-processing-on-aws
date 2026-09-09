@@ -237,64 +237,103 @@ def _declared_types(node: Dict[str, Any]) -> List[str]:
     )
 
 
-def _permits_string(node: Any, root: Any, depth: int = 0) -> bool:
-    """True if ``node`` (resolved through ``$ref`` and combinators) allows a string."""
-    if not isinstance(node, dict) or depth > _MAX_REF_DEPTH:
-        return False
-    if "string" in _declared_types(node):
-        return True
-    if "$ref" in node:
-        target = _resolve_pointer(root, node["$ref"])
-        if _permits_string(target, root, depth + 1):
-            return True
-    for key in _SUBSCHEMA_LISTS:
-        branches = node.get(key)
-        if isinstance(branches, list) and any(
-            _permits_string(b, root, depth + 1) for b in branches
-        ):
-            return True
-    return False
+class _KindResolver:
+    """Container-kind and permits-string queries over ONE sanitized schema.
 
+    Memoized by node identity, so a definition reached through many ``$ref``s (a
+    DAG) is examined once instead of once per path — the un-memoized recursion
+    was exponential in a chain of ``anyOf``-doubled pointers. A node re-entered
+    while it is still being resolved (a ``$ref`` cycle) contributes nothing on
+    that path, which is also what terminates the recursion.
+    """
 
-def _kinds(node: Any, root: Any, depth: int = 0) -> frozenset[str]:
-    if not isinstance(node, dict) or depth > _MAX_REF_DEPTH:
-        return frozenset()
-    kinds: set[str] = set(_CONTAINER & set(_declared_types(node)))
-    if "properties" in node:
-        kinds.add("object")
-    if "items" in node or "prefixItems" in node:
-        kinds.add("array")
-    if "$ref" in node:
-        target = _resolve_pointer(root, node["$ref"])
-        if target is None:
-            # A pointer we cannot follow (non-local, or into a keyword we do not
-            # track): unknown, so keep the pre-#794 reading of "$ref = a group".
-            kinds |= _CONTAINER
-        else:
-            kinds |= _kinds(target, root, depth + 1)
-    for key in _SUBSCHEMA_LISTS:
-        branches = node.get(key)
-        if isinstance(branches, list):
-            for b in branches:
-                kinds |= _kinds(b, root, depth + 1)
-    return frozenset(kinds)
+    def __init__(self, root: Any) -> None:
+        self.root = root
+        self._kinds: Dict[int, frozenset[str]] = {}
+        self._strings: Dict[int, bool] = {}
+        self._in_progress: set[int] = set()
+
+    def container_kinds(self, node: Any) -> frozenset[str]:
+        """The container kind(s) a property's schema declares, or empty.
+
+        Resolves ``$ref`` against the sanitized root and looks through combinator
+        branches, so a ``$ref`` to a shared *string* definition — an enum or a
+        formatted code factored into ``$defs`` — is a string, not a group. Empty
+        when the schema is not a container OR also permits a plain string: that
+        exclusion mirrors coercion's rule for the same repair, because a field
+        declared ``["object", "string"]`` legitimately holds text and a
+        JSON-looking string under it must stay a string. Without the exclusion
+        the two layers disagreed and ``restore_names`` (which runs first) won.
+        """
+        if self.permits_string(node):
+            return frozenset()
+        return self.kinds(node)
+
+    def permits_string(self, node: Any) -> bool:
+        if not isinstance(node, dict):
+            return False
+        key = id(node)
+        if key in self._strings:
+            return self._strings[key]
+        if key in self._in_progress:
+            return False
+        self._in_progress.add(key)
+        try:
+            result = "string" in _declared_types(node)
+            if not result and "$ref" in node:
+                result = self.permits_string(_resolve_pointer(self.root, node["$ref"]))
+            if not result:
+                for k in _SUBSCHEMA_LISTS:
+                    branches = node.get(k)
+                    if isinstance(branches, list) and any(
+                        self.permits_string(b) for b in branches
+                    ):
+                        result = True
+                        break
+        finally:
+            self._in_progress.discard(key)
+        self._strings[key] = result
+        return result
+
+    def kinds(self, node: Any) -> frozenset[str]:
+        if not isinstance(node, dict):
+            return frozenset()
+        key = id(node)
+        if key in self._kinds:
+            return self._kinds[key]
+        if key in self._in_progress:
+            return frozenset()
+        self._in_progress.add(key)
+        try:
+            found: set[str] = set(_CONTAINER & set(_declared_types(node)))
+            if "properties" in node:
+                found.add("object")
+            if "items" in node or "prefixItems" in node:
+                found.add("array")
+            if "$ref" in node:
+                target = _resolve_pointer(self.root, node["$ref"])
+                if target is None:
+                    # A pointer we cannot follow (non-local, or into a keyword we
+                    # do not track): unknown, so keep the pre-#794 reading of
+                    # "$ref = a group".
+                    found |= _CONTAINER
+                else:
+                    found |= self.kinds(target)
+            for k in _SUBSCHEMA_LISTS:
+                branches = node.get(k)
+                if isinstance(branches, list):
+                    for b in branches:
+                        found |= self.kinds(b)
+        finally:
+            self._in_progress.discard(key)
+        result = frozenset(found)
+        self._kinds[key] = result
+        return result
 
 
 def _container_kinds(node: Any, root: Any) -> frozenset[str]:
-    """The container kind(s) a property's schema declares, or empty.
-
-    Resolves ``$ref`` against ``root`` (the sanitized schema) and looks through
-    combinator branches, so a ``$ref`` to a shared *string* definition — an enum
-    or a formatted code factored into ``$defs`` — is a string, not a group.
-    Empty when the schema is not a container OR also permits a plain string: that
-    exclusion mirrors coercion's rule for the same repair, because a field
-    declared ``["object", "string"]`` legitimately holds text and a JSON-looking
-    string under it must stay a string. Without the exclusion the two layers
-    disagreed and ``restore_names`` (which runs first) won.
-    """
-    if _permits_string(node, root):
-        return frozenset()
-    return _kinds(node, root)
+    """One-off form of :meth:`_KindResolver.container_kinds` (tests, probes)."""
+    return _KindResolver(root).container_kinds(node)
 
 
 def _resolve_pointer(root: Any, ref: Any) -> Any:
@@ -427,7 +466,7 @@ def sanitize_tool_schema(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], NameMa
     clean, name_map = _sanitize_node(strip_non_wire_keywords(schema))
     if not name_map.is_empty():
         clean = _rewrite_refs(clean, name_map)
-        _link_maps(clean, name_map, name_map, clean)
+        _link_maps(clean, name_map)
     clean = _annotate_ref_types(clean)
     if not name_map.is_empty():
         logger.debug(
@@ -585,6 +624,16 @@ def _annotate_ref_types(schema: Dict[str, Any]) -> Dict[str, Any]:
                 out[key] = _walk(value)
         if "type" not in node and "$ref" in node:
             definition = _resolve_pointer(schema, node["$ref"])
+            depth = 0
+            # Follow a chain of bare $refs (A -> B -> the typed definition).
+            while (
+                isinstance(definition, dict)
+                and "type" not in definition
+                and isinstance(definition.get("$ref"), str)
+                and depth < _MAX_REF_DEPTH
+            ):
+                definition = _resolve_pointer(schema, definition["$ref"])
+                depth += 1
             if isinstance(definition, dict) and isinstance(definition.get("type"), str):
                 out["type"] = definition["type"]
         return out
@@ -592,7 +641,32 @@ def _annotate_ref_types(schema: Dict[str, Any]) -> Dict[str, Any]:
     return _walk(schema)
 
 
-def _link_maps(node: Any, level: NameMap, root_map: NameMap, root_schema: Any) -> None:
+_MAX_LINK_PASSES = 64
+
+#: Keywords that give a schema node structure of its own, beyond a bare ``$ref``.
+_STRUCTURE_KEYS = (
+    "properties",
+    "items",
+    "prefixItems",
+    "$defs",
+    "patternProperties",
+    "additionalProperties",
+)
+
+
+def _has_own_structure(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if any(isinstance(node.get(k), (dict, list)) for k in _STRUCTURE_KEYS):
+        return True
+    for key in _SUBSCHEMA_LISTS:
+        branches = node.get(key)
+        if isinstance(branches, list) and any(_has_own_structure(b) for b in branches):
+            return True
+    return False
+
+
+def _link_maps(clean: Any, root_map: NameMap) -> None:
     """Attach each ``$ref``'d definition's map where its VALUE will appear, and
     record every property's container kind(s).
 
@@ -600,88 +674,161 @@ def _link_maps(node: Any, level: NameMap, root_map: NameMap, root_schema: Any) -
     because that is where the *schema* keeps them; a model *response* keeps the
     value under the property that references the definition. Walking the
     sanitized schema against the map tree, this resolves each ``$ref`` (already
-    rewritten to sanitized segments) to the definition's map and links that same
-    object under the referencing property (or as ``items`` for a list of them),
-    so ``restore_names`` follows the response without guessing. A pointer it
-    cannot follow leaves those names sanitized — never restored to a wrong field.
+    rewritten to sanitized segments) to the definition's map and links it under
+    the referencing property (or as ``items`` for a list of them), so
+    ``restore_names`` follows the response without guessing. A pointer it cannot
+    follow leaves those names sanitized — never restored to a wrong field.
 
-    ``$defs`` blocks are walked before ``properties`` at each level so a
-    definition that itself references another is linked before it is shared.
+    Two rules keep the links honest:
+
+    * **A definition's map is never mutated from a use site.** A site that is a
+      bare ``$ref`` (possibly ``anyOf``'d with ``null``) SHARES the definition's
+      map by identity. A site with structure of its own — inline properties
+      beside the ``$ref``, two combinator branches pointing at different
+      definitions, an alias already holding a shared map that now needs more —
+      gets a site-owned map that ABSORBS the definitions instead, so nothing
+      leaks from one ``$ref`` site into every other ``$ref`` to that definition.
+    * **Linking runs to a fixpoint.** A rename-free definition that only
+      references renamed ones has no map until a pass creates one, and a chain
+      of such definitions needs one pass per link; a created map is attached
+      before its subtree is walked so pointers into it resolve within the pass.
+      Passes stop when a pass changes nothing (bounded by ``_MAX_LINK_PASSES``).
     """
-    if not isinstance(node, dict):
-        return
+    _Linker(root_map).run(clean)
 
-    defs = node.get("$defs")
-    if isinstance(defs, dict):
-        for safe_def, body in defs.items():
-            key = f"$defs/{safe_def}"
-            _link_into(
-                body,
-                level.children.get(key),
-                root_map,
-                root_schema,
-                lambda m, key=key: level.children.__setitem__(key, m),
-            )
 
-    props = node.get("properties")
-    if isinstance(props, dict):
-        for safe, sub in props.items():
-            kinds = _container_kinds(sub, root_schema)
-            if kinds:
-                level.container_kinds[safe] = kinds
-            _link_into(
-                sub,
-                level.children.get(safe),
-                root_map,
-                root_schema,
-                lambda m, safe=safe: level.children.__setitem__(safe, m),
-            )
+class _Linker:
+    def __init__(self, root_map: NameMap) -> None:
+        self.root_map = root_map
+        self._kinds: Optional[_KindResolver] = None
+        self.definition_ids: set[int] = set()
+        self.changed = False
+        for m in root_map._beneath():
+            for key, child in m.children.items():
+                if key.startswith(f"{_DEF_SEGMENT}/"):
+                    self.definition_ids.add(id(child))
 
-    items = node.get("items")
-    if isinstance(items, dict):
-        _link_into(
-            items,
-            level.items,
-            root_map,
-            root_schema,
-            lambda m: setattr(level, "items", m),
+    def run(self, clean: Any) -> None:
+        self._kinds = _KindResolver(clean)
+        for _ in range(_MAX_LINK_PASSES):
+            self.changed = False
+            self._walk(clean, self.root_map)
+            if not self.changed:
+                return
+        logger.warning(
+            "tool-schema name-map linking did not converge in %d passes; some "
+            "$ref'd names may stay sanitized",
+            _MAX_LINK_PASSES,
         )
 
-    for key in _SUBSCHEMA_LISTS:
-        branches = node.get(key)
-        if isinstance(branches, list):
-            for branch in branches:
-                # Branch maps were merged into this level by the sanitizer.
-                _link_maps(branch, level, root_map, root_schema)
+    def _walk(self, node: Any, level: NameMap) -> None:
+        if not isinstance(node, dict):
+            return
+
+        defs = node.get(_DEF_SEGMENT)
+        if isinstance(defs, dict):
+            for safe_def, body in defs.items():
+                key = f"{_DEF_SEGMENT}/{safe_def}"
+                self._site(body, level, level.children, key, is_definition=True)
+
+        props = node.get("properties")
+        if isinstance(props, dict):
+            for safe, sub in props.items():
+                assert self._kinds is not None
+                kinds = self._kinds.container_kinds(sub)
+                if kinds:
+                    level.container_kinds[safe] = kinds
+                self._site(sub, level, level.children, safe)
+
+        items = node.get("items")
+        if isinstance(items, dict):
+            self._site(items, level, None, "items")
+
+        for key in _SUBSCHEMA_LISTS:
+            branches = node.get(key)
+            if isinstance(branches, list):
+                for branch in branches:
+                    # Branch maps were merged into this level by the sanitizer.
+                    self._walk(branch, level)
+
+    def _site(
+        self,
+        sub: Any,
+        level: NameMap,
+        slot: Optional[Dict[str, NameMap]],
+        key: str,
+        *,
+        is_definition: bool = False,
+    ) -> None:
+        """Link one schema node (a property, definition or ``items`` schema)."""
+
+        def get() -> Optional[NameMap]:
+            return slot.get(key) if slot is not None else level.items
+
+        def put(m: Optional[NameMap]) -> None:
+            if slot is not None:
+                if m is None:
+                    slot.pop(key, None)
+                else:
+                    slot[key] = m
+            else:
+                level.items = m
+
+        targets: List[NameMap] = []
+        for ref in _refs_in(sub):
+            m = _resolve_map(self.root_map, ref)
+            if m is not None and all(m is not x for x in targets):
+                targets.append(m)
+        pure = len(targets) == 1 and not _has_own_structure(sub)
+
+        existing = get()
+        created = False
+        if existing is None:
+            if pure:
+                put(targets[0])  # share by identity
+                self.changed = True
+                return
+            child = NameMap()
+            created = True
+            put(child)  # before the walk, so pointers INTO it resolve this pass
+            if is_definition:
+                self.definition_ids.add(id(child))
+        elif (
+            not is_definition
+            and id(existing) in self.definition_ids
+            and not (pure and existing is targets[0])
+        ):
+            # A use site holding a shared definition map that now needs structure
+            # of its own (a second branch, inline properties): fork a site-owned
+            # copy rather than writing into the definition.
+            child = NameMap()
+            _absorb(child, existing)
+            put(child)
+            self.changed = True
+        else:
+            child = existing
+            if pure and existing is targets[0]:
+                return  # already linked; a bare $ref has nothing to walk
+
+        before = _signature(child)
+        for target in targets:
+            if target is not child:
+                _absorb(child, target)
+        self._walk(sub, child)
+        if created and child.is_empty():
+            put(None)
+            self.definition_ids.discard(id(child))
+        elif _signature(child) != before:
+            self.changed = True
 
 
-def _link_into(
-    sub: Any,
-    existing: Optional[NameMap],
-    root_map: NameMap,
-    root_schema: Any,
-    attach: Any,
-) -> None:
-    """Link ``sub``'s ``$ref`` targets into its map (creating one if needed)."""
-    targets = [
-        m for m in (_resolve_map(root_map, r) for r in _refs_in(sub)) if m is not None
-    ]
-    child = existing
-    if child is None and len(targets) == 1:
-        # Share the definition's map itself (not a copy): links added to it
-        # later — a definition referencing another — are then visible here too.
-        child = targets[0]
-        attach(child)
-        targets = []
-    created = child is None
-    if created:
-        child = NameMap()
-    assert child is not None
-    for target in targets:
-        _absorb(child, target)
-    _link_maps(sub, child, root_map, root_schema)
-    if created and not child.is_empty():
-        attach(child)
+def _signature(m: NameMap) -> Tuple[int, int, int, bool]:
+    return (
+        len(m.renamed),
+        len(m.children),
+        len(m.container_kinds),
+        m.items is not None,
+    )
 
 
 def _refs_in(node: Any) -> List[str]:
@@ -726,8 +873,8 @@ def _resolve_map(root_map: NameMap, ref: str) -> Optional[NameMap]:
 
 
 def _absorb(into: NameMap, other: NameMap) -> None:
-    """Merge ``other`` into ``into`` (a property that has both inline names and a
-    ``$ref`` branch). Sub-maps are shared, not copied."""
+    """Copy ``other``'s names into ``into`` (a site-owned map). Sub-maps are
+    shared by reference, never the top-level dicts, so ``other`` is never written."""
     into.renamed.update(other.renamed)
     into.children.update(other.children)
     into.container_kinds.update(other.container_kinds)

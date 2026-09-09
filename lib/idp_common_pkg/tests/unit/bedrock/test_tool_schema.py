@@ -1155,6 +1155,181 @@ class TestRefLinkedRestore:
         assert restored == {"Ok": {"A B": 1}, "Ext": {"A_B": 1}}
 
 
+def _restore_for_orders(defs, props, response):
+    """Sanitize with `$defs` in every listed order and restore the same response."""
+    import itertools
+
+    out = set()
+    for order in itertools.permutations(defs):
+        schema = {
+            "type": "object",
+            "$defs": {k: defs[k] for k in order},
+            "properties": props,
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        out.add(json.dumps(restore_names(response, name_map), sort_keys=True))
+    return out
+
+
+class TestLinkingIsOrderIndependentAndSiteLocal:
+    """Two properties the verification of the first linking pass established: the
+    result must not depend on the order `$defs` are written in, and a definition's
+    map must never be written from a use site."""
+
+    def test_rename_free_intermediate_definitions_link_in_any_order(self):
+        defs = {
+            "X Def": {"type": "object", "properties": {"Meta": {"$ref": "#/$defs/Y"}}},
+            "Y": {"type": "object", "properties": {"Z": {"$ref": "#/$defs/W Def"}}},
+            "W Def": {"type": "object", "properties": {"Q Q": {}}},
+        }
+        props = {"Root": {"$ref": "#/$defs/X Def"}}
+        results = _restore_for_orders(
+            defs, props, {"Root": {"Meta": {"Z": {"Q_Q": 1}}}}
+        )
+        assert results == {
+            json.dumps({"Root": {"Meta": {"Z": {"Q Q": 1}}}}, sort_keys=True)
+        }
+
+    def test_a_bare_ref_chain_links_and_is_type_annotated_in_any_order(self):
+        defs = {
+            "A": {"$ref": "#/$defs/B"},
+            "B": {"$ref": "#/$defs/C Def"},
+            "C Def": {"type": "object", "properties": {"X Y": {}}},
+        }
+        props = {"P": {"$ref": "#/$defs/A"}}
+        results = _restore_for_orders(defs, props, {"P": {"X_Y": 1}})
+        assert results == {json.dumps({"P": {"X Y": 1}}, sort_keys=True)}
+        clean, _ = sanitize_tool_schema(
+            {"type": "object", "$defs": defs, "properties": props}
+        )
+        assert clean["properties"]["P"]["type"] == "object"
+
+    def test_a_pointer_into_a_rename_free_wrapper_block_resolves(self):
+        schema = {
+            "type": "object",
+            "$defs": {"W Def": {"type": "object", "properties": {"Q Q": {}}}},
+            "properties": {
+                "A": {"$ref": "#/properties/W/$defs/Y"},
+                "W": {
+                    "type": "object",
+                    "$defs": {
+                        "Y": {
+                            "type": "object",
+                            "properties": {"Z": {"$ref": "#/$defs/W Def"}},
+                        }
+                    },
+                    "properties": {"In": {"$ref": "#/properties/W/$defs/Y"}},
+                },
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names(
+            {"A": {"Z": {"Q_Q": 1}}, "W": {"In": {"Z": {"Q_Q": 2}}}}, name_map
+        )
+        assert restored == {"A": {"Z": {"Q Q": 1}}, "W": {"In": {"Z": {"Q Q": 2}}}}
+
+    def test_two_branches_pointing_at_different_definitions_do_not_pollute_either(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "G Def": {"type": "object", "properties": {"A B": {}}},
+                "H Def": {"type": "object", "properties": {"C D": {}}},
+            },
+            "properties": {
+                "Wrapper": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"Addr": {"$ref": "#/$defs/G Def"}},
+                        },
+                        {
+                            "type": "object",
+                            "properties": {"Addr": {"$ref": "#/$defs/H Def"}},
+                        },
+                    ]
+                },
+                "Other": {"$ref": "#/$defs/G Def"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert name_map.children["$defs/G_Def"].renamed == {"A_B": "A B"}
+        assert restore_names({"Other": {"C_D": 1}}, name_map) == {"Other": {"C_D": 1}}
+        assert restore_names({"Wrapper": {"Addr": {"C_D": 1, "A_B": 2}}}, name_map) == {
+            "Wrapper": {"Addr": {"C D": 1, "A B": 2}}
+        }
+
+    def test_an_alias_definition_shares_without_polluting_the_target(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "G Def": {"type": "object", "properties": {"A B": {}}},
+                "H Def": {"type": "object", "properties": {"C D": {}}},
+                "Alias": {"$ref": "#/$defs/G Def"},
+            },
+            "properties": {
+                "X": {"anyOf": [{"$ref": "#/$defs/Alias"}, {"$ref": "#/$defs/H Def"}]},
+                "Y": {"$ref": "#/$defs/Alias"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert restore_names({"Y": {"C_D": 1, "A_B": 2}}, name_map) == {
+            "Y": {"C_D": 1, "A B": 2}
+        }
+        assert restore_names({"X": {"C_D": 1, "A_B": 2}}, name_map) == {
+            "X": {"C D": 1, "A B": 2}
+        }
+
+    def test_inline_properties_beside_a_ref_stay_at_that_site(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "G Def": {"type": "object", "properties": {"A B": {}}},
+                "H Def": {"type": "object", "properties": {"C D": {}}},
+            },
+            "properties": {
+                "P1": {
+                    "$ref": "#/$defs/G Def",
+                    "properties": {"Extra": {"$ref": "#/$defs/H Def"}},
+                },
+                "P2": {"$ref": "#/$defs/G Def"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        g = name_map.children["$defs/G_Def"]
+        assert "Extra" not in g.children and "Extra" not in g.container_kinds
+        assert restore_names({"P2": {"A_B": 1, "Extra": {"C_D": 2}}}, name_map) == {
+            "P2": {"A B": 1, "Extra": {"C_D": 2}}
+        }
+        assert restore_names({"P1": {"A_B": 1, "Extra": {"C_D": 2}}}, name_map) == {
+            "P1": {"A B": 1, "Extra": {"C D": 2}}
+        }
+
+    def test_a_long_anyof_doubled_alias_chain_links_in_linear_time(self):
+        """Kind resolution is memoized by node and linking runs to a fixpoint, so a
+        60-deep chain of rename-free aliases that each `anyOf` two pointers to the
+        next (2^60 paths) resolves in milliseconds and still restores."""
+        import time
+
+        n = 60
+        defs = {
+            f"D{i}": {
+                "anyOf": [{"$ref": f"#/$defs/D{i + 1}"}, {"$ref": f"#/$defs/D{i + 1}"}]
+            }
+            for i in range(n)
+        }
+        defs[f"D{n}"] = {"type": "object", "properties": {"a b": {}}}
+        schema = {
+            "type": "object",
+            "$defs": defs,
+            "properties": {"P": {"$ref": "#/$defs/D0"}},
+        }
+        t0 = time.perf_counter()
+        _, name_map = sanitize_tool_schema(schema)
+        assert time.perf_counter() - t0 < 2.0
+        assert name_map.container_kinds["P"] == {"object"}
+        assert restore_names({"P": {"a_b": 1}}, name_map) == {"P": {"a b": 1}}
+
+
 class TestContainerKindsResolveRefs:
     def test_a_ref_to_a_string_definition_is_a_string_not_a_group(self):
         """An enum factored into `$defs` is an ordinary thing to do; a JSON-looking
