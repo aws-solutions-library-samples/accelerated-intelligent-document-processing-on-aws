@@ -8,6 +8,7 @@ import os
 import time
 
 from aws_xray_sdk.core import patch_all, xray_recorder
+
 from idp_common import assessment, get_config, s3
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
@@ -15,6 +16,7 @@ from idp_common.utils import (
     calculate_lambda_metering,
     merge_metering_data,
 )
+from idp_common.utils.transient_errors import TransientError, is_transient_error
 
 patch_all()
 
@@ -281,6 +283,17 @@ def handler(event, context):
             logger.error(f"Throttling exception detected: {type(e).__name__}. This will trigger state machine retry.")
             # Re-raise to trigger state machine retry (status already updated to ASSESSING)
             raise
+        elif is_transient_error(e):
+            # #787: a transient failure that is not throttling by name (botocore
+            # read/connect timeout, a dropped connection, a Strands wrapper around
+            # one) used to be marked FAILED here with no retry. Surface it under
+            # the one name AssessmentStep retries; hard errors still fall through
+            # to the FAILED branch below and are not retried.
+            logger.error(
+                f"Transient failure detected: {type(e).__name__}. Re-raising as "
+                "TransientError to trigger state machine retry."
+            )
+            raise TransientError(e, where=f"assessment section {section_id}") from e
         else:
             logger.error(f"Non-throttling exception: {type(e).__name__}. Marking document as failed.")
             # Set document status to failed for non-throttling exceptions

@@ -461,7 +461,7 @@
                         "ServiceUnavailableException",
                         "InternalServerException",
                         "InternalServerError",
-                        "States.TaskFailed"
+                        "TransientError"
                       ],
                       "IntervalSeconds": 10,
                       "MaxAttempts": 8,
@@ -521,6 +521,7 @@
               {
                 "ErrorEquals": [
                   "States.Timeout",
+                  "TransientError",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
@@ -598,6 +599,7 @@
               {
                 "ErrorEquals": [
                   "States.Timeout",
+                  "TransientError",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",

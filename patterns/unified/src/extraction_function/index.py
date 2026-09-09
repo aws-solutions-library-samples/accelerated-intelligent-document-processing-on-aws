@@ -2,18 +2,20 @@
 # SPDX-License-Identifier: MIT-0
 
 
-import os
 import json
-import time
 import logging
+import os
+import time
 
 import boto3
-from idp_common import metrics, get_config, extraction
-from idp_common.models import Document, Section, Status
+from aws_xray_sdk.core import patch_all, xray_recorder
+
+from idp_common import extraction, get_config, metrics
 from idp_common.docs_service import create_document_service
+from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
-from aws_xray_sdk.core import xray_recorder, patch_all
+from idp_common.utils.transient_errors import raise_if_transient
 
 patch_all()
 
@@ -334,12 +336,23 @@ def handler(event, context):
 
     # Process the section in our focused document
     t0 = time.time()
-    section_document = extraction_service.process_document_section(
-        document=section_document,
-        section_id=section_id,
-        checkpoint_data=checkpoint_data,
-        deadline_epoch=deadline_epoch,
-    )
+    try:
+        section_document = extraction_service.process_document_section(
+            document=section_document,
+            section_id=section_id,
+            checkpoint_data=checkpoint_data,
+            deadline_epoch=deadline_epoch,
+        )
+    except Exception as e:
+        # #787: Step Functions retries by the exception's CLASS NAME. A transient
+        # failure that reaches here as a plain Python exception (botocore read
+        # timeout, a Strands wrapper around one, a reset connection) would
+        # otherwise fail the document with no retry, while the same condition
+        # that ran into the Lambda timeout WAS retried. Surface transient causes
+        # under the one name ExtractionStep lists; hard errors keep their own
+        # name and are not retried (a bad schema cannot succeed on attempt 8).
+        raise_if_transient(e, where=f"extraction section {section_id}")
+        raise
     t1 = time.time()
     logger.info(f"Total extraction time: {t1-t0:.2f} seconds")
     
