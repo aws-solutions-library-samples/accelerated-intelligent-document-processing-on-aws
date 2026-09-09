@@ -574,7 +574,16 @@ class TestDeployedInlineCopy:
         env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         with patch.dict(os.environ, env, clear=False):
             mod = types.ModuleType("inline_external_idp_group_mapping")
-            exec(compile(code, "template.yaml:InlineCode", "exec"), mod.__dict__)
+            # The exec below IS the test. `code` is read from this repo's own
+            # template.yaml, not from any input: running the InlineCode copy that
+            # actually deploys is what proves it has not drifted from the copy
+            # these tests cover. Asserting on the text instead would pass while
+            # the deployed handler behaved differently.
+            #
+            # The pragma has to sit on the line immediately above the finding —
+            # semgrep does not look further back than that.
+            # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+            exec(compile(code, "template.yaml:InlineCode", "exec"), mod.__dict__)  # nosec B102 - see above
 
         self.mod = mod
         self.handler = mod.handler
