@@ -80,11 +80,17 @@ jobs:
           restore-keys: |
             srt-${{ runner.os }}-
 
-      # No AWS credentials needed: setup.py only writes a region/output into
-      # .srt/srtconfig.json, and skips even that when the AWS CLI is absent.
+      # No AWS *credentials* are needed — the scan is static analysis — but a
+      # profile must EXIST in ~/.aws, because `srt config` (which installs the
+      # scanners) enumerates profiles and aborts with "No AWS profiles found!" if
+      # there are none. setup.py writes one itself when the AWS CLI is absent, as
+      # it is in this image. Before that it silently skipped the step, so this job
+      # failed at setup with all five scanners missing and an error message about
+      # AWS that had nothing to do with the real cause.
+      #
       # GITHUB_TOKEN is passed so the one-per-run GitHub release lookup is
-      # authenticated — unauthenticated API is 60 requests/hour per IP, and
-      # hosted runners share IPs.
+      # authenticated — unauthenticated API is 60 requests/hour per IP, and hosted
+      # runners share IPs.
       - name: Set up SRT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
