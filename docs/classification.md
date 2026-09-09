@@ -200,7 +200,11 @@ three-page bank statement `start` in about half of the runs, because the reprint
 real OCR and classification services (Nova 2 Lite, `temperature 0`) on the
 benchmark fixtures: the unpaginated 3-page statement went from **8/15** to
 **15/15** correct section counts, with the two-documents (5/5) and paginated (5/5)
-fixtures unchanged. Note that an upgrade delivers the new rules to `Config#default`
+fixtures unchanged. Confirmed end to end on a deployed stack with a same-stack A/B
+(`boundaryab` suite, the frozen v0.6.7 prompt as the control, 5 repeats): the
+unpaginated statement scored **1/5** under the v0.6.7 prompt and **5/5** under the
+new rules, the two-documents and paginated fixtures 5/5 under both, and the
+running-header fixture 0/5 under both. Note that an upgrade delivers the new rules to `Config#default`
 (and to a `CustomConfigPath` config, which is re-resolved from S3) but **not** to a
 configuration profile you saved yourself — a saved profile is an independent snapshot
 that keeps whatever `classification.task_prompt` it was saved with. Re-apply the block or
