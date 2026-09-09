@@ -122,6 +122,19 @@ def dedupe_alerts(alerts: Any) -> Any:
     - Entries that are not dicts, or that carry no string ``attribute_name``,
       pass through untouched.
     - First-appearance order is preserved, and the collapse is idempotent.
+
+    PRECONDITION on the caller: within one list, a non-indexed path must
+    identify one finding. Every producer that reaches the current call sites
+    satisfies this by construction — they walk the assessment **dict**, and list
+    rows always carry an ``[i]`` suffix, so a single pass cannot emit the same
+    non-indexed path twice; repeats can only come from re-assessing the same
+    scalars. The BDA path is the counter-example and must NOT be routed here:
+    ``patterns/unified/src/bda_processresults_function/index.py`` builds alerts
+    by iterating *pages* and using the raw key-value key as ``attribute_name``,
+    so the same key found on two pages is two findings sharing one path.
+    (It assigns ``section.confidence_threshold_alerts`` directly and never
+    reaches this function; if that ever changes, put the page in the path
+    first.)
     """
     if not isinstance(alerts, list):
         return alerts
