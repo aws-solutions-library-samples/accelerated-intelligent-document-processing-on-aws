@@ -597,7 +597,7 @@ unless `fallback_to_prompt` is off, in which case the section is a parse failure
 which exists only to measure the honored rate without fallback masking it.
 
 **`metadata.forced_tool`** records `requested`, `honored`, `renamed_properties`,
-and `skipped` (with a reason). This is load-bearing for measurement, not just
+`renamed_definitions`, and `skipped` (with a reason). This is load-bearing for measurement, not just
 audit: without it a before/after comparison cannot distinguish "forcing had no
 effect" from "forcing never ran", and both look identical in the output.
 

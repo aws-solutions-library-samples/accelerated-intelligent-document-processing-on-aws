@@ -472,7 +472,13 @@ merging two fields into one, and truncates to 64 characters.
 > are rewritten to match, the rename is recorded in `name_map.defs_renamed`, and
 > each `$ref` node without a `type` gains the definition's `type` as belt and
 > braces — the explicit `"type": "object"` made Sonnet 5 return an object even
-> for the pointer it otherwise mis-resolved.
+> for the pointer it otherwise mis-resolved. The name map is then *linked*: each
+> property whose `$ref` resolves to a definition shares that definition's map, so
+> `restore_names` puts a `$ref`'d group's authored names back however many
+> definitions the class has (it used to guess only when there was exactly one),
+> and a pointer it cannot follow leaves those names sanitized rather than
+> restoring them against the wrong map. Container detection resolves `$ref` too:
+> a `$ref` to a shared *string* definition is a string, never parsed as a group.
 
 ### Capability gate
 

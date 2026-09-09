@@ -34,6 +34,7 @@ from idp_common.bedrock.tool_schema import (
     is_valid_tool_property_name,
     restore_names,
     sanitize_tool_schema,
+    strip_non_wire_keywords,
 )
 
 
@@ -655,9 +656,14 @@ class TestDefsPointerRewriteEdges:
         import jsonschema
 
         jsonschema.Draft202012Validator.check_schema(clean)
+        # De-duplicated: `_annotate_ref_types` puts the definition's `type`
+        # beside every resolvable `$ref`, so a wrong-typed sample is reported
+        # once by the sibling and once by the definition. Same message, one fact.
         return sorted(
-            e.message
-            for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+            {
+                e.message
+                for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+            }
         )
 
     def test_a_pointer_into_a_renamed_definition_is_rewritten_segment_wise(self):
@@ -860,7 +866,7 @@ class TestRestoreNamesParsesSerializedGroups:
             },
         }
         clean, name_map = sanitize_tool_schema(schema)
-        assert name_map.container_keys == {"X", "Tags"}
+        assert set(name_map.container_kinds) == {"X", "Tags"}
         restored = restore_names(
             {"Note_Text": '{"a": 1}', "X": '{"A_B": 2}', "Tags": '["t1"]'}, name_map
         )
@@ -880,9 +886,14 @@ class TestPerBlockPointerRewrite:
         import jsonschema
 
         jsonschema.Draft202012Validator.check_schema(clean)
+        # De-duplicated: `_annotate_ref_types` puts the definition's `type`
+        # beside every resolvable `$ref`, so a wrong-typed sample is reported
+        # once by the sibling and once by the definition. Same message, one fact.
         return sorted(
-            e.message
-            for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+            {
+                e.message
+                for e in jsonschema.Draft202012Validator(clean).iter_errors(sample)
+            }
         )
 
     def test_same_original_name_in_two_blocks_is_not_cross_wired(self):
@@ -986,6 +997,291 @@ class TestPerBlockPointerRewrite:
         assert self._errors(clean, {"P": 1}) == ["1 is not of type 'string'"]
 
 
+def _lending_homeowners_class():
+    import pathlib
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[5]
+    doc = yaml.safe_load(
+        (root / "config_library/unified/lending-package-sample/config.yaml").read_text()
+    )
+    return next(
+        c for c in doc["classes"] if c.get("$id") == "Homeowners-Insurance-Application"
+    )
+
+
+class TestRefLinkedRestore:
+    """A `$ref`'d group's inner names live under the DEFINITION's map; a response
+    keeps the value under the PROPERTY. `_link_maps` joins the two, so restoring
+    never depends on there being exactly one definition (the old `_sole_defs_child`
+    guess, which left the shipped lending package's 3-definition class with wire
+    spellings in `inference_result` and could restore an unrelated container
+    against the wrong map)."""
+
+    def test_shipped_lending_class_with_three_definitions_restores_every_group(self):
+        import jsonschema
+
+        schema = _lending_homeowners_class()
+        clean, name_map = sanitize_tool_schema(schema)
+        assert name_map.total_definition_renames() == 3
+        response = {}
+        for safe_def, body in clean["$defs"].items():
+            prop = next(
+                k
+                for k, v in clean["properties"].items()
+                if v.get("$ref", "").endswith(safe_def)
+            )
+            response[prop] = {k: "x" for k in body["properties"]}
+        restored = restore_names(response, name_map)
+        for def_name, body in schema["$defs"].items():
+            prop = next(
+                k
+                for k, v in schema["properties"].items()
+                if v.get("$ref", "").endswith(def_name)
+            )
+            assert list(restored[prop]) == list(body["properties"]), prop
+        assert not list(jsonschema.Draft202012Validator(schema).iter_errors(restored))
+
+    def test_shipped_lending_class_group_serialized_as_string_restores_too(self):
+        schema = _lending_homeowners_class()
+        clean, name_map = sanitize_tool_schema(schema)
+        safe_def = "Primary_Applicant_Information"
+        prop = next(
+            k
+            for k, v in clean["properties"].items()
+            if v.get("$ref", "").endswith(safe_def)
+        )
+        response = {
+            prop: json.dumps({k: "x" for k in clean["$defs"][safe_def]["properties"]})
+        }
+        restored = restore_names(response, name_map)
+        group = restored["Primary Applicant Information"]
+        assert isinstance(group, dict)
+        assert list(group) == list(
+            schema["$defs"]["Primary Applicant Information"]["properties"]
+        )
+
+    def test_an_unrelated_container_is_never_restored_against_a_definition_map(self):
+        """`Wrapper.Street_Number` is a VALID authored name that was never renamed;
+        the sole definition also has `Street Number`. The old fallback rewrote the
+        wrapper's field to a name that does not exist there."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Home Address": {"type": "object", "properties": {"Street Number": {}}}
+            },
+            "properties": {
+                "Wrapper": {"type": "object", "properties": {"Street_Number": {}}},
+                "Addr": {"$ref": "#/$defs/Home Address"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names(
+            {
+                "Wrapper": {"Street_Number": "authored-as-is"},
+                "Addr": {"Street_Number": "1"},
+            },
+            name_map,
+        )
+        assert restored == {
+            "Wrapper": {"Street_Number": "authored-as-is"},
+            "Addr": {"Street Number": "1"},
+        }
+
+    def test_items_ref_and_nullable_ref_are_linked(self):
+        schema = {
+            "type": "object",
+            "$defs": {"Row Def": {"type": "object", "properties": {"A B": {}}}},
+            "properties": {
+                "Rows": {"type": "array", "items": {"$ref": "#/$defs/Row Def"}},
+                "Maybe": {"anyOf": [{"$ref": "#/$defs/Row Def"}, {"type": "null"}]},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names(
+            {"Rows": [{"A_B": 1}, '{"A_B": 2}'], "Maybe": {"A_B": 3}}, name_map
+        )
+        assert restored == {"Rows": [{"A B": 1}, {"A B": 2}], "Maybe": {"A B": 3}}
+
+    def test_a_definition_referencing_another_and_itself_restores_and_terminates(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Node X": {
+                    "type": "object",
+                    "properties": {
+                        "Val Ue": {},
+                        "Next": {
+                            "anyOf": [{"$ref": "#/$defs/Node X"}, {"type": "null"}]
+                        },
+                        "Meta": {"$ref": "#/$defs/Meta Def"},
+                    },
+                },
+                "Meta Def": {"type": "object", "properties": {"Tag Name": {}}},
+            },
+            "properties": {"Root": {"$ref": "#/$defs/Node X"}},
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert name_map.total_definition_renames() == 2  # shared maps counted once
+        response = {
+            "Root": {
+                "Val_Ue": 1,
+                "Meta": {"Tag_Name": "t"},
+                "Next": {"Val_Ue": 2, "Meta": {"Tag_Name": "u"}, "Next": None},
+            }
+        }
+        assert restore_names(response, name_map) == {
+            "Root": {
+                "Val Ue": 1,
+                "Meta": {"Tag Name": "t"},
+                "Next": {"Val Ue": 2, "Meta": {"Tag Name": "u"}, "Next": None},
+            }
+        }
+
+    def test_a_property_the_pointer_cannot_be_followed_for_stays_sanitized(self):
+        """Honest, not guessed: names under an unresolvable pointer keep their wire
+        spelling instead of being restored against some other map."""
+        schema = {
+            "type": "object",
+            "$defs": {"G One": {"type": "object", "properties": {"A B": {}}}},
+            "properties": {
+                "Ok": {"$ref": "#/$defs/G One"},
+                "Ext": {"$ref": "https://example.com/other.json#/Thing"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names({"Ok": {"A_B": 1}, "Ext": {"A_B": 1}}, name_map)
+        assert restored == {"Ok": {"A B": 1}, "Ext": {"A_B": 1}}
+
+
+class TestContainerKindsResolveRefs:
+    def test_a_ref_to_a_string_definition_is_a_string_not_a_group(self):
+        """An enum factored into `$defs` is an ordinary thing to do; a JSON-looking
+        value in it must survive (the `Notes`-field regression, narrowed to `$ref`)."""
+        schema = {
+            "type": "object",
+            "$defs": {"Code": {"type": "string", "enum": ['{"a": 1}', "USD"]}},
+            "properties": {
+                "Amount Currency": {"$ref": "#/$defs/Code"},
+                "Spaced Group": {"type": "object", "properties": {"a b": {}}},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert "Amount_Currency" not in name_map.container_kinds
+        restored = restore_names({"Amount_Currency": '{"a": 1}'}, name_map)
+        assert restored == {"Amount Currency": '{"a": 1}'}
+
+    def test_a_ref_to_a_union_that_permits_string_is_excluded(self):
+        schema = {
+            "type": "object",
+            "$defs": {"Loose": {"type": ["object", "string"]}},
+            "properties": {
+                "F": {"$ref": "#/$defs/Loose"},
+                "Spaced Group": {"type": "object", "properties": {"a b": {}}},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert "F" not in name_map.container_kinds
+
+    def test_kinds_are_the_declared_ones(self):
+        schema = {
+            "type": "object",
+            "$defs": {"G": {"type": "object", "properties": {"a b": {}}}},
+            "properties": {
+                "Obj": {"$ref": "#/$defs/G"},
+                "Arr": {"type": "array", "items": {"$ref": "#/$defs/G"}},
+                "Either": {"anyOf": [{"$ref": "#/$defs/G"}, {"type": "array"}]},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        assert name_map.container_kinds["Obj"] == {"object"}
+        assert name_map.container_kinds["Arr"] == {"array"}
+        assert name_map.container_kinds["Either"] == {"object", "array"}
+
+    def test_the_parse_only_produces_the_declared_kind(self):
+        """`"[1, 2]"` in an object field is not a repair coercion would make either."""
+        schema = {
+            "type": "object",
+            "$defs": {"G": {"type": "object", "properties": {"a b": {}}}},
+            "properties": {
+                "Home Addr": {"$ref": "#/$defs/G"},
+                "Tags": {"type": "array"},
+            },
+        }
+        _, name_map = sanitize_tool_schema(schema)
+        restored = restore_names({"Home_Addr": "[1, 2]", "Tags": '{"x": 1}'}, name_map)
+        assert restored == {"Home Addr": "[1, 2]", "Tags": '{"x": 1}'}
+
+
+class TestPointerDecodeOrder:
+    def test_a_percent_encoded_pointer_governs_the_decoded_definition(self):
+        """RFC 6901 §6 / jsonschema: decode BEFORE matching. With both `A B` and
+        `A%20B` present, `#/$defs/A%20B` must keep meaning `A B` after sanitizing."""
+        import jsonschema
+
+        schema = {
+            "type": "object",
+            "$defs": {
+                "A B": {"type": "object", "required": ["space_only"]},
+                "A%20B": {"type": "object", "required": ["percent_only"]},
+            },
+            "properties": {"ByEncoded": {"$ref": "#/$defs/A%20B"}},
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        jsonschema.Draft202012Validator.check_schema(clean)
+        sample = {"ByEncoded": {"space_only": 1}}
+        assert not list(jsonschema.Draft202012Validator(schema).iter_errors(sample))
+        assert not list(jsonschema.Draft202012Validator(clean).iter_errors(sample))
+
+    def test_a_name_that_literally_contains_percent_still_resolves(self):
+        import jsonschema
+
+        schema = {
+            "type": "object",
+            "$defs": {"Rate%": {"type": "object", "properties": {"a b": {}}}},
+            "properties": {"R": {"$ref": "#/$defs/Rate%"}},
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        jsonschema.Draft202012Validator.check_schema(clean)
+        assert clean["properties"]["R"]["$ref"] == "#/$defs/Rate_"
+        assert not list(jsonschema.Draft202012Validator(clean).iter_errors({"R": {}}))
+
+
+class TestNestedDefsAnnotation:
+    def test_a_pointer_into_a_nested_defs_block_gets_the_type_hint(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "W": {
+                    "type": "object",
+                    "$defs": {"G x": {"type": "object", "properties": {"a b": {}}}},
+                    "properties": {"In": {"$ref": "#/properties/W/$defs/G x"}},
+                }
+            },
+        }
+        clean, _ = sanitize_tool_schema(schema)
+        node = clean["properties"]["W"]["properties"]["In"]
+        assert node["$ref"] == "#/properties/W/$defs/G_x"
+        assert node["type"] == "object"
+
+
+class TestUserKeyedKeywordsSurviveStripping:
+    def test_keys_of_pattern_and_dependent_keywords_are_not_filtered(self):
+        schema = {
+            "type": "object",
+            "patternProperties": {"^id$": {"type": "string"}, "id": {"type": "string"}},
+            "dependentSchemas": {"id": {"required": ["x"]}},
+            "dependentRequired": {"id": ["x"], "$comment": ["y"]},
+            "properties": {"id": {}, "x": {}, "$comment": {}},
+        }
+        out = strip_non_wire_keywords(schema)
+        assert set(out["patternProperties"]) == {"^id$", "id"}
+        assert set(out["dependentSchemas"]) == {"id"}
+        assert set(out["dependentRequired"]) == {"id", "$comment"}
+        assert set(out["properties"]) == {"id", "x", "$comment"}
+
+
 class TestSerializedGroupParseScope:
     def test_an_inline_group_serialized_as_a_string_restores_inner_names(self):
         """Not only the `$ref` shape: an inline nested group has a child map, and the
@@ -1021,7 +1317,7 @@ class TestSerializedGroupParseScope:
             },
         }
         _, name_map = sanitize_tool_schema(schema)
-        assert "Maybe_Group" in name_map.container_keys
+        assert "Maybe_Group" in name_map.container_kinds
         assert restore_names({"Maybe_Group": '{"In_Ner": "x"}'}, name_map) == {
             "Maybe Group": {"In Ner": "x"}
         }
@@ -1037,8 +1333,8 @@ class TestSerializedGroupParseScope:
             },
         }
         _, name_map = sanitize_tool_schema(schema)
-        assert "Flexible" not in name_map.container_keys
-        assert "Either" not in name_map.container_keys
+        assert "Flexible" not in name_map.container_kinds
+        assert "Either" not in name_map.container_kinds
         raw = '{"a_b": 1}'
         restored = restore_names({"Flexible": raw, "Either": raw}, name_map)
         assert restored == {"Flexible": raw, "Either": raw}
