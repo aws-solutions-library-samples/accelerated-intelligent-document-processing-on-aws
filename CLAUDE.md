@@ -406,11 +406,18 @@ AWS_PROFILE=default aws logs tail /aws/lambda/<fn> --since 1h
 ```
 
 For the CloudWatch MCP tools, pass `profile_name: "default"` (and the stack's
-region). Find Lambda log groups by listing with the deployment stack-name
-prefix, e.g. `/aws/lambda/<StackName>-...`. Hook-related functions to look for:
-the pipeline-hooks dispatcher (`...-PipelineHooksDispatcher...`), a feature's
-hook Lambda, a feature's `...-FeatureApiFunction-...`, and the config-preset
-resolver (`...-ApplyFeatureConfigPreset...`).
+region). Lambda log groups take one of **three** shapes, so list on both
+prefixes before concluding a function has no logs:
+
+| Shape | Used by |
+|---|---|
+| `/<StackName>/lambda/<FunctionLogicalId>` | `patterns/unified` and every feature-platform extension — the pipeline-hooks dispatcher, feature hook Lambdas, `FeatureApiFunction`, `UiDeployerFunction` |
+| `/aws/lambda/<StackName>-<Name>` | 5 groups in the parent `template.yaml` (`CircuitBreakerManager`, `CalculateCapacity`, `CalculateCapacityResolver`, `VersionCheckResolver`, `AgentProcessor`) and 2 in `nested/api-resolvers/` |
+| `/aws/lambda/<fn>` (Lambda's default) | anything with no explicit log group — including the 9 functions in `feature-platform/main-stack-extensions/`, e.g. the config-preset resolver (`...-ApplyFeatureConfigPreset...`) |
+
+Note the first shape is `/<StackName>/`, **not** `/aws/lambda/<StackName>-`, so a
+single `/aws/lambda/` prefix listing will miss the dispatcher and every feature
+Lambda. See the log-group naming rules in `.claude/skills/infrastructure.md`.
 
 ## AWS Service Requirements
 

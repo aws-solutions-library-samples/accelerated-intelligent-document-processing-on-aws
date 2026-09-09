@@ -94,11 +94,31 @@ MyFunctionLogGroup:
     KmsKeyId: !If [HasKmsKey, !Ref KmsKeyArn, !Ref "AWS::NoValue"]
 ```
 
-### Log group naming — pick one of exactly two forms
+### Log group naming — the invariant
 
-**Either** omit `LogGroupName` entirely and let CloudFormation generate it
-(`<stack>-<LogicalId>-<random>`), **or** name it `/${AWS::StackName}/lambda/<FunctionLogicalId>`
-and add a matching `LoggingConfig` to the function. Both are fine. Nothing else is.
+A log group name must satisfy all three of:
+
+1. **It must not reference the function resource.** No `${MyFunction}` in the
+   name — that is the defect below.
+2. **It must be stack-scoped and stable** across function replacement, so it
+   derives from `AWS::StackName` (or another parameter fixed for the stack's
+   lifetime), not from anything CloudFormation regenerates.
+3. **If you name it explicitly at all, the function needs a matching
+   `LoggingConfig`** pointing at it — otherwise Lambda writes to its own default
+   group and the one you declared sits empty.
+
+Or simply omit `LogGroupName` and let CloudFormation generate it
+(`<stack>-<LogicalId>-<random>`), which satisfies all three for free.
+
+Three shapes in this repo comply, and you will see all of them. Prefer the first
+for new code; **do not "fix" the second or third** — they are correct:
+
+| Shape | Where |
+|---|---|
+| `/${AWS::StackName}/lambda/<FunctionLogicalId>` | `patterns/unified` (18), every feature-platform extension |
+| `/aws/lambda/${AWS::StackName}-<Name>` | 5 in the parent `template.yaml`, 2 in `nested/api-resolvers/` |
+| `/aws/lambda/${SomeParameter}-<Name>` | `idp-data-generator`, keyed on `MainStackName`/`FeatureId` |
+| *(generated — no `LogGroupName`)* | most of the parent `template.yaml` (49 groups) |
 
 **Never name a log group after the function resource:**
 
@@ -133,10 +153,13 @@ permit `/`, `.`, `-`, `_`, `#` and alphanumerics, up to 512 characters.
 Note that a *stable* explicit name still carries one residual risk that a
 CloudFormation-generated name does not: if a log group is newly added to an
 already-existing stack and that update rolls back, a straggler invocation can
-resurrect the group, and the retry's `CREATE` then collides under the same
-name. It is retry-able rather than a hard block, so it is not a reason to
-avoid explicit naming — but prefer generated names for one-shot custom-resource
-Lambdas introduced by an upgrade, where that is exactly the scenario.
+resurrect the group, and the retry's `CREATE` then collides under the same name.
+Because the name is stable, **a plain retry collides identically every time**
+until someone deletes the resurrected group by hand — unlike a generated name,
+where the retry simply picks a new one. So prefer generated names for one-shot
+custom-resource Lambdas introduced by an upgrade, where that is exactly the
+scenario (this is why `MeteringHourMigrationFunctionLogGroup` in the parent
+template is deliberately unnamed).
 
 ## Build & Deploy
 ```bash
