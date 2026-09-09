@@ -80,15 +80,63 @@ MyFunction:
         - SecurityGroupIds: [!Ref LambdaSecurityGroup]
           SubnetIds: !Ref PrivateSubnetIds
         - !Ref "AWS::NoValue"
+    # Points the function at the log group below. This is what makes the
+    # LOG GROUP the dependency and the FUNCTION second — see the rule below.
+    LoggingConfig:
+      LogGroup: !Ref MyFunctionLogGroup
 
 MyFunctionLogGroup:
   Type: AWS::Logs::LogGroup
   DeletionPolicy: Delete
   Properties:
-    LogGroupName: !Sub "/aws/lambda/${MyFunction}"
+    LogGroupName: !Sub "/${AWS::StackName}/lambda/MyFunction"
     RetentionInDays: !Ref LogRetentionDays
     KmsKeyId: !If [HasKmsKey, !Ref KmsKeyArn, !Ref "AWS::NoValue"]
 ```
+
+### Log group naming — pick one of exactly two forms
+
+**Either** omit `LogGroupName` entirely and let CloudFormation generate it
+(`<stack>-<LogicalId>-<random>`), **or** name it `/${AWS::StackName}/lambda/<FunctionLogicalId>`
+and add a matching `LoggingConfig` to the function. Both are fine. Nothing else is.
+
+**Never name a log group after the function resource:**
+
+```yaml
+# WRONG — do not do this
+MyFunctionLogGroup:
+  Properties:
+    LogGroupName: !Sub "/aws/lambda/${MyFunction}"   # resolves the function's generated name
+```
+
+Two defects, both observed in production (issue #818 — 79 never-expiring
+orphan log groups holding 14.8 MiB on one stack):
+
+1. **It inverts the create order.** `!Sub "/aws/lambda/${MyFunction}"` makes the
+   *log group* depend on the *function*, so CloudFormation builds the function
+   first. Anything that invokes it in that window makes Lambda auto-create
+   `/aws/lambda/<fn>` itself, and CloudFormation's `CREATE` then fails
+   `ResourceAlreadyExists`. This bites custom-resource Lambdas hardest, since
+   CloudFormation invokes those during the same stack operation.
+2. **It orphans never-expiring groups on function replacement.** `${MyFunction}`
+   embeds Lambda's random suffix, so replacing the function renames the group.
+   CloudFormation creates the new one and deletes the old; if the outgoing
+   function logs once more, Lambda recreates the old name and CloudFormation no
+   longer owns it. It then lives forever with **no retention policy**, because
+   Lambda's auto-create sets none. A group with `retentionInDays: null` is the
+   fingerprint of one of these.
+
+The `/${AWS::StackName}/lambda/<Fn>` form avoids both: the group is created
+first, and the name is stable across function replacement. Log-group names
+permit `/`, `.`, `-`, `_`, `#` and alphanumerics, up to 512 characters.
+
+Note that a *stable* explicit name still carries one residual risk that a
+CloudFormation-generated name does not: if a log group is newly added to an
+already-existing stack and that update rolls back, a straggler invocation can
+resurrect the group, and the retry's `CREATE` then collides under the same
+name. It is retry-able rather than a hard block, so it is not a reason to
+avoid explicit naming — but prefer generated names for one-shot custom-resource
+Lambdas introduced by an upgrade, where that is exactly the scenario.
 
 ## Build & Deploy
 ```bash

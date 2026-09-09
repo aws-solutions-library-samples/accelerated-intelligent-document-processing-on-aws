@@ -670,11 +670,13 @@ Resources:
               Condition:
                 StringEquals:
                   cloudwatch:namespace: GENAIDP
+      LoggingConfig:
+        LogGroup: !Ref BootstrapProcessorFunctionLogGroup
 
   BootstrapProcessorFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${BootstrapProcessorFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/BootstrapProcessorFunction'
       RetentionInDays: !Ref LogRetentionDays
       KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
 
@@ -776,11 +778,13 @@ Resources:
             ApiId: !Ref FeatureApi
             Path: /{proxy+}
             Method: GET
+      LoggingConfig:
+        LogGroup: !Ref FeatureApiFunctionLogGroup
 
   FeatureApiFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FeatureApiFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FeatureApiFunction'
       RetentionInDays: !Ref LogRetentionDays
       KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
 
@@ -851,11 +855,13 @@ Resources:
           FEATURE_API_ENDPOINT: !GetAtt FeatureApi.ApiEndpoint
           GENERATION_QUEUE_ARN: !GetAtt BootstrapQueue.Arn
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
 
   UiDeployerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${UiDeployerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
       RetentionInDays: !Ref LogRetentionDays
       KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
 
